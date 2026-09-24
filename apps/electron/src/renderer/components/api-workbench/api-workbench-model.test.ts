@@ -85,6 +85,32 @@ describe('接口工作台编辑模型', () => {
     expect(result.revision).toBe(10)
   })
 
+  test('Given 指定测试用例 When 发送 Then prepare 带上用例身份', async () => {
+    /** 记录 prepare 参数，验证用例身份确实传到 Host。 */
+    const calls: unknown[] = []
+    const api = {
+      getCatalog: async () => createCatalog(),
+      saveCatalog: async (input: { catalog: ApiCatalog }) => input.catalog,
+      prepare: async (input: { caseId?: string }) => {
+        calls.push(input)
+        return {
+          preparedId: 'prepared_case', requestName: '用例', catalogRevision: 0, createdAt: 1, expiresAt: 2, warnings: [],
+          request: {
+            method: 'GET' as const, url: 'https://example.test', headers: [], body: '', timeoutMs: 1_000,
+            followRedirects: false, maxRedirects: 0, sensitiveHeaderNames: [], sensitiveQueryNames: [],
+          },
+        }
+      },
+      send: async () => createRun('run-case'),
+      cancel: async () => undefined,
+    } as unknown as ApiWorkbenchApi
+    const controller = createApiWorkbenchController(api, 'session-1', () => undefined)
+
+    await controller.send('tab-1', createApiRequestDraft(), undefined, undefined, 'case_401')
+
+    expect(calls[0]).toMatchObject({ sessionId: 'session-1', caseId: 'case_401' })
+  })
+
   test('Given 请求 A 在途后切到请求 B When A 迟到完成 Then 结果只写回 A 标签', async () => {
     const prepared = { preparedId: 'prepared-a', request: createRun('run-a').request, requestName: 'A', catalogRevision: 3, createdAt: 1, expiresAt: 2, warnings: [] }
     const api = {

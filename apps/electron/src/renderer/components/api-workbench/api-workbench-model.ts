@@ -252,7 +252,8 @@ export function createApiWorkbenchController(
   sessionId: string,
   publish: (tabId: string, patch: ApiWorkbenchExecutionPatch) => void,
 ): {
-  send: (tabId: string, request: ApiRequestDraft, requestId?: string, environmentId?: string) => Promise<ApiRun | null>
+  /** caseId 指定要跑测试用例；未指定时按请求自身的默认断言发送。 */
+  send: (tabId: string, request: ApiRequestDraft, requestId?: string, environmentId?: string, caseId?: string) => Promise<ApiRun | null>
   cancel: (tabId: string) => Promise<void>
 } {
   /** 单个标签当前 prepare/send 的完整生命周期。 */
@@ -266,7 +267,7 @@ export function createApiWorkbenchController(
   const activeByTab = new Map<string, ActiveExecution>()
   return {
     /** 先固定请求快照，再发送同一个 preparedId。 */
-    send(tabId, request, requestId, environmentId) {
+    send(tabId, request, requestId, environmentId, caseId) {
       /** 双击与连续快捷键复用同一 prepare/send，不产生第二次副作用。 */
       const existing = activeByTab.get(tabId)
       if (existing) return existing.promise
@@ -279,7 +280,7 @@ export function createApiWorkbenchController(
       const promise = (async (): Promise<ApiRun | null> => {
         try {
           /** Host 生成的固定执行快照。 */
-          const prepared = await api.prepare({ sessionId, request, ...(requestId ? { requestId } : {}), ...(environmentId ? { environmentId } : {}) })
+          const prepared = await api.prepare({ sessionId, request, ...(requestId ? { requestId } : {}), ...(environmentId ? { environmentId } : {}), ...(caseId ? { caseId } : {}) })
           if (active.cancelRequested) {
             /** prepare 尚未完成时的取消在取得合法身份后清理，且绝不进入 send。 */
             await api.cancel({ sessionId, preparedId: prepared.preparedId }).catch(() => undefined)
