@@ -2,6 +2,7 @@
 
 > 前置：阶段 A 已明确「SSE、上传、代理、自动 Cookie Jar 和导入属于已批准路线中的下一增量」；B1–B7b 已交付导入导出、事件流、事件断言、变量提取、运行时变量面板、按用例执行与 Agent 出题。
 > 本轮只做 **自动 Cookie Jar**，其余三项各自单独评估。
+> 状态：**已交付**（提交 `72b69df0`、`d2215b30`、`68a552f3`、`41626f51`，验收记录见第 6 节）。
 
 ## 1. 要解决的问题
 
@@ -35,3 +36,27 @@
 3. 服务：`Set-Cookie` 采集（含 `Max-Age`、`Expires`、删除语义）、跨 workspace 与跨 host 隔离、关闭时不写入、条目上限、清空、关闭服务即清空。
 4. 四层契约与界面：IPC/preload/界面面板接线；请求设置开关；记录与预览里不出现 cookie 值。
 5. 真实验收：`bun test`（共享合同 / 主进程工作台 / 工作台界面 / preload / agent 组件）、`bun run typecheck`、`bun run electron:build`、真实 Electron 端到端（登录后 jar 开启的后续请求确实带上 cookie，且运行记录与预览中查不到该值）、界面 smoke（开关、面板、清空）。
+
+## 6. 已交付与验收记录（2026-09-24）
+
+已交付行为：
+
+- `ApiRequestDraft.useCookieJar`（缺省 `false`）在请求「设置」页是一个开关；解析器只在它为真、且草稿没有手写 `Cookie` 头时注入合成头（同时标记为敏感头）。
+- 每 workspace 一份 jar，只活在主进程内存；运行终态逐跳采集 `Set-Cookie`（`Max-Age`/`Expires` 参与过期与删除；host-only 作用域；路径前缀匹配；`Secure` 只在 https 回送；条目 128 上限按最久未更新淘汰；值上限 4 KiB、头部预算 8 KiB，畸形/含 CR-LF 的值整条丢弃）。
+- `getCookieJar`/`clearCookieJar` 两条命令只回元数据；界面工具栏「Cookie」面板列出名称、作用域、HttpOnly/Secure 与过期时间，并可刷新/清空。Agent 只多了 `useCookieJar` 布尔开关与一句说明，没有任何读取取值的参数。
+
+| 验证 | 结果 | 日志 |
+| --- | --- | --- |
+| 定向回归（共享合同 / IPC / 主进程工作台 / 工作台界面 / agent 组件 / preload） | 829 pass / 0 fail，100 文件 | `/tmp/proma-api-b8-targeted.log` |
+| `bun run typecheck` | 7 workspace 全部通过 | `/tmp/proma-api-b8-typecheck.log` |
+| `bun run electron:build` | 通过，仅既有 EventKit 告警 | `/tmp/proma-api-b8-build.log` |
+| 真实 Electron 端到端（`api-workbench-smoke.ts`） | PASS；网络调用 14 次。首次请求不带 cookie → 服务端下发两条 → 开启自动 Cookie 的第二次请求服务端确实收到 `sid=smoke-cookie-1; theme=dark` → 关闭自动 Cookie 的请求收不到 → 清空后再发仍不带；注入的 `Cookie` 头在运行记录里是 `[REDACTED]`，元数据接口不含取值 | `/tmp/proma-api-b8-smoke.log` |
+| 真实界面（`api-workbench-ui-smoke.ts`） | PASS；请求设置出现「自动 Cookie（仅本机内存）」开关，Cookie 面板显示元数据（含 HttpOnly 徽标与会话 cookie 文案）、一键清空为空状态、关闭弹层 | `/tmp/proma-api-b8-ui-smoke.log` |
+
+截图：`/private/tmp/api-workbench-ui-cookie-jar.png`。
+
+需要知悉的两条事实与坑：
+
+- **服务端自己下发的 `Set-Cookie` 仍按原始网络事实留在运行记录里**（这是 B7 起就有的行为，用于调试「服务端到底发了什么」）；本增量保证的是**不会把 cookie 值写进磁盘、历史摘要、报告或模型上下文**。若将来要连服务端响应头一起遮罩，需要单独决策，因为它会损失证据。
+- 已关闭的 Radix 弹层会**继续留在 DOM**（`data-state="closed"`），界面 smoke 里按文字找按钮必须限定在「当前打开的那层」，否则会点到隐藏弹层的同名按钮（本次踩到并已修正）。
+- 新实例读同一个数据根拿不到任何 cookie：本能力**不落盘**，这也是「重启即失效」的实现方式。
