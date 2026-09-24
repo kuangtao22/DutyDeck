@@ -1,9 +1,38 @@
 import { describe, expect, test } from 'bun:test'
-import { formatApiCaseReportMarkdown } from './api-workbench-cases'
+import { createApiCaseReportRow, formatApiCaseReportCells, formatApiCaseReportMarkdown } from './api-workbench-cases'
 import type { ApiCaseReportRow } from './api-workbench-cases'
+import type { ApiAssertion, ApiRun, ApiTestCase } from './api-workbench'
 
 /** 报告抬头固定值，便于逐字断言。 */
 const meta = { requestName: '登录', method: 'POST', url: 'https://example.test/login', startedAt: 1_700_000_000_000 }
+
+/** 最小断言声明，只用于构造用例。 */
+function assertion(id: string): ApiAssertion {
+  return { id, kind: 'status', path: '', expected: '200' }
+}
+
+/** 构造带断言数量的用例声明。 */
+function testCase(id: string, name: string, assertionCount: number): ApiTestCase {
+  return { id, name, assertions: Array.from({ length: assertionCount }, (_value, index) => assertion(`${id}_${index}`)) }
+}
+
+/** 构造只保留报告关心的字段的运行记录。 */
+function run(options: { status?: number; passed: boolean[]; state?: ApiRun['state']; error?: ApiRun['error']; finishedAt?: number }): ApiRun {
+  return {
+    id: 'run_1', workspaceId: 'workspace', sessionId: 'session', source: 'manual', requestName: '登录', caseId: 'case_ok',
+    catalogRevision: 0, createdAt: 1_000, finishedAt: options.finishedAt ?? 1_240, state: options.state ?? 'completed',
+    request: { method: 'POST', url: 'https://example.test/login', headers: [], body: '', timeoutMs: 1_000, followRedirects: false, maxRedirects: 0, sensitiveHeaderNames: [], sensitiveQueryNames: [] },
+    hops: options.status === undefined ? [] : [{
+      url: 'https://example.test/login', method: 'POST', requestHeaders: [], requestHeadersSource: 'configured', status: options.status, statusText: 'OK', httpVersion: '1.1',
+      responseHeaders: [], trailers: [], timings: { dnsMs: null, connectMs: null, tlsMs: null, sendMs: null, ttfbMs: null, downloadMs: null, totalMs: 240 },
+      connection: { reused: false },
+    }],
+    body: { rawBytes: 0, decodedBytes: 0, contentType: '', encoding: '', preview: '', previewTruncated: false, complete: true, decoded: false },
+    assertions: options.passed.map((passed, index) => ({ id: `a${index}`, passed, expected: '200', actual: '200', message: passed ? '状态码匹配' : '状态码不匹配' })),
+    recording: 'saved', pinned: false,
+    ...(options.error ? { error: options.error } : {}),
+  }
+}
 
 describe('接口用例报告', () => {
   test('Given 全部用例通过 When 生成报告 Then 汇总通过率且每行标注通过', () => {
@@ -56,5 +85,45 @@ describe('接口用例报告', () => {
 
     expect(dataLine).toBe('| 带\\|竖线 和换行 | 失败 | — | 0/1 | — | 第一行 第二行\\|尾 |')
     expect(report.split('\n').filter((line) => line.startsWith('|')).length).toBe(3)
+  })
+})
+
+describe('接口用例结果映射', () => {
+  test('Given 用例执行完成 When 映射报告行 Then 用运行里的真实状态码、断言与耗时', () => {
+    const row = createApiCaseReportRow(testCase('case_ok', '正常登录', 3), run({ status: 200, passed: [true, true, true] }))
+
+    expect(row).toEqual({
+      caseId: 'case_ok', caseName: '正常登录', runId: 'run_1', state: 'completed', status: 200,
+      assertionsPassed: 3, assertionsTotal: 3, durationMs: 240,
+    })
+    expect(formatApiCaseReportCells(row)).toEqual({
+      caseName: '正常登录', verdict: '通过', status: '200', assertions: '3/3', duration: '240 ms', remark: '',
+    })
+  })
+
+  test('Given 用例没有运行记录 When 映射报告行 Then 标注未执行并保留声明的断言数量', () => {
+    const row = createApiCaseReportRow(testCase('case_new', '越权', 2), null)
+
+    expect(row.runId).toBeUndefined()
+    expect(row.assertionsTotal).toBe(2)
+    expect(row.assertionsPassed).toBe(0)
+    expect(row.status).toBeNull()
+    expect(row.durationMs).toBeNull()
+    expect(formatApiCaseReportCells(row).verdict).toBe('未执行')
+  })
+
+  test('Given 用例被取消或派发失败 When 映射报告行 Then 备注写清原因且不伪装成通过', () => {
+    const cancelled = createApiCaseReportRow(testCase('case_c', '取消用例', 1), null, '已取消，未执行')
+    const failedDispatch = createApiCaseReportRow(testCase('case_d', '派发失败', 1), null, 'API_WORKBENCH_CASE_NOT_FOUND')
+    const brokenRun = createApiCaseReportRow(testCase('case_e', '连接失败', 1), run({ passed: [], state: 'failed', error: { phase: 'connect', code: 'ECONNREFUSED', message: '连接被拒绝' } }), undefined)
+    const cancelledRun = createApiCaseReportRow(testCase('case_f', '中断的运行', 2), run({ status: 200, passed: [true], state: 'cancelled' }))
+
+    expect(cancelled.error).toBe('已取消，未执行')
+    expect(formatApiCaseReportCells(cancelled).verdict).toBe('未执行')
+    expect(failedDispatch.error).toBe('API_WORKBENCH_CASE_NOT_FOUND')
+    expect(brokenRun.error).toBe('连接被拒绝')
+    expect(formatApiCaseReportCells(brokenRun).verdict).toBe('失败')
+    expect(cancelledRun.error).toBe('运行已取消')
+    expect(formatApiCaseReportCells(cancelledRun).verdict).toBe('失败')
   })
 })
