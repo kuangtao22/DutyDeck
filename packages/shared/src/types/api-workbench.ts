@@ -161,6 +161,8 @@ export interface ApiRun {
   sse?: ApiSseStream
   /** 提取结果只记录命中与否，值保存在主进程的运行时变量里。 */
   extracted?: ApiExtractionOutcome[]
+  /** 本次运行所跑的测试用例；未按用例跑时缺省。 */
+  caseId?: string
 }
 /** 正文分页结果；offset 按字符计数，下一页通过 nextOffset 获取。 */
 export interface ApiBodySlice { text: string; offset: number; nextOffset: number | null; totalChars: number; truncated: boolean }
@@ -169,7 +171,7 @@ export interface ApiTarget { sessionId: string }
 /** 保存完整小目录；expectedRevision 防止多 Pane 丢失更新。 */
 export interface ApiSaveCatalogInput extends ApiTarget { expectedRevision: number; catalog: ApiCatalog }
 /** 从已保存请求或本地草稿生成一次发送身份；单次覆盖不写回环境。 */
-export interface ApiPrepareInput extends ApiTarget { request: ApiRequestDraft; requestId?: string; environmentId?: string; overrides?: ApiField[] }
+export interface ApiPrepareInput extends ApiTarget { request: ApiRequestDraft; requestId?: string; environmentId?: string; overrides?: ApiField[]; caseId?: string }
 /** 发送或取消仅使用 Host 签发的准备身份。 */
 export interface ApiSendInput extends ApiTarget { preparedId: string }
 /** 读取运行原文只能由本地 UI 显式使用 reveal，Agent facade 不暴露该参数。 */
@@ -202,7 +204,7 @@ export interface ApiWorkbenchApi {
 }
 /** 创建不包含自动网络行为的新草稿。 */
 export function createApiRequestDraft(collectionId = 'default'): ApiRequestDraft {
-  return { name: '新请求', collectionId, folder: '', description: '', method: 'GET', url: '', query: [], headers: [], body: { kind: 'none', text: '', fields: [] }, auth: { type: 'none', value: { value: '' } }, timeoutMs: 30_000, followRedirects: false, maxRedirects: 5, assertions: [], extractions: [] }
+  return { name: '新请求', collectionId, folder: '', description: '', method: 'GET', url: '', query: [], headers: [], body: { kind: 'none', text: '', fields: [] }, auth: { type: 'none', value: { value: '' } }, timeoutMs: 30_000, followRedirects: false, maxRedirects: 5, assertions: [], extractions: [], cases: [] }
 }
 /** 稳定的合同错误，附带字段名但不回显字段值。 */
 function invalid(path: string): never { throw new Error('API_WORKBENCH_INVALID: ' + path) }
