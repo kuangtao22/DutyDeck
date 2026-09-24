@@ -72,12 +72,28 @@ export function formatApiCaseReportCells(row: ApiCaseReportRow): ApiCaseReportCe
   }
 }
 
+/**
+ * 失败断言的说明：优先用求值器给出的具体原因，否则拼出期望与实际。
+ * @param failed 已判定为失败的断言结果，至少一条。
+ * @returns 可读原因；多条失败时补一句计数，避免只看到其中一条。
+ */
+function assertionRemark(failed: readonly ApiRun['assertions'][number][]): string {
+  const first = failed[0]!
+  /** 通用「断言失败」不足以定位，替换成期望与实际。 */
+  const detail = first.message && first.message !== '断言失败'
+    ? first.message
+    : `期望 ${first.expected || '（空）'}，实际 ${first.actual || '（空）'}`
+  return failed.length > 1 ? `${detail}（共 ${failed.length} 项未通过）` : detail
+}
+
 /** 运行终态的补充说明：失败保留真实原因，取消与中断不伪装成通过。 */
 function runRemark(run: ApiRun): string | undefined {
   if (run.error) return run.error.message || run.error.code
   if (run.state === 'cancelled') return '运行已取消'
   if (run.state !== 'completed') return `运行状态：${run.state}`
-  return undefined
+  /** 传输成功但断言不成立时必须给出原因，否则表格只有「失败」两个字。 */
+  const failed = run.assertions.filter((item) => !item.passed)
+  return failed.length > 0 ? assertionRemark(failed) : undefined
 }
 
 /**

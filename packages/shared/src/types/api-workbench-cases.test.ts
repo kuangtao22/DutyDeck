@@ -17,7 +17,7 @@ function testCase(id: string, name: string, assertionCount: number): ApiTestCase
 }
 
 /** 构造只保留报告关心的字段的运行记录。 */
-function run(options: { status?: number; passed: boolean[]; state?: ApiRun['state']; error?: ApiRun['error']; finishedAt?: number }): ApiRun {
+function run(options: { status?: number; passed: boolean[]; state?: ApiRun['state']; error?: ApiRun['error']; finishedAt?: number; assertionMessages?: string[] }): ApiRun {
   return {
     id: 'run_1', workspaceId: 'workspace', sessionId: 'session', source: 'manual', requestName: '登录', caseId: 'case_ok',
     catalogRevision: 0, createdAt: 1_000, finishedAt: options.finishedAt ?? 1_240, state: options.state ?? 'completed',
@@ -28,7 +28,13 @@ function run(options: { status?: number; passed: boolean[]; state?: ApiRun['stat
       connection: { reused: false },
     }],
     body: { rawBytes: 0, decodedBytes: 0, contentType: '', encoding: '', preview: '', previewTruncated: false, complete: true, decoded: false },
-    assertions: options.passed.map((passed, index) => ({ id: `a${index}`, passed, expected: '200', actual: '200', message: passed ? '状态码匹配' : '状态码不匹配' })),
+    assertions: options.passed.map((passed, index) => ({
+      id: `a${index}`,
+      passed,
+      expected: '200',
+      actual: options.status === undefined ? '' : String(options.status),
+      message: options.assertionMessages?.[index] ?? (passed ? '断言通过' : '断言失败'),
+    })),
     recording: 'saved', pinned: false,
     ...(options.error ? { error: options.error } : {}),
   }
@@ -125,5 +131,20 @@ describe('接口用例结果映射', () => {
     expect(formatApiCaseReportCells(brokenRun).verdict).toBe('失败')
     expect(cancelledRun.error).toBe('运行已取消')
     expect(formatApiCaseReportCells(cancelledRun).verdict).toBe('失败')
+  })
+
+  test('Given 断言不成立 When 映射报告行 Then 备注写出期望与实际而不是「断言失败」', () => {
+    const single = createApiCaseReportRow(testCase('case_b', '越权', 1), run({ status: 401, passed: [false] }))
+    const multiple = createApiCaseReportRow(testCase('case_m', '多断点', 3), run({ status: 401, passed: [true, false, false] }))
+    const detailed = createApiCaseReportRow(testCase('case_s', '事件流', 1), run({
+      status: 200,
+      passed: [false],
+      assertionMessages: ['响应不是事件流，无法验证该断言'],
+    }))
+
+    expect(single.error).toBe('期望 200，实际 401')
+    expect(multiple.error).toBe('期望 200，实际 401（共 2 项未通过）')
+    expect(detailed.error).toBe('响应不是事件流，无法验证该断言')
+    expect(createApiCaseReportRow(testCase('case_ok', '正常', 1), run({ status: 200, passed: [true] })).error).toBeUndefined()
   })
 })

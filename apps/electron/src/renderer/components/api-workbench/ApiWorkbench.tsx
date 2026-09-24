@@ -1545,7 +1545,7 @@ function ApiWorkbenchSession({ sessionId, uiScope, workspaceLabel }: { sessionId
         batch={caseBatch}
         onOpenChange={(open) => { if (!open && !caseBatch?.running) setCaseBatch(null) }}
         onCopy={() => void copyCaseReport()}
-        onOpenRun={(runId) => openRun(runId)}
+        onOpenRun={(runId) => { /** 报告是模态弹层，打开某次运行时要先让位给响应面板。 */ setCaseBatch(null); openRun(runId) }}
         onCancel={cancelActive}
       />
       <RuntimeVariablesDialog
