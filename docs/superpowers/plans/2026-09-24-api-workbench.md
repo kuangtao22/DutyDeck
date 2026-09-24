@@ -260,3 +260,50 @@ Electron 链路 smoke 在 `apps/electron` 编译 `scripts/api-workbench-smoke.ts
 - 系统安全存储不可用时新秘密禁止持久化，有限内存只保存请求与头的原始详情；正文只保留脱敏预览，界面需明确标识。自定义敏感项须标记或引用秘密环境变量。
 - 文件夹基于请求路径，空文件夹不持久化；历史载入编辑器、集合鉴权继承、可拖动分隔条、JSON 类型断言与响应差异比较尚未交付。
 - 本轮不执行安装包发布、Windows/Linux 原生测试、真实第三方接口调用或用户客户端重启；变更留在隔离工作树待审阅。
+
+## 阶段 B7：接口测试用例（进行中）
+
+分支 `codex/api-cases`（工作树 `.worktrees/api-cases`，基于 main `7aca05ff`）。目标：把请求上那份扁平的断言升级成**具名用例**，让同一接口的「正常 / 缺参数 / 越权」各自独立，并能一键跑全部用例拿到结论。
+
+### 已交付（4 个提交，均带测试）
+
+| 提交 | 内容 |
+| --- | --- |
+| `5c21e764` | 契约：`cases?: ApiTestCase[]`（id/name/assertions/overrides/environmentId），≤16 条，可选字段向后兼容 |
+| `2f91540b` | 求值：`prepare({ caseId })` 用该用例的断言与覆盖；优先级 **显式覆盖 > 用例覆盖 > 运行时变量 > 环境 > 集合**；用例环境仅在仍存在时生效；用例不存在时 `API_WORKBENCH_CASE_NOT_FOUND`；运行记录带 `caseId` |
+| `30e76442` | Agent：`api_prepare_request` 接受 `caseId` 并透传；运行摘要带 `caseId`；补齐用例执行回归测试 |
+| `e79c0ad4` | 报告：`ApiCaseReportRow` + `formatApiCaseReportMarkdown`（未执行/未验证/通过/失败四态分明，单元格转义竖线与换行） |
+
+验证基线：主进程工作台 91 项、共享合同与服务工作台 559 项、用例报告 4 项测试通过；`@proma/shared` 与 `@proma/electron` 类型检查通过。
+
+### 待办一：界面（下一步）
+
+1. `apps/electron/src/renderer/components/api-workbench/api-workbench-model.ts`
+   - `ApiWorkbenchRequestTab` 增加 `activeCaseId?: string`（切换请求标签时保留各自用例）。
+   - `createApiWorkbenchController` 的 `send` 增加第 5 个参数 `caseId?: string`，透传进 `api.prepare({ ..., caseId })`；其余单飞/取消语义不变。
+2. `ApiWorkbench.tsx`
+   - 请求编辑区新增「用例」分区：列出 `draft.cases ?? []`，支持新增/重命名/删除/设为当前；新增用例默认 `{ id: createLocalId('case'), name: '新用例', assertions: [] }`。
+   - 当前用例选中时，「断言」分区编辑的是**该用例的 assertions**；未选用例时编辑请求自身的 assertions（即默认用例）。
+   - 发送入口（`onSend`）带上 `activeTab.activeCaseId`。
+   - 响应区把断言结论标注为「用例 <名称> x/y」，并在运行历史里显示用例名（用 `run.caseId` 查目录，查不到显示「已删除的用例」）。
+3. 目录树可在请求名旁显示用例数量（`cases.length > 0` 时），一眼看出哪些接口有测试。
+
+### 待办二：跑全部用例 + 复制报告
+
+- 请求头部新增「跑全部用例」：顺序对 `draft.cases` 逐个 `prepare + send`（走现有控制器，保持单飞与取消语义），把每次结果映射成 `ApiCaseReportRow`，用已交付的纯函数渲染汇总表。
+- 汇总表提供「复制报告」（复用 `copyTextToClipboard`）与「逐个打开 runId」。
+- 失败即停 vs 跑完再汇总：建议**跑完再汇总**，并在表格里标出失败项，便于一次看全。
+
+### 待办三：真实验收与合并
+
+1. 定向回归：`bun test packages/shared/src/types apps/electron/src/main/lib/api-workbench apps/electron/src/renderer/components/api-workbench apps/electron/src/preload`。
+2. `bun run typecheck`、`bun run electron:build`。
+3. 真实 Electron 端到端（`apps/electron/scripts/api-workbench-smoke.ts`）：加一个多用例请求（一个通过、一个故意失败），断言 `run.caseId`、用例级断言结论与报告文本。
+4. 界面 smoke（`api-workbench-ui-smoke.ts`）：用例页签增删改、跑全部用例、复制报告。
+5. 合并进主工作区：**用显式路径提交**（`git commit <paths>`），因为主区索引里可能有用户已暂存的 `MEMORY.md`；`git commit -m` 会把整个索引一起提交（B6 那次踩过，提交未推送，软回退后按路径重提即可）。
+
+### 环境注意事项（踩过的坑）
+
+- 新建工作树没有 `node_modules`，先 `bun install --offline --frozen-lockfile`，否则 `@proma/electron` 类型检查会报大量「找不到 @proma/shared」的假错误。
+- 解析器给新字段补默认值（如 `cases ?? []`）时，`createApiRequestDraft` 必须同步补形状，否则「解析前 vs 解析后」不一致会让既有相等断言失败（B7 第二步实际踩到）。
+- `ApiWorkbench.tsx` 里有几行超长 JSX，`apply_patch` 常对不上上下文；改用带断言的定点替换更稳。
