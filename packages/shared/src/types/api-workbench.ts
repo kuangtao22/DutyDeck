@@ -12,7 +12,20 @@ export const API_LIMITS = {
   sseDeltaEvents: 64, sseDeltaChars: 32 * 1024,
   /** 单个请求可声明的提取规则数量，以及单个提取值的字符上限。 */
   maxExtractions: 16, extractionValueChars: 4096,
+  /** 单个请求可声明的测试用例数量。 */
+  maxCases: 16,
 } as const
+/** 一条具名测试用例：同一接口的不同预期，可带用例级变量覆盖。 */
+export interface ApiTestCase {
+  id: string
+  name: string
+  /** 该用例的断言集合；为空表示只跑请求、不做校验。 */
+  assertions: ApiAssertion[]
+  /** 用例级变量覆盖，优先级高于运行时变量与环境；不写入环境定义。 */
+  overrides?: ApiField[]
+  /** 该用例默认使用的环境；环境被删除后按未指定处理。 */
+  environmentId?: string
+}
 /** 从响应里取值的声明式规则；只描述来源，不携带任何值。 */
 export interface ApiExtraction {
   id: string
@@ -80,6 +93,11 @@ export interface ApiRequestDraft {
    * 可选是为了兼容升级前保存的请求；环境被删除后这里会留下悬空引用，界面按「环境已删除」显示。
    */
   targetEnvironmentId?: string
+  /**
+   * 具名测试用例；可选是为了兼容升级前保存的请求，解析时缺省补成空数组。
+   * 请求自身的 assertions 仍然有效，等价于「默认用例」。
+   */
+  cases?: ApiTestCase[]
 }
 /** 已保存请求具有独立版本，更新采用 expected revision 比较。 */
 export interface ApiRequestDefinition extends ApiRequestDraft { id: string; revision: number; updatedAt: number }
@@ -252,7 +270,18 @@ function assertion(value: unknown): ApiAssertion {
   }
 }
 /** 草稿字段白名单，定义解析也复用此表。 */
-const DRAFT_KEYS = ['name', 'collectionId', 'folder', 'description', 'method', 'url', 'query', 'headers', 'body', 'auth', 'timeoutMs', 'followRedirects', 'maxRedirects', 'assertions', 'extractions', 'targetEnvironmentId'] as const
+const DRAFT_KEYS = ['name', 'collectionId', 'folder', 'description', 'method', 'url', 'query', 'headers', 'body', 'auth', 'timeoutMs', 'followRedirects', 'maxRedirects', 'assertions', 'extractions', 'targetEnvironmentId', 'cases'] as const
+/** 解析单条测试用例；用例名可有界重复，身份必须唯一。 */
+function testCase(value: unknown): ApiTestCase {
+  const record = apiRecord(value, ['id', 'name', 'assertions', 'overrides', 'environmentId'], 'case')
+  return {
+    id: parseApiId(record.id),
+    name: text(record.name, 'case.name', 128),
+    assertions: rows(record.assertions, assertion, 64, 'case.assertions'),
+    ...(record.overrides === undefined ? {} : { overrides: parseApiFields(record.overrides) }),
+    ...(record.environmentId === undefined ? {} : { environmentId: parseApiId(record.environmentId) }),
+  }
+}
 /** 变量名必须能直接嵌入 {{name}} 模板。 */
 const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/
 /** 解析单条提取规则；来源是固定枚举，变量名必须可用于模板。 */
@@ -287,6 +316,7 @@ export function parseApiRequestDraft(value: unknown): ApiRequestDraft {
     maxRedirects: apiInteger(record.maxRedirects, 0, 10, 'maxRedirects'), assertions: rows(record.assertions, assertion, 64, 'assertions'),
     extractions: rows(record.extractions ?? [], extraction, API_LIMITS.maxExtractions, 'extractions'),
     ...(record.targetEnvironmentId === undefined ? {} : { targetEnvironmentId: parseApiId(record.targetEnvironmentId) }),
+    cases: rows(record.cases ?? [], testCase, API_LIMITS.maxCases, 'cases'),
   }
 }
 /** 从定义提取编辑草稿，不把内部版本字段送入草稿解析器。 */
