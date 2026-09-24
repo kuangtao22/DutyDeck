@@ -288,7 +288,7 @@ function testCase(value: unknown): ApiTestCase {
     ...(record.overrides === undefined ? {} : { overrides: parseApiFields(record.overrides) }),
     ...(record.environmentId === undefined ? {} : { environmentId: parseApiId(record.environmentId) }),
     /** 来源只允许 Host 认可的两种取值；升级前保存的用例缺省为人工创建。 */
-    source: choice(record.source ?? 'user', ['user', 'agent'], 'case.source'),
+    source: choice(record.source ?? 'user', ['user', 'agent'] as const, 'case.source'),
   }
 }
 /** 变量名必须能直接嵌入 {{name}} 模板。 */
