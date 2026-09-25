@@ -70,11 +70,33 @@ function header(value: unknown): ApiHeader {
   const record = apiRecord(value, ['name', 'value', 'source'])
   return { name: str(record.name, 'header.name', 256), value: str(record.value, 'header.value', 65536), ...(record.source === undefined ? {} : { source: one(record.source, ['user', 'generated'] as const) }) }
 }
+/** base64 正文的字符上限：按 20 MiB 原始字节的最坏膨胀再加边界余量。 */
+const MAX_BODY_BASE64_CHARS = Math.ceil((API_LIMITS.bodyBytes * 4) / 3) + 4096
+/** 解析附件摘要；只允许字段名、文件名、大小与 sha256。 */
+function attachmentSummary(value: unknown) {
+  const record = apiRecord(value, ['field', 'fileName', 'sizeBytes', 'sha256'])
+  const sha256 = str(record.sha256, 'attachment.sha256', 64)
+  if (!/^[0-9a-f]{64}$/.test(sha256)) return bad('attachment.sha256')
+  return {
+    field: str(record.field, 'attachment.field', 256),
+    fileName: str(record.fileName, 'attachment.fileName', 256),
+    sizeBytes: apiInteger(record.sizeBytes, 0, API_LIMITS.bodyBytes, 'attachment.sizeBytes'),
+    sha256,
+  }
+}
 /** 准备结果的请求已经是解析后的公开投影，敏感部分应被 Host 遮罩。 */
 export function parseApiResolvedRequest(value: unknown): ApiResolvedRequest {
-  const record = apiRecord(value, ['method', 'url', 'headers', 'body', 'timeoutMs', 'followRedirects', 'maxRedirects', 'sensitiveHeaderNames', 'sensitiveQueryNames'])
+  const record = apiRecord(value, ['method', 'url', 'headers', 'body', 'timeoutMs', 'followRedirects', 'maxRedirects', 'sensitiveHeaderNames', 'sensitiveQueryNames', 'bodyBase64', 'attachments'])
   if (typeof record.body !== 'string' || new TextEncoder().encode(record.body).byteLength > API_LIMITS.requestBytes) return bad('request.bodyBytes')
-  return { method: one(record.method, ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']), url: str(record.url, 'url', 16384), headers: list(record.headers, header, 256), body: str(record.body, 'body', API_LIMITS.bodyBytes), timeoutMs: apiInteger(record.timeoutMs, 100, 300000, 'timeoutMs'), followRedirects: bool(record.followRedirects), maxRedirects: apiInteger(record.maxRedirects, 0, 10, 'maxRedirects'), sensitiveHeaderNames: list(record.sensitiveHeaderNames, (item) => str(item, 'sensitiveHeader', 256)), sensitiveQueryNames: list(record.sensitiveQueryNames, (item) => str(item, 'sensitiveQuery', 256)) }
+  /** 二进制正文只在主进程与 Utility 之间流转；这里同样按上限收紧。 */
+  const bodyBase64 = record.bodyBase64 === undefined ? undefined : str(record.bodyBase64, 'bodyBase64', MAX_BODY_BASE64_CHARS)
+  return {
+    method: one(record.method, ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']), url: str(record.url, 'url', 16384), headers: list(record.headers, header, 256), body: str(record.body, 'body', API_LIMITS.bodyBytes),
+    timeoutMs: apiInteger(record.timeoutMs, 100, 300000, 'timeoutMs'), followRedirects: bool(record.followRedirects), maxRedirects: apiInteger(record.maxRedirects, 0, 10, 'maxRedirects'),
+    sensitiveHeaderNames: list(record.sensitiveHeaderNames, (item) => str(item, 'sensitiveHeader', 256)), sensitiveQueryNames: list(record.sensitiveQueryNames, (item) => str(item, 'sensitiveQuery', 256)),
+    ...(bodyBase64 === undefined ? {} : { bodyBase64 }),
+    ...(record.attachments === undefined ? {} : { attachments: list(record.attachments, attachmentSummary, API_LIMITS.maxFileParts) }),
+  }
 }
 /** 解析准备回执，不能携带内部密钥和路径。 */
 export function parseApiPreparedPreview(value: unknown): ApiPreparedPreview {
