@@ -1,10 +1,10 @@
 import { API_LIMITS, apiInteger, apiRecord, parseApiCatalog, parseApiFields, parseApiId, parseApiRequestDraft, parseApiTarget } from './api-workbench'
-import type { ApiWorkbenchApi, ApiTarget, ApiSaveCatalogInput, ApiPrepareInput, ApiSendInput, ApiRunInput, ApiReadBodyInput, ApiListRunsInput, ApiPinRunInput, ApiCatalog, ApiPreparedPreview, ApiRun, ApiBodySlice, ApiResolvedRequest, ApiHeader, ApiTimings, ApiHttpHop, ApiBodyInfo, ApiFailure, ApiRunChanged, ApiRunStreamChanged, ApiSseEvent, ApiSseStream, ApiExtractionOutcome, ApiRuntimeVariable, ApiCookieJarEntry, ApiConnectionInfo } from './api-workbench'
+import type { ApiWorkbenchApi, ApiTarget, ApiSaveCatalogInput, ApiPrepareInput, ApiSendInput, ApiRunInput, ApiReadBodyInput, ApiListRunsInput, ApiPinRunInput, ApiCatalog, ApiPreparedPreview, ApiRun, ApiBodySlice, ApiResolvedRequest, ApiHeader, ApiTimings, ApiHttpHop, ApiBodyInfo, ApiFailure, ApiRunChanged, ApiRunStreamChanged, ApiSseEvent, ApiSseStream, ApiExtractionOutcome, ApiRuntimeVariable, ApiCookieJarEntry, ApiPickedFile, ApiConnectionInfo } from './api-workbench'
 
 /** IPC 命令的输入映射，拒绝用户自行声明 workspace。 */
-export interface ApiCommandInputs { getCatalog: ApiTarget; saveCatalog: ApiSaveCatalogInput; prepare: ApiPrepareInput; send: ApiSendInput; cancel: ApiSendInput; listRuns: ApiListRunsInput; getRun: ApiRunInput; readBody: ApiReadBodyInput; pinRun: ApiPinRunInput; getRuntimeVariables: ApiTarget; clearRuntimeVariables: ApiTarget; getCookieJar: ApiTarget; clearCookieJar: ApiTarget }
+export interface ApiCommandInputs { getCatalog: ApiTarget; saveCatalog: ApiSaveCatalogInput; prepare: ApiPrepareInput; send: ApiSendInput; cancel: ApiSendInput; listRuns: ApiListRunsInput; getRun: ApiRunInput; readBody: ApiReadBodyInput; pinRun: ApiPinRunInput; getRuntimeVariables: ApiTarget; clearRuntimeVariables: ApiTarget; getCookieJar: ApiTarget; clearCookieJar: ApiTarget; pickApiFiles: ApiTarget }
 /** IPC 返回值映射，preload 必须验证实际响应。 */
-export interface ApiCommandResults { getCatalog: ApiCatalog; saveCatalog: ApiCatalog; prepare: ApiPreparedPreview; send: ApiRun; cancel: void; listRuns: { runs: ApiRun[]; nextCursor: number | null }; getRun: ApiRun; readBody: ApiBodySlice; pinRun: ApiRun; getRuntimeVariables: { variables: ApiRuntimeVariable[] }; clearRuntimeVariables: { cleared: number }; getCookieJar: { cookies: ApiCookieJarEntry[] }; clearCookieJar: { cleared: number } }
+export interface ApiCommandResults { getCatalog: ApiCatalog; saveCatalog: ApiCatalog; prepare: ApiPreparedPreview; send: ApiRun; cancel: void; listRuns: { runs: ApiRun[]; nextCursor: number | null }; getRun: ApiRun; readBody: ApiBodySlice; pinRun: ApiRun; getRuntimeVariables: { variables: ApiRuntimeVariable[] }; clearRuntimeVariables: { cleared: number }; getCookieJar: { cookies: ApiCookieJarEntry[] }; clearCookieJar: { cleared: number }; pickApiFiles: { files: ApiPickedFile[] } }
 /** 严格分派所支持的方法。 */
 export type ApiCommandMethod = keyof ApiCommandInputs
 /** 方法与输入保持关联，主进程 switch 可直接收窄。 */
@@ -29,7 +29,7 @@ function target(record: Record<string, unknown>): ApiTarget { return parseApiTar
 /** 解析单个 IPC 命令，复制所有字段避免调用方后续变更输入。 */
 export function parseApiCommand(value: unknown): ApiCommand {
   const root = apiRecord(value, ['method', 'input'], 'command')
-  const method = one(root.method, ['getCatalog', 'saveCatalog', 'prepare', 'send', 'cancel', 'listRuns', 'getRun', 'readBody', 'pinRun', 'getRuntimeVariables', 'clearRuntimeVariables', 'getCookieJar', 'clearCookieJar'])
+  const method = one(root.method, ['getCatalog', 'saveCatalog', 'prepare', 'send', 'cancel', 'listRuns', 'getRun', 'readBody', 'pinRun', 'getRuntimeVariables', 'clearRuntimeVariables', 'getCookieJar', 'clearCookieJar', 'pickApiFiles'])
   switch (method) {
     case 'getCatalog': return { method, input: parseApiTarget(root.input) }
     case 'saveCatalog': {
@@ -63,6 +63,7 @@ export function parseApiCommand(value: unknown): ApiCommand {
     /** 运行时变量命令只接收会话身份，workspace 由主进程解析。 */
     case 'getRuntimeVariables': case 'clearRuntimeVariables': return { method, input: parseApiTarget(root.input) }
     case 'getCookieJar': case 'clearCookieJar': return { method, input: parseApiTarget(root.input) }
+    case 'pickApiFiles': return { method, input: parseApiTarget(root.input) }
   }
 }
 /** 原始响应头值允许协议字符，但始终限定字符串长度。 */
@@ -237,6 +238,19 @@ export function parseApiResponse<M extends ApiCommandMethod>(method: M, value: u
     case 'clearCookieJar': {
       const record = apiRecord(value, ['cleared'])
       result = { cleared: apiInteger(record.cleared, 0, 128, 'cleared') }; break
+    }
+    case 'pickApiFiles': {
+      const record = apiRecord(value, ['files'])
+      /** 回执里只允许元数据；出现路径或字节一律判损坏协议。 */
+      result = { files: list(record.files, (item): ApiPickedFile => {
+        const entry = apiRecord(item, ['ref', 'fileName', 'sizeBytes', 'contentType'])
+        return {
+          ref: parseApiId(entry.ref),
+          fileName: str(entry.fileName, 'file.fileName', 256),
+          sizeBytes: apiInteger(entry.sizeBytes, 0, API_LIMITS.bodyBytes, 'file.sizeBytes'),
+          contentType: str(entry.contentType, 'file.contentType', 256),
+        }
+      }, API_LIMITS.maxFileParts) }; break
     }
     case 'listRuns': {
       const record = apiRecord(value, ['runs', 'nextCursor'])

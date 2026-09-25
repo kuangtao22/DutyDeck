@@ -119,6 +119,13 @@ export interface ApiAttachmentSummary {
   sizeBytes: number
   sha256: string
 }
+/** 用户通过原生对话框选择文件后回传的元数据；**不含路径**（路径只在主进程内存）。 */
+export interface ApiPickedFile {
+  ref: string
+  fileName: string
+  sizeBytes: number
+  contentType: string
+}
 /**
  * 无脚本断言。JSON 路径使用简单点路径和数组下标；事件流断言只看有界事实：
  * sse-count/sse-first-event 复用 `<=10` 形式的比较，sse-ended 比较结束原因，
@@ -268,6 +275,8 @@ export interface ApiWorkbenchApi {
   getCookieJar(input: ApiTarget): Promise<{ cookies: ApiCookieJarEntry[] }>
   /** 清空当前 workspace 的 Cookie Jar。 */
   clearCookieJar(input: ApiTarget): Promise<{ cleared: number }>
+  /** 打开原生文件对话框选择待上传文件；返回元数据，渲染层永远拿不到路径。 */
+  pickApiFiles(input: ApiTarget): Promise<{ files: ApiPickedFile[] }>
   onChanged(callback: (event: ApiRunChanged) => void): () => void
   onStream(callback: (event: ApiRunStreamChanged) => void): () => void
 }
