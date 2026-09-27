@@ -1,36 +1,105 @@
 # DutyDeck
 
-DutyDeck is a local-first AI desktop app that brings multi-model Chat, general-purpose Agent workflows, workspaces, Skills, MCP, remote bots, and memory into one open-source client.
-
-It is not just another chat box. DutyDeck is meant to become a long-lived Agent workbench for your personal workflows: use Chat for simple answers, use Agent when the task needs to act on files, tools, projects, and longer context.
+DutyDeck is a local-first engineering Agent workbench: on top of Proma's Chat, Agent, project workspaces, Skills, and MCP, it adds canvas orchestration, a server operations workbench, an API workbench, and today activity — gathering the project maintenance chores outside core development into one place, so attention can go back to the product. Data and settings stay on your own machine.
 
 <img src="./docs/assets/brand/dutydeck-icon-256.png" alt="DutyDeck" width="96" height="96" />
 
 > **This repository is a modified edition of Proma.** DutyDeck evolves from the upstream open-source project [Proma](https://github.com/proma-ai/Proma) (AGPL-3.0-only) and is independently maintained by [kuangtao22](https://github.com/kuangtao22). It is not affiliated with, nor endorsed by, the official Proma project. See [Relationship To Upstream Proma](#relationship-to-upstream-proma) for the upstream baseline and differences.
 
-[中文 README](./README.md) | [Beginner Tutorial](./tutorial/tutorial.md) | [Changelog](./release-notes/bone) | [Download DutyDeck](https://github.com/kuangtao22/Proma/releases/latest)
+[中文 README](./README.md) | [Proma Tutorial (upstream)](https://github.com/proma-ai/Proma/tree/main/tutorial) | [Changelog](./release-notes/bone) | [Download DutyDeck](https://github.com/kuangtao22/Proma/releases/latest)
 
-## What DutyDeck Can Do
+## Why DutyDeck Exists
 
-- **Chat mode**: multi-model conversations, attachments, image input, Markdown / Mermaid / KaTeX / code highlighting, parallel conversations, system prompts, and context controls.
-- **Agent mode**: the Agent core has fully migrated to DutyDeck's built-in Pi Agent Runtime with no third-party Agent runtime; workspace isolation, permission modes, file operations, streaming output, plan confirmation, and ask-user interactions are all supported.
-- **In-app browser automation**: the Agent can directly operate the built-in managed browser—opening pages, inspecting page structure, clicking / filling controls, switching tabs, and opening `localhost` dev services; in-site search, post-login pages, dynamic content, and local HTML previews can all be handled by the Agent without manual copy-paste.
-- **Collaboration and tasks**: complex work can be split into traceable collaboration sub-agents and tasks, with calls and results shown in the message stream.
-- **Skills, MCP, and project instructions**: each DutyDeck project manages its own Skills and MCP servers. Projects can declare trusted project instructions via `AGENTS.md`, and legacy `CLAUDE.md` configurations are auto-migrated. Project files can use a user-selected local project root or a DutyDeck-managed blank-project directory.
-- **Remote bots**: Lark / Feishu bot bridging is supported, with DingTalk and WeChat bridge entry points also present in the app.
-- **Memory and tools**: Chat and Agent can share workspace memory, with memory changes tracked and refresh prompts shown in the UI; web search, built-in Chat tools, and Agent recommendation helpers are also available.
-- **Local-first data**: conversations, workspaces, attachments, settings, and Skills are stored under `~/.proma/` as JSON / JSONL files, without a local database.
-- **Desktop experience**: auto-update, proxy settings, file preview, global shortcuts, quick task window, Agent Island run states, voice input, and light / dark / system themes.
+DutyDeck starts from a thank-you, and from a very concrete problem: individual developers want to focus on the product, but project maintenance chores keep chopping that focus into pieces.
 
-## Getting Started
+**The thank-you goes to upstream Proma.** Back when Agent products were still rough, Proma had already turned the hard parts — dual Chat / Agent modes, project workspaces, Skills, MCP, collaboration sub-sessions, and an in-app browser — into an open-source product people could use every day, and it keeps maintaining them under AGPL-3.0. Chat, Agent, workspaces, memory, remote bridges, and local-first storage in this repository all come from Proma; without it, this repository would not exist.
 
-### Download
+**The problem is focus getting interrupted.** Building a product needs long, uninterrupted stretches of attention, yet running a project also comes with a pile of duties: watching servers and databases, integrating APIs, setting up environments and scripts, reading logs, shepherding releases, answering issues and docs. None of them is large on its own, but they are scattered across a terminal, a database client, an API tool, a cloud console, and a chat window, and every switch costs a context switch. By the time the chores are cleared, your attention no longer fits back into the product.
 
-Download DutyDeck from [GitHub Releases](https://github.com/kuangtao22/Proma/releases), with macOS Apple Silicon, macOS Intel, Windows, Ubuntu/Debian x86_64 `.deb` and Linux x86_64 AppImage builds. Artifacts are named like `DutyDeck-<version>-macos-arm64.dmg`, `DutyDeck-<version>-windows-x64.exe` and `dutydeck_<version>_amd64.deb`. Linux installation, security boundaries and support scope are documented in [Linux notes](./docs/linux.md).
+So the intent behind DutyDeck is one sentence: **give individual developers a focused workbench that gathers the duties outside core development into one place.** Agent, canvas, server operations, and API work share one local context, so you clear the chores there and give your attention back to the product; anything that needs your call stops in front of you as an approval card instead of showing up in an audit log afterwards. The name says the same thing: Duty + Deck, one deck for everything you are duty-bound to keep running.
 
-All model channels are configured by you; DutyDeck ships no built-in subscription channel. The upstream commercial edition of Proma (proma.cool) is unrelated to this project.
+We also set two boundaries for ourselves:
 
-### Relationship To Upstream Proma
+- **No changes to the upstream core**: the Agent runtime, IPC contracts, and data directory stay as Proma defines them, and extensions are added on top so upstream updates can keep merging.
+- **No commercial exemptions**: this repository ships under AGPL-3.0-only and neither offers nor is able to offer a commercial license exemption.
+
+## Why It Is Worth Using
+
+DutyDeck is not about adding more features; it is about merging scattered maintenance work into one chain:
+
+- **One client instead of a row of tools**: terminal, database client, API tooling, log panels, and file transfer live in the same window — one less context rebuild per tool switch.
+- **The Agent gets real context**: it can see the server, database, request, or canvas you are looking at, instead of waiting for you to copy the screen into the chat.
+- **Dangerous actions stop in front of you**: read-only by default, writes either emit a script or go through a per-item approval card, and credentials are encrypted locally so the Agent cannot take them for you.
+- **Data stays on your machine**: conversations, workspaces, settings, and Skills live as JSON / JSONL under `~/.proma/`, canvas data travels with the project directory, and there is no local database.
+- **Standing on Proma's shoulders**: Chat, Agent, workspaces, Skills, and MCP keep following upstream, extensions are added on top, and upstream fixes still merge in.
+
+## Our Own Extensions
+
+These four are built in this repository and are the main difference from upstream Proma. Each one gathers a family of scattered maintenance chores into a single place, and each has its own documentation page.
+
+### Canvas — draw a multi-step delivery as one graph
+
+Delivery is rarely one step: write copy, generate images, build a prototype, revise, revise again. Canvas uses nodes for steps and edges for dependencies, keeps versions and ownership on the artifacts, and lets you see at a glance which version is in use and what else must change. It is deliberately not a generic workflow engine; it is the multi-modal production surface for the ordinary Agent.
+
+- Node types: Agent, image, document, and prototype (WebView); video is marked "coming soon".
+- Three Agent roles: the ordinary Agent orchestrates, Canvas Agents own long-running branches, execution Agents run single generations.
+- Artifacts become candidates first and only take effect once adopted: node cards and downstream consumers use the adopted version only.
+
+Details: [Canvas documentation](./docs/extensions/canvas.md)
+
+### Server Operations — ship and troubleshoot without leaving the client
+
+Checking server load, reading logs, inspecting table structures, running one SQL statement, moving a file, glancing at containers — none of it is big, yet it keeps pulling you away from the product. The workbench gathers it into one panel and lets the Agent help only inside a read-only scope you explicitly granted, with the scope and remaining time shown in the UI.
+
+- Connections: SSH (password / private key / SSH agent), MySQL, PostgreSQL, Redis, and local SQLite, organised by project.
+- Servers: overview, remote terminal, systemd services, live logs, remote files and transfers, Docker.
+- Databases: database and table browsing, paged rows, a SQL workbench with query history, read-only diagnostics; Redis provides connection and read-only diagnostics.
+- Safety: credentials are encrypted locally and never echoed back; read-only by default, writes either emit a script or require per-item approval; Agent read grants are per session, expire after 30 minutes, and can be revoked at any time.
+
+Details: [Server Operations documentation](./docs/extensions/server-ops.md)
+
+### API Workbench — keep integration, auth, and cases in the project
+
+API work is the most fragmented kind of maintenance: change the host per environment, auth spread across tools, cases buried in chat, and a failure that only says "401". The workbench separates configuration from evidence — collections hold reusable configuration, run records hold what actually happened — and both you and the Agent execute through the same pipeline, so every conclusion can be opened and verified.
+
+- Organisation: collections / folders / requests, environments, and four levels of variable scope with the effective layer shown in the UI.
+- Debugging: HTTP/1.1 and SSE, with full run records (final request headers, raw body bytes, phase timings, redirects, TLS, cookies, assertion results).
+- Encryption and signing: profiles live in shared configuration and requests only select one; keys are referenced by variable name, and a missing key is honestly reported as "sent in plaintext".
+- Agent: sending and saving are two separate approvals, repeated calls never resend, and Agent-authored cases cannot modify human-created ones.
+
+Details: [API Workbench documentation](./docs/extensions/api-workbench.md)
+
+### Today Activity — see what today actually produced
+
+After a day of switching between projects and modes, memory is a poor answer to "what did I actually move forward today". Today Activity gathers the sessions that had conversations today across all projects into one time-ordered stream; one click returns you to the original context.
+
+- Ordered by last conversation time, covering delegated sub-sessions and scheduled-task sessions.
+- Archived sessions, drafts, and internal execution sessions are excluded.
+- The entry lives at the bottom of the sidebar with a count, and recomputes across midnight.
+
+Details: [Today Activity documentation](./docs/extensions/today-activity.md)
+
+All four share the same rules: credentials, keys, and connection details are encrypted locally and never echoed back; reads are read-only by default and revocable in the UI at any time; writes either emit a script or go through a per-item approval card; and sensitive Agent actions post a card in the message stream and only run after you confirm.
+
+## Inherited From Upstream Proma
+
+Everything else comes from upstream Proma and is maintained here:
+
+- **Chat and Agent**: multi-model conversations, attachments and images, parallel conversations, system prompts; the Agent is driven by a single Pi Agent Runtime with workspace isolation, permission modes, plan confirmation, and long-task streaming output.
+- **Workspaces and project instructions**: each project configures its own Skills and MCP servers, projects can declare trusted instructions via `AGENTS.md`, and legacy `CLAUDE.md` files are auto-migrated.
+- **Collaboration and tools**: collaboration sub-agents and tasks, an in-app managed browser, web search, and workspace memory with refresh prompts.
+- **Remote and desktop**: Lark / Feishu bot bridging (with DingTalk and WeChat entry points), auto-update, proxy settings, file preview, global shortcuts, quick tasks, voice input, and light / dark themes.
+- **Local-first data**: conversations, workspaces, attachments, settings, and Skills live under `~/.proma/` as JSON / JSONL files, without a local database.
+
+Usage is identical to Proma, so this repository does not repeat the tutorial:
+
+- [Proma tutorial](https://github.com/proma-ai/Proma/tree/main/tutorial): environment and channel setup, Chat and Agent modes, Skills, MCP, and remote bots.
+- [Proma repository and feature list](https://github.com/proma-ai/Proma#readme): the full upstream feature set with screenshots.
+- The `tutorial/` directory here keeps a local copy of the upstream tutorial with product names and UI entry points updated to DutyDeck.
+
+The mode choice is still the same one-liner: **use Chat when you need an answer, use Agent when you need work done.**
+
+## Relationship To Upstream Proma
 
 DutyDeck is a modified edition of Proma, not an official release:
 
@@ -40,35 +109,47 @@ DutyDeck is a modified edition of Proma, not an official release:
 - **Added by this repository**: canvas, server operations workbench, API workbench, today activity, plus the permission confirmations, auditing and local encryption around them.
 - **Attribution**: upstream copyright belongs to Proma's author and contributors; this repository's modifications are likewise licensed to everyone under AGPL-3.0.
 
+## Getting Started
+
+### Download
+
+Download DutyDeck from [GitHub Releases](https://github.com/kuangtao22/Proma/releases), with macOS Apple Silicon, macOS Intel, Windows, Ubuntu/Debian x86_64 `.deb` and Linux x86_64 AppImage builds. Artifacts are named like `DutyDeck-<version>-macos-arm64.dmg`, `DutyDeck-<version>-windows-x64.exe` and `dutydeck_<version>_amd64.deb`. Linux installation, security boundaries and support scope are documented in [Linux notes](./docs/linux.md).
+
+All model channels are configured by you; DutyDeck ships no built-in subscription channel. The upstream commercial edition of Proma (proma.cool) is unrelated to this project.
 
 ### First Setup
 
-1. Open DutyDeck and finish the environment check. Agent mode depends on local tooling, especially Git, Node.js / Bun, and a usable shell.
-2. Go to **Settings > Channels**, add at least one AI provider channel, and fill in Base URL, API Key, and model list.
-3. Chat mode can use OpenAI, Anthropic, Google, or OpenAI-compatible channels.
-4. Agent uses the Pi Runtime and can use any enabled model channel.
-5. Go to **Settings > Agent** and choose the default Agent channel, model, and workspace.
-6. Configure memory, web search, or Feishu / DingTalk / WeChat bridges from their corresponding settings tabs if needed.
+The environment check (Git, Node.js / Bun, and a usable shell), **Settings > Channels**, **Settings > Agent**, plus memory, web search, and Feishu / DingTalk / WeChat bridge setup are identical to upstream — follow the [upstream tutorial](https://github.com/proma-ai/Proma/blob/main/tutorial/tutorial.md).
 
-## Choosing A Mode
-
-### Use Chat For
-
-- Everyday Q&A, explanation, translation, rewriting, and lightweight code discussion.
-- Reading attachments and summarizing or comparing their content.
-- One-off conversations enhanced by web search or memory tools.
-- Comparing outputs from multiple models or exploring different system prompts.
-
-### Use Agent For
-
-- Creating, editing, or organizing local files.
-- Research, report writing, and multi-step tasks.
-- Work that needs MCP, Skills, Shell, Git, project files, or external context.
-- Tasks that benefit from permissions, plan mode, background execution, or remote bot follow-up.
-
-In short: **use Chat when you need an answer; use Agent when you need work to be done.**
+This repository differs in one place: the Agent is driven by the Pi Agent Runtime, and the support matrix lives in [Agent Runtime and Providers](#agent-runtime-and-providers). Everything else we changed is under [Our Own Extensions](#our-own-extensions).
 
 ## Screenshots
+
+### Canvas
+
+Turn Agent tasks, assets and dependencies into a node graph: filter by type, locate nodes by upstream / downstream and association, and drive multi-step delivery from one picture.
+
+![DutyDeck canvas](./docs/assets/screenshots/dutydeck-canvas-demo.png)
+
+Full details: [Canvas documentation](./docs/extensions/canvas.md).
+
+### Server Operations Workbench
+
+Manage SSH, MySQL / PostgreSQL / Redis connections in one place, read-only by default with write operations emitted as scripts; overview, terminal, services, logs, remote files and Docker panels live in the same workbench.
+
+![DutyDeck server operations workbench](./docs/assets/screenshots/dutydeck-server-ops-demo.png)
+
+Full details: [Server Operations documentation](./docs/extensions/server-ops.md).
+
+### API Workbench
+
+Organize requests by collection and environment: variables with collection-scoped auth inheritance, request-side encryption and signing, cases and assertions, plus Agent-driven batch runs with per-item approval.
+
+![DutyDeck API workbench](./docs/assets/screenshots/dutydeck-api-workbench-demo.png)
+
+Full details: [API Workbench documentation](./docs/extensions/api-workbench.md).
+
+The following screenshots show capabilities inherited from upstream Proma (usage is covered by the tutorial links above):
 
 ### Chat Analysis
 
@@ -189,6 +270,7 @@ Before opening a PR, please check:
 
 ## Credits
 
+- [Proma](https://github.com/proma-ai/Proma) and its author [erlich.fun](https://erlich.fun): Chat, Agent, workspaces, Skills, MCP, remote bridges, and local-first storage in DutyDeck all come from this open-source project. It has stayed open and actively maintained under AGPL-3.0, which is the reason this repository can exist, and it deserves more attention than it gets.
 - [Shiki](https://shiki.style/): code highlighting.
 - [Beautiful Mermaid](https://github.com/lukilabs/beautiful-mermaid) and [Mermaid](https://mermaid.js.org/): Mermaid diagram rendering with the official fallback renderer.
 
