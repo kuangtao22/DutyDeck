@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <iostream>
 #include <iomanip>
 #include <memory>
@@ -48,6 +49,63 @@ constexpr std::size_t kCanvasContentMaxFileBytes = 256 * 1024;
 // Windows 目录 flush 只有系统调用成功才可声明耐久，错误码仅供测试分类完整性。
 [[maybe_unused]] bool IsCanvasWindowsDirectoryFlushDurable(bool flush_succeeded, unsigned long) {
   return flush_succeeded;
+}
+
+// Win32 错误码名称表项；只覆盖本 helper 会遇到的稳定 ABI 值。
+struct WindowsErrorName {
+  unsigned long code;
+  const char* name;
+};
+
+// 把 Win32 错误码格式化为可稳定比对的诊断标签；纯查表，不调用任何 Win32 API。
+[[maybe_unused]] std::string DescribeWindowsError(unsigned long error_code) {
+  static const WindowsErrorName kNames[] = {
+      {2UL, "FILE_NOT_FOUND"},
+      {3UL, "PATH_NOT_FOUND"},
+      {5UL, "ACCESS_DENIED"},
+      {19UL, "WRITE_PROTECT"},
+      {32UL, "SHARING_VIOLATION"},
+      {33UL, "LOCK_VIOLATION"},
+      {50UL, "NOT_SUPPORTED"},
+      {80UL, "FILE_EXISTS"},
+      {87UL, "INVALID_PARAMETER"},
+      {123UL, "INVALID_NAME"},
+      {145UL, "DIR_NOT_EMPTY"},
+      {183UL, "ALREADY_EXISTS"},
+      {267UL, "DIRECTORY"},
+      {1920UL, "CANT_ACCESS_FILE"},
+      {1921UL, "CANT_RESOLVE_FILENAME"},
+      {4390UL, "REPARSE_TAG_INVALID"},
+      {4393UL, "REPARSE_POINT_ENCOUNTERED"},
+  };
+  for (const WindowsErrorName& entry : kNames) {
+    if (entry.code == error_code) {
+      return "win32=" + std::to_string(error_code) + " " + entry.name;
+    }
+  }
+  return "win32=" + std::to_string(error_code);
+}
+
+// 为失败消息追加 Win32 错误码标签；不调用 Win32 API，避免覆盖调用方读取的 GetLastError。
+[[maybe_unused]] std::string WithWindowsError(const std::string& message, unsigned long error_code) {
+  return message + " [" + DescribeWindowsError(error_code) + "]";
+}
+
+// 从多个错误码中取首个非零值；全部为零时返回 0，供多目录 flush 聚合使用。
+template <typename T>
+[[maybe_unused]] T FirstNonZeroError(std::initializer_list<T> codes) {
+  for (T code : codes) {
+    if (code != 0) return code;
+  }
+  return 0;
+}
+
+// 聚合多个目录 flush 结果；任一非零即持久性未确认，判定规则仍由纯分类函数决定。
+[[maybe_unused]] bool IsWindowsFlushDurable(std::initializer_list<unsigned long> error_codes) {
+  for (unsigned long error_code : error_codes) {
+    if (!IsCanvasWindowsDirectoryFlushDurable(error_code == 0UL, error_code)) return false;
+  }
+  return true;
 }
 
 struct Config {
@@ -640,6 +698,17 @@ class UniqueFd {
   int value_;
 };
 
+// 把 POSIX errno 格式化为可稳定比对的诊断标签；数值是跨环境比对的唯一依据。
+std::string DescribePosixErrno(int error_code) {
+  const char* text = std::strerror(error_code);
+  return "errno=" + std::to_string(error_code) + " (" + (text ? text : "unknown") + ")";
+}
+
+// 为失败消息追加 errno 标签。
+std::string WithPosixErrno(const std::string& message, int error_code) {
+  return message + " [" + DescribePosixErrno(error_code) + "]";
+}
+
 // 在固定内部普通文件上持有跨进程排他锁，析构时解锁并关闭 fd。
 class CanvasIntentLock {
  public:
@@ -746,7 +815,7 @@ bool CanonicalPathForFd(int descriptor, std::string* output) {
 bool OpenStableRoot(const std::string& requested_path, StableRoot* root, std::string* error) {
   UniqueFd descriptor(open(requested_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
   if (descriptor.Get() < 0) {
-    *error = "cannot open root";
+    *error = WithPosixErrno("cannot open root", errno);
     return false;
   }
   struct stat identity {};
@@ -756,7 +825,7 @@ bool OpenStableRoot(const std::string& requested_path, StableRoot* root, std::st
   }
   std::string canonical_path;
   if (!CanonicalPathForFd(descriptor.Get(), &canonical_path)) {
-    *error = "cannot resolve opened root";
+    *error = WithPosixErrno("cannot resolve opened root", errno);
     return false;
   }
   root->requested_path = requested_path;
@@ -818,13 +887,13 @@ bool OpenCanvasTransactions(const Config& config, const StableRoot& root,
     return false;
   }
   if (mkdirat(root.descriptor.Get(), config.child_name.c_str(), 0700) != 0 && errno != EEXIST) {
-    *error = "cannot create canvas transactions directory";
+    *error = WithPosixErrno("cannot create canvas transactions directory", errno);
     return false;
   }
   transactions->Reset(openat(root.descriptor.Get(), config.child_name.c_str(),
       O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
   if (transactions->Get() < 0) {
-    *error = "cannot open canvas transactions directory";
+    *error = WithPosixErrno("cannot open canvas transactions directory", errno);
     return false;
   }
   struct stat identity {};
@@ -844,6 +913,12 @@ bool WriteAndSync(int descriptor, const std::string& payload) {
     offset += static_cast<std::size_t>(written);
   }
   return fsync(descriptor) == 0;
+}
+
+// 刷新已打开目录并返回 errno；成功返回 0，供提交后的持久性判定与诊断复用。
+int FlushDirectoryPosix(int descriptor) {
+  if (fsync(descriptor) == 0) return 0;
+  return errno;
 }
 
 // 在两个已打开目录之间执行禁止覆盖的原子 rename。
@@ -868,7 +943,7 @@ bool OpenCanvasContentRoot(const StableRoot& root, const std::string& name, bool
   *missing = false;
   if (!S_ISDIR(root.identity.st_mode)) { *error = "canvas root is not a directory"; return false; }
   if (create && mkdirat(root.descriptor.Get(), name.c_str(), 0700) != 0 && errno != EEXIST) {
-    *error = "cannot create canvas content root";
+    *error = WithPosixErrno("cannot create canvas content root", errno);
     return false;
   }
   directory->Reset(openat(root.descriptor.Get(), name.c_str(),
@@ -887,7 +962,7 @@ bool OpenCanvasContentEntry(int content_root_fd, const std::string& entry_id, bo
                             UniqueFd* entry, bool* missing, std::string* error) {
   *missing = false;
   if (create && mkdirat(content_root_fd, entry_id.c_str(), 0700) != 0 && errno != EEXIST) {
-    *error = "cannot create canvas content entry";
+    *error = WithPosixErrno("cannot create canvas content entry", errno);
     return false;
   }
   entry->Reset(openat(content_root_fd, entry_id.c_str(),
@@ -906,11 +981,20 @@ bool CheckCanvasContentCapacity(const Config& config, int content_root_fd,
                                 const std::string& target_entry_id, std::string* error) {
   struct stat target {};
   if (fstatat(content_root_fd, target_entry_id.c_str(), &target, AT_SYMLINK_NOFOLLOW) == 0) return true;
-  if (errno != ENOENT) { *error = "cannot inspect canvas content capacity target"; return false; }
+  if (errno != ENOENT) {
+    *error = WithPosixErrno("cannot inspect canvas content capacity target", errno);
+    return false;
+  }
   UniqueFd duplicate(dup(content_root_fd));
-  if (duplicate.Get() < 0) { *error = "cannot duplicate canvas content root"; return false; }
+  if (duplicate.Get() < 0) {
+    *error = WithPosixErrno("cannot duplicate canvas content root", errno);
+    return false;
+  }
   DIR* raw_directory = fdopendir(duplicate.Get());
-  if (!raw_directory) { *error = "cannot enumerate canvas content root"; return false; }
+  if (!raw_directory) {
+    *error = WithPosixErrno("cannot enumerate canvas content root", errno);
+    return false;
+  }
   duplicate.Release();
   std::unique_ptr<DIR, int (*)(DIR*)> directory(raw_directory, closedir);
   std::size_t count = 0;
@@ -970,26 +1054,35 @@ CanvasIntentWriteOutcome WriteCanvasContentAtomic(const Config& config, const St
     temporary.Reset(openat(entry.Get(), temporary_name.c_str(),
         O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600));
     if (temporary.Get() >= 0) break;
-    if (errno != EEXIST) { outcome.error = "cannot create canvas content temporary file"; return outcome; }
+    if (errno != EEXIST) {
+      outcome.error = WithPosixErrno("cannot create canvas content temporary file", errno);
+      return outcome;
+    }
   }
-  if (temporary.Get() < 0) { outcome.error = "cannot allocate canvas content temporary file"; return outcome; }
+  if (temporary.Get() < 0) {
+    outcome.error = WithPosixErrno("cannot allocate canvas content temporary file", errno);
+    return outcome;
+  }
   if (!WriteAndSync(temporary.Get(), payload)) {
+    const int write_error = errno;
     unlinkat(entry.Get(), temporary_name.c_str(), 0);
-    outcome.error = "cannot persist canvas content temporary file";
+    outcome.error = WithPosixErrno("cannot persist canvas content temporary file", write_error);
     return outcome;
   }
   if (renameat(entry.Get(), temporary_name.c_str(), entry.Get(), config.file_name.c_str()) != 0) {
+    const int rename_error = errno;
     unlinkat(entry.Get(), temporary_name.c_str(), 0);
-    outcome.error = "cannot commit canvas content file";
+    outcome.error = WithPosixErrno("cannot commit canvas content file", rename_error);
     return outcome;
   }
   outcome.commit_visible = true;
-  const bool entry_persisted = fsync(entry.Get()) == 0;
-  const bool content_root_persisted = fsync(content_root.Get()) == 0;
-  const bool canvas_root_persisted = fsync(root.descriptor.Get()) == 0;
-  if (!entry_persisted || !content_root_persisted || !canvas_root_persisted) {
+  const int entry_flush_error = FlushDirectoryPosix(entry.Get());
+  const int content_root_flush_error = FlushDirectoryPosix(content_root.Get());
+  const int canvas_root_flush_error = FlushDirectoryPosix(root.descriptor.Get());
+  if (entry_flush_error != 0 || content_root_flush_error != 0 || canvas_root_flush_error != 0) {
     outcome.durability_uncertain = true;
-    outcome.error = "cannot persist canvas content directories";
+    outcome.error = WithPosixErrno("cannot persist canvas content directories",
+        FirstNonZeroError<int>({entry_flush_error, content_root_flush_error, canvas_root_flush_error}));
   }
   return outcome;
 }
@@ -1010,7 +1103,10 @@ CanvasIntentWriteOutcome RemoveCanvasTrashMarker(const Config& config, const Sta
   if (missing) { outcome.commit_visible = true; return outcome; }
   UniqueFd duplicate(dup(entry.Get()));
   DIR* raw_directory = duplicate.Get() < 0 ? nullptr : fdopendir(duplicate.Get());
-  if (!raw_directory) { outcome.error = "cannot inspect canvas trash marker"; return outcome; }
+  if (!raw_directory) {
+    outcome.error = WithPosixErrno("cannot inspect canvas trash marker", errno);
+    return outcome;
+  }
   duplicate.Release();
   std::unique_ptr<DIR, int (*)(DIR*)> directory(raw_directory, closedir);
   std::size_t visible_entries = 0;
@@ -1033,20 +1129,21 @@ CanvasIntentWriteOutcome RemoveCanvasTrashMarker(const Config& config, const Sta
     return outcome;
   }
   if (visible_entries == 1 && unlinkat(entry.Get(), "entry.json", 0) != 0) {
-    outcome.error = "cannot remove canvas trash marker file";
+    outcome.error = WithPosixErrno("cannot remove canvas trash marker file", errno);
     return outcome;
   }
   entry.Reset();
   if (unlinkat(content_root.Get(), config.entry_id.c_str(), AT_REMOVEDIR) != 0) {
-    outcome.error = "cannot remove canvas trash marker directory";
+    outcome.error = WithPosixErrno("cannot remove canvas trash marker directory", errno);
     return outcome;
   }
   outcome.commit_visible = true;
-  const bool content_root_persisted = fsync(content_root.Get()) == 0;
-  const bool canvas_root_persisted = fsync(root.descriptor.Get()) == 0;
-  if (!content_root_persisted || !canvas_root_persisted) {
+  const int content_root_flush_error = FlushDirectoryPosix(content_root.Get());
+  const int canvas_root_flush_error = FlushDirectoryPosix(root.descriptor.Get());
+  if (content_root_flush_error != 0 || canvas_root_flush_error != 0) {
     outcome.durability_uncertain = true;
-    outcome.error = "cannot persist canvas trash marker removal";
+    outcome.error = WithPosixErrno("cannot persist canvas trash marker removal",
+        FirstNonZeroError<int>({content_root_flush_error, canvas_root_flush_error}));
   }
   return outcome;
 }
@@ -1089,7 +1186,8 @@ std::string ReadCanvasContent(const Config& config, const StableRoot& root) {
   struct stat listed {};
   if (fstatat(entry.Get(), config.file_name.c_str(), &listed, AT_SYMLINK_NOFOLLOW) != 0) {
     if (errno == ENOENT) return CanvasContentReadResultJson("missing", "", 0, "", "", "");
-    return CanvasContentReadResultJson("corrupt", "", 0, "", "", "cannot stat canvas content file");
+    return CanvasContentReadResultJson("corrupt", "", 0, "", "",
+        WithPosixErrno("cannot stat canvas content file", errno));
   }
   if (!S_ISREG(listed.st_mode) || listed.st_nlink != 1 || listed.st_size < 0
       || listed.st_size > static_cast<off_t>(kCanvasContentMaxFileBytes)) {
@@ -1105,7 +1203,8 @@ std::string ReadCanvasContent(const Config& config, const StableRoot& root) {
   std::size_t offset = 0;
   while (offset < content.size()) {
     const ssize_t count = read(file.Get(), content.data() + offset, content.size() - offset);
-    if (count <= 0) return CanvasContentReadResultJson("corrupt", "", 0, "", "", "cannot read canvas content file");
+    if (count <= 0) return CanvasContentReadResultJson("corrupt", "", 0, "", "",
+        WithPosixErrno("cannot read canvas content file", errno));
     offset += static_cast<std::size_t>(count);
   }
   struct stat final_file {};
@@ -1130,9 +1229,15 @@ bool ListCanvasContent(const Config& config, const StableRoot& root,
   if (!OpenCanvasContentRoot(root, config.child_name, false, &content_root, &missing, error)) return false;
   if (missing) return true;
   UniqueFd duplicate(dup(content_root.Get()));
-  if (duplicate.Get() < 0) { *error = "cannot duplicate canvas content root"; return false; }
+  if (duplicate.Get() < 0) {
+    *error = WithPosixErrno("cannot duplicate canvas content root", errno);
+    return false;
+  }
   DIR* raw_directory = fdopendir(duplicate.Get());
-  if (!raw_directory) { *error = "cannot enumerate canvas content root"; return false; }
+  if (!raw_directory) {
+    *error = WithPosixErrno("cannot enumerate canvas content root", errno);
+    return false;
+  }
   duplicate.Release();
   std::unique_ptr<DIR, int (*)(DIR*)> directory(raw_directory, closedir);
   std::vector<std::string> names;
@@ -1182,22 +1287,27 @@ CanvasIntentWriteOutcome MoveCanvasContent(const Config& config, const StableRoo
     outcome.error = "canvas content move destination exists";
     return outcome;
   }
-  if (errno != ENOENT) { outcome.error = "cannot inspect canvas content move destination"; return outcome; }
+  if (errno != ENOENT) {
+    outcome.error = WithPosixErrno("cannot inspect canvas content move destination", errno);
+    return outcome;
+  }
   if (!CheckCanvasContentCapacity(config, destination_root.Get(),
       config.destination_entry_id, &outcome.error)) return outcome;
   if (!RenameDirectoryNoReplace(source_root.Get(), config.entry_id,
       destination_root.Get(), config.destination_entry_id)) {
-    outcome.error = errno == EEXIST ? "canvas content move destination exists"
-                                    : "cannot commit canvas content move";
+    const int rename_error = errno;
+    outcome.error = rename_error == EEXIST ? "canvas content move destination exists"
+                                           : WithPosixErrno("cannot commit canvas content move", rename_error);
     return outcome;
   }
   outcome.commit_visible = true;
-  const bool source_persisted = fsync(source_root.Get()) == 0;
-  const bool destination_persisted = fsync(destination_root.Get()) == 0;
-  const bool canvas_root_persisted = fsync(root.descriptor.Get()) == 0;
-  if (!source_persisted || !destination_persisted || !canvas_root_persisted) {
+  const int source_flush_error = FlushDirectoryPosix(source_root.Get());
+  const int destination_flush_error = FlushDirectoryPosix(destination_root.Get());
+  const int canvas_root_flush_error = FlushDirectoryPosix(root.descriptor.Get());
+  if (source_flush_error != 0 || destination_flush_error != 0 || canvas_root_flush_error != 0) {
     outcome.durability_uncertain = true;
-    outcome.error = "cannot persist canvas content move";
+    outcome.error = WithPosixErrno("cannot persist canvas content move",
+        FirstNonZeroError<int>({source_flush_error, destination_flush_error, canvas_root_flush_error}));
   }
   return outcome;
 }
@@ -1205,9 +1315,15 @@ CanvasIntentWriteOutcome MoveCanvasContent(const Config& config, const StableRoo
 // 写入前在同一 transactions fd 下统计合法普通 intent；覆盖不占新名额。
 bool CheckCanvasIntentCapacity(const Config& config, int transactions_fd, std::string* error) {
   UniqueFd duplicate(dup(transactions_fd));
-  if (duplicate.Get() < 0) { *error = "cannot duplicate canvas transactions directory"; return false; }
+  if (duplicate.Get() < 0) {
+    *error = WithPosixErrno("cannot duplicate canvas transactions directory", errno);
+    return false;
+  }
   DIR* raw_directory = fdopendir(duplicate.Get());
-  if (!raw_directory) { *error = "cannot enumerate canvas transactions directory"; return false; }
+  if (!raw_directory) {
+    *error = WithPosixErrno("cannot enumerate canvas transactions directory", errno);
+    return false;
+  }
   duplicate.Release();
   std::unique_ptr<DIR, int (*)(DIR*)> directory(raw_directory, closedir);
   std::size_t count = 0;
@@ -1217,7 +1333,7 @@ bool CheckCanvasIntentCapacity(const Config& config, int transactions_fd, std::s
     if (!IsCanvasIntentCandidateName(name)) continue;
     struct stat listed {};
     if (fstatat(transactions_fd, name.c_str(), &listed, AT_SYMLINK_NOFOLLOW) != 0) {
-      *error = "cannot stat canvas intent entry";
+      *error = WithPosixErrno("cannot stat canvas intent entry", errno);
       return false;
     }
     if (!S_ISREG(listed.st_mode)) continue;
@@ -1242,7 +1358,8 @@ std::string ReadCanvasIntent(const Config& config, int transactions_fd) {
   if (fstatat(transactions_fd, config.file_name.c_str(), &listed, AT_SYMLINK_NOFOLLOW) != 0) {
     return errno == ENOENT
         ? CanvasContentReadResultJson("missing", "", 0, "", "", "")
-        : CanvasContentReadResultJson("corrupt", "", 0, "", "", "cannot stat canvas intent file");
+        : CanvasContentReadResultJson("corrupt", "", 0, "", "",
+            WithPosixErrno("cannot stat canvas intent file", errno));
   }
   if (!S_ISREG(listed.st_mode) || listed.st_nlink != 1 || listed.st_size < 0
       || listed.st_size > 64 * 1024) {
@@ -1259,7 +1376,8 @@ std::string ReadCanvasIntent(const Config& config, int transactions_fd) {
   while (offset < content.size()) {
     const ssize_t count = read(file.Get(), content.data() + offset, content.size() - offset);
     if (count <= 0) {
-      return CanvasContentReadResultJson("corrupt", "", 0, "", "", "cannot read canvas intent");
+      return CanvasContentReadResultJson("corrupt", "", 0, "", "",
+          WithPosixErrno("cannot read canvas intent", errno));
     }
     offset += static_cast<std::size_t>(count);
   }
@@ -1303,32 +1421,36 @@ CanvasIntentWriteOutcome WriteCanvasIntentAtomic(const Config& config, int trans
         O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600));
     if (temporary.Get() >= 0) break;
     if (errno != EEXIST) {
-      outcome.error = "cannot create canvas intent temporary file";
+      outcome.error = WithPosixErrno("cannot create canvas intent temporary file", errno);
       return outcome;
     }
   }
   if (temporary.Get() < 0) {
-    outcome.error = "cannot allocate canvas intent temporary file";
+    outcome.error = WithPosixErrno("cannot allocate canvas intent temporary file", errno);
     return outcome;
   }
   if (!WriteAndSync(temporary.Get(), payload)) {
+    const int write_error = errno;
     unlinkat(transactions_fd, temporary_name.c_str(), 0);
-    outcome.error = "cannot persist canvas intent temporary file";
+    outcome.error = WithPosixErrno("cannot persist canvas intent temporary file", write_error);
     return outcome;
   }
   const bool renamed = config.create_only
       ? RenameDirectoryNoReplace(transactions_fd, temporary_name, transactions_fd, config.file_name)
       : renameat(transactions_fd, temporary_name.c_str(), transactions_fd, config.file_name.c_str()) == 0;
   if (!renamed) {
+    const int rename_error = errno;
     unlinkat(transactions_fd, temporary_name.c_str(), 0);
-    outcome.error = errno == EEXIST
-        ? "canvas intent destination exists" : "cannot commit canvas intent file";
+    outcome.error = rename_error == EEXIST
+        ? "canvas intent destination exists"
+        : WithPosixErrno("cannot commit canvas intent file", rename_error);
     return outcome;
   }
   outcome.commit_visible = true;
-  if (fsync(transactions_fd) != 0) {
+  const int transactions_flush_error = FlushDirectoryPosix(transactions_fd);
+  if (transactions_flush_error != 0) {
     outcome.durability_uncertain = true;
-    outcome.error = "cannot persist canvas transactions directory";
+    outcome.error = WithPosixErrno("cannot persist canvas transactions directory", transactions_flush_error);
   }
   return outcome;
 }
@@ -1342,7 +1464,7 @@ CanvasIntentWriteOutcome RemoveCanvasIntent(const Config& config, int transactio
   struct stat listed {};
   if (fstatat(transactions_fd, config.file_name.c_str(), &listed, AT_SYMLINK_NOFOLLOW) != 0) {
     if (errno == ENOENT) { outcome.commit_visible = true; return outcome; }
-    outcome.error = "cannot inspect canvas intent removal target";
+    outcome.error = WithPosixErrno("cannot inspect canvas intent removal target", errno);
     return outcome;
   }
   if (!S_ISREG(listed.st_mode) || listed.st_nlink != 1) {
@@ -1365,7 +1487,10 @@ CanvasIntentWriteOutcome RemoveCanvasIntent(const Config& config, int transactio
   std::size_t offset = 0;
   while (offset < content.size()) {
     const ssize_t count = read(opened.Get(), content.data() + offset, content.size() - offset);
-    if (count <= 0) { outcome.error = "cannot read canvas intent removal target"; return outcome; }
+    if (count <= 0) {
+      outcome.error = WithPosixErrno("cannot read canvas intent removal target", errno);
+      return outcome;
+    }
     offset += static_cast<std::size_t>(count);
   }
   struct stat final_path {};
@@ -1377,13 +1502,14 @@ CanvasIntentWriteOutcome RemoveCanvasIntent(const Config& config, int transactio
     return outcome;
   }
   if (unlinkat(transactions_fd, config.file_name.c_str(), 0) != 0) {
-    outcome.error = "cannot remove canvas intent";
+    outcome.error = WithPosixErrno("cannot remove canvas intent", errno);
     return outcome;
   }
   outcome.commit_visible = true;
-  if (fsync(transactions_fd) != 0) {
+  const int transactions_flush_error = FlushDirectoryPosix(transactions_fd);
+  if (transactions_flush_error != 0) {
     outcome.durability_uncertain = true;
-    outcome.error = "cannot persist canvas intent removal";
+    outcome.error = WithPosixErrno("cannot persist canvas intent removal", transactions_flush_error);
   }
   return outcome;
 }
@@ -1392,9 +1518,15 @@ CanvasIntentWriteOutcome RemoveCanvasIntent(const Config& config, int transactio
 bool ScanCanvasIntents(const Config& config, int transactions_fd,
                        EntryBudget* budget, std::string* error) {
   UniqueFd duplicate(dup(transactions_fd));
-  if (duplicate.Get() < 0) { *error = "cannot duplicate canvas transactions directory"; return false; }
+  if (duplicate.Get() < 0) {
+    *error = WithPosixErrno("cannot duplicate canvas transactions directory", errno);
+    return false;
+  }
   DIR* raw_directory = fdopendir(duplicate.Get());
-  if (!raw_directory) { *error = "cannot enumerate canvas transactions directory"; return false; }
+  if (!raw_directory) {
+    *error = WithPosixErrno("cannot enumerate canvas transactions directory", errno);
+    return false;
+  }
   duplicate.Release();
   std::unique_ptr<DIR, int (*)(DIR*)> directory(raw_directory, closedir);
   while (dirent* item = readdir(directory.get())) {
@@ -1403,7 +1535,7 @@ bool ScanCanvasIntents(const Config& config, int transactions_fd,
     if (!IsCanvasIntentCandidateName(name)) continue;
     struct stat listed {};
     if (fstatat(transactions_fd, name.c_str(), &listed, AT_SYMLINK_NOFOLLOW) != 0) {
-      *error = "cannot stat canvas intent entry";
+      *error = WithPosixErrno("cannot stat canvas intent entry", errno);
       return false;
     }
     if (!S_ISREG(listed.st_mode)) continue;
@@ -1519,7 +1651,7 @@ CanvasIntentWriteOutcome ExportArtifactAtomic(const Config& config,
     return outcome;
   }
   if (!target_exists && errno != ENOENT) {
-    outcome.error = "cannot inspect artifact export destination";
+    outcome.error = WithPosixErrno("cannot inspect artifact export destination", errno);
     return outcome;
   }
   std::string temporary_name;
@@ -1530,9 +1662,15 @@ CanvasIntentWriteOutcome ExportArtifactAtomic(const Config& config,
     temporary.Reset(openat(destination.descriptor.Get(), temporary_name.c_str(),
         O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600));
     if (temporary.Get() >= 0) break;
-    if (errno != EEXIST) { outcome.error = "cannot create artifact export temporary file"; return outcome; }
+    if (errno != EEXIST) {
+      outcome.error = WithPosixErrno("cannot create artifact export temporary file", errno);
+      return outcome;
+    }
   }
-  if (temporary.Get() < 0) { outcome.error = "cannot allocate artifact export temporary file"; return outcome; }
+  if (temporary.Get() < 0) {
+    outcome.error = WithPosixErrno("cannot allocate artifact export temporary file", errno);
+    return outcome;
+  }
   bool valid = true;
   if (config.mode == "artifact-export-write") {
     valid = WriteAndSync(temporary.Get(), payload);
@@ -1581,14 +1719,18 @@ CanvasIntentWriteOutcome ExportArtifactAtomic(const Config& config,
       ? renameat(destination.descriptor.Get(), temporary_name.c_str(), destination.descriptor.Get(), config.file_name.c_str()) == 0
       : RenameDirectoryNoReplace(destination.descriptor.Get(), temporary_name, destination.descriptor.Get(), config.file_name);
   if (!renamed) {
+    const int rename_error = errno;
     unlinkat(destination.descriptor.Get(), temporary_name.c_str(), 0);
-    outcome.error = errno == EEXIST ? "artifact export destination exists" : "cannot commit artifact export";
+    outcome.error = rename_error == EEXIST
+        ? "artifact export destination exists"
+        : WithPosixErrno("cannot commit artifact export", rename_error);
     return outcome;
   }
   outcome.commit_visible = true;
-  if (fsync(destination.descriptor.Get()) != 0) {
+  const int destination_flush_error = FlushDirectoryPosix(destination.descriptor.Get());
+  if (destination_flush_error != 0) {
     outcome.durability_uncertain = true;
-    outcome.error = "cannot persist artifact export destination";
+    outcome.error = WithPosixErrno("cannot persist artifact export destination", destination_flush_error);
   }
   return outcome;
 }
@@ -1832,8 +1974,9 @@ bool OpenRelativeWindows(HANDLE RootDirectory, const std::wstring& name,
   if (status < 0 || handle == INVALID_HANDLE_VALUE) {
     const auto rtl_nt_status_to_dos_error = reinterpret_cast<RtlNtStatusToDosErrorFunction>(
         ntdll ? GetProcAddress(ntdll, "RtlNtStatusToDosError") : nullptr);
-    SetLastError(rtl_nt_status_to_dos_error ? rtl_nt_status_to_dos_error(status) : ERROR_GEN_FAILURE);
-    *error = "cannot open relative Windows object";
+    const DWORD error_code = rtl_nt_status_to_dos_error ? rtl_nt_status_to_dos_error(status) : ERROR_GEN_FAILURE;
+    SetLastError(error_code);
+    *error = WithWindowsError("cannot open relative Windows object", error_code);
     return false;
   }
   output->Reset(handle);
@@ -1868,7 +2011,7 @@ class CanvasIntentLock {
       return false;
     }
     if (!LockFileEx(handle_.Get(), LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped_)) {
-      *error = "cannot lock canvas intent";
+      *error = WithWindowsError("cannot lock canvas intent", GetLastError());
       return false;
     }
     locked_ = true;
@@ -1903,7 +2046,7 @@ class CanvasContentLock {
       return false;
     }
     if (!LockFileEx(handle_.Get(), LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped_)) {
-      *error = "cannot lock canvas content";
+      *error = WithWindowsError("cannot lock canvas content", GetLastError());
       return false;
     }
     locked_ = true;
@@ -1959,7 +2102,10 @@ bool OpenStableRoot(const std::string& requested_path, StableRoot* root, std::st
   UniqueHandle handle(CreateFileW(requested.c_str(), access,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
       FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-  if (handle.Get() == INVALID_HANDLE_VALUE) { *error = "cannot open root"; return false; }
+  if (handle.Get() == INVALID_HANDLE_VALUE) {
+    *error = WithWindowsError("cannot open root", GetLastError());
+    return false;
+  }
   BY_HANDLE_FILE_INFORMATION identity {};
   if (!GetFileInformationByHandle(handle.Get(), &identity)
       || (identity.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
@@ -1968,7 +2114,10 @@ bool OpenStableRoot(const std::string& requested_path, StableRoot* root, std::st
   }
   std::vector<wchar_t> final_path(32768);
   const DWORD length = GetFinalPathNameByHandleW(handle.Get(), final_path.data(), static_cast<DWORD>(final_path.size()), FILE_NAME_NORMALIZED);
-  if (length == 0 || length >= final_path.size()) { *error = "cannot resolve opened root"; return false; }
+  if (length == 0 || length >= final_path.size()) {
+    *error = WithWindowsError("cannot resolve opened root", GetLastError());
+    return false;
+  }
   const std::wstring extended_final_path(final_path.data(), length);
   root->requested_path = requested_path;
   root->canonical_path = WindowsPathForDisplay(WideToUtf8(extended_final_path));
@@ -2021,7 +2170,8 @@ bool OpenCanvasContentRootWindows(const StableRoot& root, const std::string& nam
       create ? FILE_OPEN_IF : FILE_OPEN, FILE_DIRECTORY_FILE, directory, error)) {
     const DWORD open_error = GetLastError();
     if (!create && IsCanvasWindowsMissingError(open_error)) { *missing = true; return true; }
-    *error = create ? "cannot create canvas content root" : "cannot open canvas content root";
+    *error = WithWindowsError(
+        create ? "cannot create canvas content root" : "cannot open canvas content root", open_error);
     return false;
   }
   BY_HANDLE_FILE_INFORMATION identity {};
@@ -2044,7 +2194,8 @@ bool OpenCanvasContentEntryWindows(HANDLE content_root, const std::string& entry
       create ? FILE_OPEN_IF : FILE_OPEN, FILE_DIRECTORY_FILE, entry, error)) {
     const DWORD open_error = GetLastError();
     if (!create && IsCanvasWindowsMissingError(open_error)) { *missing = true; return true; }
-    *error = create ? "cannot create canvas content entry" : "cannot open canvas content entry";
+    *error = WithWindowsError(
+        create ? "cannot create canvas content entry" : "cannot open canvas content entry", open_error);
     return false;
   }
   BY_HANDLE_FILE_INFORMATION identity {};
@@ -2066,7 +2217,7 @@ bool CheckCanvasContentCapacity(const Config& config, HANDLE content_root,
       FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_OPEN, 0, &target, &target_error)) return true;
   const DWORD target_open_error = GetLastError();
   if (!IsCanvasWindowsMissingError(target_open_error)) {
-    *error = "cannot inspect canvas content capacity target";
+    *error = WithWindowsError("cannot inspect canvas content capacity target", target_open_error);
     return false;
   }
   std::vector<unsigned char> buffer(64 * 1024);
@@ -2076,8 +2227,9 @@ bool CheckCanvasContentCapacity(const Config& config, HANDLE content_root,
     if (!GetFileInformationByHandleEx(content_root,
         restart ? FileIdBothDirectoryRestartInfo : FileIdBothDirectoryInfo,
         buffer.data(), static_cast<DWORD>(buffer.size()))) {
-      if (GetLastError() == ERROR_NO_MORE_FILES) break;
-      *error = "cannot enumerate canvas content root";
+      const DWORD enumerate_error = GetLastError();
+      if (enumerate_error == ERROR_NO_MORE_FILES) break;
+      *error = WithWindowsError("cannot enumerate canvas content root", enumerate_error);
       return false;
     }
     restart = false;
@@ -2117,11 +2269,10 @@ bool CheckCanvasContentCapacity(const Config& config, HANDLE content_root,
   return true;
 }
 
-// Windows 目录 flush 失败一律标记持久性未确认，禁止把权限或句柄错误当成成功。
-bool FlushCanvasDirectoryWindows(HANDLE directory) {
-  const bool flush_succeeded = FlushFileBuffers(directory) != FALSE;
-  const DWORD error = flush_succeeded ? ERROR_SUCCESS : GetLastError();
-  return IsCanvasWindowsDirectoryFlushDurable(flush_succeeded, error);
+// 刷新 Windows 目录并返回 Win32 错误码；成功返回 0，持久性判定交给 IsCanvasWindowsDirectoryFlushDurable。
+unsigned long FlushDirectoryWindows(HANDLE directory) {
+  if (FlushFileBuffers(directory) != FALSE) return 0UL;
+  return GetLastError();
 }
 
 // 在安全 entry HANDLE 内原子覆盖白名单文件。
@@ -2157,15 +2308,17 @@ CanvasIntentWriteOutcome WriteCanvasContentAtomic(const Config& config, const St
     }
   }
   UniqueHandle temporary;
+  DWORD allocate_error = ERROR_SUCCESS;
   for (int attempt = 0; attempt < 32; ++attempt) {
     const std::wstring name = L".content-" + std::to_wstring(GetCurrentProcessId()) + L"-"
         + std::to_wstring(static_cast<unsigned long long>(std::random_device{}())) + L".tmp";
     if (OpenRelativeWindows(entry.Get(), name,
         FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
         FILE_CREATE, FILE_NON_DIRECTORY_FILE, &temporary, &outcome.error)) break;
+    allocate_error = GetLastError();
   }
   if (temporary.Get() == INVALID_HANDLE_VALUE) {
-    outcome.error = "cannot allocate canvas content temporary file";
+    outcome.error = WithWindowsError("cannot allocate canvas content temporary file", allocate_error);
     return outcome;
   }
   std::size_t offset = 0;
@@ -2173,30 +2326,34 @@ CanvasIntentWriteOutcome WriteCanvasContentAtomic(const Config& config, const St
     const DWORD remaining = static_cast<DWORD>(std::min<std::size_t>(payload.size() - offset, MAXDWORD));
     DWORD written = 0;
     if (!WriteFile(temporary.Get(), payload.data() + offset, remaining, &written, nullptr) || written == 0) {
+      const DWORD write_error = GetLastError();
       DeleteTemporaryWindowsFile(temporary.Get());
-      outcome.error = "cannot write canvas content temporary file";
+      outcome.error = WithWindowsError("cannot write canvas content temporary file", write_error);
       return outcome;
     }
     offset += written;
   }
   if (!FlushFileBuffers(temporary.Get())) {
+    const DWORD persist_error = GetLastError();
     DeleteTemporaryWindowsFile(temporary.Get());
-    outcome.error = "cannot persist canvas content temporary file";
+    outcome.error = WithWindowsError("cannot persist canvas content temporary file", persist_error);
     return outcome;
   }
   const std::wstring target = Utf8ToWide(config.file_name);
   if (!RenameRelativeWindows(temporary.Get(), entry.Get(), target, true)) {
+    const DWORD rename_error = GetLastError();
     DeleteTemporaryWindowsFile(temporary.Get());
-    outcome.error = "cannot commit canvas content file";
+    outcome.error = WithWindowsError("cannot commit canvas content file", rename_error);
     return outcome;
   }
   outcome.commit_visible = true;
-  const bool entry_persisted = FlushCanvasDirectoryWindows(entry.Get());
-  const bool content_root_persisted = FlushCanvasDirectoryWindows(content_root.Get());
-  const bool canvas_root_persisted = FlushCanvasDirectoryWindows(root.handle.Get());
-  if (!entry_persisted || !content_root_persisted || !canvas_root_persisted) {
+  const unsigned long entry_flush_error = FlushDirectoryWindows(entry.Get());
+  const unsigned long content_root_flush_error = FlushDirectoryWindows(content_root.Get());
+  const unsigned long canvas_root_flush_error = FlushDirectoryWindows(root.handle.Get());
+  if (!IsWindowsFlushDurable({entry_flush_error, content_root_flush_error, canvas_root_flush_error})) {
     outcome.durability_uncertain = true;
-    outcome.error = "cannot persist canvas content directories";
+    outcome.error = WithWindowsError("cannot persist canvas content directories",
+        FirstNonZeroError<unsigned long>({entry_flush_error, content_root_flush_error, canvas_root_flush_error}));
   }
   return outcome;
 }
@@ -2222,8 +2379,9 @@ CanvasIntentWriteOutcome RemoveCanvasTrashMarker(const Config& config, const Sta
     if (!GetFileInformationByHandleEx(entry.Get(),
         restart ? FileIdBothDirectoryRestartInfo : FileIdBothDirectoryInfo,
         buffer.data(), static_cast<DWORD>(buffer.size()))) {
-      if (GetLastError() == ERROR_NO_MORE_FILES) break;
-      outcome.error = "cannot inspect canvas trash marker";
+      const DWORD inspect_error = GetLastError();
+      if (inspect_error == ERROR_NO_MORE_FILES) break;
+      outcome.error = WithWindowsError("cannot inspect canvas trash marker", inspect_error);
       return outcome;
     }
     restart = false;
@@ -2262,22 +2420,23 @@ CanvasIntentWriteOutcome RemoveCanvasTrashMarker(const Config& config, const Sta
       return outcome;
     }
     if (!SetFileInformationByHandle(marker.Get(), FileDispositionInfo, &disposition, sizeof(disposition))) {
-      outcome.error = "cannot remove canvas trash marker file";
+      outcome.error = WithWindowsError("cannot remove canvas trash marker file", GetLastError());
       return outcome;
     }
     marker.Reset();
   }
   if (!SetFileInformationByHandle(entry.Get(), FileDispositionInfo, &disposition, sizeof(disposition))) {
-    outcome.error = "cannot remove canvas trash marker directory";
+    outcome.error = WithWindowsError("cannot remove canvas trash marker directory", GetLastError());
     return outcome;
   }
   entry.Reset();
   outcome.commit_visible = true;
-  const bool content_root_persisted = FlushCanvasDirectoryWindows(content_root.Get());
-  const bool canvas_root_persisted = FlushCanvasDirectoryWindows(root.handle.Get());
-  if (!content_root_persisted || !canvas_root_persisted) {
+  const unsigned long content_root_flush_error = FlushDirectoryWindows(content_root.Get());
+  const unsigned long canvas_root_flush_error = FlushDirectoryWindows(root.handle.Get());
+  if (!IsWindowsFlushDurable({content_root_flush_error, canvas_root_flush_error})) {
     outcome.durability_uncertain = true;
-    outcome.error = "cannot persist canvas trash marker removal";
+    outcome.error = WithWindowsError("cannot persist canvas trash marker removal",
+        FirstNonZeroError<unsigned long>({content_root_flush_error, canvas_root_flush_error}));
   }
   return outcome;
 }
@@ -2306,9 +2465,11 @@ std::string ReadCanvasContent(const Config& config, const StableRoot& root) {
   if (!OpenRelativeWindows(entry.Get(), Utf8ToWide(config.file_name),
       FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
       FILE_OPEN, FILE_NON_DIRECTORY_FILE, &file, &error)) {
-    return IsCanvasWindowsMissingError(GetLastError())
+    const DWORD open_error = GetLastError();
+    return IsCanvasWindowsMissingError(open_error)
       ? CanvasContentReadResultJson("missing", "", 0, "", "", "")
-      : CanvasContentReadResultJson("corrupt", "", 0, "", "", "cannot open canvas content file");
+      : CanvasContentReadResultJson("corrupt", "", 0, "", "",
+          WithWindowsError("cannot open canvas content file", open_error));
   }
   BY_HANDLE_FILE_INFORMATION initial {};
   FILE_BASIC_INFO initial_basic {};
@@ -2328,7 +2489,8 @@ std::string ReadCanvasContent(const Config& config, const StableRoot& root) {
     DWORD read_bytes = 0;
     if (!ReadFile(file.Get(), content.data() + offset,
         static_cast<DWORD>(content.size() - offset), &read_bytes, nullptr) || read_bytes == 0) {
-      return CanvasContentReadResultJson("corrupt", "", 0, "", "", "cannot read canvas content file");
+      return CanvasContentReadResultJson("corrupt", "", 0, "", "",
+          WithWindowsError("cannot read canvas content file", GetLastError()));
     }
     offset += read_bytes;
   }
@@ -2366,8 +2528,9 @@ bool ListCanvasContent(const Config& config, const StableRoot& root,
     if (!GetFileInformationByHandleEx(content_root.Get(),
         restart ? FileIdBothDirectoryRestartInfo : FileIdBothDirectoryInfo,
         buffer.data(), static_cast<DWORD>(buffer.size()))) {
-      if (GetLastError() == ERROR_NO_MORE_FILES) break;
-      *error = "cannot enumerate canvas content root";
+      const DWORD enumerate_error = GetLastError();
+      if (enumerate_error == ERROR_NO_MORE_FILES) break;
+      *error = WithWindowsError("cannot enumerate canvas content root", enumerate_error);
       return false;
     }
     restart = false;
@@ -2444,16 +2607,17 @@ CanvasIntentWriteOutcome MoveCanvasContent(const Config& config, const StableRoo
       config.destination_entry_id, &outcome.error)) return outcome;
   const std::wstring target = Utf8ToWide(config.destination_entry_id);
   if (!RenameRelativeWindows(source.Get(), destination_root.Get(), target, false)) {
-    outcome.error = "cannot commit canvas content move";
+    outcome.error = WithWindowsError("cannot commit canvas content move", GetLastError());
     return outcome;
   }
   outcome.commit_visible = true;
-  const bool source_persisted = FlushCanvasDirectoryWindows(source_root.Get());
-  const bool destination_persisted = FlushCanvasDirectoryWindows(destination_root.Get());
-  const bool canvas_root_persisted = FlushCanvasDirectoryWindows(root.handle.Get());
-  if (!source_persisted || !destination_persisted || !canvas_root_persisted) {
+  const unsigned long source_flush_error = FlushDirectoryWindows(source_root.Get());
+  const unsigned long destination_flush_error = FlushDirectoryWindows(destination_root.Get());
+  const unsigned long canvas_root_flush_error = FlushDirectoryWindows(root.handle.Get());
+  if (!IsWindowsFlushDurable({source_flush_error, destination_flush_error, canvas_root_flush_error})) {
     outcome.durability_uncertain = true;
-    outcome.error = "cannot persist canvas content move";
+    outcome.error = WithWindowsError("cannot persist canvas content move",
+        FirstNonZeroError<unsigned long>({source_flush_error, destination_flush_error, canvas_root_flush_error}));
   }
   return outcome;
 }
@@ -2469,8 +2633,9 @@ bool CheckCanvasIntentCapacity(const Config& config, HANDLE transactions, std::s
     if (!GetFileInformationByHandleEx(transactions,
         restart ? FileIdBothDirectoryRestartInfo : FileIdBothDirectoryInfo,
         buffer.data(), static_cast<DWORD>(buffer.size()))) {
-      if (GetLastError() == ERROR_NO_MORE_FILES) break;
-      *error = "cannot enumerate canvas transactions directory";
+      const DWORD enumerate_error = GetLastError();
+      if (enumerate_error == ERROR_NO_MORE_FILES) break;
+      *error = WithWindowsError("cannot enumerate canvas transactions directory", enumerate_error);
       return false;
     }
     restart = false;
@@ -2513,20 +2678,22 @@ CanvasIntentWriteOutcome WriteCanvasIntentAtomic(const Config& config, HANDLE tr
       return outcome;
     }
     if (!IsCanvasWindowsMissingError(GetLastError())) {
-      outcome.error = "cannot inspect canvas intent destination";
+      outcome.error = WithWindowsError("cannot inspect canvas intent destination", GetLastError());
       return outcome;
     }
   }
   UniqueHandle temporary;
+  DWORD allocate_error = ERROR_SUCCESS;
   for (int attempt = 0; attempt < 32; ++attempt) {
     const std::wstring temporary_name = L".intent-" + std::to_wstring(GetCurrentProcessId())
         + L"-" + std::to_wstring(static_cast<unsigned long long>(std::random_device{}())) + L".tmp";
     if (OpenRelativeWindows(transactions, temporary_name,
         FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
         FILE_CREATE, FILE_NON_DIRECTORY_FILE, &temporary, &outcome.error)) break;
+    allocate_error = GetLastError();
   }
   if (temporary.Get() == INVALID_HANDLE_VALUE) {
-    outcome.error = "cannot allocate canvas intent temporary file";
+    outcome.error = WithWindowsError("cannot allocate canvas intent temporary file", allocate_error);
     return outcome;
   }
   std::size_t offset = 0;
@@ -2534,15 +2701,17 @@ CanvasIntentWriteOutcome WriteCanvasIntentAtomic(const Config& config, HANDLE tr
     const DWORD remaining = static_cast<DWORD>(std::min<std::size_t>(payload.size() - offset, MAXDWORD));
     DWORD written = 0;
     if (!WriteFile(temporary.Get(), payload.data() + offset, remaining, &written, nullptr) || written == 0) {
+      const DWORD write_error = GetLastError();
       DeleteTemporaryWindowsFile(temporary.Get());
-      outcome.error = "cannot write canvas intent temporary file";
+      outcome.error = WithWindowsError("cannot write canvas intent temporary file", write_error);
       return outcome;
     }
     offset += written;
   }
   if (!FlushFileBuffers(temporary.Get())) {
+    const DWORD persist_error = GetLastError();
     DeleteTemporaryWindowsFile(temporary.Get());
-    outcome.error = "cannot persist canvas intent temporary file";
+    outcome.error = WithWindowsError("cannot persist canvas intent temporary file", persist_error);
     return outcome;
   }
   const std::wstring target = Utf8ToWide(config.file_name);
@@ -2550,17 +2719,18 @@ CanvasIntentWriteOutcome WriteCanvasIntentAtomic(const Config& config, HANDLE tr
     const DWORD rename_error = GetLastError();
     DeleteTemporaryWindowsFile(temporary.Get());
     outcome.error = rename_error == ERROR_FILE_EXISTS || rename_error == ERROR_ALREADY_EXISTS
-        ? "canvas intent destination exists" : "cannot commit canvas intent file";
+        ? "canvas intent destination exists"
+        : WithWindowsError("cannot commit canvas intent file", rename_error);
     return outcome;
   }
   outcome.commit_visible = true;
   /** Windows 对目录 FlushFileBuffers 的支持依文件系统而异；成功时强化 rename 元数据持久性。 */
-  if (!FlushFileBuffers(transactions)) {
-    const DWORD flush_error = GetLastError();
-    if (flush_error != ERROR_INVALID_HANDLE && flush_error != ERROR_ACCESS_DENIED) {
-      outcome.durability_uncertain = true;
-      outcome.error = "cannot persist canvas transactions directory";
-    }
+  const unsigned long transactions_flush_error = FlushDirectoryWindows(transactions);
+  if (transactions_flush_error != ERROR_SUCCESS
+      && transactions_flush_error != ERROR_INVALID_HANDLE
+      && transactions_flush_error != ERROR_ACCESS_DENIED) {
+    outcome.durability_uncertain = true;
+    outcome.error = WithWindowsError("cannot persist canvas transactions directory", transactions_flush_error);
   }
   return outcome;
 }
@@ -2576,8 +2746,9 @@ CanvasIntentWriteOutcome RemoveCanvasIntent(const Config& config, HANDLE transac
   if (!OpenRelativeWindows(transactions, Utf8ToWide(config.file_name),
       DELETE | FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
       FILE_OPEN, FILE_NON_DIRECTORY_FILE, &target, &open_error)) {
-    if (IsCanvasWindowsMissingError(GetLastError())) { outcome.commit_visible = true; return outcome; }
-    outcome.error = "cannot open canvas intent removal target";
+    const DWORD remove_open_error = GetLastError();
+    if (IsCanvasWindowsMissingError(remove_open_error)) { outcome.commit_visible = true; return outcome; }
+    outcome.error = WithWindowsError("cannot open canvas intent removal target", remove_open_error);
     return outcome;
   }
   BY_HANDLE_FILE_INFORMATION identity {};
@@ -2600,7 +2771,7 @@ CanvasIntentWriteOutcome RemoveCanvasIntent(const Config& config, HANDLE transac
     const DWORD remaining = static_cast<DWORD>(content.size() - offset);
     if (!ReadFile(target.Get(), content.data() + offset, remaining, &read_bytes, nullptr)
         || read_bytes == 0) {
-      outcome.error = "cannot read canvas intent removal target";
+      outcome.error = WithWindowsError("cannot read canvas intent removal target", GetLastError());
       return outcome;
     }
     offset += read_bytes;
@@ -2612,14 +2783,15 @@ CanvasIntentWriteOutcome RemoveCanvasIntent(const Config& config, HANDLE transac
   FILE_DISPOSITION_INFO disposition {};
   disposition.DeleteFile = TRUE;
   if (!SetFileInformationByHandle(target.Get(), FileDispositionInfo, &disposition, sizeof(disposition))) {
-    outcome.error = "cannot remove canvas intent";
+    outcome.error = WithWindowsError("cannot remove canvas intent", GetLastError());
     return outcome;
   }
   target.Reset();
   outcome.commit_visible = true;
-  if (!FlushCanvasDirectoryWindows(transactions)) {
+  const unsigned long transactions_flush_error = FlushDirectoryWindows(transactions);
+  if (transactions_flush_error != ERROR_SUCCESS) {
     outcome.durability_uncertain = true;
-    outcome.error = "cannot persist canvas intent removal";
+    outcome.error = WithWindowsError("cannot persist canvas intent removal", transactions_flush_error);
   }
   return outcome;
 }
@@ -2648,7 +2820,7 @@ bool ReadCanvasIntentWindows(HANDLE transactions, const std::wstring& name,
     DWORD read_bytes = 0;
     const DWORD remaining = static_cast<DWORD>(content->size() - offset);
     if (!ReadFile(file.Get(), content->data() + offset, remaining, &read_bytes, nullptr) || read_bytes == 0) {
-      *error = "cannot read canvas intent";
+      *error = WithWindowsError("cannot read canvas intent", GetLastError());
       return false;
     }
     offset += read_bytes;
@@ -2845,19 +3017,21 @@ CanvasIntentWriteOutcome ExportArtifactAtomic(const Config& config,
     }
     if (!config.overwrite) { outcome.error = "artifact export destination exists"; return outcome; }
   } else if (!IsCanvasWindowsMissingError(GetLastError())) {
-    outcome.error = "cannot inspect artifact export destination";
+    outcome.error = WithWindowsError("cannot inspect artifact export destination", GetLastError());
     return outcome;
   }
   UniqueHandle temporary;
+  DWORD allocate_error = ERROR_SUCCESS;
   for (int attempt = 0; attempt < 32; ++attempt) {
     const std::wstring name = L".proma-export-" + std::to_wstring(GetCurrentProcessId()) + L"-"
         + std::to_wstring(static_cast<unsigned long long>(std::random_device{}())) + L".tmp";
     if (OpenRelativeWindows(destination.handle.Get(), name,
         FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
         FILE_CREATE, FILE_NON_DIRECTORY_FILE, &temporary, &outcome.error)) break;
+    allocate_error = GetLastError();
   }
   if (temporary.Get() == INVALID_HANDLE_VALUE) {
-    outcome.error = "cannot allocate artifact export temporary file";
+    outcome.error = WithWindowsError("cannot allocate artifact export temporary file", allocate_error);
     return outcome;
   }
   bool valid = true;
@@ -2901,21 +3075,26 @@ CanvasIntentWriteOutcome ExportArtifactAtomic(const Config& config,
         && hash.FinalHex() == config.expected_source_sha256;
   }
   if (!valid || !FlushFileBuffers(temporary.Get())) {
+    const DWORD persist_error = GetLastError();
     DeleteTemporaryWindowsFile(temporary.Get());
-    outcome.error = "artifact export source or temporary file validation failed";
+    outcome.error = valid
+        ? WithWindowsError("artifact export source or temporary file validation failed", persist_error)
+        : "artifact export source or temporary file validation failed";
     return outcome;
   }
   if (!RenameRelativeWindows(temporary.Get(), destination.handle.Get(), Utf8ToWide(config.file_name), config.overwrite)) {
     const DWORD rename_error = GetLastError();
     DeleteTemporaryWindowsFile(temporary.Get());
     outcome.error = rename_error == ERROR_FILE_EXISTS || rename_error == ERROR_ALREADY_EXISTS
-        ? "artifact export destination exists" : "cannot commit artifact export";
+        ? "artifact export destination exists"
+        : WithWindowsError("cannot commit artifact export", rename_error);
     return outcome;
   }
   outcome.commit_visible = true;
-  if (!FlushCanvasDirectoryWindows(destination.handle.Get())) {
+  const unsigned long destination_flush_error = FlushDirectoryWindows(destination.handle.Get());
+  if (destination_flush_error != ERROR_SUCCESS) {
     outcome.durability_uncertain = true;
-    outcome.error = "cannot persist artifact export destination";
+    outcome.error = WithWindowsError("cannot persist artifact export destination", destination_flush_error);
   }
   return outcome;
 }

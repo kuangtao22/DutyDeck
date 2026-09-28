@@ -682,6 +682,36 @@ describe('Canvas 节点内容 Store', () => {
     expect(await fixture.store.listTrash(target)).toEqual([entryB])
   })
 
+  test('Given helper 提交失败带平台错误码 When 写入与移动 Then 错误信息保留错误码与受管定位', async () => {
+    /** 原生层已把 win32 错误码写进错误串，Store 只能追加受管定位，不能丢失任何一段。 */
+    const writeFixture = createFixture({
+      outcomeFor: (request) => request.mode === 'canvas-content-write'
+        ? {
+            commitVisible: false,
+            durabilityUncertain: false,
+            error: 'cannot commit canvas content file [win32=32 SHARING_VIOLATION]',
+          }
+        : undefined,
+    })
+    await expect(writeFixture.store.prepareEmptyContent(target, { kind: 'document', contentId: 'content-1' }))
+      .rejects.toThrow(
+        'CANVAS_CONTENT_WRITE_FAILED: cannot commit canvas content file [win32=32 SHARING_VIOLATION] [nodes/content-1/',
+      )
+
+    const moveFixture = createFixture({
+      moveOutcome: {
+        commitVisible: false,
+        durabilityUncertain: false,
+        error: 'cannot commit canvas content move [win32=87 INVALID_PARAMETER]',
+      },
+    })
+    await moveFixture.store.prepareEmptyContent(target, { kind: 'document', contentId: 'content-1' })
+    await expect(moveFixture.store.moveToTrash(target, { ...trashEntry, trashId: 'trash-a' }))
+      .rejects.toThrow(
+        'CANVAS_CONTENT_MOVE_FAILED: cannot commit canvas content move [win32=87 INVALID_PARAMETER] [nodes/content-1 -> trash/trash-a]',
+      )
+  })
+
   test('Given nodes 历史 marker 身份不匹配 When 再次删除 Then move 前拒绝且节点保持原位', async () => {
     const fixture = createFixture()
     await fixture.store.prepareEmptyContent(target, { kind: 'document', contentId: 'content-1' })

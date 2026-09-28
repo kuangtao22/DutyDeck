@@ -368,6 +368,8 @@ export function createCanvasNodeContentStore(
   const confirmWrite = (
     capability: CanvasTrustedDirectoryCapability,
     outcome: StableDirectoryNativeWriteOutcome | undefined,
+    /** 失败诊断定位：固定受管子目录、稳定 ID 与固定文件名，不含绝对路径。 */
+    scope: string,
   ): Error | null => {
     if (!outcome) throw new Error('CANVAS_CONTENT_PROTOCOL_INVALID: missing write outcome')
     /** outcome 必须先于 post-assert 被保存，防止撤权覆盖已提交事实。 */
@@ -381,7 +383,7 @@ export function createCanvasNodeContentStore(
     }
     if (!committedOutcome.commitVisible) {
       throw new Error(
-        `CANVAS_CONTENT_WRITE_FAILED: ${committedOutcome.error ?? 'write not committed'}`,
+        `CANVAS_CONTENT_WRITE_FAILED: ${committedOutcome.error ?? 'write not committed'} [${scope}]`,
         scopeError === undefined ? undefined : { cause: scopeError },
       )
     }
@@ -389,7 +391,7 @@ export function createCanvasNodeContentStore(
       if (scopeError !== undefined) {
         throw contentCommitUnconfirmed('write visible but scope revalidation failed', scopeError)
       }
-      return new Error(`CANVAS_CONTENT_DURABILITY_UNCERTAIN: ${committedOutcome.error}`)
+      return new Error(`CANVAS_CONTENT_DURABILITY_UNCERTAIN: ${committedOutcome.error} [${scope}]`)
     }
     if (scopeError !== undefined) throw scopeError
     return null
@@ -414,7 +416,7 @@ export function createCanvasNodeContentStore(
       maxEntries: MAX_CONTENT_ENTRIES,
     }, capability.authorizeOpenedRoots)
     /** rename 后耐久性不确定时，复读失败不得覆盖已可见证据。 */
-    const durabilityError = confirmWrite(capability, result.writeOutcome)
+    const durabilityError = confirmWrite(capability, result.writeOutcome, `${childName}/${entryId}/${fileName}`)
     if (durabilityError) {
       try {
         const committed = await readFile(capability, childName, entryId, fileName)
@@ -440,7 +442,7 @@ export function createCanvasNodeContentStore(
       entryId,
       maxEntries: MAX_CONTENT_ENTRIES,
     }, capability.authorizeOpenedRoots)
-    const durabilityError = confirmWrite(capability, result.writeOutcome)
+    const durabilityError = confirmWrite(capability, result.writeOutcome, `trash/${entryId}`)
     if (durabilityError) throw durabilityError
   }
 
@@ -805,7 +807,8 @@ export function createCanvasNodeContentStore(
     }
     if (!committedOutcome.commitVisible) {
       throw new Error(
-        `CANVAS_CONTENT_MOVE_FAILED: ${committedOutcome.error ?? 'move not committed'}`,
+        `CANVAS_CONTENT_MOVE_FAILED: ${committedOutcome.error ?? 'move not committed'}`
+          + ` [${sourceChildName}/${sourceEntryId} -> ${destinationChildName}/${destinationEntryId}]`,
         scopeError === undefined ? undefined : { cause: scopeError },
       )
     }
@@ -813,7 +816,10 @@ export function createCanvasNodeContentStore(
       if (scopeError !== undefined) {
         throw contentCommitUnconfirmed('move visible but scope revalidation failed', scopeError)
       }
-      return new Error(`CANVAS_CONTENT_DURABILITY_UNCERTAIN: ${committedOutcome.error}`)
+      return new Error(
+        `CANVAS_CONTENT_DURABILITY_UNCERTAIN: ${committedOutcome.error}`
+          + ` [${sourceChildName}/${sourceEntryId} -> ${destinationChildName}/${destinationEntryId}]`,
+      )
     }
     if (scopeError !== undefined) throw scopeError
     return null

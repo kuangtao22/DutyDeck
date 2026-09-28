@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from 'bun:test'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -789,15 +789,16 @@ describe('stable directory native host', () => {
     /** 原生源码合同用于锁定 `||` 短路不会跳过后续目录 flush。 */
     const source = readFileSync(resolve(appDir, 'native/stable-directory/stable-directory-helper.cc'), 'utf8')
 
-    expect(source).toContain('const bool entry_persisted = fsync(entry.Get()) == 0;')
-    expect(source).toContain('const bool content_root_persisted = fsync(content_root.Get()) == 0;')
-    expect(source).toContain('const bool canvas_root_persisted = fsync(root.descriptor.Get()) == 0;')
-    expect(source).toContain('const bool source_persisted = fsync(source_root.Get()) == 0;')
-    expect(source).toContain('const bool destination_persisted = fsync(destination_root.Get()) == 0;')
-    expect(source).toContain('const bool entry_persisted = FlushCanvasDirectoryWindows(entry.Get());')
-    expect(source).toContain('const bool source_persisted = FlushCanvasDirectoryWindows(source_root.Get());')
+    expect(source).toContain('const int entry_flush_error = FlushDirectoryPosix(entry.Get());')
+    expect(source).toContain('const int content_root_flush_error = FlushDirectoryPosix(content_root.Get());')
+    expect(source).toContain('const int canvas_root_flush_error = FlushDirectoryPosix(root.descriptor.Get());')
+    expect(source).toContain('const int source_flush_error = FlushDirectoryPosix(source_root.Get());')
+    expect(source).toContain('const int destination_flush_error = FlushDirectoryPosix(destination_root.Get());')
+    expect(source).toContain('const unsigned long entry_flush_error = FlushDirectoryWindows(entry.Get());')
+    expect(source).toContain('const unsigned long source_flush_error = FlushDirectoryWindows(source_root.Get());')
     expect(source).not.toMatch(/fsync\([^\n]+\) != 0 \|\| fsync/)
-    expect(source).not.toMatch(/FlushCanvasDirectoryWindows\([^\n]+\) \|\|/)
+    expect(source).not.toMatch(/FlushDirectoryPosix\([^\n]+\) \|\|/)
+    expect(source).not.toMatch(/FlushDirectoryWindows\([^\n]+\) \|\|/)
   })
 
   test.skipIf(process.platform === 'win32')('Given Windows missing 与 flush 错误码 When 运行纯分类合同 Then 仅明确不存在映射 missing 且所有 flush 失败均不耐久', () => {
@@ -830,6 +831,89 @@ describe('stable directory native host', () => {
       rmSync(root, { recursive: true, force: true })
     }
   }, 150_000)
+
+  test.skipIf(process.platform === 'win32')('Given 提交失败诊断 When 运行平台错误码纯合同 Then 稳定标签与首个非零聚合可复现', () => {
+    const root = mkdtempSync(join(tmpdir(), 'proma-native-error-label-contract-'))
+    const contractSource = join(root, 'error-label-contract.cc')
+    const output = join(root, 'error-label-contract')
+    const helperSource = resolve(appDir, 'native/stable-directory/stable-directory-helper.cc')
+    writeFileSync(contractSource, [
+      '#define STABLE_DIRECTORY_HELPER_LIBRARY',
+      `#include ${JSON.stringify(helperSource)}`,
+      'int main() {',
+      '  if (DescribeWindowsError(5UL) != "win32=5 ACCESS_DENIED") return 1;',
+      '  if (DescribeWindowsError(32UL) != "win32=32 SHARING_VIOLATION") return 2;',
+      '  if (DescribeWindowsError(87UL) != "win32=87 INVALID_PARAMETER") return 3;',
+      '  if (DescribeWindowsError(1234UL) != "win32=1234") return 4;',
+      '  if (WithWindowsError("cannot commit canvas content file", 32UL)',
+      '      != "cannot commit canvas content file [win32=32 SHARING_VIOLATION]") return 5;',
+      '  if (WithPosixErrno("cannot commit canvas content file", 2).rfind(',
+      '      "cannot commit canvas content file [errno=2 (", 0) != 0) return 6;',
+      '  if (FirstNonZeroError<int>({0, 0, 5}) != 5) return 7;',
+      '  if (FirstNonZeroError<int>({0, 0, 0}) != 0) return 8;',
+      '  if (!IsWindowsFlushDurable({0UL, 0UL})) return 9;',
+      '  if (IsWindowsFlushDurable({0UL, 5UL})) return 10;',
+      '  if (IsWindowsFlushDurable({6UL, 0UL})) return 11;',
+      '  return 0;',
+      '}',
+    ].join('\n'), 'utf8')
+    try {
+      // 冷编译沿用原生 helper 的 120 秒预算；纯函数合同执行仍单独限制为 5 秒。
+      if (process.platform === 'darwin') {
+        execFileSync('xcrun', ['clang++', '-std=c++17', '-Wall', '-Wextra', contractSource, '-o', output], { timeout: 120_000 })
+      } else {
+        execFileSync(process.env.CXX || 'g++', ['-std=c++17', '-Wall', '-Wextra', contractSource, '-o', output], { timeout: 120_000 })
+      }
+      execFileSync(output, [], { timeout: 5_000 })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 150_000)
+
+  test('Given 原生提交失败 When 检查源码合同 Then 内容与事务提交错误都携带平台错误码', () => {
+    /** 提交失败必须同时保留稳定阶段名与平台错误码，否则无法区分占用、权限与不支持。 */
+    const source = readFileSync(resolve(appDir, 'native/stable-directory/stable-directory-helper.cc'), 'utf8')
+
+    expect(source).toContain('WithPosixErrno("cannot commit canvas content file", rename_error)')
+    expect(source).toContain('WithWindowsError("cannot commit canvas content file", rename_error)')
+    expect(source).toContain('WithPosixErrno("cannot commit canvas intent file", rename_error)')
+    expect(source).toContain('WithWindowsError("cannot commit canvas intent file", rename_error)')
+    expect(source).toContain('WithPosixErrno("cannot persist canvas content directories",')
+    expect(source).toContain('WithWindowsError("cannot persist canvas content directories",')
+  })
+
+  test.skipIf(process.platform !== 'darwin' || (process.getuid?.() ?? 0) === 0)(
+    'Given 内容目录失去写权限 When 真实 helper 写入 Then 失败信息携带 errno 标签',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'proma-native-content-permission-'))
+      const canvasRoot = join(root, 'canvas')
+      const entryDir = join(canvasRoot, 'nodes', 'content-a')
+      mkdirSync(canvasRoot)
+      try {
+        /** 首次写入建立真实 entry 目录与正式文件，作为后续降权的前提。 */
+        const created = await runStableDirectoryNative({
+          mode: 'canvas-content-write', roots: [canvasRoot], childName: 'nodes',
+          entryId: 'content-a', fileName: 'meta.json', content: '{}',
+        }, () => true, { helperPath: () => nativeHelperPath })
+        expect(created.writeOutcome).toEqual({ commitVisible: true, durabilityUncertain: false })
+
+        // 目录降为只读后再次写入：临时文件创建失败，诊断必须带 errno 标签与阶段名。
+        chmodSync(entryDir, 0o555)
+        const denied = await runStableDirectoryNative({
+          mode: 'canvas-content-write', roots: [canvasRoot], childName: 'nodes',
+          entryId: 'content-a', fileName: 'meta.json', content: '{"a":1}',
+        }, () => true, { helperPath: () => nativeHelperPath })
+        expect(denied.writeOutcome).toEqual({
+          commitVisible: false,
+          durabilityUncertain: false,
+          error: 'cannot create canvas content temporary file [errno=13 (Permission denied)]',
+        })
+      } finally {
+        // 只读目录会阻断递归删除，必须先恢复权限再清理。
+        try { chmodSync(entryDir, 0o755) } catch { /* 目录可能尚未创建。 */ }
+        rmSync(root, { recursive: true, force: true })
+      }
+    }, 60_000)
 
   test('Given fdopendir 接管 duplicated fd When 检查失败路径 Then 成功前仍由 UniqueFd 持有', () => {
     const source = readFileSync(resolve(appDir, 'native/stable-directory/stable-directory-helper.cc'), 'utf8')
