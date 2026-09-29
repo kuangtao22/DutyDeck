@@ -1,3 +1,4 @@
+import { publishAgentFileObservation } from './agent-file-observation-bus'
 /**
  * 工作区文件监听器
  *
@@ -74,6 +75,7 @@ const attachedChangedPaths = new Set<string>()
 let mainWin: BrowserWindow | null = null
 
 function notifyWorkspaceFilesChanged(changedPath?: string): void {
+  if (changedPath) publishAgentFileObservation(changedPath)
   if (!mainWin || mainWin.isDestroyed()) return
 
   if (attachedFilesTimer) clearTimeout(attachedFilesTimer)
@@ -263,6 +265,7 @@ export function startWorkspaceWatcher(win: BrowserWindow): void {
         // renderer 会在记录会话文件改动前确认路径仍是实际文件。
         if (filesTimer) clearTimeout(filesTimer)
         changedFilePaths.add(join(watchDir, normalizedFilename))
+        publishAgentFileObservation(join(watchDir, normalizedFilename))
         filesTimer = setTimeout(() => {
           const paths = [...changedFilePaths]
           changedFilePaths.clear()

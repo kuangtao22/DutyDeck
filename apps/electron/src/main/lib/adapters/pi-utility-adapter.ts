@@ -214,6 +214,11 @@ export class PiUtilityAdapter {
       }
     }
 
+    if (request.method === AGENT_RUNTIME_METHODS.CAPABILITY_FILE_CHANGE) {
+      await pending.input.onFileChangeCapture?.(payload?.capture as import('@proma/shared').AgentFileChangeCapture)
+      return { accepted: true }
+    }
+
     if (request.method === AGENT_RUNTIME_METHODS.CAPABILITY_CUSTOM_TOOL) {
       const toolName = String(payload?.toolName ?? '')
       const tool = pending.input.customTools?.find((candidate) => candidate.name === toolName)
@@ -379,6 +384,7 @@ function serializeQueryInput(input: PiAgentQueryOptions): Record<string, unknown
     onModelResolved: _onModelResolved,
     onContextWindow: _onContextWindow,
     onRetry: _onRetry,
+    onFileChangeCapture: _onFileChangeCapture,
     onSkillActivated: _onSkillActivated,
     onCodexOAuthCredentialsRefreshed: _onCodexOAuthCredentialsRefreshed,
     onXaiOAuthCredentialsRefreshed: _onXaiOAuthCredentialsRefreshed,

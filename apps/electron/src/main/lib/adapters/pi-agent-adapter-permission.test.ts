@@ -78,3 +78,60 @@ test('Given 恶意模型尝试宿主分派 When 运维只读模式 Then Bash/MCP
   expect(executed).toEqual([])
   expect(wrapCustomToolDefinitions(tools, undefined, 'standard')).toHaveLength(4)
 })
+
+
+/** 创建真正经过权限包装器的文件工具，用事件序列检查副作用边界。 */
+async function captureFixture(denied = false, throws = false) {
+  const { wrapToolWithPermission } = await import('./pi-agent-adapter')
+  const events: string[] = []
+  const definition = sdk.defineTool({
+    name: 'write', label: 'Write', description: 'write fixture',
+    parameters: { type: 'object', properties: { path: { type: 'string' } } },
+    async execute(_id, params) {
+      events.push(`execute:${(params as { path: string }).path}`)
+      if (throws) throw new Error('partial write')
+      return { content: [{ type: 'text', text: 'ok' }], details: {} }
+    },
+  })
+  const wrapped = wrapToolWithPermission(definition, {
+    canUseTool: async () => {
+      events.push('permission')
+      return denied ? { behavior: 'deny', message: 'denied' } : { behavior: 'allow', updatedInput: { file_path: '/approved.ts', content: 'x' } }
+    },
+    onFileChangeCapture: async capture => { events.push(`${capture.phase}:${capture.path}`) },
+  })
+  return { events, execute: () => wrapped.execute('capture-test', { path: '/requested.ts' }, new AbortController().signal, undefined, {} as ExtensionContext) }
+}
+
+test('Given Write 经权限改写路径 When 执行 Then 只采集获准路径并严格按 before execute after 排序', async () => {
+  const fixture = await captureFixture()
+  await fixture.execute()
+  expect(fixture.events).toEqual(['permission', 'before:/approved.ts', 'execute:/approved.ts', 'after:/approved.ts'])
+})
+test('Given 拒绝 Write When 执行 Then 不读取文件也不调用采集器', async () => {
+  const fixture = await captureFixture(true)
+  await expect(fixture.execute()).rejects.toThrow('denied')
+  expect(fixture.events).toEqual(['permission'])
+})
+test('Given 工具部分写入后抛错 When 收尾 Then 仍采集实际结果且保留原始错误', async () => {
+  const fixture = await captureFixture(false, true)
+  await expect(fixture.execute()).rejects.toThrow('partial write')
+  expect(fixture.events.at(-1)).toBe('after:/approved.ts')
+})
+
+
+test('Given 采集超时 When 工具正常写入 Then 执行继续且最终请求未知降级', async () => {
+  const { wrapToolWithPermission } = await import('./pi-agent-adapter')
+  const phases: string[] = []
+  let executed = false
+  const tool = wrapToolWithPermission(sdk.defineTool({ name: 'edit', label: 'Edit', description: 'fixture',
+    parameters: { type: 'object', properties: { path: { type: 'string' } } },
+    async execute() { executed = true; return { content: [], details: {} } },
+  }), { onFileChangeCapture: async capture => {
+    phases.push(capture.phase)
+    if (capture.phase === 'before') throw new Error('capture timeout')
+  } })
+  await tool.execute('timeout', { path: '/a.ts' }, undefined, undefined, {} as ExtensionContext)
+  expect(executed).toBe(true)
+  expect(phases).toEqual(['before', 'invalidate'])
+})

@@ -1,3 +1,5 @@
+import { createAgentRunFileChanges } from './agent-run-file-changes-service'
+import { writeAgentRunFileChanges } from './agent-run-file-change-store'
 /**
  * AgentOrchestrator — Agent 编排层
  *
@@ -1139,6 +1141,8 @@ export class AgentOrchestrator {
     let titleGenerationStarted = false
     /** 捕获到的 SDK session ID（用于 resume / recovery） */
     let capturedSdkSessionId = existingSdkSessionId
+    /** 同一用户 run 的 Pi 重试复用基线，终态后立即释放正文。 */
+    let runFileChanges: ReturnType<typeof createAgentRunFileChanges> | undefined
     let agentCwd: string | undefined
     let workspaceSlug: string | undefined
     let workspace: import('@proma/shared').AgentWorkspace | undefined
@@ -1197,6 +1201,21 @@ export class AgentOrchestrator {
         attachedDirectories,
         productivityTools.obsidianEnabled ? getAgentVaultRoots() : [],
       )
+      // 统计范围不扩大到附加文件的父目录，也不自动包含应用配置或 Obsidian 仓库。
+      try {
+        if (agentCwd) runFileChanges = createAgentRunFileChanges({
+          cwd: agentCwd, startedAt: streamStartedAt,
+          roots: [...new Set([
+            agentCwd, ...(additionalDirectories ?? []), ...(sessionMeta?.attachedDirectories ?? []),
+            ...(workspaceSlug ? [getAgentSessionWorkspacePath(workspaceSlug, sessionId), getProjectFilesPath(workspaceSlug), ...getWorkspaceAttachedDirectories(workspaceSlug)] : []),
+          ])],
+          files: [...(sessionMeta?.attachedFiles ?? []), ...(workspaceSlug ? getWorkspaceAttachedFiles(workspaceSlug) : [])],
+          isValid: () => !isAgentSessionDeleting(sessionId) && Boolean(getAgentSessionMeta(sessionId)),
+          isCurrent: () => isLatestRunGeneration(this.latestRunGenerations, sessionId, runGeneration),
+          persist: snapshot => writeAgentRunFileChanges(sessionId, snapshot),
+          publish: snapshot => this.eventBus.emit(sessionId, { kind: 'proma_event', event: { type: 'run_file_changes', snapshot } }),
+        })
+      } catch (error) { console.warn('[本轮文件统计] 初始化失败，继续执行工具', error) }
       const browserAllowedRoots = [...new Set([
         workspaceId ? agentCwd : undefined,
         workspaceSlug ? getProjectFilesPath(workspaceSlug) : undefined,
@@ -2032,6 +2051,7 @@ export class AgentOrchestrator {
         },
         onModelResolved: handleModelResolved,
         onContextWindow: handleContextWindow,
+        onFileChangeCapture: capture => runFileChanges?.capture(capture) ?? Promise.resolve(),
         retryRunStartedAt: streamStartedAt,
         onRetry: (retry) => {
           if (!isLatestRunGeneration(this.latestRunGenerations, sessionId, runGeneration)) return
@@ -2057,6 +2077,7 @@ export class AgentOrchestrator {
           const wasStoppedByUser = this.consumeStoppedByUser(sessionId, runGeneration)
           this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
           try { updateAgentSessionMeta(sessionId, { stoppedByUser: wasStoppedByUser }) } catch { /* 会话可能已删除 */ }
+          await runFileChanges?.finish()
           completeRun(getAgentSessionMessages(sessionId), { stoppedByUser: wasStoppedByUser, startedAt: streamStartedAt })
           return
         }
@@ -2304,6 +2325,7 @@ export class AgentOrchestrator {
                 emitLiveSdkMessage(errorSDKMsg)
                 try { updateAgentSessionMeta(sessionId, {}) } catch { /* 忽略 */ }
                 // 此处会提前结束迭代，必须直接传递错误终态，不能等未消费的 SDK result 补齐。
+                await runFileChanges?.finish()
                 completeRun(getAgentSessionMessages(sessionId), {
                   startedAt: streamStartedAt,
                   resultSubtype: 'error_during_execution',
@@ -2438,6 +2460,7 @@ export class AgentOrchestrator {
 
           if (!isLatestRunGeneration(this.latestRunGenerations, sessionId, runGeneration)) {
             const wasStoppedByUser = this.consumeStoppedByUser(sessionId, runGeneration)
+            await runFileChanges?.finish()
             completeRun([], { stoppedByUser: wasStoppedByUser, startedAt: streamStartedAt })
             return
           }
@@ -2453,6 +2476,7 @@ export class AgentOrchestrator {
 
           if (!wasStoppedByUser && visibleRunMessageCount === 0) {
             const errorContent = this.persistEmptyResponseError(sessionId, capturedResultSubtype, capturedResultErrors)
+            await runFileChanges?.finish()
             failRun(errorContent, getAgentSessionMessages(sessionId), {
               startedAt: streamStartedAt,
               resultSubtype: EMPTY_RESPONSE_RESULT_SUBTYPE,
@@ -2468,6 +2492,7 @@ export class AgentOrchestrator {
           }
 
           // 发送完成信号
+          await runFileChanges?.finish()
           completeRun(getAgentSessionMessages(sessionId), { stoppedByUser: wasStoppedByUser, startedAt: streamStartedAt, resultSubtype: capturedResultSubtype, resultErrors: capturedResultErrors })
 
           return
@@ -2481,6 +2506,7 @@ export class AgentOrchestrator {
               this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
               try { updateAgentSessionMeta(sessionId, { stoppedByUser: wasStoppedByUser }) } catch { /* 会话可能已删除 */ }
             }
+            await runFileChanges?.finish()
             completeRun([], { stoppedByUser: wasStoppedByUser, startedAt: streamStartedAt })
             return
           }
@@ -2602,6 +2628,8 @@ export class AgentOrchestrator {
             console.error('[Agent 编排] 保存错误消息失败:', saveError)
           }
 
+          await runFileChanges?.finish()
+
           failRun(userFacingError, getAgentSessionMessages(sessionId), { startedAt: streamStartedAt })
 
           // 保留 Pi session ID，确保网络或上游临时失败后的下一轮可继续 resume。
@@ -2625,9 +2653,11 @@ export class AgentOrchestrator {
         _errorTitle: '会话恢复失败',
       } as unknown as SDKMessage
       appendSDKMessages(sessionId, [recoveryError])
+      await runFileChanges?.finish()
       failRun(recoveryFailure, getAgentSessionMessages(sessionId), { startedAt: streamStartedAt })
 
     } finally {
+      await runFileChanges?.finish()
       /** 旧 run 收尾时若新 generation 已占槽，不得清理新运行的审批状态。 */
       const activeGenerationAtCleanup = this.activeSessions.get(sessionId)
       /** 当前槽为空或仍属于本 run 时，pending 状态才归本次收尾所有。 */

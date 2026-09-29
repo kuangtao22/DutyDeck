@@ -267,3 +267,16 @@ describe('本轮文件改动分类', () => {
     expect(groups[0]!.paths).toEqual(['/project/src/a.ts', '/project/src/b.ts'])
   })
 })
+
+
+describe('本轮统计快照合并', () => {
+  test('Given 监听路径 When 收到精确快照 Then 合并路径并保留统计', async () => {
+    const { mergeAgentRunFileChangesSnapshot } = await import('./agent-run-file-changes')
+    const records = upsertAgentRunFileChanges([], { runId: '10', startedAt: 10, path: '/p/shell.ts', observed: true })
+    const next = mergeAgentRunFileChangesSnapshot(records, { runId: '10', startedAt: 10, revision: 2, files: [{ path: '/p/a.ts', status: 'modified', statsState: 'complete', additions: 2, deletions: 1 }] })
+    expect(next[0]?.paths).toEqual(['/p/shell.ts', '/p/a.ts'])
+    expect(next[0]?.files?.[0]?.additions).toBe(2)
+    const stale = mergeAgentRunFileChangesSnapshot(next, { runId: '10', startedAt: 10, revision: 1, files: [] })
+    expect(stale).toBe(next)
+  })
+})

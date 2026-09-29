@@ -182,6 +182,10 @@ function handleQueryStart(request: RuntimeRequest): void {
     onPiEntryBindings: (bindings: Record<string, string>) => sendCallback(active, 'pi_entry_bindings', { bindings }),
     onModelResolved: (model: string) => sendCallback(active, 'model_resolved', { model }),
     onContextWindow: (contextWindow: number) => sendCallback(active, 'context_window', { contextWindow }),
+    // 不传工具取消 signal：部分写入后的 finally 仍需完成采集。
+    onFileChangeCapture: (capture: import('@proma/shared').AgentFileChangeCapture) => requestParent(
+      AGENT_RUNTIME_METHODS.CAPABILITY_FILE_CHANGE, { queryId, sessionId, capture },
+    ),
     onRetry: (update: unknown) => sendCallback(active, 'retry', { update }),
     onSkillActivated: (activations: unknown, userMessageUuid: string) => sendCallback(active, 'skill_activated', { activations, userMessageUuid }),
     onCodexOAuthCredentialsRefreshed: (credentials: unknown) => requestParent(

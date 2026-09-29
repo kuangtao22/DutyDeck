@@ -79,6 +79,8 @@ export const AGENT_RUNTIME_METHODS = {
   QUERY_ABORT: 'agent.query.abort',
   QUERY_SEND_QUEUED_MESSAGE: 'agent.query.sendQueuedMessage',
   QUERY_SET_PERMISSION_MODE: 'agent.query.setPermissionMode',
+  /** 权限通过后的本轮文件采集，不携带正文。 */
+  CAPABILITY_FILE_CHANGE: 'agent.capability.fileChange',
   CAPABILITY_CAN_USE_TOOL: 'agent.capability.canUseTool',
   CAPABILITY_CANCEL: 'agent.capability.cancel',
   CAPABILITY_CUSTOM_TOOL: 'agent.capability.customTool',

@@ -694,6 +694,8 @@ export interface ElectronAPI extends LanBridgePreloadApi, NormalPathManagementPr
   listActiveAgentSessionSnapshots: () => Promise<AgentActiveSessionSnapshot[]>
 
   /** 获取 Agent 会话 SDKMessage（Phase 4 新格式） */
+  /** 加载历史本轮文件统计，仅返回轻量元数据。 */
+  getAgentRunFileChanges: (id: string) => Promise<import('@proma/shared').AgentRunFileChangesSnapshot[]>
   getAgentSessionSDKMessages: (id: string) => Promise<SDKMessage[]>
 
   /** 更新 Agent 会话标题 */
@@ -2119,6 +2121,8 @@ const electronAPI: ElectronAPI = {
   listActiveAgentSessionSnapshots: () => {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.ACTIVE_SESSIONS_SNAPSHOT)
   },
+
+  getAgentRunFileChanges: (id: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_RUN_FILE_CHANGES, id),
 
   getAgentSessionSDKMessages: (id: string) => {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_SDK_MESSAGES, id)

@@ -118,3 +118,5 @@ export * from './api-workbench-ipc'
 export * from './api-workbench-sharing'
 export * from './api-workbench-sse'
 export * from './api-workbench-cases'
+
+export * from './agent-run-file-changes'

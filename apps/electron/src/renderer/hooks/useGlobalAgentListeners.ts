@@ -1,3 +1,4 @@
+import { mergeAgentRunFileChangesSnapshot } from '@/lib/agent-run-file-changes'
 /**
  * useGlobalAgentListeners — 全局 Agent IPC 监听器
  *
@@ -1583,6 +1584,17 @@ export function useGlobalAgentListeners(): void {
           || store.get(canvasAgentInternalInvalidSessionIdsAtom).has(sessionId)
 
         unstable_batchedUpdates(() => {
+
+        // 元数据归属其原始 run，终态后迟到也只更新历史统计，不复活流式状态。
+        if (payload.kind === 'proma_event' && payload.event.type === 'run_file_changes') {
+          const snapshot = payload.event.snapshot
+          store.set(agentRunFileChangesAtom, previous => {
+            const current = previous.get(sessionId) ?? []
+            const merged = mergeAgentRunFileChangesSnapshot(current, snapshot, isWindows)
+            return merged === current ? previous : new Map(previous).set(sessionId, merged)
+          })
+          return
+        }
 
         if (!isCanvasAgent && payload.kind === 'proma_event' && payload.event.type === 'external_run_started') {
           activateExternalAgentRun(payload.event)
