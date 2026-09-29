@@ -1,4 +1,4 @@
-import { validateServerOpsSqlQuery } from '@proma/shared'
+import { getServerOpsSqlDiagnostic, planServerOpsSqlWrite, validateServerOpsSqlQuery } from '@proma/shared'
 import type { ServerOpsSqlDiagnostic } from '@proma/shared'
 import type { ServerOpsSqlCompletionProjection } from './server-ops-sql-completion-controller'
 import type { ServerOpsSqlDialect } from './server-ops-sql-completion'
@@ -13,6 +13,43 @@ export interface ServerOpsSqlEditorDiagnostic extends Omit<ServerOpsSqlDiagnosti
 export interface ServerOpsSqlDraftValidation {
   status: 'empty' | 'unavailable' | 'valid' | 'invalid'
   diagnostics: ServerOpsSqlEditorDiagnostic[]
+}
+
+/** 写模式校验额外返回将执行的语句首关键字，供确认卡展示。 */
+export interface ServerOpsSqlWriteDraftValidation extends ServerOpsSqlDraftValidation {
+  heads: string[]
+}
+
+/**
+ * 使用共享写计划校验手工写入草稿。
+ *
+ * @param sql 待校验的完整脚本
+ * @param dialect 当前连接方言
+ * @returns 写计划状态、诊断和语句首关键字；不执行 SQL
+ */
+export function validateServerOpsSqlWriteDraft(
+  sql: string,
+  dialect: ServerOpsSqlDialect,
+): ServerOpsSqlWriteDraftValidation {
+  if (!sql.trim()) return { status: 'empty', diagnostics: [], heads: [] }
+  try {
+    const plan = planServerOpsSqlWrite(sql, dialect)
+    return { status: 'valid', diagnostics: [], heads: plan.statements.map((statement) => statement.head) }
+  } catch (error) {
+    const code = error instanceof Error ? error.message : ''
+    return {
+      status: 'invalid',
+      heads: [],
+      diagnostics: [{
+        code,
+        from: 0,
+        to: 0,
+        severity: 'error',
+        category: 'policy',
+        message: getServerOpsSqlDiagnostic(code)?.message ?? '写脚本无法通过校验',
+      }],
+    }
+  }
 }
 
 /** 校验当前草稿与已有结构快照，返回诊断；不加载结构、不执行 SQL、不写历史。 */

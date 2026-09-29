@@ -17,5 +17,8 @@
   },
   "devDependencies": {
     "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@proma/capability-runner": "workspace:*"
   }
 }

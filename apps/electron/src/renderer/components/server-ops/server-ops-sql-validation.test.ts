@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { validateServerOpsSqlDraft } from './server-ops-sql-validation'
+import { validateServerOpsSqlDraft, validateServerOpsSqlWriteDraft } from './server-ops-sql-validation'
 import { createServerOpsSqlCompletionIdleProjection } from './server-ops-sql-completion-controller'
 import type { ServerOpsSqlCompletionProjection } from './server-ops-sql-completion-controller'
 
@@ -15,6 +15,18 @@ const schema: ServerOpsSqlCompletionProjection = {
 }
 
 describe('SQL 草稿本地校验', () => {
+  test('Given 写模式手动校验 When 输入写语句 Then 使用写计划而不是只读规则', () => {
+    expect(validateServerOpsSqlWriteDraft('UPDATE users SET name = \'张三\' WHERE id = 1', 'mysql')).toMatchObject({
+      status: 'valid',
+      heads: ['UPDATE'],
+      diagnostics: [],
+    })
+    expect(validateServerOpsSqlWriteDraft('BEGIN; UPDATE users SET name = \'张三\' WHERE id = 1', 'mysql')).toMatchObject({
+      status: 'invalid',
+      diagnostics: [{ severity: 'error', category: 'policy' }],
+    })
+  })
+
   test('Given 空输入或未选库 When 校验 Then 不把空白标成语法错误', () => {
     expect(validateServerOpsSqlDraft(' \n ', 'app', schema)).toMatchObject({ status: 'empty', diagnostics: [] })
     expect(validateServerOpsSqlDraft('SELECT * FROM users', null, schema)).toMatchObject({ status: 'unavailable', diagnostics: [] })

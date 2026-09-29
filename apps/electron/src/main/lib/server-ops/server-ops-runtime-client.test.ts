@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type {
+  ServerOpsRuntimeDataWriteRequest,
   ServerOpsRuntimeMessage,
   ServerOpsRuntimeRequest,
 } from '../../../utility/server-ops/server-ops-runtime-protocol'
@@ -847,5 +848,165 @@ describe('服务器运维 runtime client 日志流', () => {
     expect(() => { controller.abort() }).not.toThrow()
     await expect(reading).rejects.toMatchObject({ code: 'SERVER_OPS_DATA_CANCELLED' })
     expect(fixture.runtimeProcess.killCalls).toBe(1)
+  })
+})
+
+/** 构造不依赖真实数据库的直连写请求。 */
+function createDataWriteInput(
+  overrides: Partial<Omit<ServerOpsRuntimeDataWriteRequest, 'requestId'>> = {},
+): Omit<ServerOpsRuntimeDataWriteRequest, 'requestId'> {
+  return {
+    hostId: 'server-ops-local-direct',
+    connectionId: 'data-connection-1',
+    transport: 'direct',
+    engine: 'mysql',
+    address: '127.0.0.1',
+    port: 3306,
+    database: 'app',
+    username: 'user',
+    tlsMode: 'disabled',
+    timeoutMs: 15_000,
+    writeId: 'write-1',
+    statements: [{ text: 'UPDATE t SET n = 1', head: 'UPDATE' }],
+    ...overrides,
+  }
+}
+
+/** 构造 utility 已确认提交的写入结果。 */
+function createCommittedWriteResult(writeId = 'write-1') {
+  return {
+    writeId,
+    database: 'app',
+    statementCount: 1,
+    affectedRows: 1,
+    committed: true,
+    durationMs: 8,
+    statements: [{ head: 'UPDATE', affectedRows: 1 }],
+    warnings: [],
+  }
+}
+
+/** 启动首个直连写请求并取得 utility 侧 requestId。 */
+async function startDataWrite(
+  fixture: ReturnType<typeof createFixture>,
+  signal?: AbortSignal,
+): Promise<{ writing: ReturnType<ServerOpsRuntimeClient['dataWrite']>; requestId: string }> {
+  const writing = fixture.client.dataWrite(createDataWriteInput(), signal)
+  await flushRuntimeClient()
+  fixture.port.emit({ type: 'server-ops.ready', pid: 100 })
+  await flushRuntimeClient()
+  const request = fixture.port.messages.find((message) => message.type === 'server-ops.data-write')
+  if (!request || request.type !== 'server-ops.data-write') throw new Error('SERVER_OPS_TEST_WRITE_REQUEST_MISSING')
+  return { writing, requestId: request.input.requestId }
+}
+
+describe('服务器运维 runtime client 数据写生命周期', () => {
+  test('Given 写请求在途 When 通用错误身份匹配 Then 立即清理并保留 utility 错误码', async () => {
+    const fixture = createFixture()
+    const { writing, requestId } = await startDataWrite(fixture)
+    let settled = false
+    void writing.catch(() => { settled = true })
+
+    fixture.port.emit({
+      type: 'server-ops.error', requestId, hostId: 'wrong-host', connectionId: 'data-connection-1',
+      code: 'SERVER_OPS_DATA_WRITE_FAILED', message: '数据库写入失败',
+    })
+    await flushRuntimeClient()
+    expect(settled).toBe(false)
+
+    fixture.port.emit({
+      type: 'server-ops.error', requestId, hostId: 'server-ops-local-direct', connectionId: 'data-connection-1',
+      code: 'SERVER_OPS_DATA_WRITE_FAILED', message: '数据库写入失败',
+    })
+    await expect(writing).rejects.toMatchObject({ code: 'SERVER_OPS_DATA_WRITE_FAILED' })
+    expect((Reflect.get(fixture.client, 'pendingDataWrites') as Map<string, unknown>).size).toBe(0)
+    fixture.client.stop()
+  })
+
+  test('Given 已请求取消 When utility 返回已提交结果 Then 保留真实成功结果', async () => {
+    const fixture = createFixture()
+    const controller = new AbortController()
+    const { writing, requestId } = await startDataWrite(fixture, controller.signal)
+    controller.abort()
+    fixture.port.emit({
+      type: 'server-ops.data-write-result', requestId,
+      hostId: 'server-ops-local-direct', connectionId: 'data-connection-1',
+      result: createCommittedWriteResult(),
+    })
+    await expect(writing).resolves.toMatchObject({ committed: true, affectedRows: 1 })
+    fixture.client.stop()
+  })
+
+  test('Given 已请求取消 When utility 只返回取消 ACK Then 结果按未知收口', async () => {
+    const fixture = createFixture()
+    const controller = new AbortController()
+    const { writing, requestId } = await startDataWrite(fixture, controller.signal)
+    controller.abort()
+    fixture.port.emit({
+      type: 'server-ops.data-write-cancelled', requestId,
+      hostId: 'server-ops-local-direct', connectionId: 'data-connection-1',
+    })
+    await expect(writing).rejects.toMatchObject({ code: 'SERVER_OPS_DATA_WRITE_OUTCOME_UNKNOWN' })
+    fixture.client.stop()
+  })
+
+  test.each(['stop', 'crash'] as const)('Given 写请求在途 When runtime %s Then 立即按结果未知收口', async (reason) => {
+    const fixture = createFixture()
+    const { writing } = await startDataWrite(fixture)
+    if (reason === 'stop') fixture.client.stop()
+    else fixture.runtimeProcess.emit('exit')
+    await expect(writing).rejects.toMatchObject({ code: 'SERVER_OPS_DATA_WRITE_OUTCOME_UNKNOWN' })
+    expect((Reflect.get(fixture.client, 'pendingDataWrites') as Map<string, unknown>).size).toBe(0)
+  })
+
+  test('Given 旧代次写请求已失联 When 新代次启动且旧结果迟到 Then 只接受新端口结果', async () => {
+    const fixture = createRotatingFixture()
+    const oldWriting = fixture.client.dataWrite(createDataWriteInput())
+    await flushRuntimeClient()
+    const oldPort = fixture.ports[0]
+    if (!oldPort) throw new Error('SERVER_OPS_TEST_OLD_PORT_MISSING')
+    oldPort.emit({ type: 'server-ops.ready', pid: 100 })
+    await flushRuntimeClient()
+    fixture.client.stop()
+    await expect(oldWriting).rejects.toMatchObject({ code: 'SERVER_OPS_DATA_WRITE_OUTCOME_UNKNOWN' })
+
+    const newWriting = fixture.client.dataWrite(createDataWriteInput({ writeId: 'write-2' }))
+    await flushRuntimeClient()
+    const newPort = fixture.ports[1]
+    if (!newPort) throw new Error('SERVER_OPS_TEST_NEW_PORT_MISSING')
+    newPort.emit({ type: 'server-ops.ready', pid: 101 })
+    await flushRuntimeClient()
+    let settled = false
+    void newWriting.then(() => { settled = true })
+    oldPort.emit({
+      type: 'server-ops.data-write-result', requestId: 'connect-1',
+      hostId: 'server-ops-local-direct', connectionId: 'data-connection-1',
+      result: createCommittedWriteResult(),
+    })
+    await flushRuntimeClient()
+    expect(settled).toBe(false)
+    newPort.emit({
+      type: 'server-ops.data-write-result', requestId: 'connect-2',
+      hostId: 'server-ops-local-direct', connectionId: 'data-connection-1',
+      result: createCommittedWriteResult('write-2'),
+    })
+    await expect(newWriting).resolves.toMatchObject({ writeId: 'write-2', committed: true })
+    fixture.client.stop()
+  })
+
+  test('Given 两笔写入在途 When 一笔超时停止共享 utility Then 另一笔也按结果未知收口', async () => {
+    const fixture = createFixture()
+    const first = fixture.client.dataWrite(createDataWriteInput({ timeoutMs: 1_000 }))
+    await flushRuntimeClient()
+    fixture.port.emit({ type: 'server-ops.ready', pid: 100 })
+    await flushRuntimeClient()
+    const second = fixture.client.dataWrite(createDataWriteInput({ writeId: 'write-2' }))
+    /** 第一笔超时会同步停止 utility，先接住第二笔拒绝，避免测试运行器误报未处理 Promise。 */
+    const secondOutcome = second.catch((error: unknown) => error)
+
+    await expect(first).rejects.toMatchObject({ code: 'SERVER_OPS_DATA_WRITE_TIMEOUT' })
+    expect(await secondOutcome).toMatchObject({ code: 'SERVER_OPS_DATA_WRITE_OUTCOME_UNKNOWN' })
+    expect(fixture.runtimeProcess.killCalls).toBe(1)
+    expect((Reflect.get(fixture.client, 'pendingDataWrites') as Map<string, unknown>).size).toBe(0)
   })
 })

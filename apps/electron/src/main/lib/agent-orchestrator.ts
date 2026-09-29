@@ -82,6 +82,13 @@ import { buildPiBuiltinTools } from './adapters/pi-builtin-tools'
 import { createApiAgentFacade } from './api-workbench/api-agent-facade'
 import { buildApiAgentTools, API_AGENT_TOOL_NAMES } from './api-workbench/api-agent-tools'
 import { getApiWorkbenchService } from './api-workbench/api-workbench-singleton'
+import { buildCapabilityFactoryAgentTools, CAPABILITY_FACTORY_AGENT_TOOL_NAMES } from './capability-factory/capability-factory-agent-tools'
+import { createCapabilityFactoryAgentFacade } from './capability-factory/capability-factory-agent-facade'
+import { getCapabilityFactoryService } from './capability-factory/capability-factory-singleton'
+import { createCapabilityFactoryRunner } from './capability-factory/capability-factory-run'
+import {
+  createCapabilityFactoryModelCall, resolveCapabilityFactoryModels,
+} from './capability-factory/capability-factory-model-call'
 import { createServerOpsAgentFacade } from './server-ops/server-ops-agent-facade'
 import { createServerOpsAgentReadFacade } from './server-ops/server-ops-agent-read-facade'
 import { createServerOpsConnectionDraftAgent } from './server-ops/server-ops-connection-draft-agent'
@@ -1267,7 +1274,62 @@ export class AgentOrchestrator {
         assertWorkspaceWritable: (id) => { if (!getAgentWorkspace(id)) throw new Error('API_AGENT_WORKSPACE_NOT_FOUND'); workspaceOperationGuard.assertWorkspaceWritable(id) },
         runWorkspaceWrite: (id, effect) => workspaceOperationGuard.runWorkspaceWrite(id, effect),
       })
-      piBuiltinTools = [...builtinMcpResult.tools, ...(apiFacade ? buildApiAgentTools(piSdk, apiFacade) : [])]
+      /**
+       * 提示词编排工厂：存储按工作区隔离，所以服务按工作区根目录取。
+       * 没有工作区（例如临时会话）时不注册工具 —— 工厂是工作区级的模块。
+       */
+      /** 工厂存储根目录：会话不带工作区时不注册工具（工厂是工作区级模块）。 */
+      const capabilityFactoryRoot = workspaceSlug
+        ? join(getAgentWorkspacePath(workspaceSlug), 'capability-factory')
+        : null
+      const capabilityFactoryFacade = capabilityFactoryRoot
+        ? createCapabilityFactoryAgentFacade({
+            service: getCapabilityFactoryService(capabilityFactoryRoot),
+            /** 整链运行与界面共用 runner；对比只留运行记录，不采纳草案。 */
+            runScene: async ({ sceneId, input: sceneInput, ...runOptions }) => {
+              const sessionModel = sessionMeta?.channelId && sessionMeta.modelId
+                ? { channelId: sessionMeta.channelId, modelId: sessionMeta.modelId }
+                : null
+              return createCapabilityFactoryRunner({
+                service: getCapabilityFactoryService(capabilityFactoryRoot),
+                resolveModels: (definition) =>
+                  resolveCapabilityFactoryModels(definition, listChannels(), sessionModel),
+                callModel: createCapabilityFactoryModelCall({
+                  listChannels,
+                  resolveApiKey: resolveChannelRuntimeApiKey,
+                  resolveProxyUrl: getEffectiveProxyUrl,
+                  sessionModel: () => sessionModel,
+                }),
+              }).run(sceneId, sceneInput, runOptions)
+            },
+            /**
+             * 单步试跑的执行口子：跑一步要用渠道凭据、走代理、还要知道这个会话用的是哪个模型 ——
+             * 全是主进程事实，所以在这里接线；工厂模块只负责编排。
+             */
+            runStep: async ({ sceneId, stepId, input }) => {
+              /** 每次现建 runner（不缓存）：同一工作区的另一个会话可能用另一个模型。 */
+              const sessionModel = sessionMeta?.channelId && sessionMeta.modelId
+                ? { channelId: sessionMeta.channelId, modelId: sessionMeta.modelId }
+                : null
+              return createCapabilityFactoryRunner({
+                service: getCapabilityFactoryService(capabilityFactoryRoot),
+                resolveModels: (definition) =>
+                  resolveCapabilityFactoryModels(definition, listChannels(), sessionModel),
+                callModel: createCapabilityFactoryModelCall({
+                  listChannels,
+                  resolveApiKey: resolveChannelRuntimeApiKey,
+                  resolveProxyUrl: getEffectiveProxyUrl,
+                  sessionModel: () => sessionModel,
+                }),
+              }).runStep(sceneId, stepId, input)
+            },
+          })
+        : null
+      piBuiltinTools = [
+        ...builtinMcpResult.tools,
+        ...(apiFacade ? buildApiAgentTools(piSdk, apiFacade) : []),
+        ...(capabilityFactoryFacade ? buildCapabilityFactoryAgentTools(piSdk, capabilityFactoryFacade) : []),
+      ]
       const collaborationAvailable = builtinMcpResult.collaborationAvailable
 
       // 合并外部注入的自定义 MCP 服务器（如飞书群聊工具）
@@ -1510,8 +1572,12 @@ export class AgentOrchestrator {
         /** 接口出网与保存各自批准精确快照；只读工具仍受 facade 身份检查。 */
         if (API_AGENT_TOOL_NAMES.some((name) => name === toolName)) {
           if (!apiFacade) return { behavior: 'deny', message: '当前会话不具备接口工作台能力' }
-          /** 只有「会出网」与「会改目录」的四个工具需要逐次批准，其余只读工具直接放行。 */
-          if (!['api_send_request', 'api_save_request', 'api_run_scenario', 'api_save_scenario', 'api_save_environment', 'api_update_requests', 'api_extract_base_url'].includes(toolName)) return { behavior: 'allow', updatedInput: input }
+          /** 接口发送、目录变更和加密配置变更都需要逐次批准，其余只读工具直接放行。 */
+          if (![
+            'api_send_request', 'api_save_request', 'api_run_scenario', 'api_save_scenario',
+            'api_save_environment', 'api_update_requests', 'api_extract_base_url',
+            'api_declare_variables', 'api_save_crypto_profile', 'api_bind_crypto_profile',
+          ].includes(toolName)) return { behavior: 'allow', updatedInput: input }
           try {
             if (toolName === 'api_send_request' && apiFacade.hasCompletedSend(input)) return { behavior: 'allow', updatedInput: input }
             /** 同一份场景身份已跑完：重复调用不再弹审批，也不会第二次出网。 */
@@ -1529,6 +1595,10 @@ export class AgentOrchestrator {
                 ...(snapshot.environmentSave ? { environmentSave: snapshot.environmentSave } : {}),
                 ...(snapshot.requestUpdates ? { requestUpdates: snapshot.requestUpdates } : {}),
                 ...(snapshot.baseUrlExtract ? { baseUrlExtract: snapshot.baseUrlExtract } : {}),
+                /** 加密配置审批卡只展示变量名、算法和绑定关系，不包含任何密钥值。 */
+                ...(snapshot.variableDeclare ? { variableDeclare: snapshot.variableDeclare } : {}),
+                ...(snapshot.cryptoProfileSave ? { cryptoProfileSave: snapshot.cryptoProfileSave } : {}),
+                ...(snapshot.cryptoBind ? { cryptoBind: snapshot.cryptoBind } : {}),
                 /** 审批卡要逐行展示附件真实路径与大小；这也是路径唯一离开主进程内存的场合（只给本机 UI）。 */
                 ...(snapshot.files ? { files: snapshot.files } : {}),
                 ...(snapshot.send ? { send: snapshot.send } : {}),
@@ -1542,6 +1612,47 @@ export class AgentOrchestrator {
             return revalidateSingleApprovalResult({ behavior: 'allow', updatedInput: input }, denyStaleToolRun, getPermissionMode)
           } catch (error) {
             return { behavior: 'deny', message: error instanceof Error ? error.message : '接口批准已失效，请重新准备请求' }
+          }
+        }
+
+        /** 编排工厂：只读工具直接放行；写草案与写虚拟接入各需要一次批准，快照由宿主合并进权限请求。 */
+        if (CAPABILITY_FACTORY_AGENT_TOOL_NAMES.some((name) => name === toolName)) {
+          if (!capabilityFactoryFacade) return { behavior: 'deny', message: '当前会话不具备编排工厂能力' }
+          /** 读工具与两个 prepare（只签发快照、不写盘）都不改状态，不弹卡。 */
+          if (toolName !== 'factory_apply_draft' && toolName !== 'factory_apply_stub') {
+            /**
+             * 单步试跑会写一条运行记录并调一次模型：不弹卡（它不改场景、不推版本、不导出），
+             * 但计划模式下必须拒绝 —— 计划模式不产生任何写入。
+             */
+            if ((toolName === 'factory_run_step' || toolName === 'factory_run_scene') && currentMode === 'plan') {
+              return { behavior: 'deny', message: '计划模式下不能试跑：它会写入一条运行记录' }
+            }
+            return { behavior: 'allow', updatedInput: input }
+          }
+          if (currentMode === 'plan' || options.signal.aborted) {
+            return { behavior: 'deny', message: '计划模式或已停止的运行不能写入场景草案' }
+          }
+          try {
+            /**
+             * 快照来自 facade 的内存签发记录（按 preparedId 取回），**不是模型的入参** ——
+             * 所以卡片上列的改动无法被伪造，批准后写入的也必然是同一份定义。
+             */
+            const factorySnapshot = capabilityFactoryFacade.approval(toolName, input)
+            const factoryPermission = currentMode === 'bypassPermissions'
+              ? { behavior: 'allow' as const, updatedInput: input }
+              : await permissionService.requestSingleApproval(sessionId, toolName, {
+                ...input,
+                ...(factorySnapshot ? { approval: factorySnapshot } : {}),
+              }, options, (request) => {
+                if (!denyStaleToolRun()) this.eventBus.emit(sessionId, { kind: 'proma_event', event: { type: 'permission_request', request } })
+              })
+            const factoryChecked = revalidateSingleApprovalResult(factoryPermission, denyStaleToolRun, getPermissionMode)
+            if (factoryChecked.behavior !== 'allow' || options.signal.aborted) {
+              return factoryChecked.behavior === 'deny' ? factoryChecked : { behavior: 'deny', message: '操作已中止' }
+            }
+            return revalidateSingleApprovalResult({ behavior: 'allow', updatedInput: input }, denyStaleToolRun, getPermissionMode)
+          } catch (error) {
+            return { behavior: 'deny', message: error instanceof Error ? error.message : '草案批准已失效，请重新准备' }
           }
         }
 
@@ -1864,6 +1975,8 @@ export class AgentOrchestrator {
         permissionMode: initialPermissionMode,
         collaborationAvailable,
         serverOpsAvailable: Boolean(serverOpsReadFacade || serverOpsFacade || serverOpsConnectionDrafts),
+        /** 工厂是工作区级能力：能建 facade 就说明这个会话能用它，注入场景设计方法论。 */
+        capabilityFactoryAvailable: capabilityFactoryFacade !== null,
         currentModelId: selectedModelId,
         projectInstructions,
         projectKnowledgeMaintenanceApproved,

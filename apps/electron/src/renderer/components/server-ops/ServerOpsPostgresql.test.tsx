@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { EditorState } from '@codemirror/state'
 import { CompletionContext } from '@codemirror/autocomplete'
 import { PostgreSQL, sql } from '@codemirror/lang-sql'
+import type { ServerOpsDataSource } from '@proma/shared'
 import {
   applyServerOpsDataSourceEngineChange,
   buildServerOpsDataSourceProbeDraft,
@@ -13,8 +14,19 @@ import {
 import { createServerOpsSqlCompletionSource } from './server-ops-sql-completion'
 import type { ServerOpsSqlCompletionSchema } from './server-ops-sql-completion'
 import { createServerOpsQueryableScope, toggleServerOpsExcludedTable } from './server-ops-agent-table-scope'
+import { getServerOpsManualWriteUnavailableReason } from './ServerOpsDatabaseWorkbench'
 
 describe('PostgreSQL 运维表单与补全', () => {
+  test('Given PostgreSQL 或 SSH 数据源 When 进入数据库工作台 Then 手工写模式明确禁用', () => {
+    const base: ServerOpsDataSource = {
+      id: 'source-1', label: '业务库', engine: 'postgresql', transport: 'direct', address: '127.0.0.1', port: 5432,
+      tlsMode: 'required', hasPassword: true, createdAt: 1, updatedAt: 1,
+    }
+    expect(getServerOpsManualWriteUnavailableReason(base)).toContain('PostgreSQL')
+    expect(getServerOpsManualWriteUnavailableReason({ ...base, engine: 'mysql', transport: 'ssh', hostId: 'host-1', port: 3306 })).toContain('SSH 跳板')
+    expect(getServerOpsManualWriteUnavailableReason({ ...base, engine: 'mysql', port: 3306 })).toBeUndefined()
+  })
+
   test('Given 大小写不同的 PostgreSQL 表 When 勾选第二张表 Then 不撤销第一张表的禁用', () => {
     /** PostgreSQL 双引号保留大小写，两个名称属于不同策略目标。 */
     const scope = createServerOpsQueryableScope('business', ['"public"."Users"'])

@@ -1,9 +1,9 @@
 import * as React from 'react'
-import { ChevronDown, FolderOpen, Settings2 } from 'lucide-react'
+import { ChevronDown, FolderOpen } from 'lucide-react'
 import type { ServerOpsProject } from '@proma/shared'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { WorkspaceEntitySelector } from '@/components/common/WorkspaceEntitySelector'
 
 /** 项目选择只使用工作区已加载的清单，切换交给既有离开检查处理。 */
 interface ServerOpsProjectSelectorProps {
@@ -18,35 +18,22 @@ interface ServerOpsProjectSelectorProps {
 export function ServerOpsProjectSelector({ projects, projectId, onSelectProject, onManageProjects }: ServerOpsProjectSelectorProps): React.ReactElement {
   /** 失效身份不显示旧项目名，等待工作区完成回落。 */
   const project = projects.find((entry) => entry.id === projectId)
-  /** 菜单关闭后先恢复入口焦点，再打开抽屉，避免两层自动聚焦相互覆盖。 */
-  const manageRequestedRef = React.useRef(false)
-  /** 抽屉关闭时可返回的稳定项目入口。 */
-  const triggerRef = React.useRef<HTMLButtonElement>(null)
   return (
-    <DropdownMenu modal={false}>
-      <DropdownMenuTrigger asChild>
-        <Button ref={triggerRef} type="button" variant="outline" disabled={projects.length === 0 && !onManageProjects} className="h-8 w-full min-w-0 gap-2 rounded-md border-border/60 bg-background/40 px-2.5 py-0 text-xs font-normal [&>svg]:shrink-0" aria-label="切换运维项目" title={project?.name}>
+    /** 菜单与「编排场景」共用同一个组件，只有触发器外观按各自场景定制。 */
+    <WorkspaceEntitySelector
+      items={projects.map((entry) => ({ id: entry.id, name: entry.name }))}
+      value={project?.id ?? null}
+      onSelect={onSelectProject}
+      emptyLabel="暂无项目"
+      {...(onManageProjects ? { manage: { label: '管理项目', onSelect: onManageProjects } } : {})}
+      trigger={(ref) => (
+        <Button ref={ref} type="button" variant="outline" disabled={projects.length === 0 && !onManageProjects} className="h-8 w-full min-w-0 gap-2 rounded-md border-border/60 bg-background/40 px-2.5 py-0 text-xs font-normal [&>svg]:shrink-0" aria-label="切换运维项目" title={project?.name}>
           <FolderOpen className="size-3.5 text-muted-foreground" aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate text-left">{project?.name ?? '选择项目'}</span>
           <ChevronDown className="size-4 text-muted-foreground" aria-hidden="true" />
         </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="z-[240] min-w-[var(--radix-dropdown-menu-trigger-width)] max-w-[calc(100vw-2rem)]" onCloseAutoFocus={(event) => {
-        if (!manageRequestedRef.current) return
-        event.preventDefault()
-        manageRequestedRef.current = false
-        triggerRef.current?.focus()
-        onManageProjects?.()
-      }}>
-        <div className="max-h-72 overflow-y-auto">
-          <DropdownMenuRadioGroup value={project?.id ?? ''} onValueChange={(id) => { if (id !== project?.id) onSelectProject(id) }}>
-            {projects.map((entry) => <DropdownMenuRadioItem key={entry.id} value={entry.id} title={entry.name} className="text-xs"><span className="truncate">{entry.name}</span></DropdownMenuRadioItem>)}
-          </DropdownMenuRadioGroup>
-          {projects.length === 0 ? <DropdownMenuItem disabled className="text-xs">暂无项目</DropdownMenuItem> : null}
-        </div>
-        {onManageProjects ? <><DropdownMenuSeparator /><DropdownMenuItem className="text-xs" onSelect={() => { manageRequestedRef.current = true }}><Settings2 className="size-3.5" aria-hidden="true" />管理项目</DropdownMenuItem></> : null}
-      </DropdownMenuContent>
-    </DropdownMenu>
+      )}
+    />
   )
 }
 

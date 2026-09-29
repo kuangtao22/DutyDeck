@@ -62,7 +62,14 @@ export interface ServerOpsSchemaBrowserViewProps {
 
 /** 错误/刷新提示限制在当前区域；保留正文时明确提示旧数据。 */
 export function ServerOpsDataReadStatus({ state, onRetry }: { state: ServerOpsSchemaLoadState; onRetry: () => void }): React.ReactElement | null {
-  if (state.status === 'loading') return <div role="status" className="flex shrink-0 items-center gap-2 px-4 py-2 text-xs text-muted-foreground"><RefreshCw className="size-3 animate-spin" />正在读取…{state.collectedAt ? '（保留上次结果）' : ''}</div>
+  /**
+   * 首次读取不再单独占一行：选库器本身已经显示「正在读取数据库…」，再叠一条进度行只是重复噪音。
+   * 只有「刷新时画面里仍是上一次成功结果」才需要额外说明，否则用户会以为看到的是最新数据。
+   */
+  if (state.status === 'loading') {
+    if (!state.collectedAt) return null
+    return <div role="status" className="flex shrink-0 items-center gap-2 px-4 py-2 text-xs text-muted-foreground"><RefreshCw className="size-3 animate-spin" />正在刷新…（当前显示上次成功结果）</div>
+  }
   if (state.status !== 'error') return null
   return <div role="alert" className="mx-3 my-2 flex shrink-0 items-center gap-2 rounded-lg bg-destructive/5 px-3 py-2 text-xs"><span className="min-w-0 flex-1 break-words text-destructive">{state.error ?? '读取失败'}{state.collectedAt ? ' · 当前显示上次成功结果' : ''}</span><Button size="sm" variant="outline" onClick={onRetry}>重试</Button></div>
 }

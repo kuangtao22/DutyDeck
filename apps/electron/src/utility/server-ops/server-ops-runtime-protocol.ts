@@ -8,6 +8,7 @@ import { isServerOpsDataCapability, isServerOpsDataEngine, isServerOpsDataTlsMod
   parseServerOpsDataTableList, parseServerOpsDataWarnings, parseServerOpsDataDiagnosticsResult, parseServerOpsDataSourceRowsResult,
   parseServerOpsDataSourceTableResult, parseServerOpsDataSourceTablesResult, parseServerOpsDataQueryResult, parseServerOpsDataRowFilters,
   parseServerOpsDataSourceCellResult, parseServerOpsPostgresTable } from '@proma/shared'
+import { parseServerOpsDataWriteResult, SERVER_OPS_DATA_WRITE_MAX_TIMEOUT_MS, SERVER_OPS_DATA_WRITE_STATEMENT_LIMIT } from '@proma/shared'
 import type { ServerOpsConsoleIdentity, ServerOpsDataCapability, ServerOpsDataEngine, ServerOpsDataMetric, ServerOpsDataTable, ServerOpsDataTlsMode, ServerOpsDataTlsStatus } from '@proma/shared'
 import type { ServerOpsDataDiagnosticSection, ServerOpsDataParameter, ServerOpsDataQueryResult, ServerOpsDataSchemaCell, ServerOpsDataRowFilters } from '@proma/shared'
 import type { ServerOpsConsoleRuntimeStart } from './server-ops-console-runtime'
@@ -166,6 +167,38 @@ export interface ServerOpsRuntimeDataSchemaCellResult {
   value: string | null | { kind: 'binary'; bytes: number }
   warnings: string[]
 }
+/**
+ * 主进程发往 runtime 的写库请求。
+ *
+ * 与读请求共用同一组连接字段，但**语句已在主进程完成切分、会话控制拒绝与写类别判定**，
+ * 因此这里传的是语句计划而不是原始 SQL：utility 只执行已经判定过的语句，不做二次解释。
+ */
+export interface ServerOpsRuntimeDataWriteRequest {
+  requestId: string
+  hostId: string
+  connectionId: string
+  /** 连接方式：`ssh` 走转发通道，`direct` 在 utility 内直接发起连接。 */
+  transport: 'ssh' | 'direct'
+  engine: ServerOpsDataEngine
+  /** 仅网络数据库携带 TCP 端点。 */
+  address?: string
+  port?: number
+  /** SQLite 的文件路径：direct 为本机绝对路径。 */
+  filePath?: string
+  /** 主进程绑定的本地 SQLite 文件身份；只允许 direct SQLite 携带。 */
+  localFileId?: string
+  database: string
+  username?: string
+  password?: string
+  tlsMode: ServerOpsDataTlsMode
+  tlsServerName?: string
+  timeoutMs: number
+  /** 渲染层生成的调用身份，用于运行中取消与结果对齐。 */
+  writeId: string
+  /** 共享层判定过的语句计划。 */
+  statements: { text: string; head: string }[]
+}
+
 /** utility process 内部启动独立日志 channel 的请求。 */
 export interface ServerOpsRuntimeLogStartRequest {
   streamId: string
@@ -188,7 +221,9 @@ export type ServerOpsRuntimeRequest =
   | { type: 'server-ops.exec'; input: ServerOpsRuntimeExecRequest }
   | { type: 'server-ops.exec-cancel'; requestId: string; hostId: string; connectionId: string }
   | { type: 'server-ops.data-read'; input: ServerOpsRuntimeDataReadRequest }
+  | { type: 'server-ops.data-write'; input: ServerOpsRuntimeDataWriteRequest }
   | { type: 'server-ops.data-cancel'; requestId: string; hostId: string; connectionId: string }
+  | { type: 'server-ops.data-write-cancel'; requestId: string; hostId: string; connectionId: string }
   | { type: 'server-ops.disconnect'; hostId: string; connectionId: string }
   | { type: 'server-ops.terminal-input'; hostId: string; connectionId: string; data: string }
   | { type: 'server-ops.terminal-resize'; hostId: string; connectionId: string; cols: number; rows: number }
@@ -212,6 +247,8 @@ export type ServerOpsRuntimeMessage =
   | { type: 'server-ops.exec-cancelled'; requestId: string; hostId: string; connectionId: string }
   | { type: 'server-ops.data-read-result'; requestId: string; hostId: string; connectionId: string; result: ServerOpsRuntimeDataReadResult }
   | { type: 'server-ops.data-read-cancelled'; requestId: string; hostId: string; connectionId: string }
+  | { type: 'server-ops.data-write-result'; requestId: string; hostId: string; connectionId: string; result: import('@proma/shared').ServerOpsDataWriteResult }
+  | { type: 'server-ops.data-write-cancelled'; requestId: string; hostId: string; connectionId: string }
   | { type: 'server-ops.error'; requestId?: string; hostId: string; connectionId: string; code: string; message: string }
   | { type: 'server-ops.terminal-output'; event: ServerOpsTerminalOutputEvent }
   | { type: 'server-ops.terminal-exit'; event: ServerOpsTerminalExitEvent }
@@ -567,6 +604,74 @@ function isLogSequence(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
+/**
+ * 严格解析主进程发往 runtime 的写库请求。
+ *
+ * 只有 MySQL 与本地 SQLite 拥有写执行器；PostgreSQL、Redis 与远端 SQLite 明确拒绝，
+ * 不能因为「看起来能连」就静默降级到某个读写行为不明的路径。
+ */
+function parseDataWriteRequest(value: unknown): ServerOpsRuntimeDataWriteRequest {
+  if (!isRecord(value)) throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
+  /** 可选连接字段按实际存在情况参与 exact-key 校验。 */
+  const keys = ['requestId', 'hostId', 'connectionId', 'transport', 'engine', 'database', 'tlsMode', 'timeoutMs', 'writeId', 'statements']
+    .concat(value.address === undefined ? [] : ['address'])
+    .concat(value.port === undefined ? [] : ['port'])
+    .concat(value.filePath === undefined ? [] : ['filePath'])
+    .concat(value.localFileId === undefined ? [] : ['localFileId'])
+    .concat(value.username === undefined ? [] : ['username'])
+    .concat(value.password === undefined ? [] : ['password'])
+    .concat(value.tlsServerName === undefined ? [] : ['tlsServerName'])
+  if (!hasExactKeys(value, keys)
+    || !isRuntimeId(value.requestId) || !isRuntimeId(value.hostId) || !isRuntimeId(value.connectionId)
+    || !isRuntimeId(value.writeId)
+    || (value.transport !== 'ssh' && value.transport !== 'direct')
+    || !isServerOpsDataEngine(value.engine)
+    || (value.engine !== 'mysql' && value.engine !== 'sqlite')
+    || !isConnectionText(value.database, 64)
+    || (value.username !== undefined && !isConnectionText(value.username, 128))
+    || (value.password !== undefined && !isSecretText(value.password))
+    || !isServerOpsDataTlsMode(value.tlsMode)
+    || (value.tlsServerName !== undefined && !isConnectionText(value.tlsServerName, 255))
+    || typeof value.timeoutMs !== 'number' || !Number.isSafeInteger(value.timeoutMs)
+    || value.timeoutMs < 1_000 || value.timeoutMs > SERVER_OPS_DATA_WRITE_MAX_TIMEOUT_MS
+    || !Array.isArray(value.statements)
+    || value.statements.length < 1 || value.statements.length > SERVER_OPS_DATA_WRITE_STATEMENT_LIMIT) {
+    throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
+  }
+  if (value.engine === 'sqlite') {
+    /** 写链只支持本地文件：远端 SQLite 写需要另一套远端脚本与权限模型。 */
+    if (value.transport !== 'direct' || !isConnectionText(value.filePath, 1_024) || value.localFileId === undefined
+      || !isServerOpsSqliteFileId(value.localFileId)
+      || value.address !== undefined || value.port !== undefined
+      || value.username !== undefined || value.password !== undefined || value.tlsServerName !== undefined) {
+      throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
+    }
+  } else if (!isConnectionText(value.address, 255) || !isPort(value.port) || value.filePath !== undefined || value.localFileId !== undefined) {
+    throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
+  }
+  /** 语句计划只接受已判定过的窄形状：正文与大写首关键字。 */
+  const statements = value.statements.map((entry) => {
+    if (!isRecord(entry) || !hasExactKeys(entry, ['text', 'head'])
+      || typeof entry.text !== 'string' || entry.text.length < 1 || entry.text.length > 65_536
+      || typeof entry.head !== 'string' || !/^[A-Z_]{1,32}$/u.test(entry.head)) {
+      throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
+    }
+    return { text: entry.text, head: entry.head }
+  })
+  return {
+    requestId: value.requestId, hostId: value.hostId, connectionId: value.connectionId,
+    transport: value.transport, engine: value.engine, database: value.database,
+    tlsMode: value.tlsMode, timeoutMs: value.timeoutMs, writeId: value.writeId, statements,
+    ...(value.address === undefined ? {} : { address: value.address as string }),
+    ...(value.port === undefined ? {} : { port: value.port as number }),
+    ...(value.filePath === undefined ? {} : { filePath: value.filePath as string }),
+    ...(value.localFileId === undefined ? {} : { localFileId: value.localFileId as string }),
+    ...(value.username === undefined ? {} : { username: value.username as string }),
+    ...(value.password === undefined ? {} : { password: value.password as string }),
+    ...(value.tlsServerName === undefined ? {} : { tlsServerName: value.tlsServerName as string }),
+  }
+}
+
 /** 严格解析主进程发往 SSH utility process 的内部请求。 */
 export function parseServerOpsRuntimeRequest(value: unknown): ServerOpsRuntimeRequest {
   try {
@@ -583,7 +688,11 @@ export function parseServerOpsRuntimeRequest(value: unknown): ServerOpsRuntimeRe
     if (value.type === 'server-ops.data-read' && hasExactKeys(value, ['type', 'input'])) {
       return { type: value.type, input: parseDataReadRequest(value.input) }
     }
-    if ((value.type === 'server-ops.data-cancel' || value.type === 'server-ops.exec-cancel')
+    if (value.type === 'server-ops.data-write' && hasExactKeys(value, ['type', 'input'])) {
+      return { type: value.type, input: parseDataWriteRequest(value.input) }
+    }
+    if ((value.type === 'server-ops.data-cancel' || value.type === 'server-ops.data-write-cancel'
+      || value.type === 'server-ops.exec-cancel')
       && hasExactKeys(value, ['type', 'requestId', 'hostId', 'connectionId'])
       && isRuntimeId(value.requestId) && isRuntimeId(value.hostId) && isRuntimeId(value.connectionId)) {
       return { type: value.type, requestId: value.requestId, hostId: value.hostId, connectionId: value.connectionId }
@@ -877,14 +986,21 @@ export function parseServerOpsRuntimeMessage(value: unknown): ServerOpsRuntimeMe
       && typeof value.pid === 'number' && Number.isSafeInteger(value.pid) && value.pid >= 1 && value.pid <= 2_147_483_647) {
       return { type: value.type, pid: value.pid }
     }
-    if ((value.type === 'server-ops.connect-result' || value.type === 'server-ops.exec-result' || value.type === 'server-ops.data-read-result')
+    if ((value.type === 'server-ops.connect-result' || value.type === 'server-ops.exec-result'
+      || value.type === 'server-ops.data-read-result' || value.type === 'server-ops.data-write-result')
       && hasExactKeys(value, ['type', 'requestId', 'hostId', 'connectionId', 'result'])
       && isRuntimeId(value.requestId) && isRuntimeId(value.hostId) && isRuntimeId(value.connectionId)) {
       if (value.type === 'server-ops.connect-result') return { type: value.type, requestId: value.requestId, hostId: value.hostId, connectionId: value.connectionId, result: parseConnectResult(value.result) }
       if (value.type === 'server-ops.exec-result') return { type: value.type, requestId: value.requestId, hostId: value.hostId, connectionId: value.connectionId, result: parseExecResult(value.result) }
+      /** 写结果直接复用共享合同的严格解析器，避免协议层再维护一份形状。 */
+      if (value.type === 'server-ops.data-write-result') {
+        return { type: value.type, requestId: value.requestId, hostId: value.hostId, connectionId: value.connectionId,
+          result: parseServerOpsDataWriteResult(value.result) }
+      }
       return { type: value.type, requestId: value.requestId, hostId: value.hostId, connectionId: value.connectionId, result: parseDataReadResult(value.result) }
     }
-    if ((value.type === 'server-ops.data-read-cancelled' || value.type === 'server-ops.exec-cancelled')
+    if ((value.type === 'server-ops.data-read-cancelled' || value.type === 'server-ops.exec-cancelled'
+      || value.type === 'server-ops.data-write-cancelled')
       && hasExactKeys(value, ['type', 'requestId', 'hostId', 'connectionId'])
       && isRuntimeId(value.requestId) && isRuntimeId(value.hostId) && isRuntimeId(value.connectionId)) {
       return { type: value.type, requestId: value.requestId, hostId: value.hostId, connectionId: value.connectionId }

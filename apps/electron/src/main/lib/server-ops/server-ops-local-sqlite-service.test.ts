@@ -28,11 +28,15 @@ function fixture() {
   const reads: Parameters<ServerOpsDataServiceDependencies['runtime']['dataRead']>[0][] = []
   const store = new ServerOpsDataSourceStore(directory, { transaction: (callback) => callback() })
   /** 可替换回执以复现读取途中替换，而不是只验证路径字符串。 */
-  const runtime: ServerOpsDataServiceDependencies['runtime'] = { dataRead: async (input) => {
-    reads.push(input)
-    if (input.mode === 'schema-tables') return { mode: 'schema-tables', capability: 'available', databases: ['main'], database: 'main', tables: [], warnings: [] }
-    return { capability: 'available', serverVersion: '3.50', metrics: [], tables: [], warnings: [] }
-  } }
+  const runtime: ServerOpsDataServiceDependencies['runtime'] = {
+    dataRead: async (input) => {
+      reads.push(input)
+      if (input.mode === 'schema-tables') return { mode: 'schema-tables', capability: 'available', databases: ['main'], database: 'main', tables: [], warnings: [] }
+      return { capability: 'available', serverVersion: '3.50', metrics: [], tables: [], warnings: [] }
+    },
+    /** 本地只读用例不应触发写；触发即失败，避免把写问题掩盖成读问题。 */
+    dataWrite: async () => { throw new Error('SERVER_OPS_DATA_WRITE_NOT_EXPECTED_IN_READ_TEST') },
+  }
   const service = new ServerOpsDataService({
     store,
     credentials: { setSecret: () => { throw new Error('不应读取凭据') }, resolveSecret: () => undefined, removeSecret: () => false, removeByHost: () => 0 },

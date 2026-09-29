@@ -73,6 +73,8 @@ interface AnthropicMessage {
 /** Anthropic SSE 事件 */
 interface AnthropicSSEEvent {
   type: string
+  /** 服务端在已建立的流内报告错误，必须交给 reader 终止请求。 */
+  error?: { type?: string; message?: string }
   /** content_block_start 的 content_block */
   content_block?: {
     type: string
@@ -342,6 +344,9 @@ export class AnthropicAdapter implements ProviderAdapter {
       } else {
         body.thinking = { type: 'disabled' }
       }
+    } else if (input.thinkingEnabled === false && capability.disableStrategy === 'explicit-disabled') {
+      // GLM 等模型默认开启思考；省略字段不会关闭，可能耗尽额度而没有正文。
+      body.thinking = { type: 'disabled' }
     } else if (input.thinkingEnabled) {
       if (capability.mode === 'adaptive-only' || capability.mode === 'adaptive-preferred') {
         body.thinking = {
@@ -392,6 +397,11 @@ export class AnthropicAdapter implements ProviderAdapter {
     try {
       const event = JSON.parse(jsonLine) as AnthropicSSEEvent
       const events: StreamEvent[] = []
+
+      if (event.type === 'error') {
+        return [{ type: 'error', error: typeof event.error?.message === 'string'
+          ? event.error.message : '模型服务返回流式错误，请稍后重试。' }]
+      }
 
       // 调试：开启 PROMA_DEBUG_SSE 时打印原始事件，便于排查 Provider 的 SSE 格式差异
       const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process

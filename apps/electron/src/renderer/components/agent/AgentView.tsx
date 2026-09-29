@@ -154,6 +154,7 @@ import {
 } from '@/lib/session-reference-drag'
 import { buildQuotedSelectionBlock, expandAgentHistoryQuoteMentions } from '@/lib/quoted-selection'
 import { INSERT_AGENT_INPUT_QUOTE_EVENT, type InsertAgentInputQuoteDetail } from '@/lib/agent-input-quote'
+import { bindAgentInputText } from '@/lib/agent-input-text'
 import { createClipboardPendingFile, createClipboardTextDraft, makeUniqueAttachmentName } from '@/lib/clipboard-text-attachment'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import {
@@ -796,6 +797,9 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
   const pendingFilesRef = React.useRef(pendingFiles)
   // RichTextInput 命令接口 ref（右侧文件面板拖入时插入 @file 引用）
   const richTextInputRef = React.useRef<RichTextInputHandle>(null)
+  /** 仅响应本会话的草稿追加；同步应答避免重复面板插入，不调用发送逻辑。 */
+  React.useEffect(() => bindAgentInputText(sessionId,
+    (text) => richTextInputRef.current?.appendPlainText(text) ?? false), [sessionId])
   /** 当前会话跨视图等待插入的文件引用。 */
   const pendingMentions = useAtomValue(agentPendingMentionsAtomFamily(sessionId))
   /** composer 插入成功后确认并清理同一队列。 */

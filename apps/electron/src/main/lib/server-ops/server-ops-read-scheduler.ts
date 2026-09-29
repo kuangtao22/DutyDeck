@@ -1,5 +1,7 @@
 /** 单条排队读取携带的授权、配置和取消边界。 */
 export interface ServerOpsScheduledReadOptions {
+  /** 写操作已经执行后的结果不得被取消或配置变更改写；执行前门禁仍完整应用。 */
+  preserveExecutionOutcome?: boolean
   signal?: AbortSignal
   ownerSessionId?: string
   check?: () => void
@@ -126,11 +128,13 @@ export class ServerOpsReadScheduler {
       this.check(options)
       if (options.signal?.aborted) throw new Error('SERVER_OPS_DATA_CANCELLED')
       const result = await execute()
-      this.check(options)
-      if (options.signal?.aborted) throw new Error('SERVER_OPS_DATA_CANCELLED')
+      if (!options.preserveExecutionOutcome) {
+        this.check(options)
+        if (options.signal?.aborted) throw new Error('SERVER_OPS_DATA_CANCELLED')
+      }
       return result
     } catch (error) {
-      this.check(options)
+      if (!options.preserveExecutionOutcome) this.check(options)
       throw error
     } finally {
       this.active.delete(sourceId)

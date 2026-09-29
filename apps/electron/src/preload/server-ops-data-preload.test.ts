@@ -1,9 +1,39 @@
 import { describe, expect, test } from 'bun:test'
 import { SERVER_OPS_DATA_CHANNELS, SERVER_OPS_DATA_QUERY_HISTORY_CHANNELS, SERVER_OPS_DATA_SCHEMA_CHANNELS } from '@proma/shared'
-import type { ServerOpsDataSourceRowsInput } from '@proma/shared'
+import type { ServerOpsDataSource, ServerOpsDataSourceRowsInput } from '@proma/shared'
 import { createServerOpsDataPreload } from './server-ops-data-preload'
 
 describe('Server Ops 数据服务 preload 边界', () => {
+  test('Given 手工写回执和逐次运行历史 When 通过 bridge Then 保留真实终态并拒绝伪造或污染字段', async () => {
+    /** 跨进程边界必须完整保留 unknown，不能由 committed=false 推断回滚。 */
+    const source: ServerOpsDataSource = { id: 'db-1', engine: 'mysql', transport: 'direct', address: '127.0.0.1', port: 3306,
+      label: '写入测试', database: 'app', tlsMode: 'disabled', hasPassword: false, createdAt: 1, updatedAt: 1 }
+    const input = { sourceId: source.id, source, database: 'app', writeId: 'write-1', sql: 'UPDATE t SET n = 1' }
+    const result = { writeId: input.writeId, database: input.database, statementCount: 1, affectedRows: 1,
+      committed: false, outcome: 'unknown' as const, errorCode: 'SERVER_OPS_DATA_WRITE_TIMEOUT', durationMs: 1000,
+      statements: [{ head: 'UPDATE', affectedRows: 1 }], warnings: ['请核对数据'] }
+    const execution = { writeId: input.writeId, startedAt: 1, finishedAt: 1001, result }
+    const calls: string[] = []
+    const preload = createServerOpsDataPreload(async (channel) => {
+      calls.push(channel)
+      if (channel.endsWith('cancel')) return undefined
+      if (channel === SERVER_OPS_DATA_QUERY_HISTORY_CHANNELS.LIST) return { entries: [{
+        id: 'history-1', sourceId: input.sourceId, database: input.database, sql: input.sql, createdAt: 1, execution,
+      }] }
+      return result
+    })
+    await expect(preload.writeServerOpsDatabase(input)).resolves.toEqual(result)
+    await expect(preload.listServerOpsDatabaseQueryHistory({ sourceId: input.sourceId, database: input.database }))
+      .resolves.toMatchObject({ entries: [{ execution }] })
+    await preload.cancelServerOpsDatabaseWrite({ sourceId: input.sourceId, writeId: input.writeId })
+    expect(calls).toEqual(['server-ops:data-write', SERVER_OPS_DATA_QUERY_HISTORY_CHANNELS.LIST, 'server-ops:data-write-cancel'])
+    await expect(preload.saveServerOpsDatabaseQueryHistory({ sourceId: input.sourceId, database: input.database, sql: input.sql, execution } as never)).rejects.toThrow()
+    expect(calls).toHaveLength(3)
+    const polluted = createServerOpsDataPreload(async () => ({ ...result, password: 'private' }))
+    await expect(polluted.writeServerOpsDatabase(input)).rejects.toThrow('SERVER_OPS_DATA_WRITE_RESULT_INVALID')
+    await expect(polluted.cancelServerOpsDatabaseWrite({ sourceId: input.sourceId, writeId: input.writeId })).rejects.toThrow('SERVER_OPS_DATA_WRITE_CANCEL_RESULT_INVALID')
+  })
+
   test('Given 本机凭据发现 When 通过 bridge 查找与取回 Then 走独立通道且两侧 fail closed', async () => {
     /** 记录真实桥接通道与输入，避免发现能力被接到其它数据源通道上。 */
     const calls: Array<{ channel: string; input: unknown }> = []

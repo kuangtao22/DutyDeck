@@ -428,18 +428,33 @@ describe('Agent sendMessage 准入顺序合同', () => {
     expect(body).toContain('revalidateSingleApprovalResult(result, denyStaleToolRun, getPermissionMode)')
   })
 
-  test('Given 单次审批等待期间权限模式变化 When 审批返回 Then 既有工具与接口工作台统一复核状态', () => {
+  test('Given 单次审批等待期间权限模式变化 When 审批返回 Then 既有工具、接口工作台与编排工厂统一复核状态', () => {
     /** 读取真实 canUseTool，约束所有单次审批工具共享同一安全收口。 */
     const source = readFileSync(join(import.meta.dir, 'agent-orchestrator.ts'), 'utf8')
     /** 截取 canUseTool 权限函数，避免其它模块调用干扰计数。 */
     const start = source.indexOf('const canUseTool = async')
     const end = source.indexOf('// 13. 构建 Adapter 查询选项', start)
     const body = source.slice(start, end)
-    /** 既有五条审批分支各复核一次；接口工作台在批准返回和异步授权写入后分别复核。 */
+    /** 既有五条审批分支各复核一次；接口工作台与编排工厂分别在审批返回和最终放行前复核两次。 */
     const revalidationCalls = body.match(/revalidateSingleApprovalResult\(/g)?.length ?? 0
 
-    expect(revalidationCalls).toBe(7)
+    expect(revalidationCalls).toBe(9)
     expect(body).not.toContain('return permissionService.requestSingleApproval(sessionId, toolName, input, options')
+  })
+
+  test('Given 接口加密配置变更 When Agent 请求写入 Then 变量、方案与绑定都进入单次审批且快照传给审批卡', () => {
+    /** 读取真实接口工作台权限边界，防止配置工具绕过审批或审批卡丢失变更详情。 */
+    const source = readFileSync(join(import.meta.dir, 'agent-orchestrator.ts'), 'utf8')
+    const start = source.indexOf('if (API_AGENT_TOOL_NAMES.some((name) => name === toolName))')
+    const end = source.indexOf('\n        /** 编排工厂', start)
+    const body = source.slice(start, end)
+
+    for (const toolName of ['api_declare_variables', 'api_save_crypto_profile', 'api_bind_crypto_profile']) {
+      expect(body).toContain(`'${toolName}'`)
+    }
+    expect(body).toContain('snapshot.variableDeclare')
+    expect(body).toContain('snapshot.cryptoProfileSave')
+    expect(body).toContain('snapshot.cryptoBind')
   })
 
   test('Given 会话或同项目会话仍在 draining When 请求 rewind Then 以 in-flight 状态保持阻断', () => {

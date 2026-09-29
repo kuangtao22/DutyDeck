@@ -6,6 +6,8 @@ import {
   createServerOpsSshConnectionId,
   filterServerOpsConnections,
   listServerOpsProjectConnections,
+  preserveServerOpsConnectionAfterHostsLoad,
+  shouldApplyServerOpsHostsLoad,
   resolveSelectedServerOpsConnection,
   resolveServerOpsWorkspaceTarget,
   summarizeServerOpsConnections,
@@ -34,6 +36,20 @@ function createDataSource(id: string, label: string, overrides: Partial<ServerOp
 }
 
 describe('项目连接模型', () => {
+  test('Given 当前选择是数据连接 When 服务器列表刷新 Then 不清除数据连接选择', () => {
+    const hosts = [createHost('host-1', '应用服务器', 'project-1')]
+    expect(preserveServerOpsConnectionAfterHostsLoad('data:source-1', hosts)).toBe('data:source-1')
+    expect(preserveServerOpsConnectionAfterHostsLoad('ssh:host-1', hosts)).toBe('ssh:host-1')
+    expect(preserveServerOpsConnectionAfterHostsLoad('ssh:deleted', hosts)).toBeNull()
+  })
+
+  test('Given A 会话主机读取未完成 When 同一组件切到 B 会话 Then A 的迟到回执不得写入任一会话', () => {
+    const hostsAtStart: ServerOpsHost[] = []
+    expect(shouldApplyServerOpsHostsLoad('session-a:single', 'session-b:single', hostsAtStart, hostsAtStart)).toBeFalse()
+    expect(shouldApplyServerOpsHostsLoad('session-a:single', 'session-a:single', hostsAtStart, hostsAtStart)).toBeTrue()
+    expect(shouldApplyServerOpsHostsLoad('session-a:single', 'session-a:single', hostsAtStart, [])).toBeFalse()
+  })
+
   test('Given 主机与数据源 When 构造连接 Then 统一为同级条目并按类别排序', () => {
     const projects = [createProject('project-1', '生产环境')]
     const connections = buildServerOpsConnections({

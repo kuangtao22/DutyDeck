@@ -22,7 +22,41 @@ test('Given 运维工具可用 When 构建提示词 Then 数据库修改只交�
   expect(prompt).toContain('不承诺事务回滚')
   expect(prompt).toContain('不得把生产事务回滚当作无副作用测试')
   expect(prompt).toContain('未读取程序时明确标记缺失')
+  /** 写模式必须写进提示词：否则用户说「我开了写模式」时模型不知道那是什么意思。 */
+  expect(prompt).toContain('写库由用户手工执行')
+  expect(prompt).toContain('可直接粘贴的 SQL')
+  expect(prompt).toContain('不提供给你任何写工具')
+  expect(prompt).toContain('当前手工写入仅支持直连 MySQL 和本地 SQLite')
+  expect(prompt).toContain('断线、超时或取消可能返回「结果未知」')
+  expect(prompt).not.toContain('失败自动回滚')
   expect(buildSystemPrompt(context)).not.toContain('ops_database_change_context')
+})
+
+test('Given 编排工厂可用 When 构建系统提示词 Then 注入不变量并指向场景设计 Skill（且不增加执行权限）', () => {
+  const context = {
+    sessionId: 'factory-session', permissionMode: 'bypassPermissions' as const,
+    dependencies: { resolveWorkspaceContext: () => ({ workspaceRoot: '/tmp/workspace', projectRoot: '/tmp/project', isLocalProject: true }),
+      getUserName: () => '测试用户' },
+  }
+  const prompt = buildSystemPrompt({ ...context, capabilityFactoryAvailable: true })
+
+  /** 不变量留在系统提示里：这类约束不能"等着被加载"。 */
+  expect(prompt).toContain('只编排模型必须做的那部分')
+  expect(prompt).toContain('是**边界**，不是流程')
+  expect(prompt).toContain('是否由模型决定"要不要做、以及用什么参数做"')
+  /** 详细流程交给 Skill：长文与例子不占用每次会话的固定成本。 */
+  expect(prompt).toContain('capability-factory-scene-design')
+  expect(prompt).toContain('先加载并遵循')
+  /** 权限边界：草案不生效，采纳是人做的事。 */
+  expect(prompt).toContain('你负责设计与改草案')
+  expect(prompt).toContain('草案不生效')
+  /** 不要把桩当成为跑通而绑的东西。 */
+  expect(prompt).toContain('不要为了"让整条链跑通"去绑虚拟接入')
+  /** 常驻成本要低：详细流程（含反例）不在系统提示里重复一遍。 */
+  expect(prompt).not.toContain('正确形状：输入 `corpusText`')
+
+  /** 不具备工厂能力时一个字都不注入。 */
+  expect(buildSystemPrompt(context)).not.toContain('只编排模型必须做的那部分')
 })
 
 afterEach(() => {

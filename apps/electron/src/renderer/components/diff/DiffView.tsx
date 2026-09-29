@@ -23,6 +23,8 @@ interface DiffViewProps {
   newContent: string
   filePath: string
   viewMode: 'split' | 'unified'
+  /** 代码行的溢出策略；版本对比窄列使用自动换行，普通 diff 默认保留横向滚动。 */
+  overflow?: 'scroll' | 'wrap'
 }
 
 function countLines(content: string): number {
@@ -34,7 +36,7 @@ function countLines(content: string): number {
   return count
 }
 
-export const DiffView = React.memo(function DiffView({ oldContent, newContent, filePath, viewMode }: DiffViewProps): React.ReactElement {
+export const DiffView = React.memo(function DiffView({ oldContent, newContent, filePath, viewMode, overflow = 'scroll' }: DiffViewProps): React.ReactElement {
   const theme = useAtomValue(resolvedThemeAtom)
 
   const oldLines = React.useMemo(() => countLines(oldContent), [oldContent])
@@ -58,7 +60,7 @@ export const DiffView = React.memo(function DiffView({ oldContent, newContent, f
     diffIndicators: 'bars' as const,
     hunkSeparators: 'line-info' as const,
     lineDiffType: 'none' as const,
-    overflow: 'scroll' as const,
+    overflow,
     themeType: theme as 'light' | 'dark' | 'system',
     unsafeCSS: `
       :root, :host {
@@ -121,7 +123,7 @@ export const DiffView = React.memo(function DiffView({ oldContent, newContent, f
         background-color: hsl(var(--content-area)) !important;
       }
     `,
-  }), [viewMode, theme])
+  }), [overflow, viewMode, theme])
 
   if (tooLarge) {
     return (

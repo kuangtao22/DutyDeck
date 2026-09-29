@@ -7,7 +7,8 @@
 
 import * as React from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { X, ExternalLink, ChevronRight, MoreHorizontal, FolderSearch, Pencil, FolderInput, GitBranch, GitMerge, MessageSquarePlus, FileDiff, FileText, FolderOpen, Globe, MessageCircle, Brain, Split, Blocks, Braces, CalendarDays, ListTodo, Clock, ServerCog, SquareTerminal, Terminal, Workflow } from 'lucide-react'
+import { X, ExternalLink, ChevronRight, MoreHorizontal, FolderSearch, Pencil, FolderInput, GitBranch, GitMerge, MessageSquarePlus, FileDiff, FileText, FolderOpen, Globe, MessageCircle, Brain, Split, Blocks, Braces, CalendarDays, ListTodo, Clock, ServerCog, SquareTerminal, Terminal, Workflow, Factory } from 'lucide-react'
+import { CapabilityFactoryPanel } from '@/components/capability-factory/CapabilityFactoryPanel'
 import { Button } from '@/components/ui/button'
 import { toast } from 'sonner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -1779,6 +1780,7 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
         vault: { label: OBSIDIAN_NAME, icon: <ObsidianIcon className="size-3.5" /> },
         'server-ops': { label: '运维', icon: <ServerCog className="size-3.5" /> },
         'api-workbench': { label: '接口', icon: <Braces className="size-3.5" /> },
+        'capability-factory': { label: '工厂', icon: <Factory className="size-3.5" /> },
       }
       return { id: component, ...meta[component], closable: true }
     }),
@@ -2214,6 +2216,11 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
           workspaceLabel={workspaces.find((workspace) => workspace.id === currentWorkspaceId)?.name}
         />
       )
+    ) : paneTab === 'capability-factory' ? (
+      <CapabilityFactoryPanel
+        sessionId={sessionId}
+        workspaceLabel={workspaces.find((workspace) => workspace.id === currentWorkspaceId)?.name}
+      />
     ) : paneTab === 'changes' ? (
       sessionPath ? (
         <DiffChangesList

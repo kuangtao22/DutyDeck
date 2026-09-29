@@ -1,5 +1,7 @@
 import { createApiWorkbenchPreload } from './api-workbench-preload'
+import { createCapabilityFactoryPreload } from './capability-factory-preload'
 import type { ApiWorkbenchApi } from '@proma/shared'
+import type { CapabilityFactoryApi } from '@proma/shared'
 import type { AgentToolMode } from '@proma/shared'
 /**
  * Preload 脚本
@@ -39,7 +41,9 @@ import type { ServerOpsConnectionDraftPreload } from './server-ops-connection-dr
 import type { ServerOpsAgentReadPreload } from './server-ops-agent-read-preload'
 import type { ServerOpsDataPreload } from './server-ops-data-preload'
 import { createServerOpsProjectPreload } from './server-ops-project-preload'
+import { createServerOpsScriptPreload } from './server-ops-script-preload'
 import type { ServerOpsProjectPreload } from './server-ops-project-preload'
+import type { ServerOpsScriptPreload } from './server-ops-script-preload'
 import {
   invokeServerOpsLogAck,
   invokeServerOpsLogExport,
@@ -286,7 +290,7 @@ import { QUICK_TASK_IPC_CHANNELS, TRAY_IPC_CHANNELS, VOICE_DICTATION_IPC_CHANNEL
 /**
  * 暴露给渲染进程的 API 接口定义
  */
-export interface ElectronAPI extends LanBridgePreloadApi, NormalPathManagementPreloadApi, DesignPreloadApi, ServerOpsTrustPreload, ServerOpsDockerPreload, ServerOpsFilesPreload, ServerOpsConsolePreloadApi, ServerOpsTransferPreload, ServerOpsDataPreload, ServerOpsProjectPreload, ServerOpsAgentReadPreload, ServerOpsConnectionDraftPreload, MediaPreloadApi, CanvasMediaPreloadApi {
+export interface ElectronAPI extends LanBridgePreloadApi, NormalPathManagementPreloadApi, DesignPreloadApi, ServerOpsTrustPreload, ServerOpsDockerPreload, ServerOpsFilesPreload, ServerOpsConsolePreloadApi, ServerOpsTransferPreload, ServerOpsDataPreload, ServerOpsProjectPreload, ServerOpsScriptPreload, ServerOpsAgentReadPreload, ServerOpsConnectionDraftPreload, MediaPreloadApi, CanvasMediaPreloadApi {
   // ===== 运行时相关 =====
 
   /**
@@ -316,6 +320,8 @@ export interface ElectronAPI extends LanBridgePreloadApi, NormalPathManagementPr
   // ===== Linux 服务器运维资产 =====
   /** 接口工作台共享服务桥接，旧客户端缺失时由 UI 提示重启。 */
   apiWorkbench: ApiWorkbenchApi
+  /** 提示词编排工厂：界面侧可采纳 / 回滚 / 导出（人的动作），与 Agent 侧的方法集刻意不同。 */
+  capabilityFactory: CapabilityFactoryApi
   listServerOpsHosts: () => Promise<ServerOpsHost[]>
   upsertServerOpsHost: (input: ServerOpsSaveHostInput) => Promise<ServerOpsHost>
   deleteServerOpsHost: (hostId: string) => Promise<boolean>
@@ -1520,7 +1526,22 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.on(channel, handler)
     return () => ipcRenderer.removeListener(channel, handler)
   }),
+  capabilityFactory: createCapabilityFactoryPreload(
+    (channel, input) => ipcRenderer.invoke(channel, input),
+    (channel, listener) => {
+      /** 隔离 Electron 事件对象，渲染层只拿结构化进度。 */
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown): void => { listener(value) }
+      ipcRenderer.on(channel, handler)
+      return () => { ipcRenderer.removeListener(channel, handler) }
+    },
+  ),
   ...createServerOpsProjectPreload((channel, input) => ipcRenderer.invoke(channel, input)),
+  ...createServerOpsScriptPreload((channel, input) => ipcRenderer.invoke(channel, input), (channel, listener) => {
+    /** 草稿事件只传身份提示，隔离 Electron 事件对象后交给界面按会话重读。 */
+    const handler = (_event: Electron.IpcRendererEvent, value: unknown): void => listener(value)
+    ipcRenderer.on(channel, handler)
+    return () => ipcRenderer.removeListener(channel, handler)
+  }),
   ...createServerOpsConsolePreload(ipcRenderer),
   ...createServerOpsTransferPreload((channel, input) => ipcRenderer.invoke(channel, input), (channel, listener) => {
     /** 隔离 Electron 事件对象，只向文件视图传递严格解析的进度。 */

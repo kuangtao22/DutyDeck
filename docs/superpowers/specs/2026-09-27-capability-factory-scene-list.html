@@ -1,0 +1,896 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>编排工厂 · 场景列表交互稿（对齐运维）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* 对齐 DutyDeck globals.css 的 token。结构对齐运维模块：
+   顶栏（打开场景栏 + 模块名 + 场景选择器）+ 提示行 + 当前场景内容，
+   左侧「场景」列表是**默认隐藏的抽屉**（标题 + 副标题 + ＋ + 收起 / 每行 ⋯ 管理）。 */
+:root{
+  --background:0 0% 100%;--foreground:0 0% 3.9%;--muted:0 0% 96.1%;--muted-foreground:0 0% 45.1%;
+  --border:0 0% 89.8%;--input:0 0% 89.8%;--card:0 0% 100%;--popover:0 0% 100%;--primary:0 0% 9%;
+  --primary-foreground:0 0% 98%;--secondary:0 0% 96.1%;--content-area:0 0% 100%;
+  --sidebar-surface:60 14.3% 98.6%;--input-surface:60 14.3% 98.6%;--radius:6px;
+  --shadow-sm:0 1px 2px 0 rgb(0 0 0 / .05),0 1px 1px 0 rgb(0 0 0 / .04);
+  --shadow-lg:0 12px 24px -6px rgb(0 0 0 / .12),0 4px 8px -2px rgb(0 0 0 / .06),0 0 0 1px rgb(0 0 0 / .04);
+  --shadow-md:0 4px 8px -2px rgb(0 0 0 / .08),0 2px 4px -1px rgb(0 0 0 / .05),0 0 0 1px rgb(0 0 0 / .04);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:hsl(0 0% 8%);color:hsl(var(--foreground));
+  font-family:'Inter','PingFang SC',-apple-system,system-ui,sans-serif;font-size:13px;
+  font-feature-settings:'cv11','ss01','ss03','tnum';-webkit-font-smoothing:antialiased;
+  padding:22px 26px 70px;display:flex;justify-content:center}
+.panel{width:605px;height:620px;background:hsl(var(--content-area));border:1px solid hsl(var(--border));
+  border-radius:var(--radius);box-shadow:var(--shadow-lg);overflow:hidden;display:flex;flex-direction:column}
+
+/* ---------- 顶栏导航（照运维）----------
+   左：图标 + 模块名；右：选择器下拉；下面一条提示行，文案格式同运维的
+   「可在左侧 Agent 中直接说：……」。 */
+.topbar{display:flex;align-items:center;gap:10px;padding:12px 14px 10px}
+.brand{display:flex;align-items:center;gap:8px;min-width:0;flex:1}
+.brand .ic{width:18px;height:18px;flex:0 0 auto;border:1.5px solid hsl(var(--foreground));border-radius:3px;
+  display:grid;place-items:center;font-size:9px}
+.brand .t{font-size:15px;font-weight:600;letter-spacing:-.01em;white-space:nowrap}
+.picker{display:inline-flex;align-items:center;gap:7px;height:32px;min-width:186px;padding:0 10px;
+  border:1px solid hsl(var(--border));border-radius:var(--radius);background:hsl(var(--background));
+  color:hsl(var(--foreground));font-family:inherit;font-size:13px;cursor:pointer}
+.picker:hover{background:hsl(var(--muted))}
+.picker .fico{font-size:11px;color:hsl(var(--muted-foreground))}
+.picker .nm{flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.picker .cv{font-size:10px;color:hsl(var(--muted-foreground))}
+.hint{display:flex;align-items:center;gap:8px;margin:0 14px 10px;padding:9px 11px;border-radius:var(--radius);
+  background:hsl(var(--muted));color:hsl(var(--muted-foreground));font-size:12px;line-height:1.5}
+.hint .hi{flex:0 0 auto;font-size:12px}
+.hint b{color:hsl(var(--foreground));font-weight:500}
+.split{flex:1;min-height:0;display:flex}
+.pmenu{position:absolute;top:52px;right:14px;z-index:30;width:220px;background:hsl(var(--popover));
+  border:1px solid hsl(var(--border));border-radius:var(--radius);box-shadow:var(--shadow-lg);padding:4px}
+/* 下拉条目照 Radix 菜单：左侧勾选位 + 名称省略 + 右侧版本元信息，末尾分隔线与「管理」入口。 */
+
+/* ---------- 页签：场景 / 运行（评测与交付还没接） ---------- */
+.tabs{display:flex;align-items:center;gap:4px;margin:0 14px 10px}
+.tabs button{height:26px;padding:0 10px;border:0;border-radius:var(--radius);background:transparent;
+  color:hsl(var(--muted-foreground));font-family:inherit;font-size:12px;cursor:pointer}
+.tabs button:hover{background:hsl(var(--muted))}
+.tabs button[aria-selected="true"]{background:hsl(var(--muted));color:hsl(var(--foreground));font-weight:500}
+
+/* ---------- 运行段 ---------- */
+.run{flex:1;min-height:0;overflow:auto;padding:12px}
+.run .top{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.run .top .tip{font-size:11px;color:hsl(var(--muted-foreground))}
+.rstatus{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.badge.ok{border-color:hsl(160 60% 40% / .4);color:hsl(160 60% 32%)}
+.badge.warn{border-color:hsl(38 80% 45% / .45);color:hsl(38 80% 35%)}
+.badge.bad{border-color:hsl(0 62% 50% / .4);color:hsl(0 62% 45%)}
+.bindings{margin-bottom:8px}
+.bindings div{font-family:ui-monospace,Menlo,monospace;font-size:10px;color:hsl(var(--muted-foreground));line-height:1.7}
+.steprow{display:flex;align-items:center;gap:8px;border:1px solid hsl(var(--border));border-radius:4px;
+  padding:6px 9px;margin-bottom:4px;background:hsl(var(--card));cursor:pointer}
+.steprow .st{font-size:10px}
+.steprow .ms{font-family:ui-monospace,Menlo,monospace;font-size:10px;color:hsl(var(--muted-foreground))}
+.steprow.open{border-color:hsl(var(--foreground)/.25)}
+.stepdetail{border:1px solid hsl(var(--border));border-top:0;border-radius:0 0 4px 4px;margin:-5px 0 6px;padding:8px 9px}
+.stepdetail .lbl{font-size:10px;font-weight:500;color:hsl(var(--muted-foreground));margin-bottom:3px}
+.stepdetail pre{background:hsl(var(--muted));border-radius:4px;padding:6px 8px;margin-bottom:8px;
+  font-family:ui-monospace,Menlo,monospace;font-size:10px;line-height:1.6;white-space:pre-wrap;word-break:break-all}
+.stepdetail pre:last-child{margin-bottom:0}
+.outlbl{font-size:11px;font-weight:500;color:hsl(var(--muted-foreground));margin:10px 0 4px}
+.rhist{display:flex;align-items:center;gap:8px;width:100%;border:1px solid transparent;border-radius:4px;
+  padding:5px 8px;background:transparent;font-family:inherit;cursor:pointer;text-align:left}
+.rhist:hover{background:hsl(var(--muted)/.6)}
+.rhist.on{border-color:hsl(var(--border));background:hsl(var(--muted))}
+.rhist .when{flex:1;font-size:11px;color:hsl(var(--muted-foreground))}
+.cap{border:1px solid hsl(var(--border));border-radius:4px;padding:6px 8px;margin-bottom:5px}
+.cap .hd{display:flex;align-items:center;gap:8px}
+.cap .id{flex:1;font-family:ui-monospace,Menlo,monospace;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cap .d{margin-top:2px;font-size:10px;line-height:1.6;color:hsl(var(--muted-foreground))}
+.cap .acts{margin-top:6px;display:flex;gap:6px}
+.pmenu .item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:4px;cursor:pointer}
+.pmenu .item:hover{background:hsl(var(--muted))}
+.pmenu .tick{width:12px;flex:0 0 auto;font-size:11px;color:hsl(var(--foreground))}
+.pmenu .nm{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pmenu .ver{flex:0 0 auto;font-family:ui-monospace,Menlo,monospace;font-size:10px;
+  color:hsl(var(--muted-foreground))}
+.pmenu .sep{height:1px;margin:4px -4px;background:hsl(var(--border))}
+
+/* ---------- 左：场景抽屉（对齐运维的项目抽屉）----------
+   默认隐藏。常驻一列会把这个窄面板压掉三分之一，所以改成抽屉：开关只影响自己，右侧内容不被挤窄。
+   **锚点是 .panel 而不是 .split**：必须整列覆盖（连顶栏与提示行一起盖住，与运维一致），
+   挂在下半区的话顶栏会露在抽屉上面，看起来像两栏而不是一层抽屉。
+   注意也不能用通用 Sheet 的 fixed 定位——它锚的是整个窗口，展开时会飞到窗口最左边。 */
+.scrim{position:absolute;inset:0;z-index:29;border:0;padding:0;cursor:default;
+  background:hsl(var(--background)/.35)}
+.rail{position:absolute;top:0;bottom:0;left:0;z-index:30;width:288px;max-width:88%;
+  background:hsl(var(--content-area));border-right:1px solid hsl(var(--border)/.4);
+  box-shadow:var(--shadow-lg);display:flex;flex-direction:column;min-height:0}
+.rail-head{display:flex;align-items:flex-start;gap:6px;padding:12px 12px 10px;
+  border-bottom:1px solid hsl(var(--border)/.4)}
+.rail-head .titles{min-width:0;flex:1}
+.rail-head .t{font-size:13px;font-weight:600;line-height:1.3}
+.rail-head .s{font-size:11px;color:hsl(var(--muted-foreground));margin-top:1px}
+.iconbtn{width:26px;height:26px;flex:0 0 auto;border:0;border-radius:4px;background:transparent;
+  color:hsl(var(--muted-foreground));cursor:pointer;font-size:14px;line-height:1;display:grid;place-items:center}
+.iconbtn:hover{background:hsl(var(--muted));color:hsl(var(--foreground))}
+.rows{flex:1;overflow:auto;padding:2px 6px 8px}
+.row{position:relative;display:flex;gap:8px;padding:8px;border-radius:4px;cursor:pointer}
+.row:hover{background:hsl(var(--muted))}
+.row.on{background:hsl(var(--muted))}
+.row .ic{width:16px;flex:0 0 auto;color:hsl(var(--muted-foreground));font-size:12px;line-height:1.4}
+.row .txt{min-width:0;flex:1}
+/* 名称与副标题必须各自成行：这两个是 span，默认行内会让「名称 副标题」挤在一行 */
+.row .nm{display:block;font-size:12.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .sub{display:block;font-size:11px;color:hsl(var(--muted-foreground));margin-top:1px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .more{width:22px;height:22px;flex:0 0 auto;border:0;border-radius:4px;background:transparent;
+  color:hsl(var(--muted-foreground));cursor:pointer;opacity:0;font-size:13px;line-height:1}
+.row:hover .more{opacity:1}
+.row .more:hover{background:hsl(var(--border));color:hsl(var(--foreground))}
+
+/* 行内管理菜单 */
+.rmenu{position:absolute;right:6px;top:30px;z-index:30;width:132px;background:hsl(var(--popover));
+  border:1px solid hsl(var(--border));border-radius:var(--radius);box-shadow:var(--shadow-lg);padding:4px}
+.rmenu button{display:flex;align-items:center;gap:7px;width:100%;padding:6px 8px;border:0;border-radius:4px;
+  background:transparent;color:hsl(var(--foreground));font-family:inherit;font-size:12.5px;text-align:left;cursor:pointer}
+.rmenu button:hover{background:hsl(var(--muted))}
+.rmenu button.danger{color:hsl(0 62% 50%)}
+
+/* ---------- 右：当前场景 ---------- */
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+/* 不设标题行：场景名在右上选择器里已经写了，再画一遍就是同一行信息出现两次。 */
+.main-body{flex:1;overflow:auto;padding:12px}
+
+/* ---------- 待采纳草案（人唯一的决定入口）----------
+   Agent 只能写草案，采纳必须在面板里完成；这块缺失会让整条闭环卡死
+   （2026-09-28 的真实故障：Agent 写好了草案，面板里既没有草案也没有按钮）。 */
+.draft{border:1px solid hsl(var(--primary)/.4);background:hsl(var(--primary)/.04);
+  border-radius:var(--radius);padding:10px;margin-bottom:12px}
+.draft .head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.draft .note{margin-top:8px;font-size:12px;line-height:1.6}
+.draft .lbl{margin-top:8px;font-size:11px;font-weight:500;color:hsl(var(--muted-foreground))}
+.draft ul{list-style:none;margin-top:4px}
+.draft ul li{font-size:11px;line-height:1.7;color:hsl(var(--muted-foreground))}
+.draft .dsteps{margin-top:4px}
+.draft .acts{display:flex;align-items:center;gap:8px;margin-top:10px}
+.draft .acts .tip{font-size:11px;color:hsl(var(--muted-foreground))}
+.sect{font-size:11px;font-weight:500;color:hsl(var(--muted-foreground));margin-bottom:8px}
+.meta{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:9px}
+.badge{font-size:11px;font-weight:600;padding:1px 8px;border-radius:999px;border:1px solid hsl(var(--border));
+  color:hsl(var(--muted-foreground));background:hsl(var(--background));white-space:nowrap}
+.badge.solid{border-color:transparent;background:hsl(var(--secondary));color:hsl(var(--foreground))}
+.mono{font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}
+.desc{font-size:12px;color:hsl(var(--muted-foreground));line-height:1.6;margin-bottom:10px}
+.step{display:flex;align-items:center;gap:8px;border:1px solid hsl(var(--border));border-radius:4px;
+  padding:7px 9px;margin-bottom:6px;background:hsl(var(--card))}
+.step .n{font-family:ui-monospace,Menlo,monospace;font-size:10px;color:hsl(var(--muted-foreground))}
+.step .tt{flex:1;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.step .ty{font-family:ui-monospace,Menlo,monospace;font-size:10px;color:hsl(var(--muted-foreground))}
+.empty{margin:30px auto 0;max-width:300px;text-align:center}
+.empty .t{font-size:13px;font-weight:500;margin-bottom:6px}
+.empty .d{font-size:12px;color:hsl(var(--muted-foreground));line-height:1.7}
+.foot{flex:0 0 auto;border-top:1px solid hsl(var(--border));padding:7px 10px;font-size:11px;
+  color:hsl(var(--muted-foreground));line-height:1.6;background:hsl(var(--background))}
+
+.states{position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:50;display:flex;gap:6px;
+  align-items:center;background:hsl(var(--popover));border:1px solid hsl(var(--border));border-radius:999px;
+  padding:5px 12px;box-shadow:var(--shadow-lg);color:hsl(var(--foreground));
+  flex-wrap:wrap;justify-content:center;max-width:min(640px,calc(100vw - 40px))}
+.states .lb{font-size:11px;color:hsl(var(--muted-foreground));margin-right:2px}
+.states button{height:24px;padding:0 10px;border-radius:999px;border:1px solid hsl(var(--border));
+  background:hsl(var(--background));font-size:11px;font-family:inherit;cursor:pointer;color:hsl(var(--foreground));
+  white-space:nowrap}
+.states button[aria-pressed="true"]{background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:transparent}
+.hidden{display:none!important}
+
+/* ---------- 新建场景弹窗 ----------
+   新建是低频动作，不再用栏底常驻输入行：那会让抽屉变成「列表 + 表单」两层，
+   焦点从浏览场景被拉到填表上。运维的「添加项目」也是弹窗。
+   用 fixed 而不是 absolute：真实实现是 Radix Dialog（Portal 到 body），
+   居中的是**窗口**而不是这一栏，稿子若锚在面板上会给出错误的观感。 */
+.dlg{position:fixed;inset:0;z-index:40;display:grid;place-items:center;
+  background:hsl(var(--background)/.55)}
+.dlg-card{width:min(320px,84%);background:hsl(var(--popover));border:1px solid hsl(var(--border));
+  border-radius:var(--radius);box-shadow:var(--shadow-lg);padding:16px}
+.dlg-card .t{font-size:14px;font-weight:600}
+.dlg-card .d{margin-top:4px;font-size:11.5px;color:hsl(var(--muted-foreground));line-height:1.6}
+.dlg-card .lbl{display:block;margin:14px 0 6px;font-size:12px;font-weight:500}
+.dlg-card input{width:100%;height:32px;padding:0 9px;border:1px solid hsl(var(--input));
+  border-radius:var(--radius);background:hsl(var(--background));color:hsl(var(--foreground));
+  font-family:inherit;font-size:12.5px;outline:none}
+.dlg-card input:focus{border-color:hsl(var(--foreground)/.35)}
+.dlg-card .hint2{margin-top:6px;font-size:11px;color:hsl(var(--muted-foreground))}
+.dlg-card .acts{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.dlg-card .acts button{height:30px;padding:0 12px;border-radius:var(--radius);font-family:inherit;
+  font-size:12.5px;cursor:pointer;border:1px solid hsl(var(--border));background:hsl(var(--background));
+  color:hsl(var(--foreground))}
+.dlg-card .acts button.primary{border-color:transparent;background:hsl(var(--primary));
+  color:hsl(var(--primary-foreground))}
+.dlg-card .acts button:disabled{opacity:.5;cursor:not-allowed}
+
+/* ---------- 步骤训练弹窗（主回路：改提示词 → 试跑 → 看返回） ---------- */
+.stepdlg{position:fixed;inset:0;z-index:45;display:grid;place-items:center;background:hsl(var(--background)/.55)}
+.stepdlg-card{width:min(640px,92%);max-height:86vh;overflow:auto;background:hsl(var(--popover));
+  border:1px solid hsl(var(--border));border-radius:var(--radius);box-shadow:var(--shadow-lg);padding:16px}
+.stepdlg-card .hd{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.stepdlg-card .sub{margin-top:4px;font-size:11.5px;color:hsl(var(--muted-foreground));line-height:1.6}
+.stepdlg-card .lbl{display:block;margin:12px 0 5px;font-size:12px;font-weight:500}
+.stepdlg-card .lbl .src{font-weight:400;color:hsl(var(--muted-foreground))}
+.stepdlg-card textarea{width:100%;border:1px solid hsl(var(--input));border-radius:var(--radius);
+  background:hsl(var(--background));color:hsl(var(--foreground));font-family:ui-monospace,Menlo,monospace;
+  font-size:11px;line-height:1.6;padding:7px 9px;outline:none;resize:vertical}
+.stepdlg-card textarea:focus{border-color:hsl(var(--foreground)/.35)}
+.stepdlg-card .acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.stepdlg-card .acts button{height:30px;padding:0 12px;border-radius:var(--radius);font-family:inherit;
+  font-size:12.5px;cursor:pointer;border:1px solid hsl(var(--border));background:hsl(var(--background));
+  color:hsl(var(--foreground))}
+.stepdlg-card .acts button.primary{border-color:transparent;background:hsl(var(--primary));
+  color:hsl(var(--primary-foreground))}
+.stepdlg-card .note{margin-top:10px;font-size:11px;color:hsl(var(--muted-foreground));line-height:1.6}
+.stepdlg-card .attempts{margin-top:10px}
+.stepdlg-card .attempt{display:flex;align-items:center;gap:8px;width:100%;border:1px solid transparent;
+  border-radius:4px;padding:5px 8px;background:transparent;font-family:inherit;cursor:pointer;text-align:left}
+.stepdlg-card .attempt.on{border-color:hsl(var(--border));background:hsl(var(--muted))}
+</style>
+</head>
+<body>
+<div class="panel" style="position:relative">
+  <!-- 顶栏导航：与运维一致 —— 图标 + 模块名 在左，选择器下拉在右 -->
+  <div class="topbar">
+    <span class="brand"><span class="ic">▦</span><span class="t">提示词编排工厂</span></span>
+    <button class="picker" onclick="togglePicker(event)">
+      <span class="fico">◇</span>
+      <span class="nm" id="pickerName">账号状态查询</span>
+      <span class="cv">▾</span>
+    </button>
+  </div>
+  <!-- 提示行：文案格式照运维的「可在左侧 Agent 中直接说：……」 -->
+  <div class="hint">
+    <span class="hi">💬</span>
+    <span>可在左侧 Agent 中直接说：<b>设计新的编排场景</b>，或修改某个场景的提示词与评审判据</span>
+  </div>
+
+  <div class="split">
+  <!-- 右侧：当前场景（左列改成抽屉后，这里占满整栏） -->
+  <section class="main">
+    <!-- 页签：业务地图定的四段里先给两段（评测 / 交付还没接），不摆空壳 -->
+    <div class="tabs" role="tablist" aria-label="编排工厂视图">
+      <button id="tabScene" role="tab" aria-selected="true" onclick="showTab('scene')">场景</button>
+      <button id="tabRun" role="tab" aria-selected="false" onclick="showTab('run')">运行</button>
+      <button id="tabEvaluate" role="tab" aria-selected="false" onclick="showTab('evaluate')">评测</button>
+      <button id="tabDeliver" role="tab" aria-selected="false" onclick="showTab('deliver')">交付</button>
+    </div>
+    <div class="main-body" id="bodyScene">
+      <!-- 待采纳草案在最上面：它是这一屏唯一需要人做决定的东西 -->
+      <div class="draft" id="draft" role="region" aria-label="待采纳草案">
+        <div class="head">
+          <span class="badge solid mono">草案 v5</span>
+          <span class="badge">来自 Agent</span>
+          <span class="badge" style="border:0">采纳后 v4 → v5；不采纳就一直是草案</span>
+        </div>
+        <p class="note">把第 2 步的抽取规则改严：必须带段落引用，缺引用的候选直接丢弃。</p>
+        <div class="lbl">改了什么</div>
+        <ul>
+          <li>· 修改 步骤 1 项：step-2</li>
+          <li>· 评审（判据 / 评审提示词 / 指标权重）已修改</li>
+        </ul>
+        <div class="lbl">草案内容（4 步 · 判据 8 条 · 指标 5 个）</div>
+        <div class="dsteps">
+          <div class="step"><span class="n">1</span><span class="tt">解析用户意图</span><span class="ty">llm</span></div>
+          <div class="step"><span class="n">2</span><span class="tt">抽取查询参数（必须带段落引用）</span><span class="ty">extract</span></div>
+          <div class="step"><span class="n">3</span><span class="tt">查询账号</span><span class="ty">tool</span></div>
+          <div class="step"><span class="n">4</span><span class="tt">生成回答</span><span class="ty">extract</span></div>
+        </div>
+        <div class="acts">
+          <button class="badge solid" style="height:28px;padding:0 12px;cursor:pointer" onclick="demoOnly()">✓ 采纳 v5</button>
+          <button class="badge" style="height:28px;padding:0 12px;cursor:pointer" onclick="demoOnly()">✕ 放弃草案</button>
+          <span class="tip">采纳后旧版本仍保留在版本历史里</span>
+        </div>
+      </div>
+      <div class="sect">当前生效 v4（草案采纳后才会变成 v5）</div>
+      <div class="meta">
+        <span class="badge mono">v4</span>
+        <span class="badge">4 步</span>
+        <span class="badge">1 个输入</span>
+      </div>
+      <p class="desc">根据用户问题查询账号状态与到期时间</p>
+      <!-- 场景形状体检：一个场景应该只编排模型要做的那部分 -->
+      <div style="border:1px solid hsl(var(--border));border-radius:4px;padding:8px 10px;margin-bottom:10px">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:hsl(var(--muted-foreground))">
+          <span style="font-weight:500;color:hsl(var(--foreground))">场景形状</span>
+          <span>模型步骤 4 步</span>
+          <span>代码步骤 0 步</span>
+        </div>
+        <p style="margin-top:4px;font-size:11px;line-height:1.6;color:hsl(var(--muted-foreground))">这个场景只编排模型步骤：app 的本地逻辑在边界之外，工厂里训出来的就是真正要训的东西。</p>
+      </div>
+      <p class="tip" style="margin-bottom:6px">点任意一步就能改它的提示词并单独试跑 —— 不需要把整条链搭起来。</p>
+      <div class="step" style="cursor:pointer" onclick="openStepDialog()"><span class="n">1</span><span class="tt">解析用户意图</span><span class="ty">llm</span><span class="ty">改 / 试</span></div>
+      <div class="step" style="cursor:pointer" onclick="openStepDialog()"><span class="n">2</span><span class="tt">抽取查询参数</span><span class="ty">extract</span><span class="ty">改 / 试</span></div>
+      <div class="step" style="cursor:pointer" onclick="openStepDialog()"><span class="n">3</span><span class="tt">查询账号</span><span class="ty">tool</span><span class="ty">契约</span></div>
+      <div class="step" style="cursor:pointer" onclick="openStepDialog()"><span class="n">4</span><span class="tt">生成回答</span><span class="ty">extract</span><span class="ty">改 / 试</span></div>
+
+      <!-- 版本历史：让人认出"我调好的那版"并回到它 -->
+      <div style="margin-top:14px;border-top:1px solid hsl(var(--border)/.6);padding-top:8px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <button style="border:0;background:transparent;padding:0;font-family:inherit;font-size:11px;font-weight:500;color:hsl(var(--muted-foreground));cursor:pointer" onclick="demoOnly()">版本历史</button>
+          <span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">当前 v5</span>
+        </div>
+        <ol style="list-style:none;margin-top:6px">
+          <li style="border:1px solid hsl(var(--border));border-radius:4px;padding:6px 8px;margin-bottom:5px">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span class="badge mono" style="font-size:11px">v5</span>
+              <span style="font-size:11px;color:hsl(var(--muted-foreground))">人工</span>
+              <span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">2026-09-28 10:12:31</span>
+              <span class="badge solid" style="font-size:10px;padding:0 6px">当前生效</span>
+            </div>
+            <p style="margin-top:4px;font-size:11px;line-height:1.6;color:hsl(var(--muted-foreground))">修改 步骤 1 项：step-2</p>
+            <p style="margin-top:2px;font-size:11px;line-height:1.6;color:hsl(var(--muted-foreground))">把第 2 步的抽取规则改严：必须带段落引用</p>
+          </li>
+          <li style="border:1px solid hsl(var(--border));border-radius:4px;padding:6px 8px;margin-bottom:5px">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span class="badge mono" style="font-size:11px">v4</span>
+              <span style="font-size:11px;color:hsl(var(--muted-foreground))">Agent 提出</span>
+              <span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">2026-09-28 08:28:02</span>
+            </div>
+            <p style="margin-top:4px;font-size:11px;line-height:1.6;color:hsl(var(--muted-foreground))">修改 步骤 1 项：step-1；评审（判据 / 评审提示词 / 指标权重）已修改</p>
+            <p style="margin-top:2px;font-size:11px;line-height:1.6;color:hsl(var(--muted-foreground))">补齐四步链路并按 app 的真实返回形状调整</p>
+            <button class="badge" style="margin-top:5px;height:22px;padding:0 8px;font-size:11px;cursor:pointer" onclick="demoOnly()">↺ 回到 v4</button>
+          </li>
+          <li style="border:1px solid hsl(var(--border));border-radius:4px;padding:6px 8px">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span class="badge mono" style="font-size:11px">v1</span>
+              <span style="font-size:11px;color:hsl(var(--muted-foreground))">人工</span>
+              <span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">2026-09-27 20:42:07</span>
+            </div>
+            <p style="margin-top:4px;font-size:11px;line-height:1.6;color:hsl(var(--muted-foreground))">首个版本</p>
+            <button class="badge" style="margin-top:5px;height:22px;padding:0 8px;font-size:11px;cursor:pointer" onclick="demoOnly()">↺ 回到 v1</button>
+          </li>
+        </ol>
+        <p class="tip" style="margin-top:6px">回到旧版本会生成一个新版本（内容与选中的那版一致）：版本号只增不减，中间那些版本都留在历史里，随时可以再回滚回来。</p>
+      </div>
+    </div>
+    <div class="main-body hidden" id="bodyEmpty">
+      <div class="empty">
+        <div class="t">这个项目还没有编排场景</div>
+        <div class="d">
+          场景由会话里的 Agent 设计：跟它说「帮我做一个××的工作流」，草案会回到这里等你采纳。<br>
+          也可以从右上的场景选择器里选「管理场景」，自己起一个名字。
+        </div>
+      </div>
+    </div>
+
+    <!-- 运行段：提交任务 → 看轨迹与输出 → 翻提交历史 → 绑虚拟接入 -->
+    <div class="run hidden" id="bodyRun">
+      <div class="top">
+        <button class="badge solid" style="height:28px;padding:0 12px;cursor:pointer" onclick="demoOnly()">▶ 提交任务</button>
+        <span class="tip">还没有跑过就先绑桩；跑完这里会出现每一步的提示词与模型返回</span>
+      </div>
+
+      <div class="rstatus">
+        <span class="badge ok">完成</span>
+        <span class="badge warn">约束通过（含占位桩，不可采信）</span>
+        <span class="badge mono">v4</span>
+        <span class="ms">1m14s</span>
+      </div>
+      <!-- 结论与下一步写在结果上方：光看"完成 / 约束通过"会以为能力已经做好了 -->
+      <p class="tip" style="color:hsl(38 80% 35%);margin-bottom:6px;padding:6px 8px;border:1px solid hsl(38 80% 45% / .4);border-radius:4px;background:hsl(38 80% 45% / .06)">这次只验证了流程：4 步按声明跑完了，提示词已经能被模型读到。但 3 个能力用的是空占位值，输出不可采信 —— 先把这些桩换成真实返回形状的数据，再跑一次，那时的输出才谈得上质量。</p>
+      <div class="bindings"><div>占位桩：chapter.corpus.build、anchor.ground、character.ledger.merge-preview</div></div>
+      <div class="bindings">
+        <div>scan: gpt-5.4 → 传贝-DeepSeek/deepseek-v4-flash（声明值没找到，已改用会话模型）</div>
+      </div>
+
+      <div class="steprow" onclick="toggleStep(this)">
+        <span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">1</span>
+        <span class="tt" style="flex:1;font-size:12px">构建带段落引用的批次正文</span>
+        <span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">tool</span>
+        <span class="st" style="color:hsl(160 60% 32%)">完成</span>
+        <span class="ms">8ms</span>
+      </div>
+      <div class="stepdetail hidden">
+        <div class="lbl">这一步的输入</div>
+        <pre>{ "bookId": 1024, "chapterText": "第一章……" }</pre>
+        <div class="lbl">桩的返回（虚拟接入）</div>
+        <pre>{ "corpusText": "…", "paragraphCount": 412 }</pre>
+      </div>
+
+      <div class="steprow open" onclick="toggleStep(this)">
+        <span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">2</span>
+        <span class="tt" style="flex:1;font-size:12px">扫描本批人物候选（每轮最多 6 人）</span>
+        <span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">extract</span>
+        <span class="st" style="color:hsl(38 80% 35%)">不合法</span>
+        <span class="ms">42.1s</span>
+      </div>
+      <div class="stepdetail">
+        <div class="lbl">渲染后的完整提示词（点开步骤才看得到）</div>
+        <pre>你是人物候选扫描器。<br>只输出 JSON，字段 characters：name（逐字出现的正式称谓）、paragraphRef…</pre>
+        <div class="lbl">模型原始返回</div>
+        <pre>{ "characters": [ { "name": "阿明", "paragraphRef": "p12" } ] }</pre>
+        <div class="lbl">约束不通过的原因</div>
+        <pre>characters[0].paragraphRef: 必须是本批正文中逐字存在的引用</pre>
+      </div>
+
+      <div class="outlbl">本次输出</div>
+      <pre style="background:hsl(var(--muted));border-radius:4px;padding:6px 8px;font-family:ui-monospace,Menlo,monospace;font-size:10px;line-height:1.6;white-space:pre-wrap;word-break:break-all">{ "candidateChanges": { "added": [] }, "groundingReport": { "rejectedCount": 1 } }</pre>
+
+      <div class="outlbl">提交历史</div>
+      <button class="rhist on"><span class="badge bad" style="font-size:10px;padding:0 6px">失败</span><span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">v4</span><span class="when">2026-09-28 09:12:04</span><span class="ms">1m14s</span></button>
+      <button class="rhist"><span class="badge warn" style="font-size:10px;padding:0 6px">部分完成</span><span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">v4</span><span class="when">2026-09-28 08:55:31</span><span class="ms">58.7s</span></button>
+      <button class="rhist"><span class="badge ok" style="font-size:10px;padding:0 6px">完成</span><span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">v2</span><span class="when">2026-09-28 08:40:02</span><span class="ms">1m02s</span></button>
+
+      <div class="outlbl">虚拟接入</div>
+      <p class="tip" style="margin-bottom:4px">这些能力由接入方在运行时提供（读库、调接口、读本地正文），工厂里没有它们可调，所以要用桩替代才能跑。桩只影响本地运行，不进场景版本也不进能力包。</p>
+      <p class="tip" style="margin-bottom:6px">想先看流程：点「自动填占位」——形状对、内容是空的，过程能看、质量结论不能看。要判断提示词行不行：填一份按真实返回形状的数据（可以让左侧 Agent 读项目后生成）。</p>
+      <div class="cap">
+        <div class="hd"><span class="id">chapter.corpus.build</span><span class="badge warn" style="font-size:10px;padding:0 6px">占位桩</span></div>
+        <div class="d">把章节正文解析成带不透明 paragraphRef 的批次正文映射</div>
+        <div class="acts">
+          <button class="badge" style="height:24px;padding:0 10px;cursor:pointer" onclick="demoOnly()">编辑桩</button>
+          <button class="badge" style="height:24px;padding:0 10px;cursor:pointer" onclick="demoOnly()">自动填占位</button>
+        </div>
+      </div>
+      <div class="cap">
+        <div class="hd"><span class="id">anchor.ground</span><span class="badge" style="font-size:10px;padding:0 6px;color:hsl(var(--muted-foreground))">未绑桩</span></div>
+        <div class="d">把模型候选中每条引文回到本地正文逐条核对并落锚</div>
+        <div class="acts">
+          <button class="badge" style="height:24px;padding:0 10px;cursor:pointer" onclick="demoOnly()">绑定桩</button>
+          <button class="badge" style="height:24px;padding:0 10px;cursor:pointer" onclick="demoOnly()">自动填占位</button>
+        </div>
+      </div>
+      <div class="cap">
+        <div class="hd"><span class="id">character.ledger.merge-preview</span><span class="badge ok" style="font-size:10px;padding:0 6px">Agent 填的桩</span></div>
+        <div class="d">与既有角色合并为候选变更集（不写库）</div>
+        <div class="acts">
+          <button class="badge" style="height:24px;padding:0 10px;cursor:pointer" onclick="demoOnly()">编辑桩</button>
+          <button class="badge" style="height:24px;padding:0 10px;cursor:pointer" onclick="demoOnly()">自动填占位</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 评测：数据集 → 跑一次 → 合规率与逐条结果 → 与上一次比 -->
+    <div class="run hidden" id="bodyEvaluate">
+      <div class="outlbl" style="margin-top:0">数据集</div>
+      <div class="hd" style="display:flex;gap:8px;align-items:center">
+        <select style="flex:1;height:30px;border:1px solid hsl(var(--input));border-radius:4px;background:hsl(var(--background));font-family:inherit;font-size:11px">
+          <option>小说角色提取 · 真实输入集（v3 · 6 条）</option>
+        </select>
+        <button class="badge" style="height:28px;padding:0 10px;font-size:11px;cursor:pointer" onclick="demoOnly()">从最近一次运行固化</button>
+      </div>
+      <ul style="list-style:none;margin-top:6px">
+        <li style="display:flex;align-items:center;gap:8px;border:1px solid hsl(var(--border));border-radius:4px;padding:5px 8px;margin-bottom:4px">
+          <span class="badge warn" style="font-size:10px;padding:0 6px">失败回灌</span>
+          <span style="flex:1;min-width:0;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">来自运行 2026-09-28 10:14:39</span>
+          <button class="badge" style="height:20px;padding:0 6px;font-size:10px;cursor:pointer" onclick="demoOnly()">🗑</button>
+        </li>
+        <li style="display:flex;align-items:center;gap:8px;border:1px solid hsl(var(--border));border-radius:4px;padding:5px 8px">
+          <span class="badge" style="font-size:10px;padding:0 6px">人工</span>
+          <span style="flex:1;min-width:0;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">第 12 章 · 阿明与祖母</span>
+          <button class="badge" style="height:20px;padding:0 6px;font-size:10px;cursor:pointer" onclick="demoOnly()">🗑</button>
+        </li>
+      </ul>
+
+      <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+        <button class="badge solid" style="height:28px;padding:0 12px;font-size:12.5px;cursor:pointer" onclick="demoOnly()">▶ 跑评测</button>
+        <span class="tip">将对 6 条用例各跑一次完整流程（会调用模型）</span>
+      </div>
+
+      <div class="outlbl">约束合规率</div>
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+        <span class="mono" style="font-size:16px;font-weight:600">83%</span>
+        <span style="font-size:11px;color:hsl(var(--muted-foreground))">有效样本 5/6</span>
+        <span class="badge mono" style="font-size:10px">场景 v5</span>
+        <span class="badge mono" style="font-size:10px">数据集 v3</span>
+      </div>
+      <p class="tip" style="margin-top:6px">比上一次（场景 v4）提高 16 个百分点：v4 是 67%，v5 是 83%。</p>
+      <p class="tip" style="margin-top:2px">这里只给约束轴（输出合法不合法）。判据逐条通过与准确率需要评审器，还没做 —— 所以没有质量分。</p>
+
+      <div style="margin-top:8px;border:1px solid hsl(var(--border));border-radius:4px;padding:6px 8px;margin-bottom:5px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:10px;color:hsl(0 62% 45%)">不通过</span>
+          <span style="flex:1;min-width:0;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">来自运行 2026-09-28 10:14:39</span>
+          <span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">failed</span>
+        </div>
+        <p style="margin-top:2px;font-size:10px;line-height:1.6;color:hsl(var(--muted-foreground))">characters[0].paragraphRef: 必须是本批正文中逐字存在的引用</p>
+      </div>
+      <div style="border:1px solid hsl(var(--border));border-radius:4px;padding:6px 8px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:10px;color:hsl(160 60% 32%)">通过</span>
+          <span style="flex:1;min-width:0;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">第 12 章 · 阿明与祖母</span>
+          <span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">succeeded</span>
+        </div>
+      </div>
+
+      <div class="outlbl">评测历史</div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid hsl(var(--border));border-radius:4px;padding:5px 8px;margin-bottom:4px">
+        <span class="mono" style="font-size:11px">83%</span><span style="font-size:10px;color:hsl(var(--muted-foreground))">5/6</span>
+        <span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">场景 v5</span>
+        <span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">数据集 v3</span>
+        <span class="mono" style="margin-left:auto;font-size:10px;color:hsl(var(--muted-foreground))">2026-09-28 10:22:03</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid hsl(var(--border));border-radius:4px;padding:5px 8px">
+        <span class="mono" style="font-size:11px">67%</span><span style="font-size:10px;color:hsl(var(--muted-foreground))">4/6</span>
+        <span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">场景 v4</span>
+        <span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">数据集 v3</span>
+        <span class="mono" style="margin-left:auto;font-size:10px;color:hsl(var(--muted-foreground))">2026-09-28 09:58:41</span>
+      </div>
+    </div>
+
+    <!-- 交付：导出能力包 → 拿到文件 → 记录导出历史 -->
+    <div class="run hidden" id="bodyDeliver">
+      <div class="rstatus">
+        <span class="badge mono">v5</span>
+        <span style="font-size:11px;color:hsl(var(--muted-foreground))">导出的是当前生效版本的定义与提示词</span>
+      </div>
+      <label class="lbl" style="display:block;margin:8px 0 5px;font-size:12px;font-weight:500">包版本</label>
+      <input value="1.0.0" style="width:100%;height:28px;padding:0 8px;border:1px solid hsl(var(--input));border-radius:4px;background:hsl(var(--background));font-family:ui-monospace,Menlo,monospace;font-size:11px">
+      <label class="lbl" style="display:block;margin:10px 0 5px;font-size:12px;font-weight:500">文件名</label>
+      <input value="小说角色提取-v5.json" style="width:100%;height:28px;padding:0 8px;border:1px solid hsl(var(--input));border-radius:4px;background:hsl(var(--background));font-family:ui-monospace,Menlo,monospace;font-size:11px">
+
+      <p style="margin-top:10px;padding:7px 9px;border:1px solid hsl(38 80% 45% / .45);border-radius:4px;background:hsl(38 80% 45% / .06);font-size:11px;line-height:1.6;color:hsl(38 80% 35%)">v5 上的运行用的是占位桩：只能证明流程跑通，不能证明结果可信。包本身照样可以导出（定义与提示词是完整的），但接进项目后提示词大概率还要返工 —— 建议先在「运行」页跑一次真实数据再导出。</p>
+      <label style="display:flex;gap:8px;align-items:flex-start;margin-top:8px;font-size:11px;color:hsl(var(--muted-foreground));line-height:1.6">
+        <input type="checkbox" style="margin-top:3px"> 我知道这份包还没有在真实数据上验证过，仍然导出
+      </label>
+      <div style="margin-top:10px"><button class="badge solid" style="height:30px;padding:0 14px;font-size:12.5px;cursor:pointer" onclick="demoOnly()">⬇ 导出能力包</button></div>
+
+      <div style="margin-top:10px;border:1px solid hsl(var(--border));border-radius:4px;padding:7px 9px">
+        <div style="font-size:11px;font-weight:500">已导出到</div>
+        <div class="mono" style="margin-top:3px;font-size:10px;color:hsl(var(--muted-foreground));word-break:break-all">~/.proma/agent-workspaces/parsingbook/capability-factory/deliveries/小说角色提取-v5.json</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:5px">
+          <span class="badge warn" style="font-size:10px;padding:0 6px">未验证</span>
+          <button class="badge" style="height:22px;padding:0 8px;font-size:11px;cursor:pointer" onclick="demoOnly()">📂 在文件夹中显示</button>
+        </div>
+      </div>
+
+      <div class="outlbl">导出历史</div>
+      <div style="border:1px solid hsl(var(--border));border-radius:4px;padding:6px 8px;margin-bottom:5px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="mono" style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">小说角色提取-v5.json</span>
+          <span class="badge warn" style="font-size:10px;padding:0 6px">未验证</span>
+        </div>
+        <div class="mono" style="margin-top:3px;font-size:10px;color:hsl(var(--muted-foreground))">包 1.0.0 · 场景 v5 · 2026-09-28 10:20:44</div>
+      </div>
+      <div style="border:1px solid hsl(var(--border));border-radius:4px;padding:6px 8px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="mono" style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">小说角色提取-v2.json</span>
+          <span class="badge ok" style="font-size:10px;padding:0 6px">已验证</span>
+        </div>
+        <div class="mono" style="margin-top:3px;font-size:10px;color:hsl(var(--muted-foreground))">包 0.9.0 · 场景 v2 · 2026-09-28 09:05:10</div>
+      </div>
+      <p class="tip" style="margin-top:8px">导出只是把包放到本机工作区里；把它交给关联项目、以及那边的接入状态，仍由你决定。</p>
+    </div>
+    <div class="foot">场景草稿、运行记录、评测与导出的能力包都保存在本机工作区，不进入项目仓库。质量轴（判据逐条 / 准确率）还没接。</div>
+  </section>
+  </div>
+
+  <!-- 左：场景抽屉（对齐运维的「项目」抽屉；默认隐藏，展开时**整列覆盖**） -->
+  <button class="scrim hidden" id="scrim" aria-label="关闭场景列表" onclick="show('none')"></button>
+  <aside class="rail hidden" id="rail" role="dialog" aria-modal="false" aria-label="场景列表">
+    <div class="rail-head">
+      <div class="titles">
+        <div class="t">场景</div>
+        <div class="s">选择编排范围</div>
+      </div>
+      <button class="iconbtn" title="新建场景" aria-label="新建场景" onclick="openCreateDialog()">＋</button>
+      <button class="iconbtn" title="收起场景列表" aria-label="收起场景列表" onclick="show('none')">⊟</button>
+    </div>
+    <div class="rows" id="rows">
+      <div class="row on" onclick="select(this, '账号状态查询')">
+        <span class="ic">◇</span>
+        <span class="txt"><span class="nm">账号状态查询</span><span class="sub">4 步 · v4 · 草案待采纳</span></span>
+        <button class="more" title="管理场景" onclick="rowMenu(event, this)">⋯</button>
+      </div>
+      <div class="row" onclick="select(this, '批量账号巡检')">
+        <span class="ic">◇</span>
+        <span class="txt"><span class="nm">批量账号巡检</span><span class="sub">2 步 · v2</span></span>
+        <button class="more" title="管理场景" onclick="rowMenu(event, this)">⋯</button>
+      </div>
+      <div class="row" onclick="select(this, '小说角色提取')">
+        <span class="ic">◇</span>
+        <span class="txt"><span class="nm">小说角色提取</span><span class="sub">3 步 · v1</span></span>
+        <button class="more" title="管理场景" onclick="rowMenu(event, this)">⋯</button>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<div class="states">
+  <span class="lb">状态</span>
+  <button id="s0" aria-pressed="true" onclick="show('none')">默认（左栏隐藏）</button>
+  <button id="s1" aria-pressed="false" onclick="show('list')">打开场景栏</button>
+  <button id="s2" aria-pressed="false" onclick="show('empty')">空态</button>
+  <button id="s3" aria-pressed="false" onclick="show('nodraft')">无草案</button>
+  <button id="s4" aria-pressed="false" onclick="showTab('run')">运行页</button>
+</div>
+
+<script>
+/** 切换面板状态：默认（左栏隐藏）/ 打开场景栏 / 行内管理菜单 / 空态。 */
+/* 当前演示状态：页签切换与状态按钮共用，避免两套记忆（与真实实现里 tab 与场景同源一致）。 */
+var currentState = 'none';
+
+function show(state){
+  currentState = state;
+  var scene = document.getElementById('bodyScene');
+  var empty = document.getElementById('bodyEmpty');
+  var rail = document.getElementById('rail');
+  var scrim = document.getElementById('scrim');
+  var draft = document.getElementById('draft');
+  var sect = document.querySelector('.sect');
+  /* 左栏默认隐藏，只有顶栏的「打开场景栏」与下拉里的「管理场景」会把它放出来 —— 与运维一致 */
+  var railVisible = state === 'list';
+  rail.classList.toggle('hidden', !railVisible);
+  scrim.classList.toggle('hidden', !railVisible);
+  /* 「无草案」= 场景已采纳、没有待决定的东西：草案块与「当前生效」小标题都不该出现 */
+  var hasDraft = state !== 'nodraft';
+  if (draft) draft.classList.toggle('hidden', !hasDraft);
+  if (sect) sect.classList.toggle('hidden', !hasDraft);
+  scene.classList.toggle('hidden', state === 'empty');
+  empty.classList.toggle('hidden', state !== 'empty');
+  closeMenus();
+  if (state === 'menu') openMenuAt(0);
+  var ids = ['s0', 's1', 's2', 's3'];
+  var names = ['none', 'list', 'empty', 'nodraft'];
+  for (var i = 0; i < ids.length; i++) {
+    document.getElementById(ids[i]).setAttribute('aria-pressed', String(names[i] === state));
+  }
+}
+
+/** 关掉所有行内菜单。 */
+function closeMenus(){
+  var nodes = document.querySelectorAll('.rmenu');
+  for (var i = 0; i < nodes.length; i++) nodes[i].remove();
+}
+
+/** 在某一行下面展开管理菜单（与运维的 ⋯ 菜单同构）。 */
+function openMenuAt(index){
+  closeMenus();
+  var rows = document.querySelectorAll('#rows .row');
+  var row = rows[index];
+  if (!row) return;
+  var menu = document.createElement('div');
+  menu.className = 'rmenu';
+  menu.innerHTML = '<button onclick="demoOnly()">✎ 修改名称</button>'
+    + '<button class="danger" onclick="demoOnly()">🗑 删除场景</button>';
+  row.appendChild(menu);
+}
+
+function rowMenu(event, btn){
+  event.stopPropagation();
+  var row = btn.closest('.row');
+  var rows = Array.prototype.slice.call(document.querySelectorAll('#rows .row'));
+  openMenuAt(rows.indexOf(row));
+}
+
+/** 选中一行：高亮并切换右侧内容 —— 「选中一个看一个」。 */
+function select(row, name){
+  closeMenus();
+  var rows = document.querySelectorAll('#rows .row');
+  for (var i = 0; i < rows.length; i++) rows[i].classList.remove('on');
+  row.classList.add('on');
+  /* 只改选择器上的名字：内容区不再重复显示场景名 */
+  document.getElementById('pickerName').textContent = name;
+}
+
+/** 新建场景弹窗：抽屉里的 ＋ 是唯一入口，名字填完才落场景。 */
+function openCreateDialog(){
+  closeCreateDialog();
+  var wrap = document.createElement('div');
+  wrap.className = 'dlg';
+  wrap.id = 'dlg';
+  wrap.innerHTML = '<div class="dlg-card" role="dialog" aria-modal="true" aria-label="新建编排场景">'
+    + '<div class="t">新建编排场景</div>'
+    + '<div class="d">先给场景起个名字，流程与提示词可以让左侧 Agent 来设计。</div>'
+    + '<label class="lbl" for="dlgName">场景名称</label>'
+    + '<input id="dlgName" maxlength="60" placeholder="例如：小说角色提取" onkeydown="createDialogKey(event)">'
+    + '<div class="hint2">最多 60 个字符；重名不拦，但列表里不好分辨。</div>'
+    + '<div class="acts"><button type="button" onclick="closeCreateDialog()">取消</button>'
+    + '<button type="button" class="primary" disabled onclick="demoOnly()">创建场景</button></div>'
+    + '</div>';
+  wrap.addEventListener('click', function(event){ if (event.target === wrap) closeCreateDialog() });
+  document.querySelector('.panel').appendChild(wrap);
+  var input = document.getElementById('dlgName');
+  input.focus();
+  /* 空名字不给提交：创建按钮跟着输入实时启用/禁用（与真实表单的 disabled 判断一致）。 */
+  input.addEventListener('input', function(){
+    wrap.querySelector('.acts .primary').disabled = input.value.trim().length === 0;
+  });
+}
+
+/** 弹窗内回车 = 提交（名字为空时忽略），与真实表单一致。 */
+function createDialogKey(event){
+  if (event.key === 'Enter' && !event.isComposing) {
+    var primary = document.querySelector('.dlg .acts .primary');
+    if (primary && !primary.disabled) demoOnly();
+  }
+}
+
+function closeCreateDialog(){
+  var wrap = document.getElementById('dlg');
+  if (wrap) wrap.remove();
+}
+
+/** 步骤训练弹窗：改提示词 → 给一份输入 → 试跑 → 看返回。整条链不用跑起来。 */
+function openStepDialog(){
+  closeStepDialog();
+  var wrap = document.createElement('div');
+  wrap.className = 'stepdlg';
+  wrap.id = 'stepdlg';
+  wrap.innerHTML = ''
+    + '<div class="stepdlg-card" role="dialog" aria-modal="true" aria-label="训练这一步的提示词">'
+    + '  <div class="hd"><span class="badge mono">extract</span><span style="font-size:12.5px;font-weight:500">抽取查询参数</span><span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">step-2</span></div>'
+    + '  <p class="sub">改提示词、给一份输入、跑一次，看模型返回什么 —— 不需要把整条链搭起来。</p>'
+    /* 一屏只做一件事：改提示词 / 看结果 / 翻历史。以前全堆一列会变成好几屏滚动。 */
+    + '  <div class="tabs" style="margin:12px 0 10px"><button aria-selected="true" onclick="stepTab(this, 0)">提示词</button><button aria-selected="false" onclick="stepTab(this, 1)">结果</button><button aria-selected="false" onclick="stepTab(this, 2)">历史 2</button></div>'
+    + '  <div class="acts">'
+    + '    <button class="primary" onclick="demoOnly()">▶ 试跑这一步</button>'
+    + '    <button onclick="demoOnly()">保存为草案</button>'
+    + '    <button onclick="demoOnly()">保存并采纳</button>'
+    + '    <button onclick="closeStepDialog()">关闭</button>'
+    + '  </div>'
+    + '  <div id="stepPane0">'
+    + '    <label class="lbl" for="stepPrompt">提示词</label>'
+    + '    <textarea id="stepPrompt" rows="10" style="max-height:45vh">你是参数抽取器。从用户问题里抽出账号标识与时间范围，只输出 JSON，字段 account（string）、range（string，可为空）；无法确定 range 时必须留空，不要猜。</textarea>'
+    + '    <p class="note">{{变量}} 会被输入槽替换。试跑用的是这份编辑中的文本（不落盘），满意了再保存。</p>'
+    + '    <div style="border:1px solid hsl(var(--border));border-radius:4px;padding:6px 8px;margin-top:8px">'
+    + '      <button style="border:0;background:transparent;padding:0;font-family:inherit;font-size:11px;font-weight:500;color:hsl(var(--muted-foreground));cursor:pointer" onclick="stepSlots(this)">改输入（2 个）</button>'
+    + '      <p class="note" style="margin-top:4px">question、context —— 沿用上一次试跑的值</p>'
+    + '    </div>'
+    + '  </div>'
+    + '  <div id="stepPane1" class="hidden">'
+    + '  <div class="lbl">试跑结果<span class="src"> · 1.4s · 2026-09-28 09:40:12</span></div>'
+    + '  <div class="rstatus"><span class="badge ok">完成</span><span class="badge ok">约束通过</span></div>'
+    + '  <div class="lbl">渲染后的完整提示词</div>'
+    + '  <pre style="background:hsl(var(--muted));border-radius:4px;padding:6px 8px;font-family:ui-monospace,Menlo,monospace;font-size:10px;line-height:1.6;white-space:pre-wrap;word-break:break-all">你是参数抽取器。从用户问题里抽出账号标识与时间范围…\n\n帮我看下尾号 8842 那个账号什么时候到期\n\n{"intent":"query_status"}</pre>'
+    + '  <div class="lbl">模型原始返回</div>'
+    + '  <pre style="background:hsl(var(--muted));border-radius:4px;padding:6px 8px;font-family:ui-monospace,Menlo,monospace;font-size:10px;line-height:1.6;white-space:pre-wrap;word-break:break-all">{ "account": "8842", "range": "" }</pre>'
+    + '  </div>'
+    + '  <div id="stepPane2" class="hidden">'
+    + '  <div class="attempts">'
+    + '    <div class="lbl">这一步的尝试（最新在前）</div>'
+    + '    <button class="attempt on"><span class="badge ok" style="font-size:10px;padding:0 6px">通过</span><span style="flex:1;font-size:11px;color:hsl(var(--muted-foreground))">2026-09-28 09:40:12</span><span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">1.4s</span></button>'
+    + '    <button class="attempt"><span class="badge bad" style="font-size:10px;padding:0 6px">不通过</span><span style="flex:1;font-size:11px;color:hsl(var(--muted-foreground))">2026-09-28 09:38:47</span><span class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">1.1s</span></button>'
+    + '  </div>'
+    + '  <div class="lbl">与上一次对比 <span class="src">基线 09:38:47（不通过）</span></div>'
+    + '  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
+    + '    <div><div class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">基线（较早一次）</div><div style="margin-top:4px"><span class="badge bad" style="font-size:10px;padding:0 6px">不通过</span></div><div class="mono" style="margin-top:4px;font-size:10px;color:hsl(var(--muted-foreground))">09:38:47 · 1.1s</div></div>'
+    + '    <div><div class="mono" style="font-size:10px;color:hsl(var(--muted-foreground))">当前（这次）</div><div style="margin-top:4px"><span class="badge ok" style="font-size:10px;padding:0 6px">通过</span></div><div class="mono" style="margin-top:4px;font-size:10px;color:hsl(var(--muted-foreground))">09:40:12 · 1.4s</div></div>'
+    + '  </div>'
+    + '  <div class="lbl">提示词变化<span class="src">：新增 1 行 · 删除 1 行</span></div>'
+    + '  <pre style="background:hsl(var(--muted));border-radius:4px;padding:6px 8px;font-family:ui-monospace,Menlo,monospace;font-size:10px;line-height:1.6;white-space:pre-wrap;word-break:break-all"><span style="color:hsl(var(--muted-foreground))">  你是参数抽取器。从用户问题里抽出账号标识与时间范围，只输出 JSON。</span>\n<span style="color:hsl(0 62% 45%)">- 字段 account（string）、range（string，可为空）。</span>\n<span style="color:hsl(160 60% 32%)">+ 字段 account（string）、range（string，可为空）；无法确定 range 时必须留空，不要猜。</span></pre>'
+    + '  <p style="margin-top:6px;font-size:11px;color:hsl(var(--muted-foreground))"><b>输入：</b>两次是同一份输入</p>'
+    + '  <p style="margin-top:2px;font-size:11px;color:hsl(var(--muted-foreground))"><b>约束：</b>约束不通过：range 不能为空字符串 → 约束通过</p>'
+    + '  </div>'
+    + '</div>';
+  wrap.addEventListener('click', function(event){ if (event.target === wrap) closeStepDialog() });
+  document.querySelector('.panel').appendChild(wrap);
+}
+
+function closeStepDialog(){
+  var wrap = document.getElementById('stepdlg');
+  if (wrap) wrap.remove();
+}
+
+/** 训练弹窗内的页签：改提示词 / 看结果 / 翻历史，一屏只做一件事。 */
+function stepTab(button, index){
+  var bar = button.parentElement;
+  var buttons = bar.querySelectorAll('button');
+  for (var i = 0; i < buttons.length; i++) buttons[i].setAttribute('aria-selected', String(i === index));
+  for (var j = 0; j < 3; j++) {
+    var pane = document.getElementById('stepPane' + j);
+    if (pane) pane.classList.toggle('hidden', j !== index);
+  }
+}
+
+/** 输入槽默认收起：长 JSON 展开会直接吃掉两屏。 */
+function stepSlots(button){
+  var open = button.getAttribute('aria-expanded') === 'true';
+  button.setAttribute('aria-expanded', String(!open));
+  button.textContent = open ? '改输入（2 个）' : '收起输入';
+}
+
+/** 切换页签：场景（定义与草案）/ 运行（提交、轨迹、历史、虚拟接入）。 */
+function showTab(tab){
+  var scene = document.getElementById('bodyScene');
+  var empty = document.getElementById('bodyEmpty');
+  var run = document.getElementById('bodyRun');
+  var evaluate = document.getElementById('bodyEvaluate');
+  var deliver = document.getElementById('bodyDeliver');
+  var sceneSelected = tab === 'scene';
+  /* 空态属于「场景」这一段：切到运行时不显示空态。 */
+  scene.classList.toggle('hidden', !sceneSelected || currentState === 'empty');
+  empty.classList.toggle('hidden', !(sceneSelected && currentState === 'empty'));
+  run.classList.toggle('hidden', tab !== 'run');
+  evaluate.classList.toggle('hidden', tab !== 'evaluate');
+  deliver.classList.toggle('hidden', tab !== 'deliver');
+  document.getElementById('tabScene').setAttribute('aria-selected', String(sceneSelected));
+  document.getElementById('tabRun').setAttribute('aria-selected', String(tab === 'run'));
+  document.getElementById('tabEvaluate').setAttribute('aria-selected', String(tab === 'evaluate'));
+  document.getElementById('tabDeliver').setAttribute('aria-selected', String(tab === 'deliver'));
+  if (!sceneSelected) { closeMenus(); closeCreateDialog() }
+}
+
+/** 展开 / 收起某一步的轨迹详情 —— 多步编排的增量全在这些细节里。 */
+function toggleStep(row){
+  var open = row.classList.toggle('open');
+  var detail = row.nextElementSibling;
+  if (detail && detail.classList.contains('stepdetail')) detail.classList.toggle('hidden', !open);
+}
+
+function demoOnly(){ closeMenus(); alert('交互稿：这个动作在真实实现里走 IPC（采纳 / 放弃 / 改名 / 删除都已接上），这里不真正执行') }
+
+/** 顶栏选择器：展开/收起场景下拉（与运维右上角的项目选择器同构）。 */
+function togglePicker(event){
+  if (event) event.stopPropagation();
+  var existing = document.querySelector('.pmenu');
+  if (existing) { existing.remove(); return }
+  closeMenus();
+  var rows = Array.prototype.slice.call(document.querySelectorAll('#rows .row'));
+  var menu = document.createElement('div');
+  menu.className = 'pmenu';
+  rows.forEach(function(row, index){
+    var name = row.querySelector('.nm').textContent;
+    var item = document.createElement('div');
+    item.className = 'item';
+    item.innerHTML = '<span class="tick"></span><span class="nm"></span><span class="ver"></span>';
+    item.querySelector('.nm').textContent = name;
+    item.querySelector('.ver').textContent = (row.querySelector('.sub').textContent.split(' · ')[1] || '');
+    if (row.classList.contains('on')) item.querySelector('.tick').textContent = '✓';
+    item.addEventListener('click', function(event){
+      event.stopPropagation();
+      select(row, name);
+      togglePicker();
+    });
+    menu.appendChild(item);
+  });
+  /* 与运维的「管理项目」同构：下拉里同时给管理入口，左栏因此可以默认隐藏 */
+  var sep = document.createElement('div');
+  sep.className = 'sep';
+  menu.appendChild(sep);
+  var manage = document.createElement('div');
+  manage.className = 'item';
+  /* 齿轮图标与运维的「管理项目」同源（Radix 菜单里的 Settings2） */
+  manage.innerHTML = '<span class="tick"></span><span class="nm">⚙ 管理场景</span>';
+  manage.addEventListener('click', function(event){
+    event.stopPropagation();
+    togglePicker();
+    show('list');
+  });
+  menu.appendChild(manage);
+  document.querySelector('.panel').appendChild(menu);
+}
+
+/** 点空白处收起顶栏下拉。 */
+document.addEventListener('click', function(){
+  var menu = document.querySelector('.pmenu');
+  if (menu) menu.remove();
+});
+
+/** Esc 先关最上面那层（弹窗 → 抽屉/下拉）；覆盖层必须能原路退出。 */
+document.addEventListener('keydown', function(event){
+  if (event.key !== 'Escape') return;
+  var dialog = document.getElementById('dlg');
+  if (dialog) { closeCreateDialog(); return }
+  var rail = document.getElementById('rail');
+  if (rail && !rail.classList.contains('hidden')) show('none');
+});
+
+/** 便于评审与截图：URL 带 #menu / #picker / #empty / #list / #create 时直接进入对应状态。 */
+(function boot(){
+  var hash = location.hash;
+  if (hash.indexOf('menu') >= 0) show('menu');
+  else if (hash.indexOf('picker') >= 0) { show('none'); togglePicker() }
+  else if (hash.indexOf('create') >= 0) { show('list'); openCreateDialog() }
+  else if (hash.indexOf('step') >= 0) { show('none'); openStepDialog() }
+  else if (hash.indexOf('deliver') >= 0) showTab('deliver')
+  else if (hash.indexOf('evaluate') >= 0) showTab('evaluate')
+  else if (hash.indexOf('run') >= 0) showTab('run');
+  else if (hash.indexOf('nodraft') >= 0) show('nodraft');
+  else if (hash.indexOf('empty') >= 0) show('empty');
+  else if (hash.indexOf('list') >= 0) show('list');
+  /* 默认：左栏隐藏，只显示顶栏 + 提示行 + 右列（运维的默认观感） */
+  else show('none');
+})();
+</script>
+</body>
+</html>

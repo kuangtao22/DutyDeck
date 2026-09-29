@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ServerOpsDataRowFilters, ServerOpsDataSourceUpsertInput } from '@proma/shared'
 import { ServerOpsDataService } from './server-ops-data-service'
+import type { ServerOpsDataServiceDependencies } from './server-ops-data-service'
 import { ServerOpsDataSourceStore } from './server-ops-data-source-store'
 import type { ServerOpsStoredDataSource } from './server-ops-data-source-store'
 import { ServerOpsDataSchemaCache } from './server-ops-data-schema-cache'
@@ -258,6 +259,10 @@ function createRuntimeHarness() {
       signals.push(signal)
       return new Promise<ServerOpsRuntimeDataReadResult>((resolve, reject) => { pending.push({ resolve, reject }) })
     },
+    /** 写链有自己的测试文件；这些读取用例若意外触发写入必须立刻失败而不是静默通过。 */
+    dataWrite(): Promise<never> {
+      return Promise.reject(new Error('SERVER_OPS_DATA_WRITE_NOT_EXPECTED_IN_READ_TEST'))
+    },
   }
 }
 
@@ -272,6 +277,8 @@ const availableResult: ServerOpsRuntimeDataReadResult = {
 
 /** 构造服务与替身。 */
 function createService(options: {
+  /** 写路径独立替身，只供终态回归使用。 */
+  write?: ServerOpsDataServiceDependencies['runtime']['dataWrite']
   /** 是否模拟 SSH 已连接。 */
   connected?: boolean
   /** 可替换的服务时间源。 */
@@ -302,7 +309,7 @@ function createService(options: {
         return { hostId, connectionId: `connection-${connectionGeneration}`, generation: connectionGeneration }
       },
     },
-    runtime,
+    runtime: options.write ? { ...runtime, dataWrite: options.write } : runtime,
     now: options.now ?? (() => 5_000),
     ...(injectedSchemaCache === undefined ? {} : { schemaCache: injectedSchemaCache }),
   })
@@ -328,6 +335,37 @@ function createInput(overrides: Partial<ServerOpsDataSourceUpsertInput> = {}): S
 }
 
 describe('服务器运维数据服务编排', () => {
+  test('Given 数据库提交后取消并删除配置 When 服务返回 Then 保留原目标的真实提交结果', async () => {
+    const controller = new AbortController()
+    const fixture = createService({ write: async (input) => {
+      controller.abort()
+      fixture.service.deleteSource({ sourceId: source.id })
+      return { writeId: input.writeId, database: input.database, statementCount: 1, affectedRows: 1, committed: true, outcome: 'committed', durationMs: 1, statements: [{ head: 'UPDATE', affectedRows: 1 }], warnings: [] }
+    } })
+    const source = fixture.service.upsertSource(createInput({ transport: 'direct', hostId: undefined, database: 'app' })).source
+    await expect(fixture.service.writeSource({ sourceId: source.id, source, database: 'app', writeId: 'write-1', sql: 'UPDATE t SET n=1' }, controller.signal))
+      .resolves.toMatchObject({ committed: true, database: 'app' })
+  })
+
+  test('Given 写执行后通道丢失 When 服务收尾 Then 明确返回结果未知而非已回滚', async () => {
+    const { service } = createService({ write: async () => { throw new Error('SERVER_OPS_RUNTIME_EXITED') } })
+    const source = service.upsertSource(createInput({ transport: 'direct', hostId: undefined, database: 'app' })).source
+    await expect(service.writeSource({ sourceId: source.id, source, database: 'app', writeId: 'write-1', sql: 'UPDATE t SET n=1' }))
+      .resolves.toMatchObject({ committed: false, outcome: 'unknown' })
+  })
+
+  test('Given 用户确认后另一窗口修改目标 When 服务收到旧快照 Then 在 runtime 前拒绝写入', async () => {
+    let writes = 0
+    const { service } = createService({ write: async () => {
+      writes += 1
+      throw new Error('不应执行')
+    } })
+    const source = service.upsertSource(createInput({ transport: 'direct', hostId: undefined, database: 'app' })).source
+    service.upsertSource({ ...createInput({ transport: 'direct', hostId: undefined, database: 'app', address: 'db-new.internal' }), sourceId: source.id })
+    await expect(service.writeSource({ sourceId: source.id, source, database: 'app', writeId: 'write-stale', sql: 'UPDATE t SET n=1' }))
+      .resolves.toMatchObject({ outcome: 'not-started', errorCode: 'SERVER_OPS_DATA_SOURCE_CHANGED' })
+    expect(writes).toBe(0)
+  })
   test('Given MySQL 或 PostgreSQL 公开快照 When 修改默认数据库 Then 仅更新数据库并拒绝旧快照', () => {
     for (const config of [
       { engine: 'mysql' as const, port: 3306, database: 'mysql', next: 'app', tlsMode: 'required' as const },
@@ -403,6 +441,22 @@ describe('服务器运维数据服务编排', () => {
     } finally {
       rmSync(configDir, { recursive: true, force: true })
     }
+  })
+
+  test('Given 携带 Agent 会话身份 When 调用写库 Then 在建连前拒绝且不下发任何请求', async () => {
+    /** 写链没有 Agent 入口：这是「写能力不得顺着只读工具漏给模型」的第一道闸。 */
+    const { service, runtime } = createService()
+    const created = service.upsertSource(createInput({
+      engine: 'mysql', label: 'chebenben', address: '10.0.0.5', port: 3306, username: 'u',
+      transport: 'direct', hostId: undefined, tlsMode: 'disabled', password: 'p',
+    })).source
+    await expect(service.writeSource(
+      { sourceId: created.id, source: created, database: 'chebenben', writeId: 'write-1', sql: 'UPDATE t SET n = 1' },
+      undefined,
+      { ownerSessionId: 'session-1' },
+    )).rejects.toThrow('SERVER_OPS_DATA_WRITE_AGENT_FORBIDDEN')
+    /** 拒绝必须发生在建连之前：一条写请求都不应下发到 runtime。 */
+    expect(runtime.requests).toEqual([])
   })
 
   test('Given PostgreSQL 数据源 When 探测、读取目录和执行 SQL Then 保留数据库与 canonical 表身份并分派到 runtime', async () => {

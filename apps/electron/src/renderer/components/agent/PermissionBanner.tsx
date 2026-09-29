@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button'
 import { allPendingPermissionRequestsAtom } from '@/atoms/agent-atoms'
 import type { DangerLevel } from '@proma/shared'
 import { describeApiWorkbenchApproval, formatApiApprovalCaseDiff } from './api-approval-view'
+import { describeCapabilityFactoryApproval } from './capability-factory-approval-view'
 
 /** 危险等级对应的图标颜色 */
 const DANGER_ICON_STYLES: Record<DangerLevel, string> = {
@@ -101,7 +102,12 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
   respondRef.current = respond
 
   /** 接口工作台的发送/保存单独渲染：用户必须看清目标与用例改动，而不是一坨 JSON。 */
+  /**
+   * 两种卡共用同一条渲染路径：接口工作台与编排工厂各自把自己的 toolInput 快照投影成同样的形状。
+   * 都不是本工具时返回 null，横幅降级到原始的 JSON 展示。
+   */
   const apiApproval = describeApiWorkbenchApproval(request.toolName, request.toolInput)
+    ?? describeCapabilityFactoryApproval(request.toolName, request.toolInput)
 
   return (
     <div

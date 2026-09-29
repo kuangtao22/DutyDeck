@@ -1,0 +1,916 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DutyDeck · 提示词编排工厂 — 交互设计稿 v1</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   提示词编排工厂 — 交互设计稿
+   方向：工业控制台。深墨底 + 琥珀色主强调，数据一律等宽字体，
+   面板方正、密度优先。颜色走变量，便于映射到 DutyDeck 主题 token。
+   ============================================================ */
+:root{
+  --ink:#0a0d10;
+  --ink-2:#0d1116;
+  --panel:#10141a;
+  --panel-2:#151b22;
+  --panel-3:#1a2129;
+  --line:rgba(255,255,255,.075);
+  --line-strong:rgba(255,255,255,.15);
+  --text:#dfe6ec;
+  --muted:#8a97a4;
+  --dim:#5c6772;
+  --amber:#ffa53d;
+  --amber-dim:rgba(255,165,61,.14);
+  --teal:#46b9a8;
+  --teal-dim:rgba(70,185,168,.14);
+  --coral:#e8664f;
+  --coral-dim:rgba(232,102,79,.14);
+  --blue:#6aa6e0;
+  --sans:'Archivo','Avenir Next',system-ui,-apple-system,sans-serif;
+  --mono:'IBM Plex Mono','SF Mono',Menlo,monospace;
+  --r:3px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--ink);
+  color:var(--text);
+  font-family:var(--sans);
+  font-size:13px;
+  line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+  overflow:hidden;
+}
+/* 背景：网格 + 左上琥珀辉光，制造纵深 */
+body::before{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(760px 420px at 6% -8%, rgba(255,165,61,.10), transparent 62%),
+    radial-gradient(620px 380px at 96% 104%, rgba(70,185,168,.06), transparent 60%),
+    repeating-linear-gradient(0deg, rgba(255,255,255,.022) 0 1px, transparent 1px 26px),
+    repeating-linear-gradient(90deg, rgba(255,255,255,.022) 0 1px, transparent 1px 26px);
+}
+
+/* ---------- 布局 ---------- */
+.app{position:relative;z-index:1;display:flex;flex-direction:column;height:100vh}
+.topbar{
+  display:flex;align-items:center;gap:14px;
+  padding:0 14px;height:50px;flex:0 0 auto;
+  background:linear-gradient(180deg,var(--panel-2),var(--panel));
+  border-bottom:1px solid var(--line-strong);
+}
+.brand{display:flex;align-items:center;gap:9px;padding-right:14px;border-right:1px solid var(--line)}
+.brand .mark{width:20px;height:20px;border:1.5px solid var(--amber);position:relative;flex:0 0 auto}
+.brand .mark::after{content:'';position:absolute;inset:4px;background:var(--amber);opacity:.85}
+.brand .name{font-weight:700;letter-spacing:.02em;font-size:13.5px;white-space:nowrap}
+.brand .sub{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase}
+.projchip{
+  display:flex;align-items:center;gap:8px;padding:5px 10px;
+  background:var(--panel-3);border:1px solid var(--line);border-radius:var(--r);
+  font-size:12px;color:var(--muted);
+}
+.projchip b{color:var(--text);font-weight:600}
+.projchip .dot{width:6px;height:6px;border-radius:50%;background:var(--teal);box-shadow:0 0 8px var(--teal)}
+.spacer{flex:1}
+.btn{
+  font-family:var(--sans);font-size:12px;font-weight:500;color:var(--text);
+  background:var(--panel-3);border:1px solid var(--line-strong);border-radius:var(--r);
+  padding:6px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;
+  transition:border-color .15s,background .15s,transform .08s;
+}
+.btn:hover{border-color:rgba(255,165,61,.5);background:#1e252e}
+.btn:active{transform:translateY(1px)}
+.btn:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.btn.primary{background:var(--amber);border-color:var(--amber);color:#1a1206;font-weight:600}
+.btn.primary:hover{background:#ffb75e}
+.btn.ghost{background:transparent;border-color:var(--line)}
+.btn[disabled]{opacity:.5;cursor:default}
+.kbd{font-family:var(--mono);font-size:10px;color:var(--dim);border:1px solid var(--line-strong);border-radius:2px;padding:1px 4px}
+
+.grid{flex:1;display:grid;grid-template-columns:212px minmax(0,1fr) 396px;min-height:0}
+
+/* ---------- 左栏：场景 ---------- */
+.rail{background:var(--ink-2);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.rail-head{padding:11px 12px 8px;font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--dim);text-transform:uppercase;border-bottom:1px solid var(--line)}
+.rail-list{overflow:auto;padding:6px}
+.scene{display:flex;gap:9px;align-items:flex-start;padding:8px 9px;border-radius:var(--r);cursor:pointer;border-left:2px solid transparent;transition:background .15s,border-color .15s}
+.scene:hover{background:rgba(255,255,255,.035)}
+.scene.active{background:var(--amber-dim);border-left-color:var(--amber)}
+.scene .sdot{width:7px;height:7px;border-radius:50%;margin-top:6px;flex:0 0 auto;background:var(--dim)}
+.scene.active .sdot{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+.scene .stitle{font-size:12.5px;font-weight:500;line-height:1.35}
+.scene .smeta{font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:2px}
+.rail-foot{margin-top:auto;padding:9px;border-top:1px solid var(--line)}
+.rail-note{font-size:10.5px;color:var(--dim);line-height:1.5}
+
+/* ---------- 中栏：对话 ---------- */
+.convo{display:flex;flex-direction:column;min-height:0;background:var(--ink)}
+.convo-head{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line);background:rgba(16,20,26,.6)}
+.convo-head .t{font-weight:600;font-size:13px}
+.tag{font-family:var(--mono);font-size:10px;letter-spacing:.04em;padding:2px 6px;border-radius:2px;border:1px solid var(--line-strong);color:var(--muted);white-space:nowrap}
+.tag.frozen{border-color:rgba(70,185,168,.5);color:var(--teal);background:var(--teal-dim)}
+.tag.draft{border-color:rgba(255,165,61,.5);color:var(--amber);background:var(--amber-dim)}
+.tag.tool{border-color:rgba(106,166,224,.5);color:var(--blue);background:rgba(106,166,224,.12)}
+.thread{flex:1;overflow:auto;padding:16px 18px 8px;display:flex;flex-direction:column;gap:16px}
+.msg{display:flex;gap:11px;animation:rise .45s cubic-bezier(.2,.7,.2,1) both}
+.msg:nth-child(1){animation-delay:.02s}.msg:nth-child(2){animation-delay:.07s}
+.msg:nth-child(3){animation-delay:.12s}.msg:nth-child(4){animation-delay:.17s}
+.msg:nth-child(5){animation-delay:.22s}.msg:nth-child(6){animation-delay:.27s}
+@keyframes rise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
+.av{width:24px;height:24px;flex:0 0 auto;border:1px solid var(--line-strong);border-radius:2px;display:grid;place-items:center;font-family:var(--mono);font-size:10px;color:var(--muted);background:var(--panel-2)}
+.msg.user .av{border-color:rgba(255,165,61,.45);color:var(--amber)}
+.msg.agent .av{border-color:rgba(70,185,168,.4);color:var(--teal)}
+.body{min-width:0;flex:1}
+.who{font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--dim);text-transform:uppercase;margin-bottom:4px}
+.txt{font-size:13px;color:var(--text);max-width:70ch}
+.txt + .txt{margin-top:6px}
+.txt code,code{font-family:var(--mono);font-size:11.5px;background:var(--panel-3);border:1px solid var(--line);border-radius:2px;padding:1px 4px;color:#c9d6e2}
+
+/* ---------- 对话内卡片 ---------- */
+.card{margin-top:10px;background:var(--panel);border:1px solid var(--line-strong);border-radius:var(--r);overflow:hidden;animation:rise .5s cubic-bezier(.2,.7,.2,1) both}
+.card-head{display:flex;align-items:center;gap:8px;padding:8px 11px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,var(--panel-3),var(--panel-2))}
+.card-head .ct{font-size:12px;font-weight:600;letter-spacing:.01em}
+.card-body{padding:10px 11px}
+.card-foot{padding:8px 11px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center;background:rgba(0,0,0,.18)}
+.flow{display:flex;flex-direction:column;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:2px;overflow:hidden}
+.steprow{display:grid;grid-template-columns:20px 1fr auto;gap:9px;align-items:center;padding:8px 9px;background:var(--panel);cursor:pointer;transition:background .13s}
+.steprow:hover{background:var(--panel-3)}
+.steprow.sel{background:var(--amber-dim);box-shadow:inset 2px 0 0 var(--amber)}
+.steprow .idx{font-family:var(--mono);font-size:10px;color:var(--dim);text-align:center}
+.steprow .sn{font-size:12.5px}
+.steprow .sd{font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:1px}
+.pill{font-family:var(--mono);font-size:10px;padding:2px 6px;border-radius:2px;border:1px solid var(--line-strong);color:var(--muted);white-space:nowrap}
+.pill.extract{border-color:rgba(255,165,61,.5);color:var(--amber)}
+.pill.tool{border-color:rgba(106,166,224,.55);color:var(--blue)}
+.metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--line)}
+.metric{background:var(--panel);padding:9px 11px}
+.metric .k{font-family:var(--mono);font-size:9.5px;letter-spacing:.09em;color:var(--dim);text-transform:uppercase}
+.metric .v{font-family:var(--mono);font-size:21px;font-weight:600;letter-spacing:-.01em;margin-top:2px}
+.metric .u{font-size:11px;color:var(--dim);margin-left:3px;font-weight:400}
+.v.ok{color:var(--teal)}.v.warn{color:var(--amber)}.v.bad{color:var(--coral)}
+.hint{font-size:11px;color:var(--dim);margin-top:7px;line-height:1.5}
+.warnbar{display:flex;gap:8px;align-items:flex-start;padding:8px 11px;border-top:1px solid var(--line);background:var(--coral-dim);font-size:11.5px;color:#f0b6ab}
+
+/* ---------- 输入区 ---------- */
+.composer{padding:10px 14px 14px;border-top:1px solid var(--line);background:rgba(16,20,26,.6)}
+.composer .box{display:flex;align-items:flex-end;gap:9px;background:var(--panel-2);border:1px solid var(--line-strong);border-radius:var(--r);padding:8px 9px}
+.composer .box:focus-within{border-color:rgba(255,165,61,.55);box-shadow:0 0 0 3px rgba(255,165,61,.09)}
+.composer textarea{flex:1;background:none;border:0;color:var(--text);font-family:var(--sans);font-size:13px;resize:none;height:38px;outline:none}
+.composer textarea::placeholder{color:var(--dim)}
+.quick{display:flex;gap:6px;margin-top:7px;flex-wrap:wrap}
+.chip{font-size:11px;color:var(--muted);border:1px dashed var(--line-strong);border-radius:20px;padding:3px 9px;cursor:pointer;background:transparent;font-family:var(--sans);transition:color .15s,border-color .15s}
+.chip:hover{color:var(--amber);border-color:var(--amber)}
+
+/* ---------- 右栏 inspector ---------- */
+.inspector{background:var(--ink-2);border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.tabs{display:flex;border-bottom:1px solid var(--line);background:var(--panel)}
+.tab{flex:1;padding:10px 6px;font-size:12px;font-weight:500;color:var(--muted);background:none;border:0;border-bottom:2px solid transparent;cursor:pointer;font-family:var(--sans);transition:color .15s,border-color .15s}
+.tab:hover{color:var(--text)}
+.tab[aria-selected="true"]{color:var(--amber);border-bottom-color:var(--amber)}
+.tab:focus-visible{outline:2px solid var(--amber);outline-offset:-2px}
+.pane{display:none;overflow:auto;padding:12px;flex:1}
+.pane.on{display:block}
+.sechead{font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--dim);text-transform:uppercase;margin:4px 0 8px}
+.sechead:not(:first-child){margin-top:18px}
+
+/* ---------- 轨迹 ---------- */
+.trace{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--panel)}
+.trow{border-bottom:1px solid var(--line)}
+.trow:last-child{border-bottom:0}
+.thead{display:grid;grid-template-columns:16px 1fr auto;gap:9px;align-items:center;padding:8px 10px;cursor:pointer;transition:background .13s}
+.thead:hover{background:var(--panel-3)}
+.trow.open .thead{background:var(--panel-3)}
+.tstat{font-family:var(--mono);font-size:11px;text-align:center}
+.tstat.ok{color:var(--teal)}.tstat.inv{color:var(--amber)}.tstat.bad{color:var(--coral)}
+.ttime{font-family:var(--mono);font-size:10px;color:var(--dim)}
+.tbody{display:none;padding:9px 10px 12px;background:rgba(0,0,0,.22);border-top:1px solid var(--line)}
+.trow.open .tbody{display:block}
+.kv{display:grid;grid-template-columns:82px 1fr;gap:6px 10px;font-size:11.5px;margin-bottom:8px}
+.kv dt{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.04em;padding-top:1px}
+.kv dd{color:var(--text);word-break:break-word}
+pre{font-family:var(--mono);font-size:10.5px;line-height:1.6;color:#b9c7d4;background:#0b0f13;border:1px solid var(--line);border-radius:2px;padding:9px;overflow:auto;max-height:280px;white-space:pre}
+.j-key{color:var(--blue)}.j-str{color:#a7d5a0}.j-num{color:var(--amber)}.j-cmt{color:var(--dim)}
+
+/* ---------- schema ---------- */
+.schema{font-family:var(--mono);font-size:11px;background:#0b0f13;border:1px solid var(--line);border-radius:2px;padding:10px;line-height:1.75}
+.schema .ln{white-space:pre;color:#b9c7d4}
+.schema .fname{color:var(--text)}
+.schema .ftype{color:var(--blue)}
+.schema .freq{color:var(--coral);font-size:9.5px;letter-spacing:.06em}
+.schema .fopt{color:var(--dim);font-size:9.5px;letter-spacing:.06em}
+.schema .fenum{color:#a7d5a0}
+
+/* ---------- 对比 ---------- */
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+th{font-family:var(--mono);font-size:9.5px;letter-spacing:.09em;color:var(--dim);text-transform:uppercase;font-weight:500}
+td{font-family:var(--mono);font-size:11.5px}
+td.name{font-family:var(--sans);font-size:12px;color:var(--text)}
+.delta.up{color:var(--teal)}.delta.down{color:var(--coral)}
+.bar{height:4px;background:var(--panel-3);border-radius:2px;overflow:hidden;margin-top:4px;min-width:74px}
+.bar i{display:block;height:100%;background:var(--amber)}
+.bar.b i{background:var(--blue)}
+
+/* ---------- accept ---------- */
+.accept{border:1px solid var(--line-strong);border-radius:var(--r);overflow:hidden;background:var(--panel)}
+.accept .ah{padding:8px 11px;background:var(--panel-3);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+.accept .ab{padding:10px 11px}
+.acc-row{display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-bottom:1px dashed var(--line);font-size:11.5px}
+.acc-row:last-child{border-bottom:0}
+.acc-row .an{color:var(--muted)}
+.acc-row .av{font-family:var(--mono);color:var(--text)}
+
+/* ---------- 状态条 / 弹层 ---------- */
+.statusbar{flex:0 0 auto;height:26px;display:flex;align-items:center;gap:14px;padding:0 12px;background:var(--panel);border-top:1px solid var(--line-strong);font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+.statusbar .sb{display:flex;align-items:center;gap:6px}
+.led{width:6px;height:6px;border-radius:50%;background:var(--dim)}
+.led.run{background:var(--amber);box-shadow:0 0 8px var(--amber);animation:pulse 1.1s infinite}
+.led.done{background:var(--teal);box-shadow:0 0 6px var(--teal)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.progress{width:84px;height:3px;background:var(--panel-3);border-radius:2px;overflow:hidden}
+.progress i{display:block;height:100%;width:0;background:var(--amber);transition:width .2s linear}
+.scrim{position:fixed;inset:0;background:rgba(4,6,8,.72);display:none;z-index:40}
+.scrim.on{display:block;animation:fade .2s ease both}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(.98);width:min(760px,92vw);max-height:82vh;background:var(--panel);border:1px solid var(--line-strong);border-radius:var(--r);z-index:41;display:none;flex-direction:column;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+.modal.on{display:flex;animation:pop .22s cubic-bezier(.2,.8,.2,1) both}
+@keyframes pop{from{opacity:0;transform:translate(-50%,-50%) scale(.96)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}
+.modal header{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line);background:var(--panel-2)}
+.modal header .mt{font-weight:600}
+.modal .mb{padding:14px;overflow:auto}
+.modal footer{display:flex;gap:9px;align-items:center;padding:11px 14px;border-top:1px solid var(--line);background:rgba(0,0,0,.2)}
+.x{margin-left:auto;background:none;border:0;color:var(--muted);cursor:pointer;font-size:16px;line-height:1;padding:4px 6px;border-radius:2px}
+.x:hover{color:var(--text);background:var(--panel-3)}
+.notes-list{display:flex;flex-direction:column;gap:12px}
+.note{display:grid;grid-template-columns:22px 1fr;gap:10px}
+.note .n{font-family:var(--mono);font-size:10px;color:var(--amber);border:1px solid rgba(255,165,61,.45);border-radius:2px;text-align:center;padding:1px 0;height:17px}
+.note .nt{font-size:12.5px;font-weight:600;margin-bottom:2px}
+.note .nd{font-size:11.5px;color:var(--muted);line-height:1.6}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:#232b34}
+::-webkit-scrollbar-thumb:hover{background:#2f3944}
+::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ======================= 顶栏 ======================= -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark"></div>
+      <div>
+        <div class="name">提示词编排工厂</div>
+        <div class="sub">DutyDeck · Workbench</div>
+      </div>
+    </div>
+
+    <div class="projchip">
+      <span class="dot"></span>
+      当前项目 <b>账号查询箱</b>
+      <span style="color:var(--dim)">·</span>
+      <span style="font-family:var(--mono);font-size:10.5px">~/CodeSource/apps/account-box</span>
+    </div>
+
+    <div class="spacer"></div>
+
+    <button class="btn ghost" onclick="openNotes()">设计说明</button>
+    <button class="btn" onclick="tab('compare')">对比基线</button>
+    <button class="btn primary" id="btnRun" onclick="run()">▶ 运行评测</button>
+  </header>
+
+  <div class="grid">
+
+    <!-- ======================= 左：场景 ======================= -->
+    <aside class="rail">
+      <div class="rail-head">场景</div>
+      <div class="rail-list">
+        <div class="scene active">
+          <span class="sdot"></span>
+          <div>
+            <div class="stitle">账号查询助手</div>
+            <div class="smeta">4 步 · 指标 v1 已冻结</div>
+          </div>
+        </div>
+        <div class="scene">
+          <span class="sdot"></span>
+          <div>
+            <div class="stitle">小说角色提取</div>
+            <div class="smeta">3 步 · 指标未冻结</div>
+          </div>
+        </div>
+        <div class="scene">
+          <span class="sdot" style="background:#2b333c"></span>
+          <div>
+            <div class="stitle" style="color:var(--muted)">新建场景…</div>
+            <div class="smeta">从对话开始</div>
+          </div>
+        </div>
+      </div>
+      <div class="rail-foot">
+        <div class="rail-note">
+          场景跟随当前项目。<br>
+          草稿与运行记录留存本机工作区，<b style="color:var(--muted)">不进入项目仓库</b>。
+        </div>
+      </div>
+    </aside>
+
+    <!-- ======================= 中：对话（主工作区） ======================= -->
+    <section class="convo">
+      <div class="convo-head">
+        <span class="t">账号查询助手</span>
+        <span class="tag draft">草稿 v4</span>
+        <span class="tag">能力包未导出</span>
+        <div class="spacer"></div>
+        <span style="font-family:var(--mono);font-size:10.5px;color:var(--dim)">工厂内部会话 · 不污染主对话</span>
+      </div>
+
+      <div class="thread" id="thread">
+
+        <div class="msg user">
+          <div class="av">你</div>
+          <div class="body">
+            <div class="who">You</div>
+            <div class="txt">帮我做一个账号查询的工作流。用户问「我的账号现在什么状态、什么时候到期」，要能查到状态和到期时间。</div>
+          </div>
+        </div>
+
+        <div class="msg agent">
+          <div class="av">AI</div>
+          <div class="body">
+            <div class="who">Agent</div>
+            <div class="txt">我读了当前项目，找到接口契约：<code>src/api/account.ts</code> 定义 <code>GET /v1/accounts/:id</code>，返回 <code>{ id, status, expiresAt, plan }</code>，其中 <code>status</code> 是 <code>active | suspended | expired</code> 三值枚举。我据此设计了 4 步工作流。</div>
+
+            <div class="card">
+              <div class="card-head">
+                <span class="ct">工作流草案</span>
+                <span class="tag draft">待采纳</span>
+                <div class="spacer"></div>
+                <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">来源：项目接口定义 + 你的描述</span>
+              </div>
+              <div class="card-body">
+                <div class="flow" id="flowCard">
+                  <div class="steprow" data-step="1">
+                    <span class="idx">1</span>
+                    <div><div class="sn">解析用户意图</div><div class="sd">判断要查哪个账号、要哪些字段</div></div>
+                    <span class="pill">llm</span>
+                  </div>
+                  <div class="steprow" data-step="2">
+                    <span class="idx">2</span>
+                    <div><div class="sn">抽取查询参数</div><div class="sd">accountId · 约束：必填 string</div></div>
+                    <span class="pill extract">extract</span>
+                  </div>
+                  <div class="steprow" data-step="3">
+                    <span class="idx">3</span>
+                    <div><div class="sn">查询账号</div><div class="sd">capability: query-account · 已虚拟接入</div></div>
+                    <span class="pill tool">tool</span>
+                  </div>
+                  <div class="steprow" data-step="4">
+                    <span class="idx">4</span>
+                    <div><div class="sn">生成回答</div><div class="sd">约束：status 必须属于三值枚举</div></div>
+                    <span class="pill extract">extract</span>
+                  </div>
+                </div>
+              </div>
+              <div class="card-foot">
+                <button class="btn primary" onclick="adopt(this)">采纳为草案 v4</button>
+                <button class="btn ghost">调整第 3 步</button>
+                <span style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto">未采纳前不改动现有版本</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="msg agent">
+          <div class="av">AI</div>
+          <div class="body">
+            <div class="who">Agent</div>
+            <div class="txt">第 3 步要调外部接口。我按项目里真实的接口字段生成了<b>虚拟接入</b>，字段名与类型和真实接口一致，所以现在就能跑；将来接进 app 时不需要改提示词。</div>
+
+            <div class="card">
+              <div class="card-head">
+                <span class="ct">虚拟接入 · query-account</span>
+                <span class="tag tool">桩</span>
+                <div class="spacer"></div>
+                <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">契约来源 src/api/account.ts</span>
+              </div>
+              <div class="card-body">
+                <div class="kv" style="margin-bottom:0">
+                  <dt>入参</dt><dd><code>accountId: string</code></dd>
+                  <dt>出参</dt><dd><code>{ id, status, expiresAt, plan }</code></dd>
+                  <dt>副作用</dt><dd><span class="tag">read</span> 只读</dd>
+                </div>
+              </div>
+              <div class="card-foot">
+                <span style="font-size:11.5px;color:var(--muted)">契约一致性检查：<b style="color:var(--teal)">通过</b>（4/4 字段与项目定义一致）</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="msg user">
+          <div class="av">你</div>
+          <div class="body">
+            <div class="who">You</div>
+            <div class="txt">跑一下看看。</div>
+          </div>
+        </div>
+
+        <div class="msg agent" id="resultMsg" style="display:none">
+          <div class="av">AI</div>
+          <div class="body">
+            <div class="who">Agent</div>
+            <div class="txt">跑完了。12 个用例里 11 个通过约束校验，1 个没返回 <code>expiresAt</code>。</div>
+            <div class="card">
+              <div class="card-head">
+                <span class="ct">运行结果</span>
+                <div class="spacer"></div>
+                <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">run #b8e1 · 模型 claude-sonnet-5 · temp 0.2</span>
+              </div>
+              <div class="card-body" style="padding:0">
+                <div class="metrics">
+                  <div class="metric"><div class="k">约束合规率</div><div class="v ok">91.7<span class="u">%</span></div></div>
+                  <div class="metric"><div class="k">任务完成率</div><div class="v ok">90.9<span class="u">%</span></div></div>
+                  <div class="metric"><div class="k">参数正确率</div><div class="v warn">81.8<span class="u">%</span></div></div>
+                  <div class="metric"><div class="k">编造率</div><div class="v">9.1<span class="u">%</span></div></div>
+                </div>
+                <div class="warnbar">
+                  <span style="font-family:var(--mono)">!</span>
+                  <span>指标只统计合法样本（11/12）。<b>参数正确率 81.8%</b> 是本次最弱项：2 个用例把中文账号名直接当作 <code>accountId</code> 传给了接口。建议改第 2 步的抽取规则。</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="msg agent">
+          <div class="av">AI</div>
+          <div class="body">
+            <div class="who">Agent</div>
+            <div class="txt">评测要有判据，我按这个场景提议一组指标。<b>指标定稿后会被冻结</b>，之后改提示词时指标不再变，这样两次运行的分数才可比。</div>
+
+            <div class="card">
+              <div class="card-head">
+                <span class="ct">评判指标提案</span>
+                <span class="tag draft" id="metricState">待你确认</span>
+                <div class="spacer"></div>
+                <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">evaluator: tool-trace</span>
+              </div>
+              <div class="card-body">
+                <div class="kv">
+                  <dt>约束层</dt><dd>约束合规率 —— 二元判定，不合法记为 <code>invalid</code>，不计入下列指标</dd>
+                  <dt>指标层</dt><dd>任务完成率 0.4 · 参数正确率 0.4 · 编造率 0.2（反向）</dd>
+                  <dt>判据来源</dt><dd>项目接口定义（<code>status</code> 枚举）+ 本次对话</dd>
+                </div>
+                <div class="hint">我只能提议字段权重与判据，评分算法由工厂内置——否则两次运行的分数不可比。</div>
+              </div>
+              <div class="card-foot">
+                <button class="btn primary" id="btnFreeze" onclick="freeze()">确认并冻结指标 v1</button>
+                <button class="btn ghost">调整权重</button>
+                <span style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto">冻结后随能力包一起导出</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="composer">
+        <div class="box">
+          <textarea placeholder="继续和 Agent 说话，例如：把第 2 步的抽取规则改严一点，然后重跑"></textarea>
+          <button class="btn primary" style="padding:7px 11px">发送 <span class="kbd">⏎</span></button>
+        </div>
+        <div class="quick">
+          <button class="chip" onclick="tab('compare')">和基线比是变好还是变差</button>
+          <button class="chip">只用失败用例重跑</button>
+          <button class="chip">读一遍项目里的数据模型</button>
+          <button class="chip" onclick="openExport()">导出能力包</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= 右：inspector ======================= -->
+    <aside class="inspector">
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" aria-selected="true" onclick="tab('trace')">轨迹</button>
+        <button class="tab" role="tab" aria-selected="false" onclick="tab('constraint')">约束</button>
+        <button class="tab" role="tab" aria-selected="false" onclick="tab('metric')">指标</button>
+        <button class="tab" role="tab" aria-selected="false" onclick="tab('compare')">对比</button>
+      </div>
+
+      <!-- 轨迹 -->
+      <div class="pane on" id="pane-trace">
+        <div class="sechead">本次运行 · run #b8e1</div>
+        <div class="trace" id="traceList">
+          <div class="trow open">
+            <div class="thead" onclick="tog(this)">
+              <span class="tstat ok">✓</span>
+              <div><div class="sn" style="font-size:12.5px">1 · 解析用户意图</div><div class="ttime">llm · 412ms</div></div>
+              <span class="ttime">▾</span>
+            </div>
+            <div class="tbody">
+              <div class="kv">
+                <dt>输入</dt><dd>「我的账号 xiaoming@corp 现在什么状态」</dd>
+                <dt>输出</dt><dd>需要查询该账号的 status 与 expiresAt</dd>
+              </div>
+              <div class="sechead" style="margin:0 0 5px">实际提示词</div>
+              <pre>你是账号助手。判断用户想查询哪个账号、需要哪些字段。
+只输出判断结论，不要输出 JSON。</pre>
+            </div>
+          </div>
+
+          <div class="trow">
+            <div class="thead" onclick="tog(this)">
+              <span class="tstat ok">✓</span>
+              <div><div class="sn" style="font-size:12.5px">2 · 抽取查询参数</div><div class="ttime">extract · 786ms · 约束通过</div></div>
+              <span class="ttime">▾</span>
+            </div>
+            <div class="tbody">
+              <div class="kv">
+                <dt>模型返回</dt><dd>原文 1 行，已通过 schema 校验</dd>
+                <dt>校验</dt><dd><b style="color:var(--teal)">通过</b> · 2/2 必填字段</dd>
+              </div>
+              <pre>{
+  <span class="j-key">"accountId"</span>: <span class="j-str">"xiaoming@corp"</span>,
+  <span class="j-key">"fields"</span>: [<span class="j-str">"status"</span>, <span class="j-str">"expiresAt"</span>]
+}</pre>
+            </div>
+          </div>
+
+          <div class="trow">
+            <div class="thead" onclick="tog(this)">
+              <span class="tstat ok">✓</span>
+              <div><div class="sn" style="font-size:12.5px">3 · 查询账号</div><div class="ttime">tool · query-account（桩）· 6ms</div></div>
+              <span class="ttime">▾</span>
+            </div>
+            <div class="tbody">
+              <div class="kv">
+                <dt>入参</dt><dd><code>{ accountId: "xiaoming@corp" }</code></dd>
+                <dt>返回</dt><dd>虚拟接入产生的桩数据</dd>
+              </div>
+              <pre>{
+  <span class="j-key">"id"</span>: <span class="j-str">"xiaoming@corp"</span>,
+  <span class="j-key">"status"</span>: <span class="j-str">"active"</span>,
+  <span class="j-key">"expiresAt"</span>: <span class="j-str">"2026-12-31"</span>,
+  <span class="j-key">"plan"</span>: <span class="j-str">"pro"</span>
+}</pre>
+            </div>
+          </div>
+
+          <div class="trow">
+            <div class="thead" onclick="tog(this)">
+              <span class="tstat inv">◐</span>
+              <div><div class="sn" style="font-size:12.5px">4 · 生成回答</div><div class="ttime">extract · 1 次重试 · 约束未通过</div></div>
+              <span class="ttime">▾</span>
+            </div>
+            <div class="tbody">
+              <div class="kv">
+                <dt>状态</dt><dd><b style="color:var(--amber)">invalid</b> —— 约束未通过，不计入准确率</dd>
+                <dt>原因</dt><dd>缺少必填字段 <code>expiresAt</code></dd>
+              </div>
+              <pre><span class="j-cmt">// 两次返回都缺字段，已按 maxAttempts=2 停止</span>
+{
+  <span class="j-key">"summary"</span>: <span class="j-str">"账号正常，pro 套餐"</span>,
+  <span class="j-key">"status"</span>: <span class="j-str">"active"</span>
+}</pre>
+            </div>
+          </div>
+        </div>
+        <div class="hint">轨迹逐步保存，可据此只重跑失败步骤及其下游，不必重跑整链。</div>
+      </div>
+
+      <!-- 约束 -->
+      <div class="pane" id="pane-constraint">
+        <div class="sechead">第 4 步 · 生成回答 · outputSchema</div>
+        <div class="schema">
+<div class="ln">{</div>
+<div class="ln">  <span class="fname">summary</span>:   <span class="ftype">string</span>  <span class="freq">必填</span></div>
+<div class="ln">  <span class="fname">status</span>:    <span class="ftype">string</span>  <span class="freq">必填</span> <span class="fenum">∈ active | suspended | expired</span></div>
+<div class="ln">  <span class="fname">expiresAt</span>: <span class="ftype">string</span>  <span class="freq">必填</span></div>
+<div class="ln">  <span class="fname">note</span>:      <span class="ftype">string</span>  <span class="fopt">可选</span></div>
+<div class="ln">}</div>
+        </div>
+        <div class="hint">一份 schema 驱动三件事：自动生成提示词里的格式说明、运行时强校验、评测器知道该比对哪些字段。</div>
+
+        <div class="sechead">strictness</div>
+        <div class="accept">
+          <div class="ah"><span class="tag draft">strict</span><span style="font-size:11.5px;color:var(--muted)">不合法即判该次运行失败，并按 maxAttempts 重试</span></div>
+          <div class="ab">
+            <div class="acc-row"><span class="an">maxAttempts</span><span class="av">2</span></div>
+            <div class="acc-row"><span class="an">本次合规率</span><span class="av">91.7%</span></div>
+            <div class="acc-row"><span class="an">有效样本</span><span class="av">11 / 12</span></div>
+          </div>
+        </div>
+
+        <div class="sechead">约束来源</div>
+        <div class="hint">
+          <code>status</code> 的三值枚举读自项目 <code>src/api/account.ts</code>，不是模型编的。<br>
+          约束与真实 app 一致，接入时不需要重新对齐。
+        </div>
+      </div>
+
+      <!-- 指标 -->
+      <div class="pane" id="pane-metric">
+        <div class="sechead">评测指标</div>
+        <div class="accept">
+          <div class="ah">
+            <span class="tag" id="frozenTag" style="border-color:var(--line-strong);color:var(--muted)">未冻结</span>
+            <span style="font-size:11.5px;color:var(--muted)" id="frozenText">指标未冻结时，跨版本比较不成立</span>
+          </div>
+          <div class="ab">
+            <div class="acc-row"><span class="an">evaluator</span><span class="av">tool-trace</span></div>
+            <div class="acc-row"><span class="an">任务完成率</span><span class="av">权重 0.4</span></div>
+            <div class="acc-row"><span class="an">参数正确率</span><span class="av">权重 0.4</span></div>
+            <div class="acc-row"><span class="an">编造率</span><span class="av">权重 0.2（反向）</span></div>
+            <div class="acc-row"><span class="an">判据来源</span><span class="av">项目接口定义 + 对话</span></div>
+          </div>
+        </div>
+
+        <div class="sechead">本次运行</div>
+        <div class="metrics" style="border:1px solid var(--line);border-radius:var(--r);overflow:hidden">
+          <div class="metric"><div class="k">约束合规率</div><div class="v ok">91.7<span class="u">%</span></div></div>
+          <div class="metric"><div class="k">有效样本</div><div class="v">11<span class="u">/12</span></div></div>
+          <div class="metric"><div class="k">任务完成率</div><div class="v ok">90.9<span class="u">%</span></div></div>
+          <div class="metric"><div class="k">参数正确率</div><div class="v warn">81.8<span class="u">%</span></div></div>
+        </div>
+        <div class="hint">约束合规率与指标分列。合法样本太少时不给指标结论，只报 <code>invalid rate</code>。</div>
+      </div>
+
+      <!-- 对比 -->
+      <div class="pane" id="pane-compare">
+        <div class="sechead">当前 v4 ↔ 基线 v3</div>
+        <table>
+          <thead>
+            <tr><th>指标</th><th>v3 基线</th><th>v4 当前</th><th>变化</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="name">约束合规率</td>
+              <td>83.3%<div class="bar b"><i style="width:83%"></i></div></td>
+              <td>91.7%<div class="bar"><i style="width:92%"></i></div></td>
+              <td class="delta up">+8.4</td>
+            </tr>
+            <tr><td class="name">任务完成率</td><td>83.3%</td><td>90.9%</td><td class="delta up">+7.6</td></tr>
+            <tr><td class="name">参数正确率</td><td>75.0%</td><td>81.8%</td><td class="delta up">+6.8</td></tr>
+            <tr><td class="name">编造率</td><td>16.7%</td><td>9.1%</td><td class="delta up">−7.6</td></tr>
+          </tbody>
+        </table>
+        <div class="hint">
+          两次运行使用同一份已冻结指标（v1）、同一模型与温度、同一数据集，因此差异可归因到提示词改动。<br>
+          若指标未冻结，本页拒绝给出结论。
+        </div>
+
+        <div class="sechead">成本</div>
+        <div class="acc-row"><span class="an">本次调用</span><span class="av">12 用例 × 4 步 = 48 次</span></div>
+        <div class="acc-row"><span class="an">输入 tokens</span><span class="av">86.4k</span></div>
+        <div class="acc-row"><span class="an">缓存命中</span><span class="av">第 1–2 步复用 100%</span></div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ======================= 状态条 ======================= -->
+  <footer class="statusbar">
+    <div class="sb"><span class="led" id="led"></span><span id="runState">空闲 · 上次运行 run #a7f2</span></div>
+    <div class="progress"><i id="prog"></i></div>
+    <div class="sb">指标 v1 <span style="color:var(--muted)" id="sbFrozen">未冻结</span></div>
+    <div class="sb">预算内</div>
+    <div class="spacer"></div>
+    <div class="sb">导出为人工动作 · Agent 不可自主发布</div>
+  </footer>
+</div>
+
+<!-- ======================= 导出弹层 ======================= -->
+<div class="scrim" id="exportScrim" onclick="closeExport()"></div>
+<div class="modal" id="exportModal" role="dialog" aria-modal="true">
+  <header>
+    <span class="mt">导出能力包</span>
+    <span class="tag draft">packageVersion 1.0.0</span>
+    <button class="x" onclick="closeExport()" aria-label="关闭">✕</button>
+  </header>
+  <div class="mb">
+    <div class="hint" style="margin:0 0 10px">
+      能力包自包含，不引用 DutyDeck 的任何内部概念：不含工具名、不含工作区路径、不含凭据，也不需要安装 DutyDeck 才能运行。
+    </div>
+    <pre>{
+  <span class="j-key">"kind"</span>: <span class="j-str">"proma-ai-capability-package"</span>,
+  <span class="j-key">"packageVersion"</span>: <span class="j-str">"1.0.0"</span>,
+  <span class="j-key">"specVersion"</span>: <span class="j-num">1</span>,
+  <span class="j-key">"name"</span>: <span class="j-str">"account-status-query"</span>,
+
+  <span class="j-key">"inputs"</span>:  { <span class="j-key">"question"</span>: { <span class="j-key">"type"</span>: <span class="j-str">"string"</span> } },
+  <span class="j-key">"outputs"</span>: { <span class="j-key">"answer"</span>: { <span class="j-key">"stepId"</span>: <span class="j-str">"answer"</span> } },
+
+  <span class="j-key">"steps"</span>: [
+    { <span class="j-key">"id"</span>: <span class="j-str">"intent"</span>, <span class="j-key">"type"</span>: <span class="j-str">"llm"</span>,     <span class="j-key">"modelSlot"</span>: <span class="j-str">"main"</span> },
+    { <span class="j-key">"id"</span>: <span class="j-str">"params"</span>, <span class="j-key">"type"</span>: <span class="j-str">"extract"</span>, <span class="j-key">"outputSchema"</span>: { <span class="j-cmt">…</span> } },
+    { <span class="j-key">"id"</span>: <span class="j-str">"lookup"</span>, <span class="j-key">"type"</span>: <span class="j-str">"tool"</span>,    <span class="j-key">"capability"</span>: <span class="j-str">"query-account"</span> },
+    { <span class="j-key">"id"</span>: <span class="j-str">"answer"</span>, <span class="j-key">"type"</span>: <span class="j-str">"extract"</span>, <span class="j-key">"strictness"</span>: <span class="j-str">"strict"</span> }
+  ],
+
+  <span class="j-cmt">// 消费方接入时把 capability 绑定到自己的实现</span>
+  <span class="j-key">"capabilities"</span>: [
+    { <span class="j-key">"id"</span>: <span class="j-str">"query-account"</span>, <span class="j-key">"sideEffect"</span>: <span class="j-str">"read"</span>, <span class="j-key">"inputSchema"</span>: { <span class="j-cmt">…</span> } }
+  ],
+
+  <span class="j-key">"modelSlots"</span>: [
+    { <span class="j-key">"id"</span>: <span class="j-str">"main"</span>, <span class="j-key">"model"</span>: <span class="j-str">"claude-sonnet-5"</span>, <span class="j-key">"temperature"</span>: <span class="j-num">0.2</span> }
+  ],
+
+  <span class="j-cmt">// 指标已冻结，随包导出；消费方改提示词后可用它重算并对比</span>
+  <span class="j-key">"acceptance"</span>: { <span class="j-key">"evaluator"</span>: <span class="j-str">"tool-trace"</span>, <span class="j-key">"frozenAt"</span>: <span class="j-num">1790000000000</span> },
+  <span class="j-key">"evidence"</span>:   { <span class="j-key">"metrics"</span>: { <span class="j-key">"task"</span>: <span class="j-num">0.909</span>, <span class="j-key">"args"</span>: <span class="j-num">0.818</span> }, <span class="j-key">"invalidRate"</span>: <span class="j-num">0.083</span> }
+}</pre>
+    <div class="hint" style="margin-top:10px">
+      随包附参考 runner（零依赖、只用 <code>fetch</code>），保证「工厂里通过」与「产品里通过」是同一套执行语义。
+    </div>
+  </div>
+  <footer>
+    <button class="btn primary" onclick="closeExport()">导出到文件…</button>
+    <button class="btn ghost" onclick="closeExport()">取消</button>
+    <span style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto">导出需人工触发</span>
+  </footer>
+</div>
+
+<!-- ======================= 设计说明 ======================= -->
+<div class="scrim" id="notesScrim" onclick="closeNotes()"></div>
+<div class="modal" id="notesModal" role="dialog" aria-modal="true">
+  <header>
+    <span class="mt">交互设计说明</span>
+    <button class="x" onclick="closeNotes()" aria-label="关闭">✕</button>
+  </header>
+  <div class="mb">
+    <div class="notes-list">
+      <div class="note">
+        <span class="n">01</span>
+        <div>
+          <div class="nt">对话为主，图为辅</div>
+          <div class="nd">中栏最宽，是唯一的主工作区；工作流步骤以紧凑列表嵌在对话消息里，不做独立画布。这与 Canvas 正好相反——那里是人在拖拽作图，这里是人跟 Agent 说话。步骤详情全部收在右栏，不和对话抢位置。</div>
+        </div>
+      </div>
+      <div class="note">
+        <span class="n">02</span>
+        <div>
+          <div class="nt">「采纳」与「冻结」是两个显式动作</div>
+          <div class="nd">Agent 只能产出草案和提案，都不能直接生效。采纳把草案变成当前版本，冻结把指标钉死。两个按钮都在卡片底部、都需人点，因为它们分别决定「用哪套提示词」和「用什么标准衡量」。</div>
+        </div>
+      </div>
+      <div class="note">
+        <span class="n">03</span>
+        <div>
+          <div class="nt">约束与指标分列</div>
+          <div class="nd">「约束合规率」永远和准确率类指标并排出现，且不合法样本不计入后者。指标页显式标注「有效样本 11/12」——合法样本太少时这里会变成拒绝给结论，而不是给一个漂亮分数。</div>
+        </div>
+      </div>
+      <div class="note">
+        <span class="n">04</span>
+        <div>
+          <div class="nt">每一步都可展开</div>
+          <div class="nd">轨迹里点任意步骤展开看输入、渲染后的完整提示词、约束校验结果。这是「编排」相对「单条提示词」的唯一增量：失败常常发生在中间步骤，只看最终回答定位不到。</div>
+        </div>
+      </div>
+      <div class="note">
+        <span class="n">05</span>
+        <div>
+          <div class="nt">虚拟接入标注契约来源</div>
+          <div class="nd">桩卡片显式写明「契约来源 src/api/account.ts」和一致性检查结果（4/4 字段一致）。没有这个标注，用户无法判断桩是照真实接口生成的、还是随便造的假数据——后者会导致工厂里全绿、真实接入全部返工。</div>
+        </div>
+      </div>
+      <div class="note">
+        <span class="n">06</span>
+        <div>
+          <div class="nt">导出是人工动作，状态条常驻提醒</div>
+          <div class="nd">导出入口在顶栏，底部状态条常驻「导出为人工动作 · Agent 不可自主发布」。因为导出会改变另一个项目的行为，且提示词改动在代码 review 里看不见，这个边界必须在界面上持续可见，而不是藏进设置。</div>
+        </div>
+      </div>
+      <div class="note">
+        <span class="n">07</span>
+        <div>
+          <div class="nt">对比页在指标未冻结时拒绝给结论</div>
+          <div class="nd">对比页直接说明两次运行的前提（同一指标、同一模型、同一数据集），并写明「若指标未冻结，本页拒绝给出结论」。宁可空着，也不给一个不可归因的差异。</div>
+        </div>
+      </div>
+      <div class="note">
+        <span class="n">08</span>
+        <div>
+          <div class="nt">与实现的分期差异</div>
+          <div class="nd">本稿演示的是完整目标交互。<code>tool</code> 步骤与「虚拟接入」属于第二阶段；第一阶段的端到端闭环只有 <code>llm</code> 与 <code>extract</code> 两种步骤。稿子里保留它们，是为了让接入形态在动手前就被看清楚。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* 交互原型脚本：只做状态演示，无外部依赖 */
+
+/** 切换右栏 tab */
+function tab(name){
+  var order = ['trace','constraint','metric','compare'];
+  var tabs = document.querySelectorAll('.tab');
+  for (var i = 0; i < tabs.length; i++) {
+    tabs[i].setAttribute('aria-selected', order[i] === name ? 'true' : 'false');
+  }
+  var panes = document.querySelectorAll('.pane');
+  for (var j = 0; j < panes.length; j++) { panes[j].classList.remove('on'); }
+  var pane = document.getElementById('pane-' + name);
+  if (pane) pane.classList.add('on');
+}
+
+/** 轨迹行展开 / 收起 */
+function tog(el){ el.parentElement.classList.toggle('open'); }
+
+/** 采纳工作流草案 */
+function adopt(btn){
+  btn.textContent = '已采纳为草案 v4';
+  btn.classList.remove('primary');
+  btn.disabled = true;
+  var tag = document.querySelector('.convo-head .tag.draft');
+  if (tag) tag.textContent = '草案 v4 · 已采纳';
+}
+
+/** 冻结指标：冻结后跨版本比较才成立 */
+function freeze(){
+  var btn = document.getElementById('btnFreeze');
+  btn.textContent = '指标 v1 已冻结';
+  btn.classList.remove('primary');
+  btn.disabled = true;
+  var ms = document.getElementById('metricState');
+  ms.className = 'tag frozen';
+  ms.textContent = '已冻结 v1';
+  var ft = document.getElementById('frozenTag');
+  ft.className = 'tag frozen';
+  ft.textContent = '已冻结 v1';
+  document.getElementById('frozenText').textContent = '冻结于 2026-09-27 · 此后迭代提示词不再改动指标';
+  var sb = document.getElementById('sbFrozen');
+  sb.textContent = '已冻结 v1';
+  sb.style.color = 'var(--teal)';
+}
+
+/** 模拟一次评测运行 */
+function run(){
+  var btn = document.getElementById('btnRun');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  var led = document.getElementById('led');
+  var state = document.getElementById('runState');
+  var prog = document.getElementById('prog');
+  led.className = 'led run';
+  state.textContent = '运行中 · 12 用例 × 4 步';
+  var p = 0;
+  var timer = setInterval(function(){
+    p = Math.min(100, p + 7 + Math.random() * 9);
+    prog.style.width = p + '%';
+    if (p >= 100) {
+      clearInterval(timer);
+      led.className = 'led done';
+      state.textContent = '完成 · run #b8e1 · 用时 18.4s';
+      btn.disabled = false;
+      var rm = document.getElementById('resultMsg');
+      rm.style.display = 'flex';
+      rm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, 110);
+}
+
+/** 弹层开合 */
+function openExport(){
+  document.getElementById('exportScrim').classList.add('on');
+  document.getElementById('exportModal').classList.add('on');
+}
+function closeExport(){
+  document.getElementById('exportScrim').classList.remove('on');
+  document.getElementById('exportModal').classList.remove('on');
+}
+function openNotes(){
+  document.getElementById('notesScrim').classList.add('on');
+  document.getElementById('notesModal').classList.add('on');
+}
+function closeNotes(){
+  document.getElementById('notesScrim').classList.remove('on');
+  document.getElementById('notesModal').classList.remove('on');
+}
+
+/** 点对话里的步骤 → 跳到轨迹页并展开对应步骤 */
+document.querySelectorAll('.steprow').forEach(function(row){
+  row.addEventListener('click', function(){
+    document.querySelectorAll('.steprow').forEach(function(r){ r.classList.remove('sel'); });
+    row.classList.add('sel');
+    var idx = parseInt(row.getAttribute('data-step'), 10) - 1;
+    tab('trace');
+    var rows = document.querySelectorAll('#traceList .trow');
+    rows.forEach(function(r){ r.classList.remove('open'); });
+    if (rows[idx]) rows[idx].classList.add('open');
+  });
+});
+
+document.addEventListener('keydown', function(e){
+  if (e.key === 'Escape') { closeExport(); closeNotes(); }
+});
+</script>
+</body>
+</html>

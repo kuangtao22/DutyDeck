@@ -34,6 +34,8 @@ interface SystemPromptContext {
   collaborationAvailable?: boolean
   /** 本轮具备运维能力时注入数据库脚本交付约束，不增加任何执行权限。 */
   serverOpsAvailable?: boolean
+  /** 本轮具备编排工厂能力时注入"场景该怎么设计"的方法论，不增加任何执行权限。 */
+  capabilityFactoryAvailable?: boolean
   currentModelId?: string
   projectInstructions?: ProjectInstructionManifest
   /** Only explicit guided consent enables Agent-initiated AGENTS.md maintenance. */
@@ -203,7 +205,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 - 一项操作确定需要可见终端时，**优先复用而非新开 Tab**：先用 \`TerminalList\` 查看本会话终端，选择 cwd 一致、仍在运行且你已观察到上一条命令结束的终端，并在 \`TerminalExecute\` 中传入 \`terminalId\`。仅在没有这种安全候选、cwd 或 shell 必须改变、或需要让用户独立观察并行会话时，才新开终端。交互式、长驻或忙碌状态不明的终端不可复用；需要确认完成状态或命令结果时使用 \`TerminalRead\`。`,
     WORKFLOW_PROMPT,
     ctx.serverOpsAvailable
-      ? `## 服务器运维与数据库变更\n- 新增连接使用 \`ops_connection_prepare\` 生成草稿；在运维面板选择项目、填写凭据、测试并保存，草稿成功不代表已保存或已连接。不要索取聊天中的密码或私钥。\n- 已保存的 MySQL/PostgreSQL/SQLite 连接默认允许只读访问未禁用的业务表；可在运维面板设置持久禁用表，MySQL 系统库与 PostgreSQL 系统 schema 不可访问。PostgreSQL 表必须使用目录返回的 canonical \`"schema"."table"\` 身份，未限定 schema 的 SQL 固定解析到 public。库名未知时用 \`ops_database_tables\` 按需发现，不猜测目标。SSH、Redis 和日志仍须分别在运维面板授权；发现服务不会自动建立或授权连接。\n- 数据库的数据、字段、索引、备注等变更只交付可审查脚本或程序。先使用 \`ops_database_change_context\` 取得允许读取的结构证据。\n${SERVER_OPS_DATABASE_CHANGE_WORKFLOW.map((step) => `- ${step}`).join('\n')}\n- 运维只读模式没有项目文件读写能力时，明确缺少程序上下文，并以代码块交付待完善草稿；不能切换工具或自动扩大权限。`
+      ? `## 服务器运维与数据库变更\n- 新增连接使用 \`ops_connection_prepare\` 生成草稿；在运维面板选择项目、填写凭据、测试并保存，草稿成功不代表已保存或已连接。不要索取聊天中的密码或私钥。\n- 已保存的 MySQL/PostgreSQL/SQLite 连接默认允许只读访问未禁用的业务表；可在运维面板设置持久禁用表，MySQL 系统库与 PostgreSQL 系统 schema 不可访问。PostgreSQL 表必须使用目录返回的 canonical \`"schema"."table"\` 身份，未限定 schema 的 SQL 固定解析到 public。库名未知时用 \`ops_database_tables\` 按需发现，不猜测目标。SSH、Redis 和日志仍须分别在运维面板授权；发现服务不会自动建立或授权连接。\n- **写库由用户手工执行，不提供给你任何写工具**：当前手工写入仅支持直连 MySQL 和本地 SQLite；PostgreSQL 和 SSH 隧道尚不支持。用户可以在数据库工作台「SQL 查询」页开启「写模式」，粘贴语句、确认后执行；你只能**产出可直接粘贴的 SQL**，不能代为执行、也不能声称自己执行了。用户说「我开了写模式」「帮我写一条更新语句」时，按这个含义理解：给他一段能直接用的 SQL，并写清目标库、预期影响行数、是否可回滚（MySQL 的建表改表会隐式提交、无法回滚；SQLite 整段包在一个事务里，只有收到可靠回执才可确认回滚），以及建议的预检查（先 SELECT 核对范围）。断线、超时或取消可能返回「结果未知」，必须先核对实际数据，不能承诺已回滚或建议直接重跑。不要输出「我无法写数据库」这类推给用户自己想办法的话。\n- 数据库的数据、字段、索引、备注等变更只交付可审查脚本或程序。先使用 \`ops_database_change_context\` 取得允许读取的结构证据。\n${SERVER_OPS_DATABASE_CHANGE_WORKFLOW.map((step) => `- ${step}`).join('\n')}\n- 运维只读模式没有项目文件读写能力时，明确缺少程序上下文，并以代码块交付待完善草稿；不能切换工具或自动扩大权限。`
       : undefined,
     planningPrompt,
     ctx.collaborationAvailable
@@ -215,6 +217,14 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 - 不得要求用户切换到另一个 Design/Canvas，也不得把任务转交给不存在的独立 Design 面板；当前会话负责与右侧画布工作区协同。
 - 用户需求不足以判断最终交付是画布产物还是代码实现，且该差异会实质影响结果时，只澄清期望的交付形态；用户明确要求实现、开发或修改代码时，进入正常开发流程。
 - 画布中的生成、审批、候选采用和版本更新继续遵守对应工具与 Skill 的权限边界。`,
+    ctx.capabilityFactoryAvailable
+      ? `## 提示词编排工厂（场景该怎么设计）
+用途：把"交给模型做"的一个环节做成可训练、可交付的场景（步骤 + 提示词 + 输入输出契约 + 评审判据）。右侧「工厂」面板是它的工作台；**你负责设计与改草案，采纳、导出、删除场景是人做的事**。
+- 设计或重构场景时，**先加载并遵循 \`capability-factory-scene-design\` Skill**：从项目里提取可编排环节的完整流程、边界判定与真实反例都在那里。
+- 永远成立的一条：**场景只编排模型必须做的那部分**（\`llm\` / \`extract\`）。由代码在固定位置、固定顺序执行的确定性逻辑（读文件、查库、解析、核对、去重、写库）是**边界**，不是流程 —— 要么作为输入契约由项目给进来，要么作为输出的消费方由项目在模型返回后接出去。判断口径：这一步是否由模型决定"要不要做、以及用什么参数做"。
+- 改完提示词**自己跑一遍再交草案**：\`factory_run_step\` 用真实输入单跑这一步（拿到渲染后的提示词、模型返回、约束结论），\`factory_list_runs\` 看历次尝试。它不改场景、不推版本、不导出。
+- 草案不生效：先 \`factory_prepare_draft\` 出快照，人采纳后才算改了。不要为了"让整条链跑通"去绑虚拟接入。`
+      : undefined,
     workspace
       ? `## 工作区与 Context
 - 项目根：\`${workspace.projectRoot}\`（${workspace.isLocalProject ? '用户本地原始文件' : 'DutyDeck 托管项目文件'}）；cwd：\`${workspace.agentCwd}\`（${workspace.isProjectCwd ? '当前直接在项目根工作' : '会话工作台，不等同项目根'}）。

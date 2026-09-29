@@ -1,0 +1,1193 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DutyDeck · 提示词编排工厂 — 交互设计稿 v2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   提示词编排工厂 · 交互设计稿 v2
+   视觉完全沿用 DutyDeck 现有 token（globals.css 的 :root / .dark）：
+   6px 圆角基准、hairline 边框、Inter + tabular-nums、shadcn 语义色。
+   交互结构按本轮反馈改为「场景挂在项目下 + 提交任务 + 观察过程结果」。
+   ============================================================ */
+:root{
+  /* —— 直接取自 apps/electron/src/renderer/styles/globals.css 的 :root —— */
+  --background:0 0% 100%;
+  --foreground:0 0% 3.9%;
+  --muted:0 0% 96.1%;
+  --muted-foreground:0 0% 45.1%;
+  --border:0 0% 89.8%;
+  --input:0 0% 89.8%;
+  --primary:0 0% 9%;
+  --primary-foreground:0 0% 98%;
+  --secondary:0 0% 96.1%;
+  --accent:0 0% 96.1%;
+  --destructive:0 84.2% 60.2%;
+  --card:0 0% 100%;
+  --popover:0 0% 100%;
+  --dialog:0 0% 100%;
+  --content-area:0 0% 100%;
+  --sidebar-surface:60 14.3% 98.6%;
+  --input-surface:60 14.3% 98.6%;
+  --code-bg:210 13% 12%;
+  --radius:6px;
+  --shadow-sm:0 1px 2px 0 rgb(0 0 0 / .05), 0 1px 1px 0 rgb(0 0 0 / .04);
+  --shadow-md:0 4px 8px -2px rgb(0 0 0 / .08), 0 2px 4px -1px rgb(0 0 0 / .05), 0 0 0 1px rgb(0 0 0 / .04);
+  --shadow-lg:0 12px 24px -6px rgb(0 0 0 / .12), 0 4px 8px -2px rgb(0 0 0 / .06), 0 0 0 1px rgb(0 0 0 / .04);
+  /* 运行状态语义色：亮色底上取足对比 */
+  --ok:152 55% 32%;
+  --warn:32 88% 42%;
+  --bad:0 65% 48%;
+}
+.dark{
+  /* —— 取自 globals.css 的 .dark —— */
+  --background:0 0% 10%;
+  --foreground:0 0% 98%;
+  --muted:0 0% 17%;
+  --muted-foreground:0 0% 63.9%;
+  --border:0 0% 22%;
+  --input:0 0% 22%;
+  --primary:0 0% 98%;
+  --primary-foreground:0 0% 9%;
+  --secondary:0 0% 17%;
+  --accent:0 0% 40%;
+  --destructive:0 55% 45%;
+  --card:0 0% 13%;
+  --popover:0 0% 14%;
+  --dialog:0 0% 16%;
+  --content-area:0 0% 7%;
+  --sidebar-surface:0 0% 10%;
+  --input-surface:0 0% 9%;
+  --code-bg:210 13% 12%;
+  --shadow-sm:0 1px 3px 0 rgb(0 0 0 / .5), inset 0 1px 0 0 hsl(0 0% 100% / .06);
+  --shadow-md:0 6px 16px -4px rgb(0 0 0 / .55), 0 2px 4px 0 rgb(0 0 0 / .35), inset 0 1px 0 0 hsl(0 0% 100% / .08);
+  --shadow-lg:0 16px 32px -8px rgb(0 0 0 / .6), 0 6px 12px -2px rgb(0 0 0 / .4), inset 0 1px 0 0 hsl(0 0% 100% / .10);
+  --ok:152 45% 55%;
+  --warn:32 85% 60%;
+  --bad:0 65% 62%;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:hsl(var(--content-area));
+  color:hsl(var(--foreground));
+  font-family:'Inter Variable','Inter',-apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC',system-ui,sans-serif;
+  font-feature-settings:'cv11','ss01','ss03','tnum';
+  font-size:13px;line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  overflow:hidden;
+}
+
+/* ---------- shadcn 风格基础件 ---------- */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  height:32px;padding:0 12px;border-radius:calc(var(--radius) - 2px);
+  font-size:12.5px;font-weight:500;white-space:nowrap;cursor:pointer;border:0;
+  transition:background-color .15s ease-out,box-shadow .15s ease-out,transform .15s ease-out,color .15s;
+  font-family:inherit;
+}
+.btn:active{transform:scale(.97)}
+.btn:focus-visible{outline:none;box-shadow:0 0 0 2px hsl(var(--background)),0 0 0 4px hsl(var(--foreground)/.4)}
+.btn-primary{
+  background:hsl(var(--primary));color:hsl(var(--primary-foreground));
+  box-shadow:inset 0 1px 0 0 hsl(0 0% 100% / .10),0 1px 2px 0 rgb(0 0 0 / .18),0 0 0 1px rgb(0 0 0 / .06);
+}
+.btn-primary:hover{background:hsl(var(--primary)/.92)}
+.btn-outline{
+  background:hsl(var(--background)/.8);color:hsl(var(--foreground));
+  border:1px solid hsl(var(--border)/.6);box-shadow:0 1px 1px 0 rgb(0 0 0 / .04);
+}
+.btn-outline:hover{background:hsl(var(--muted));border-color:hsl(var(--border))}
+.btn-ghost{background:transparent;color:hsl(var(--foreground))}
+.btn-ghost:hover{background:hsl(var(--muted))}
+.btn-sm{height:28px;padding:0 10px;font-size:12px}
+.btn-icon{height:28px;width:28px;padding:0}
+.btn[disabled]{opacity:.5;pointer-events:none}
+.badge{
+  display:inline-flex;align-items:center;gap:4px;border-radius:9999px;
+  border:1px solid hsl(var(--border));padding:1px 8px;
+  font-size:11px;font-weight:600;letter-spacing:.01em;color:hsl(var(--muted-foreground));
+  background:hsl(var(--background));white-space:nowrap;
+}
+.badge.ok{border-color:hsl(var(--ok)/.4);color:hsl(var(--ok));background:hsl(var(--ok)/.08)}
+.badge.warn{border-color:hsl(var(--warn)/.4);color:hsl(var(--warn));background:hsl(var(--warn)/.08)}
+.badge.bad{border-color:hsl(var(--bad)/.4);color:hsl(var(--bad));background:hsl(var(--bad)/.08)}
+.badge.solid{background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:transparent}
+.mono{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.muted{color:hsl(var(--muted-foreground))}
+.hairline{border-bottom:1px solid hsl(var(--border))}
+
+/* ---------- 布局 ---------- */
+.win{display:flex;flex-direction:column;height:100vh}
+.topbar{
+  display:flex;align-items:center;gap:10px;height:48px;padding:0 12px;flex:0 0 auto;
+  background:hsl(var(--background));border-bottom:1px solid hsl(var(--border));
+}
+.brand{display:flex;align-items:center;gap:8px;padding-right:12px;border-right:1px solid hsl(var(--border))}
+.brand .ic{
+  width:22px;height:22px;border-radius:calc(var(--radius) - 2px);
+  background:hsl(var(--primary));color:hsl(var(--primary-foreground));
+  display:grid;place-items:center;font-size:11px;font-weight:700;
+}
+.brand .t{font-size:13px;font-weight:600;letter-spacing:-.01em}
+.brand .s{font-size:10.5px;color:hsl(var(--muted-foreground))}
+.spacer{flex:1}
+
+.grid{flex:1;display:grid;grid-template-columns:236px minmax(0,1fr) 372px;min-height:0}
+
+/* ---------- 左：项目 → 场景 ---------- */
+.rail{
+  background:hsl(var(--sidebar-surface));border-right:1px solid hsl(var(--border));
+  display:flex;flex-direction:column;min-height:0;
+}
+.rail-head{
+  display:flex;align-items:center;gap:8px;padding:10px 12px 9px;
+  font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+  color:hsl(var(--muted-foreground));
+}
+.rail-list{overflow:auto;padding:0 8px 8px}
+.proj{margin-bottom:2px}
+.proj-head{
+  display:flex;align-items:center;gap:7px;padding:6px 7px;border-radius:calc(var(--radius) - 2px);
+  cursor:pointer;transition:background-color .15s;
+}
+.proj-head:hover{background:hsl(var(--muted))}
+.proj-head .caret{width:10px;font-size:9px;color:hsl(var(--muted-foreground));transition:transform .18s ease-out}
+.proj.collapsed .caret{transform:rotate(-90deg)}
+.proj.collapsed .scenes{display:none}
+.proj-head .pname{font-size:12.5px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.proj-head .pcount{font-size:10.5px;color:hsl(var(--muted-foreground))}
+.scenes{display:flex;flex-direction:column;gap:1px;margin:1px 0 4px;padding-left:8px}
+.scene{
+  display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:calc(var(--radius) - 2px);
+  cursor:pointer;transition:background-color .15s;
+}
+.scene:hover{background:hsl(var(--muted))}
+.scene.active{background:hsl(var(--primary));color:hsl(var(--primary-foreground))}
+.scene.active .smeta{color:hsl(var(--primary-foreground)/.72)}
+.scene .sdot{width:5px;height:5px;border-radius:50%;background:hsl(var(--muted-foreground));flex:0 0 auto}
+.scene.active .sdot{background:hsl(var(--primary-foreground))}
+.scene .stitle{font-size:12.5px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scene .smeta{font-size:10.5px;color:hsl(var(--muted-foreground))}
+.rail-foot{margin-top:auto;padding:10px 12px;border-top:1px solid hsl(var(--border))}
+.rail-foot p{font-size:10.5px;line-height:1.6;color:hsl(var(--muted-foreground))}
+
+/* ---------- 中：观察台 ---------- */
+.work{display:flex;flex-direction:column;min-height:0;background:hsl(var(--content-area))}
+.scenbar{
+  display:flex;align-items:center;gap:9px;padding:10px 14px;flex:0 0 auto;
+  border-bottom:1px solid hsl(var(--border));background:hsl(var(--background));
+}
+.scenbar .nm{font-size:14px;font-weight:600;letter-spacing:-.01em}
+.scenbar .flowmini{display:flex;align-items:center;gap:5px;font-size:11px;color:hsl(var(--muted-foreground))}
+.scenbar .flowmini i{font-style:normal}
+
+.stage{flex:1;overflow:auto;padding:14px}
+
+.card{
+  background:hsl(var(--card));border:1px solid hsl(var(--border));
+  border-radius:var(--radius);box-shadow:var(--shadow-sm);overflow:hidden;
+}
+.card + .card{margin-top:12px}
+.card-h{
+  display:flex;align-items:center;gap:8px;padding:9px 12px;
+  border-bottom:1px solid hsl(var(--border));background:hsl(var(--background)/.5);
+}
+.card-h .ct{font-size:12.5px;font-weight:600}
+.card-b{padding:12px}
+.card-f{
+  display:flex;align-items:center;gap:8px;padding:9px 12px;
+  border-top:1px solid hsl(var(--border));background:hsl(var(--muted)/.4);
+}
+
+/* 步骤流水线 */
+.pipe{display:flex;flex-direction:column}
+.pstep{
+  display:grid;grid-template-columns:22px minmax(0,1fr) auto auto;gap:10px;align-items:center;
+  padding:10px 12px;border-bottom:1px solid hsl(var(--border));transition:background-color .2s;
+}
+.pstep:last-child{border-bottom:0}
+.pstep.running{background:hsl(var(--muted)/.6)}
+.pstep .num{
+  width:20px;height:20px;border-radius:50%;display:grid;place-items:center;
+  font-size:10.5px;font-weight:600;border:1.5px solid hsl(var(--border));
+  color:hsl(var(--muted-foreground));background:hsl(var(--background));transition:all .25s;
+}
+.pstep.done .num{background:hsl(var(--ok));border-color:hsl(var(--ok));color:#fff}
+.pstep.running .num{border-color:hsl(var(--warn));color:hsl(var(--warn));animation:spinpulse 1.2s infinite}
+.pstep.bad .num{background:hsl(var(--bad));border-color:hsl(var(--bad));color:#fff}
+@keyframes spinpulse{0%,100%{opacity:1}50%{opacity:.4}}
+.pstep .sn{font-size:12.5px;font-weight:500}
+.pstep .sd{font-size:11px;color:hsl(var(--muted-foreground));margin-top:1px}
+.pstep .tm{font-size:11px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums}
+.pill{
+  font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:4px;
+  border:1px solid hsl(var(--border));color:hsl(var(--muted-foreground));background:hsl(var(--background));
+}
+
+/* 结果指标 */
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:hsl(var(--border))}
+.metric{background:hsl(var(--card));padding:11px 12px}
+.metric .k{font-size:10.5px;color:hsl(var(--muted-foreground));letter-spacing:.02em}
+.metric .v{font-size:22px;font-weight:600;letter-spacing:-.02em;margin-top:3px;font-variant-numeric:tabular-nums}
+.metric .u{font-size:11px;font-weight:400;color:hsl(var(--muted-foreground));margin-left:2px}
+.v.ok{color:hsl(var(--ok))}.v.warn{color:hsl(var(--warn))}.v.bad{color:hsl(var(--bad))}
+.note{
+  display:flex;gap:8px;align-items:flex-start;padding:10px 12px;font-size:11.5px;line-height:1.6;
+  border-top:1px solid hsl(var(--border));background:hsl(var(--warn)/.07);color:hsl(var(--foreground));
+}
+.note .bang{color:hsl(var(--warn));font-weight:700}
+
+/* 提交历史 */
+.hist{margin-top:12px}
+.hrow{
+  display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:10px;align-items:center;
+  padding:9px 12px;border-bottom:1px solid hsl(var(--border));cursor:pointer;transition:background-color .15s;
+}
+.hrow:last-child{border-bottom:0}
+.hrow:hover{background:hsl(var(--muted)/.5)}
+.hrow.cur{background:hsl(var(--muted)/.7)}
+.hrow .hid{font-size:11px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums}
+.hrow .htxt{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hrow .hmeta{font-size:11px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums}
+
+/* 输入预览 */
+.inputbox{
+  background:hsl(var(--input-surface));border:1px solid hsl(var(--border));border-radius:calc(var(--radius) - 2px);
+  padding:10px;font-size:12px;line-height:1.7;max-height:132px;overflow:auto;white-space:pre-wrap;
+  color:hsl(var(--foreground));font-family:inherit;
+}
+
+/* ---------- 右：inspector ---------- */
+.inspector{background:hsl(var(--sidebar-surface));border-left:1px solid hsl(var(--border));display:flex;flex-direction:column;min-height:0}
+.tabs{display:flex;gap:2px;padding:8px 8px 0;border-bottom:1px solid hsl(var(--border));background:hsl(var(--background))}
+.tab{
+  padding:7px 10px;font-size:12px;font-weight:500;color:hsl(var(--muted-foreground));
+  background:transparent;border:0;border-bottom:2px solid transparent;cursor:pointer;
+  border-radius:calc(var(--radius) - 2px) calc(var(--radius) - 2px) 0 0;font-family:inherit;
+  transition:color .15s,border-color .15s,background-color .15s;
+}
+.tab:hover{color:hsl(var(--foreground));background:hsl(var(--muted)/.6)}
+.tab[aria-selected="true"]{color:hsl(var(--foreground));border-bottom-color:hsl(var(--primary))}
+.tab:focus-visible{outline:none;box-shadow:0 0 0 2px hsl(var(--foreground)/.35)}
+.pane{display:none;overflow:auto;padding:12px;flex:1}
+.pane.on{display:block}
+.sechead{font-size:10.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:hsl(var(--muted-foreground));margin:2px 0 8px}
+.sechead:not(:first-child){margin-top:18px}
+
+/* 轨迹 accordion */
+.trace{border:1px solid hsl(var(--border));border-radius:var(--radius);overflow:hidden;background:hsl(var(--card))}
+.trow{border-bottom:1px solid hsl(var(--border))}
+.trow:last-child{border-bottom:0}
+.thead{display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:9px;align-items:center;padding:8px 10px;cursor:pointer;transition:background-color .15s}
+.thead:hover{background:hsl(var(--muted)/.5)}
+.trow.open .thead{background:hsl(var(--muted)/.6)}
+.tstat{font-size:12px;text-align:center}
+.tbody{display:none;padding:10px;border-top:1px solid hsl(var(--border));background:hsl(var(--muted)/.3)}
+.trow.open .tbody{display:block}
+.kv{display:grid;grid-template-columns:70px minmax(0,1fr);gap:6px 10px;font-size:11.5px;margin-bottom:8px}
+.kv dt{font-size:10.5px;color:hsl(var(--muted-foreground))}
+.kv dd{word-break:break-word}
+pre{
+  background:hsl(var(--code-bg));color:#cdd6e0;border-radius:calc(var(--radius) - 2px);
+  padding:10px;font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;
+  font-size:11px;line-height:1.65;overflow:auto;max-height:260px;white-space:pre;
+}
+.j-key{color:#7fb4e0}.j-str{color:#a5d6a0}.j-num{color:#e0b071}.j-cmt{color:#6b7785}
+
+/* schema */
+.schema{
+  background:hsl(var(--code-bg));color:#cdd6e0;border-radius:calc(var(--radius) - 2px);
+  padding:10px;font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;
+  font-size:11px;line-height:1.75;
+}
+.schema .ln{white-space:pre}
+.schema .fname{color:#e6edf3}
+.schema .ftype{color:#7fb4e0}
+.schema .freq{color:#e0857a;font-size:10px}
+.schema .fopt{color:#6b7785;font-size:10px}
+.schema .fenum{color:#a5d6a0}
+
+/* 对比表 */
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid hsl(var(--border))}
+th{font-size:10.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:hsl(var(--muted-foreground))}
+td{font-variant-numeric:tabular-nums}
+td.name{font-variant-numeric:normal}
+.up{color:hsl(var(--ok))}.down{color:hsl(var(--bad))}
+.barh{height:4px;background:hsl(var(--muted));border-radius:2px;overflow:hidden;margin-top:5px}
+.barh i{display:block;height:100%;background:hsl(var(--foreground)/.45)}
+.barh.cur i{background:hsl(var(--foreground)/.85)}
+.acc{border:1px solid hsl(var(--border));border-radius:var(--radius);overflow:hidden;background:hsl(var(--card))}
+.acc .ah{padding:9px 11px;background:hsl(var(--muted)/.5);border-bottom:1px solid hsl(var(--border));display:flex;gap:8px;align-items:center}
+.acc .ab{padding:10px 11px}
+.arow{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px dashed hsl(var(--border));font-size:11.5px}
+.arow:last-child{border-bottom:0}
+.arow .an{color:hsl(var(--muted-foreground))}
+.arow .av{font-variant-numeric:tabular-nums}
+
+/* ---------- 状态条 ---------- */
+.statusbar{
+  flex:0 0 auto;height:28px;display:flex;align-items:center;gap:14px;padding:0 12px;
+  background:hsl(var(--background));border-top:1px solid hsl(var(--border));
+  font-size:11px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums;
+}
+.statusbar .sb{display:flex;align-items:center;gap:6px}
+.led{width:6px;height:6px;border-radius:50%;background:hsl(var(--muted-foreground))}
+.led.run{background:hsl(var(--warn));animation:spinpulse 1.1s infinite}
+.led.done{background:hsl(var(--ok))}
+.progress{width:90px;height:4px;background:hsl(var(--muted));border-radius:2px;overflow:hidden}
+.progress i{display:block;height:100%;width:0;background:hsl(var(--foreground)/.7);transition:width .25s linear}
+
+/* ---------- 弹层 ---------- */
+.scrim{position:fixed;inset:0;background:rgb(0 0 0/.45);display:none;z-index:40}
+.scrim.on{display:block;animation:fade .16s ease both}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.dialog{
+  position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:min(680px,92vw);max-height:84vh;background:hsl(var(--dialog));color:hsl(var(--foreground));
+  border:1px solid hsl(var(--border));border-radius:var(--radius);box-shadow:var(--shadow-lg);
+  z-index:41;display:none;flex-direction:column;overflow:hidden;
+}
+.dialog.on{display:flex;animation:pop .18s cubic-bezier(.2,.8,.2,1) both}
+@keyframes pop{from{opacity:0;transform:translate(-50%,-50%) scale(.98)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}
+.dialog header{display:flex;align-items:flex-start;gap:10px;padding:14px 16px 10px}
+.dialog header .dt{font-size:14px;font-weight:600}
+.dialog header .dd{font-size:11.5px;color:hsl(var(--muted-foreground));margin-top:2px}
+.dialog .db{padding:0 16px 14px;overflow:auto}
+.dialog footer{display:flex;gap:8px;align-items:center;padding:11px 16px;border-top:1px solid hsl(var(--border));background:hsl(var(--muted)/.4)}
+.x{margin-left:auto;background:transparent;border:0;color:hsl(var(--muted-foreground));cursor:pointer;font-size:15px;line-height:1;padding:3px 5px;border-radius:4px}
+.x:hover{background:hsl(var(--muted));color:hsl(var(--foreground))}
+.field{margin-top:12px}
+.field label{display:block;font-size:11.5px;font-weight:500;margin-bottom:5px;color:hsl(var(--muted-foreground))}
+.ta{
+  width:100%;min-height:168px;resize:vertical;border:1px solid hsl(var(--input));
+  border-radius:calc(var(--radius) - 2px);background:hsl(var(--input-surface));color:hsl(var(--foreground));
+  padding:10px;font-family:inherit;font-size:12.5px;line-height:1.7;outline:none;
+}
+.ta:focus{border-color:hsl(var(--foreground)/.35);box-shadow:0 0 0 3px hsl(var(--foreground)/.08)}
+.seg{display:inline-flex;border:1px solid hsl(var(--border));border-radius:calc(var(--radius) - 2px);overflow:hidden}
+.seg button{background:hsl(var(--background));border:0;padding:6px 11px;font-size:11.5px;cursor:pointer;color:hsl(var(--muted-foreground));font-family:inherit;transition:background-color .15s,color .15s}
+.seg button[aria-pressed="true"]{background:hsl(var(--primary));color:hsl(var(--primary-foreground))}
+.hintline{font-size:11px;color:hsl(var(--muted-foreground));margin-top:7px;line-height:1.6}
+
+.notes{display:flex;flex-direction:column;gap:13px}
+.noteitem{display:grid;grid-template-columns:20px minmax(0,1fr);gap:9px}
+.noteitem .n{
+  width:20px;height:20px;border-radius:50%;display:grid;place-items:center;
+  font-size:10px;font-weight:600;background:hsl(var(--muted));color:hsl(var(--muted-foreground));
+}
+.noteitem .nt{font-size:12.5px;font-weight:600;margin-bottom:2px}
+.noteitem .nd{font-size:11.5px;color:hsl(var(--muted-foreground));line-height:1.65}
+.noteitem .nd code{background:hsl(var(--muted));border-radius:3px;padding:0 4px;font-size:11px}
+
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:hsl(var(--border));border-radius:6px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:hsl(var(--muted-foreground)/.5);background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+<div class="win">
+
+  <!-- ======================= 顶栏 ======================= -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="ic">PF</div>
+      <div>
+        <div class="t">提示词编排工厂</div>
+        <div class="s">DutyDeck · 与运维 / 接口同级</div>
+      </div>
+    </div>
+    <span class="badge">3 个项目 · 4 个场景</span>
+    <span class="badge ok">运行器就绪</span>
+    <div class="spacer"></div>
+    <button class="btn btn-ghost btn-sm" onclick="toggleTheme()" id="themeBtn">切换深色</button>
+    <button class="btn btn-ghost btn-sm" onclick="openNotes()">设计说明</button>
+    <button class="btn btn-outline btn-sm" onclick="openExport()">导出能力包</button>
+    <button class="btn btn-primary btn-sm" onclick="openSubmit()">＋ 提交任务</button>
+  </header>
+
+  <div class="grid">
+
+    <!-- ======================= 左：项目 → 场景 ======================= -->
+    <aside class="rail">
+      <div class="rail-head">项目 / 场景</div>
+      <div class="rail-list">
+
+        <div class="proj" id="proj1">
+          <div class="proj-head" onclick="toggleProj('proj1')">
+            <span class="caret">▼</span>
+            <span class="pname">账号查询箱</span>
+            <span class="pcount">2</span>
+          </div>
+          <div class="scenes">
+            <div class="scene active" onclick="pickScene(this)">
+              <span class="sdot"></span>
+              <span class="stitle">账号状态查询</span>
+              <span class="smeta">4 步</span>
+            </div>
+            <div class="scene" onclick="pickScene(this)">
+              <span class="sdot"></span>
+              <span class="stitle">批量账号巡检</span>
+              <span class="smeta">3 步</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="proj" id="proj2">
+          <div class="proj-head" onclick="toggleProj('proj2')">
+            <span class="caret">▼</span>
+            <span class="pname">小说工坊</span>
+            <span class="pcount">1</span>
+          </div>
+          <div class="scenes">
+            <div class="scene" onclick="pickScene(this)">
+              <span class="sdot"></span>
+              <span class="stitle">角色提取</span>
+              <span class="smeta">3 步</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="proj collapsed" id="proj3">
+          <div class="proj-head" onclick="toggleProj('proj3')">
+            <span class="caret">▼</span>
+            <span class="pname">车本本</span>
+            <span class="pcount">1</span>
+          </div>
+          <div class="scenes">
+            <div class="scene" onclick="pickScene(this)">
+              <span class="sdot"></span>
+              <span class="stitle">保养记录摘要</span>
+              <span class="smeta">2 步</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+      <div class="rail-foot">
+        <p>场景跟随所属项目，一个项目可以有多个场景。草稿、提交记录与运行轨迹留存本机工作区。</p>
+      </div>
+    </aside>
+
+    <!-- ======================= 中：观察台 ======================= -->
+    <section class="work">
+      <div class="scenbar">
+        <span class="nm">账号状态查询</span>
+        <span class="flowmini">
+          <i>解析意图</i>›<i>抽取参数</i>›<i>查询账号</i>›<i>生成回答</i>
+        </span>
+        <span class="badge ok" id="metricBadge">指标 v1 · 已冻结</span>
+        <div class="spacer"></div>
+        <span class="badge" id="runningBadge" style="display:none">运行中</span>
+        <button class="btn btn-primary btn-sm" id="btnSubmitTop" onclick="openSubmit()">＋ 提交任务</button>
+      </div>
+
+      <div class="stage">
+
+        <!-- 本次提交的输入 -->
+        <div class="card">
+          <div class="card-h">
+            <span class="ct">本次提交</span>
+            <span class="badge">纯文本</span>
+            <span class="muted" style="font-size:11px">4,218 字 · 2026-09-27 08:42</span>
+            <div class="spacer"></div>
+            <button class="btn btn-ghost btn-sm" onclick="toggleInput()" id="inputToggle">展开全文</button>
+          </div>
+          <div class="card-b">
+            <div class="inputbox" id="inputBox" style="max-height:76px;overflow:hidden">
+第十二章 夜航
+
+林知远把最后一只箱子推进底舱时，甲板上的探照灯正好横扫过来。他压低帽檐，听见身后有人喊他的名字——是周砚，那个在三天前还坚称自己从没上过船的人。
+
+「你骗了所有人。」周砚说，声音被海风吹得断断续续……
+            </div>
+          </div>
+        </div>
+
+        <!-- 运行过程 -->
+        <div class="card">
+          <div class="card-h">
+            <span class="ct">运行过程</span>
+            <span class="badge ok" id="runBadge">已完成</span>
+            <span class="muted mono" style="font-size:11px" id="runMeta">run #b8e1 · claude-sonnet-5 · temp 0.2 · 18.4s</span>
+            <div class="spacer"></div>
+            <button class="btn btn-ghost btn-sm" id="btnSteps" onclick="toggleSteps()">逐步展开</button>
+          </div>
+          <div class="pipe" id="pipe">
+            <div class="pstep done" data-step="1">
+              <span class="num">1</span>
+              <div><div class="sn">解析用户意图</div><div class="sd">判断要查哪个账号、要哪些字段</div></div>
+              <span class="pill">llm</span>
+              <span class="tm">412ms</span>
+            </div>
+            <div class="pstep done" data-step="2">
+              <span class="num">2</span>
+              <div><div class="sn">抽取查询参数</div><div class="sd">accountId · 约束通过 2/2 字段</div></div>
+              <span class="pill">extract</span>
+              <span class="tm">786ms</span>
+            </div>
+            <div class="pstep done" data-step="3">
+              <span class="num">3</span>
+              <div><div class="sn">查询账号</div><div class="sd">capability: query-account · 虚拟接入</div></div>
+              <span class="pill">tool</span>
+              <span class="tm">6ms</span>
+            </div>
+            <div class="pstep bad" data-step="4">
+              <span class="num">4</span>
+              <div><div class="sn">生成回答</div><div class="sd">约束未通过：缺少必填字段 expiresAt · 重试 1 次</div></div>
+              <span class="pill">extract</span>
+              <span class="tm">1.2s</span>
+            </div>
+          </div>
+          <div class="card-f">
+            <span class="muted" style="font-size:11px">点任意步骤看它的输入、渲染后的完整提示词与约束校验结果</span>
+          </div>
+        </div>
+
+        <!-- 本次输出：这是「一次提交」的观察终点 -->
+        <div class="card">
+          <div class="card-h">
+            <span class="ct">本次输出</span>
+            <span class="badge warn">约束未通过</span>
+            <div class="spacer"></div>
+            <span class="muted" style="font-size:11px">重试 1 次后仍缺 expiresAt</span>
+          </div>
+          <div class="card-b" style="padding:0">
+            <div style="padding:12px">
+              <pre style="max-height:180px">{
+  <span class="j-key">"summary"</span>: <span class="j-str">"账号 xiaoming@corp 状态正常，pro 套餐"</span>,
+  <span class="j-key">"status"</span>:  <span class="j-str">"active"</span>
+}</pre>
+            </div>
+            <div class="note">
+              <span class="bang">!</span>
+              <span>按场景的 strict 规则，这次输出被判为 <b>invalid</b>（缺必填字段 <span class="mono">expiresAt</span>），因此不计入评测指标。任务本身仍然可读，可直接拿去用。</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 最近一次评测：与提交分离，用于迭代提示词 -->
+        <div class="card">
+          <div class="card-h">
+            <span class="ct">最近一次评测</span>
+            <span class="badge">12 个用例</span>
+            <span class="muted" style="font-size:11px">2026-09-27 08:31 · 手动触发</span>
+            <div class="spacer"></div>
+            <button class="btn btn-outline btn-sm" onclick="runEval()" id="btnEval">运行评测</button>
+          </div>
+          <div class="metrics">
+            <div class="metric"><div class="k">约束合规率</div><div class="v ok">91.7<span class="u">%</span></div></div>
+            <div class="metric"><div class="k">有效样本</div><div class="v">11<span class="u">/12</span></div></div>
+            <div class="metric"><div class="k">任务完成率</div><div class="v ok">90.9<span class="u">%</span></div></div>
+            <div class="metric"><div class="k">参数正确率</div><div class="v warn">81.8<span class="u">%</span></div></div>
+          </div>
+          <div class="note">
+            <span class="bang">!</span>
+            <span>指标只统计合法样本（11/12）。<b>参数正确率 81.8%</b> 是最弱项：2 个用例把中文账号名直接当作 <code class="mono">accountId</code> 传给了接口。到「对比」看它相对基线的变化。</span>
+          </div>
+        </div>
+
+        <!-- 提交历史 -->
+        <div class="card hist">
+          <div class="card-h">
+            <span class="ct">提交历史</span>
+            <span class="badge">本场景 24 次</span>
+            <div class="spacer"></div>
+            <span class="muted" style="font-size:11px">每次提交独立留痕，可回看任意一次</span>
+          </div>
+          <div class="hrow cur">
+            <span class="hid mono">#b8e1</span>
+            <span class="htxt">第十二章 夜航 · 4,218 字</span>
+            <span class="hmeta">合规 91.7% · 完成 90.9%</span>
+            <span class="badge ok">已完成</span>
+          </div>
+          <div class="hrow" onclick="pickRun(this)">
+            <span class="hid mono">#a7f2</span>
+            <span class="htxt">第十一章 退潮 · 3,904 字</span>
+            <span class="hmeta">合规 83.3% · 完成 83.3%</span>
+            <span class="badge">已完成</span>
+          </div>
+          <div class="hrow" onclick="pickRun(this)">
+            <span class="hid mono">#91cc</span>
+            <span class="htxt">第十章 灯下 · 4,510 字</span>
+            <span class="hmeta">合规 100% · 完成 91.7%</span>
+            <span class="badge">已完成</span>
+          </div>
+          <div class="hrow" onclick="pickRun(this)">
+            <span class="hid mono">#88a0</span>
+            <span class="htxt">批量巡检 · 32 个账号</span>
+            <span class="hmeta">合规 96.9% · 完成 96.9%</span>
+            <span class="badge">已完成</span>
+          </div>
+          <div class="hrow" onclick="pickRun(this)">
+            <span class="hid mono">#7f31</span>
+            <span class="htxt">第九章 空舱 · 3,220 字</span>
+            <span class="hmeta">在第 3 步中断</span>
+            <span class="badge warn">已中断</span>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ======================= 右：inspector ======================= -->
+    <aside class="inspector">
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" aria-selected="true" onclick="tab('scene')">场景</button>
+        <button class="tab" role="tab" aria-selected="false" onclick="tab('trace')">轨迹</button>
+        <button class="tab" role="tab" aria-selected="false" onclick="tab('constraint')">约束</button>
+        <button class="tab" role="tab" aria-selected="false" onclick="tab('metric')">指标</button>
+        <button class="tab" role="tab" aria-selected="false" onclick="tab('compare')">对比</button>
+      </div>
+
+      <!-- 场景定义 -->
+      <div class="pane on" id="pane-scene">
+        <div class="sechead">场景定义 · 账号状态查询</div>
+        <div class="trace">
+          <div class="trow open">
+            <div class="thead" onclick="tog(this)">
+              <span class="tstat">1</span>
+              <div><div class="sn" style="font-size:12.5px">解析用户意图</div><div class="muted mono" style="font-size:10.5px">llm · 无输出约束</div></div>
+              <span class="muted" style="font-size:10px">▾</span>
+            </div>
+            <div class="tbody">
+              <div class="sechead" style="margin:0 0 5px">提示词</div>
+              <pre>你是账号助手。判断用户想查询哪个账号、需要哪些字段。
+只输出判断结论，不要输出 JSON。</pre>
+            </div>
+          </div>
+          <div class="trow">
+            <div class="thead" onclick="tog(this)">
+              <span class="tstat">2</span>
+              <div><div class="sn" style="font-size:12.5px">抽取查询参数</div><div class="muted mono" style="font-size:10.5px">extract · strict · maxAttempts 2</div></div>
+              <span class="muted" style="font-size:10px">▾</span>
+            </div>
+            <div class="tbody">
+              <div class="sechead" style="margin:0 0 5px">输出约束</div>
+              <div class="schema"><div class="ln">{</div><div class="ln">  <span class="fname">accountId</span>: <span class="ftype">string</span> <span class="freq">必填</span></div><div class="ln">  <span class="fname">fields</span>:    <span class="ftype">array&lt;string&gt;</span> <span class="fopt">可选</span></div><div class="ln">}</div></div>
+            </div>
+          </div>
+          <div class="trow">
+            <div class="thead" onclick="tog(this)">
+              <span class="tstat">3</span>
+              <div><div class="sn" style="font-size:12.5px">查询账号</div><div class="muted mono" style="font-size:10.5px">tool · query-account</div></div>
+              <span class="muted" style="font-size:10px">▾</span>
+            </div>
+            <div class="tbody">
+              <div class="kv" style="margin-bottom:0">
+                <dt>能力</dt><dd class="mono">query-account（read）</dd>
+                <dt>虚拟接入</dt><dd>契约来源 <span class="mono">src/api/account.ts</span> · 一致性 4/4</dd>
+              </div>
+            </div>
+          </div>
+          <div class="trow">
+            <div class="thead" onclick="tog(this)">
+              <span class="tstat">4</span>
+              <div><div class="sn" style="font-size:12.5px">生成回答</div><div class="muted mono" style="font-size:10.5px">extract · strict · maxAttempts 2</div></div>
+              <span class="muted" style="font-size:10px">▾</span>
+            </div>
+            <div class="tbody">
+              <div class="sechead" style="margin:0 0 5px">输出约束</div>
+              <div class="schema">
+<div class="ln">{</div>
+<div class="ln">  <span class="fname">summary</span>:   <span class="ftype">string</span> <span class="freq">必填</span></div>
+<div class="ln">  <span class="fname">status</span>:    <span class="ftype">string</span> <span class="freq">必填</span> <span class="fenum">∈ active|suspended|expired</span></div>
+<div class="ln">  <span class="fname">expiresAt</span>: <span class="ftype">string</span> <span class="freq">必填</span></div>
+<div class="ln">  <span class="fname">note</span>:      <span class="ftype">string</span> <span class="fopt">可选</span></div>
+<div class="ln">}</div>
+              </div>
+              <div class="hintline">status 的三值枚举读自项目 <span class="mono">src/api/account.ts</span>，不是模型编的。</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sechead">输入契约</div>
+        <div class="acc">
+          <div class="ab">
+            <div class="arow"><span class="an">text</span><span class="av mono">string · 必填</span></div>
+            <div class="arow"><span class="an">提交方式</span><span class="av">弹窗粘贴正文 / 选择本地文件</span></div>
+          </div>
+        </div>
+
+        <div class="sechead">迭代入口</div>
+        <div class="hintline">这个面板只负责提交与观察。要改提示词或约束，在 Agent 会话里让它改这个场景——改动会生成新版本，不覆盖当前版本。</div>
+        <div style="margin-top:9px"><button class="btn btn-outline btn-sm">在 Agent 中迭代此场景</button></div>
+      </div>
+
+      <!-- 轨迹 -->
+      <div class="pane" id="pane-trace">
+        <div class="sechead">run #b8e1 · 逐步轨迹</div>
+        <div class="trace" id="traceList">
+          <div class="trow open">
+            <div class="thead" onclick="tog(this)">
+              <span class="tstat ok">✓</span>
+              <div><div class="sn" style="font-size:12.5px">1 · 解析用户意图</div><div class="muted mono" style="font-size:10.5px">llm · 412ms</div></div>
+              <span class="muted" style="font-size:10px">▾</span>
+            </div>
+            <div class="tbody">
+              <div class="kv">
+                <dt>输入</dt><dd>第十二章 夜航（4,218 字）</dd>
+                <dt>输出</dt><dd>需要查询该账号的 status 与 expiresAt</dd>
+              </div>
+              <div class="sechead" style="margin:0 0 5px">实际提示词</div>
+              <pre>你是账号助手。判断用户想查询哪个账号、需要哪些字段。
+只输出判断结论，不要输出 JSON。</pre>
+            </div>
+          </div>
+          <div class="trow">
+            <div class="thead" onclick="tog(this)">
+              <span class="tstat ok">✓</span>
+              <div><div class="sn" style="font-size:12.5px">2 · 抽取查询参数</div><div class="muted mono" style="font-size:10.5px">extract · 786ms · 约束通过</div></div>
+              <span class="muted" style="font-size:10px">▾</span>
+            </div>
+            <div class="tbody">
+              <div class="kv"><dt>校验</dt><dd><b style="color:hsl(var(--ok))">通过</b> · 2/2 必填字段</dd></div>
+              <pre>{
+  <span class="j-key">"accountId"</span>: <span class="j-str">"xiaoming@corp"</span>,
+  <span class="j-key">"fields"</span>: [<span class="j-str">"status"</span>, <span class="j-str">"expiresAt"</span>]
+}</pre>
+            </div>
+          </div>
+          <div class="trow">
+            <div class="thead" onclick="tog(this)">
+              <span class="tstat ok">✓</span>
+              <div><div class="sn" style="font-size:12.5px">3 · 查询账号</div><div class="muted mono" style="font-size:10.5px">tool · 虚拟接入 · 6ms</div></div>
+              <span class="muted" style="font-size:10px">▾</span>
+            </div>
+            <div class="tbody">
+              <div class="kv"><dt>入参</dt><dd class="mono">{ accountId: "xiaoming@corp" }</dd></div>
+              <pre>{
+  <span class="j-key">"id"</span>: <span class="j-str">"xiaoming@corp"</span>,
+  <span class="j-key">"status"</span>: <span class="j-str">"active"</span>,
+  <span class="j-key">"expiresAt"</span>: <span class="j-str">"2026-12-31"</span>,
+  <span class="j-key">"plan"</span>: <span class="j-str">"pro"</span>
+}</pre>
+            </div>
+          </div>
+          <div class="trow">
+            <div class="thead" onclick="tog(this)">
+              <span class="tstat" style="color:hsl(var(--warn))">◐</span>
+              <div><div class="sn" style="font-size:12.5px">4 · 生成回答</div><div class="muted mono" style="font-size:10.5px">extract · 1 次重试 · 约束未通过</div></div>
+              <span class="muted" style="font-size:10px">▾</span>
+            </div>
+            <div class="tbody">
+              <div class="kv">
+                <dt>状态</dt><dd><b style="color:hsl(var(--warn))">invalid</b> —— 不计入准确率统计</dd>
+                <dt>原因</dt><dd>缺少必填字段 <span class="mono">expiresAt</span></dd>
+              </div>
+              <pre><span class="j-cmt">// 两次返回都缺字段，已按 maxAttempts=2 停止</span>
+{
+  <span class="j-key">"summary"</span>: <span class="j-str">"账号正常，pro 套餐"</span>,
+  <span class="j-key">"status"</span>: <span class="j-str">"active"</span>
+}</pre>
+            </div>
+          </div>
+        </div>
+        <div class="hintline">轨迹逐步留痕，可据此只重跑失败步骤及其下游，不必整链重跑。</div>
+      </div>
+
+      <!-- 约束 -->
+      <div class="pane" id="pane-constraint">
+        <div class="sechead">第 4 步 · 输出约束</div>
+        <div class="schema">
+<div class="ln">{</div>
+<div class="ln">  <span class="fname">summary</span>:   <span class="ftype">string</span>  <span class="freq">必填</span></div>
+<div class="ln">  <span class="fname">status</span>:    <span class="ftype">string</span>  <span class="freq">必填</span> <span class="fenum">∈ active|suspended|expired</span></div>
+<div class="ln">  <span class="fname">expiresAt</span>: <span class="ftype">string</span>  <span class="freq">必填</span></div>
+<div class="ln">  <span class="fname">note</span>:      <span class="ftype">string</span>  <span class="fopt">可选</span></div>
+<div class="ln">}</div>
+        </div>
+        <div class="hintline">一份 schema 驱动三件事：自动生成提示词里的格式说明、运行时强校验、评测器知道该比对哪些字段。</div>
+
+        <div class="sechead">strictness</div>
+        <div class="acc">
+          <div class="ah"><span class="badge warn">strict</span><span class="muted" style="font-size:11.5px">不合法即判该次运行失败并按 maxAttempts 重试</span></div>
+          <div class="ab">
+            <div class="arow"><span class="an">maxAttempts</span><span class="av mono">2</span></div>
+            <div class="arow"><span class="an">本次合规率</span><span class="av mono">91.7%</span></div>
+            <div class="arow"><span class="an">有效样本</span><span class="av mono">11 / 12</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 指标 -->
+      <div class="pane" id="pane-metric">
+        <div class="sechead">评测指标</div>
+        <div class="acc">
+          <div class="ah"><span class="badge ok">已冻结 v1</span><span class="muted" style="font-size:11.5px">冻结于 2026-09-27</span></div>
+          <div class="ab">
+            <div class="arow"><span class="an">evaluator</span><span class="av mono">tool-trace</span></div>
+            <div class="arow"><span class="an">任务完成率</span><span class="av mono">权重 0.4</span></div>
+            <div class="arow"><span class="an">参数正确率</span><span class="av mono">权重 0.4</span></div>
+            <div class="arow"><span class="an">编造率</span><span class="av mono">权重 0.2（反向）</span></div>
+            <div class="arow"><span class="an">判据来源</span><span class="av">项目接口定义 + 需求描述</span></div>
+          </div>
+        </div>
+        <div class="hintline">冻结后迭代提示词不再改动指标；要改指标是一个独立动作，改完需重算基线。</div>
+
+        <div class="sechead">本次运行</div>
+        <div class="acc">
+          <div class="ab">
+            <div class="arow"><span class="an">约束合规率</span><span class="av mono">91.7%</span></div>
+            <div class="arow"><span class="an">有效样本</span><span class="av mono">11 / 12</span></div>
+            <div class="arow"><span class="an">任务完成率</span><span class="av mono">90.9%</span></div>
+            <div class="arow"><span class="an">参数正确率</span><span class="av mono">81.8%</span></div>
+          </div>
+        </div>
+        <div class="hintline">约束合规率与指标分列。合法样本太少时这里只会给 <span class="mono">invalid rate</span>，不给指标结论。</div>
+      </div>
+
+      <!-- 对比 -->
+      <div class="pane" id="pane-compare">
+        <div class="sechead">本次 #b8e1 ↔ 基线 #a7f2</div>
+        <table>
+          <thead><tr><th>指标</th><th>基线</th><th>本次</th><th>变化</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="name">约束合规率</td>
+              <td>83.3%<div class="barh"><i style="width:83%"></i></div></td>
+              <td>91.7%<div class="barh cur"><i style="width:92%"></i></div></td>
+              <td class="up">+8.4</td>
+            </tr>
+            <tr><td class="name">任务完成率</td><td>83.3%</td><td>90.9%</td><td class="up">+7.6</td></tr>
+            <tr><td class="name">参数正确率</td><td>75.0%</td><td>81.8%</td><td class="up">+6.8</td></tr>
+            <tr><td class="name">编造率</td><td>16.7%</td><td>9.1%</td><td class="up">−7.6</td></tr>
+          </tbody>
+        </table>
+        <div class="hintline">
+          两次运行使用同一份已冻结指标（v1）、同一模型与温度、同一批输入，差异可归因到提示词改动。<br>
+          若指标未冻结，本页拒绝给出结论。
+        </div>
+
+        <div class="sechead">成本</div>
+        <div class="acc">
+          <div class="ab">
+            <div class="arow"><span class="an">本次调用</span><span class="av mono">12 × 4 = 48 次</span></div>
+            <div class="arow"><span class="an">输入 tokens</span><span class="av mono">86.4k</span></div>
+            <div class="arow"><span class="an">缓存命中</span><span class="av">第 1–2 步复用 100%</span></div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ======================= 状态条 ======================= -->
+  <footer class="statusbar">
+    <span class="sb"><span class="led done" id="led"></span><span id="runState">空闲 · 上次提交 #b8e1 已完成</span></span>
+    <span class="progress"><i id="prog"></i></span>
+    <span class="sb">指标 v1 已冻结</span>
+    <span class="sb">预算内</span>
+    <span class="spacer"></span>
+    <span class="sb">导出为人工动作 · Agent 不可自主发布</span>
+  </footer>
+</div>
+
+<!-- ======================= 提交任务 ======================= -->
+<div class="scrim" id="submitScrim" onclick="closeSubmit()"></div>
+<div class="dialog" id="submitDialog" role="dialog" aria-modal="true" aria-labelledby="submitTitle">
+  <header>
+    <div>
+      <div class="dt" id="submitTitle">提交任务</div>
+      <div class="dd">场景：账号状态查询 · 4 步 · 指标 v1 已冻结</div>
+    </div>
+    <button class="x" onclick="closeSubmit()" aria-label="关闭">✕</button>
+  </header>
+  <div class="db">
+    <div class="field">
+      <label>输入方式</label>
+      <div class="seg">
+        <button aria-pressed="true">粘贴正文</button>
+        <button aria-pressed="false" onclick="segPick(this)">选择本地文件</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>任务名称（留空自动取首行）</label>
+      <input class="ta" style="min-height:auto;height:34px;padding:7px 10px" placeholder="第十二章 夜航" />
+    </div>
+    <div class="field">
+      <label>正文</label>
+      <textarea class="ta" placeholder="把要处理的内容粘进来，例如小说的一个章节、一段账号信息、一批待处理数据…"></textarea>
+      <div class="hintline">提交后工作流自动运行，你可以在「运行过程」逐查看每一步的输入输出，不需要再对话。运行会消耗模型调用。</div>
+    </div>
+  </div>
+  <footer>
+    <button class="btn btn-primary" onclick="startSubmit()">开始运行</button>
+    <button class="btn btn-outline" onclick="closeSubmit()">取消</button>
+    <span class="spacer"></span>
+    <span class="muted" style="font-size:11px">本次将调用 4 步模型任务</span>
+  </footer>
+</div>
+
+<!-- ======================= 导出能力包 ======================= -->
+<div class="scrim" id="exportScrim" onclick="closeExport()"></div>
+<div class="dialog" id="exportDialog" role="dialog" aria-modal="true">
+  <header>
+    <div>
+      <div class="dt">导出能力包</div>
+      <div class="dd">packageVersion 1.0.0 · specVersion 1 · 交付给关联项目接入</div>
+    </div>
+    <button class="x" onclick="closeExport()" aria-label="关闭">✕</button>
+  </header>
+  <div class="db">
+    <div class="hintline" style="margin:0 0 10px">能力包自包含，不引用 DutyDeck 的任何内部概念：不含工具名、不含工作区路径、不含凭据，消费方项目不需要安装 DutyDeck。</div>
+    <pre>{
+  <span class="j-key">"kind"</span>: <span class="j-str">"proma-ai-capability-package"</span>,
+  <span class="j-key">"packageVersion"</span>: <span class="j-str">"1.0.0"</span>,
+  <span class="j-key">"specVersion"</span>: <span class="j-num">1</span>,
+  <span class="j-key">"name"</span>: <span class="j-str">"account-status-query"</span>,
+
+  <span class="j-key">"inputs"</span>:  { <span class="j-key">"text"</span>: { <span class="j-key">"type"</span>: <span class="j-str">"string"</span> } },
+  <span class="j-key">"outputs"</span>: { <span class="j-key">"answer"</span>: { <span class="j-key">"stepId"</span>: <span class="j-str">"answer"</span> } },
+
+  <span class="j-key">"steps"</span>: [
+    { <span class="j-key">"id"</span>: <span class="j-str">"intent"</span>, <span class="j-key">"type"</span>: <span class="j-str">"llm"</span>,     <span class="j-key">"modelSlot"</span>: <span class="j-str">"main"</span> },
+    { <span class="j-key">"id"</span>: <span class="j-str">"params"</span>, <span class="j-key">"type"</span>: <span class="j-str">"extract"</span>, <span class="j-key">"outputSchema"</span>: { <span class="j-cmt">…</span> } },
+    { <span class="j-key">"id"</span>: <span class="j-str">"lookup"</span>, <span class="j-key">"type"</span>: <span class="j-str">"tool"</span>,    <span class="j-key">"capability"</span>: <span class="j-str">"query-account"</span> },
+    { <span class="j-key">"id"</span>: <span class="j-str">"answer"</span>, <span class="j-key">"type"</span>: <span class="j-str">"extract"</span>, <span class="j-key">"strictness"</span>: <span class="j-str">"strict"</span> }
+  ],
+
+  <span class="j-cmt">// 消费方接入时把 capability 绑定到自己的实现</span>
+  <span class="j-key">"capabilities"</span>: [
+    { <span class="j-key">"id"</span>: <span class="j-str">"query-account"</span>, <span class="j-key">"sideEffect"</span>: <span class="j-str">"read"</span>, <span class="j-key">"inputSchema"</span>: { <span class="j-cmt">…</span> } }
+  ],
+
+  <span class="j-key">"modelSlots"</span>: [
+    { <span class="j-key">"id"</span>: <span class="j-str">"main"</span>, <span class="j-key">"model"</span>: <span class="j-str">"claude-sonnet-5"</span>, <span class="j-key">"temperature"</span>: <span class="j-num">0.2</span> }
+  ],
+
+  <span class="j-key">"acceptance"</span>: { <span class="j-key">"evaluator"</span>: <span class="j-str">"tool-trace"</span>, <span class="j-key">"frozenAt"</span>: <span class="j-num">1790000000000</span> },
+  <span class="j-key">"evidence"</span>:   { <span class="j-key">"metrics"</span>: { <span class="j-key">"task"</span>: <span class="j-num">0.909</span>, <span class="j-key">"args"</span>: <span class="j-num">0.818</span> }, <span class="j-key">"invalidRate"</span>: <span class="j-num">0.083</span> }
+}</pre>
+    <div class="hintline">随包附参考 runner（零依赖、只用 fetch），保证「工厂里通过」与「产品里通过」是同一套执行语义。</div>
+  </div>
+  <footer>
+    <button class="btn btn-primary" onclick="closeExport()">导出到文件…</button>
+    <button class="btn btn-outline" onclick="closeExport()">取消</button>
+    <span class="spacer"></span>
+    <span class="muted" style="font-size:11px">导出需人工触发</span>
+  </footer>
+</div>
+
+<!-- ======================= 设计说明 ======================= -->
+<div class="scrim" id="notesScrim" onclick="closeNotes()"></div>
+<div class="dialog" id="notesDialog" role="dialog" aria-modal="true">
+  <header>
+    <div><div class="dt">交互设计说明 v2</div><div class="dd">本轮按反馈改动的地方</div></div>
+    <button class="x" onclick="closeNotes()" aria-label="关闭">✕</button>
+  </header>
+  <div class="db">
+    <div class="notes">
+      <div class="noteitem"><span class="n">01</span><div>
+        <div class="nt">视觉改用项目现有 token</div>
+        <div class="nd">颜色、圆角、阴影、字体全部取自 <code>globals.css</code> 的 <code>:root</code> 与 <code>.dark</code>：6px 圆角基准、hairline 边框、Inter + tabular-nums、shadcn 语义色。右上角可以切深浅色，两侧都是项目里已有的取值。按钮的立体片状阴影也照抄了 <code>ui/button.tsx</code>。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">02</span><div>
+        <div class="nt">场景挂在项目下面</div>
+        <div class="nd">左栏是「项目 → 场景」两级，和左边栏「工作区 → 会话」的结构一致；一个项目可以有多个场景，项目标题可折叠。切换项目时只换场景列表，不切走整个面板。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">03</span><div>
+        <div class="nt">去掉对话，改成「提交任务」</div>
+        <div class="nd">提交入口在顶栏和场景条两处，点了弹对话框：粘正文 → 开始运行 → 工作流自动跑。中栏是观察台，不是聊天记录。这样一次提交就是一件事，可以反复跑同一个场景而不用重复描述需求。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">04</span><div>
+        <div class="nt">「提交」与「评测」分开</div>
+        <div class="nd">提交一次 = 跑一个输入，看过程与这一条的输出；评测 = 跑一整套用例，产出一组指标。两者目的不同，所以分两个入口、两块结果。你可能连续提交十几次都不需要跑评测。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">05</span><div>
+        <div class="nt">观察面就是「运行过程 + 本次输出」</div>
+        <div class="nd">中栏按顺序是：本次提交的输入 → 运行过程（每步的编号、类型、耗时、约束校验结论）→ 本次输出 → 评测结果 → 提交历史。点任意步骤跳到右栏看它的输入、渲染后的完整提示词和校验明细。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">06</span><div>
+        <div class="nt">场景定义收在右栏，迭代出口留给 Agent</div>
+        <div class="nd">既然这个面板不再对话，场景的提示词、约束、指标就放在右栏「场景」页只读展示；要改，走「在 Agent 中迭代此场景」到 Agent 会话里改，改动生成新版本、不覆盖当前版本。这样「看」和「改」分开，改的入口只有一个。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">07</span><div>
+        <div class="nt">约束与指标仍然分列</div>
+        <div class="nd">本次输出按 strict 规则判为 <code>invalid</code>（缺 <code>expiresAt</code>），因此不计入评测指标，但任务本身照样可读可用。指标卡显式标注「有效样本 11/12」。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">08</span><div>
+        <div class="nt">与实现分期的差异</div>
+        <div class="nd"><code>tool</code> 步骤与「虚拟接入」属于第二阶段；第一阶段端到端闭环只有 <code>llm</code> 与 <code>extract</code>，先用小说角色提取跑通。稿子里保留它们是为了让接入形态在动手前被看清楚。</div>
+      </div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* 交互原型脚本：只做状态演示，无外部依赖 */
+
+/** 深浅主题切换（两侧都是 globals.css 里已有的取值） */
+function toggleTheme(){
+  var on = document.documentElement.classList.toggle('dark');
+  document.getElementById('themeBtn').textContent = on ? '切换浅色' : '切换深色';
+}
+
+/** 项目折叠 */
+function toggleProj(id){ document.getElementById(id).classList.toggle('collapsed'); }
+
+/** 选择场景 */
+function pickScene(el){
+  document.querySelectorAll('.scene').forEach(function(s){ s.classList.remove('active'); });
+  el.classList.add('active');
+  document.querySelector('.scenbar .nm').textContent = el.querySelector('.stitle').textContent;
+}
+
+/** 右栏 tab */
+function tab(name){
+  var order = ['scene','trace','constraint','metric','compare'];
+  var tabs = document.querySelectorAll('.tab');
+  for (var i=0;i<tabs.length;i++){ tabs[i].setAttribute('aria-selected', order[i]===name ? 'true':'false'); }
+  document.querySelectorAll('.pane').forEach(function(p){ p.classList.remove('on'); });
+  var pane = document.getElementById('pane-'+name);
+  if (pane) pane.classList.add('on');
+}
+
+function tog(el){ el.parentElement.classList.toggle('open'); }
+
+/** 输入全文展开 / 收起 */
+function toggleInput(){
+  var box = document.getElementById('inputBox');
+  var btn = document.getElementById('inputToggle');
+  var open = box.style.maxHeight !== '76px';
+  box.style.maxHeight = open ? '76px' : '400px';
+  box.style.overflow = open ? 'hidden' : 'auto';
+  btn.textContent = open ? '展开全文' : '收起';
+}
+
+function toggleSteps(){
+  var btn = document.getElementById('btnSteps');
+  var last = document.querySelectorAll('#pipe .pstep')[3];
+  if (last) last.classList.toggle('open');
+  btn.textContent = btn.textContent === '逐步展开' ? '收起明细' : '逐步展开';
+  tab('trace');
+}
+
+/** 历史行选择 */
+function pickRun(el){
+  document.querySelectorAll('.hrow').forEach(function(r){ r.classList.remove('cur'); });
+  el.classList.add('cur');
+}
+
+/** 提交任务弹窗 */
+function openSubmit(){
+  document.getElementById('submitScrim').classList.add('on');
+  document.getElementById('submitDialog').classList.add('on');
+}
+function closeSubmit(){
+  document.getElementById('submitScrim').classList.remove('on');
+  document.getElementById('submitDialog').classList.remove('on');
+}
+function segPick(btn){
+  btn.parentElement.querySelectorAll('button').forEach(function(b){ b.setAttribute('aria-pressed','false'); });
+  btn.setAttribute('aria-pressed','true');
+}
+
+/** 开始运行：关掉弹窗 → 中栏逐步点亮 → 产出本次输出并写入历史 */
+function startSubmit(){
+  closeSubmit();
+  var steps = Array.prototype.slice.call(document.querySelectorAll('#pipe .pstep'));
+  steps.forEach(function(s){ s.classList.remove('done','running','bad'); s.querySelector('.tm').textContent = '—'; });
+  document.getElementById('runningBadge').style.display = '';
+  document.getElementById('led').className = 'led run';
+  var runBadge = document.getElementById('runBadge');
+  runBadge.className = 'badge'; runBadge.textContent = '运行中';
+  var state = document.getElementById('runState');
+  var prog = document.getElementById('prog');
+  prog.style.width = '0%';
+  var i = 0;
+  function tick(){
+    if (i > 0) {
+      var prev = steps[i-1];
+      prev.classList.remove('running');
+      prev.classList.add('done');
+      prev.querySelector('.tm').textContent = (200 + Math.round(Math.random()*900)) + 'ms';
+    }
+    if (i >= steps.length) {
+      var last = steps[steps.length-1];
+      last.classList.remove('done');
+      last.classList.add('bad');
+      last.querySelector('.sd').textContent = '约束未通过：缺少必填字段 expiresAt · 重试 1 次';
+      last.querySelector('.tm').textContent = '1.2s';
+      document.getElementById('led').className = 'led done';
+      document.getElementById('runningBadge').style.display = 'none';
+      runBadge.className = 'badge warn';
+      runBadge.textContent = '完成 · 1 步 invalid';
+      state.textContent = '完成 · 本次提交 #c4d9 · 用时 2.4s';
+      prog.style.width = '100%';
+      document.getElementById('runMeta').textContent = 'run #c4d9 · claude-sonnet-5 · temp 0.2 · 2.4s';
+      prependHistory();
+      return;
+    }
+    steps[i].classList.add('running');
+    state.textContent = '运行中 · 第 ' + (i+1) + ' / ' + steps.length + ' 步';
+    prog.style.width = Math.round(((i+1)/steps.length)*100) + '%';
+    i++;
+    setTimeout(tick, 620);
+  }
+  tick();
+}
+
+/** 新提交插到历史最上面 */
+function prependHistory(){
+  var card = document.querySelector('.hist');
+  var head = card.querySelector('.card-h');
+  card.querySelectorAll('.hrow').forEach(function(r){ r.classList.remove('cur'); });
+  var row = document.createElement('div');
+  row.className = 'hrow cur';
+  row.innerHTML = '<span class="hid mono">#c4d9</span>' +
+    '<span class="htxt">刚提交的内容 · 4,013 字</span>' +
+    '<span class="hmeta">合规 — · 完成 —</span>' +
+    '<span class="badge warn">1 步 invalid</span>';
+  head.insertAdjacentElement('afterend', row);
+}
+
+/** 运行评测：只动评测卡，不影响提交记录 */
+function runEval(){
+  var btn = document.getElementById('btnEval');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = '评测中…';
+  setTimeout(function(){
+    btn.disabled = false;
+    btn.textContent = '运行评测';
+  }, 1400);
+}
+
+/** 导出与说明弹层 */
+function openExport(){ document.getElementById('exportScrim').classList.add('on'); document.getElementById('exportDialog').classList.add('on'); }
+function closeExport(){ document.getElementById('exportScrim').classList.remove('on'); document.getElementById('exportDialog').classList.remove('on'); }
+function openNotes(){ document.getElementById('notesScrim').classList.add('on'); document.getElementById('notesDialog').classList.add('on'); }
+function closeNotes(){ document.getElementById('notesScrim').classList.remove('on'); document.getElementById('notesDialog').classList.remove('on'); }
+
+/** 点中栏的运行步骤 → 跳到轨迹页并展开同一步 */
+document.querySelectorAll('#pipe .pstep').forEach(function(row){
+  row.addEventListener('click', function(){
+    var idx = parseInt(row.getAttribute('data-step'), 10) - 1;
+    tab('trace');
+    var rows = document.querySelectorAll('#traceList .trow');
+    rows.forEach(function(r){ r.classList.remove('open'); });
+    if (rows[idx]) rows[idx].classList.add('open');
+  });
+});
+
+document.addEventListener('keydown', function(e){
+  if (e.key === 'Escape') { closeSubmit(); closeExport(); closeNotes(); }
+});
+
+/** 便于评审与截图：URL 带 #dark / #submit / #export / #notes 时直接进入对应状态 */
+(function boot(){
+  var h = location.hash;
+  if (h.indexOf('dark') >= 0) toggleTheme();
+  if (h.indexOf('submit') >= 0) openSubmit();
+  if (h.indexOf('export') >= 0) openExport();
+  if (h.indexOf('notes') >= 0) openNotes();
+})();
+</script>
+</body>
+</html>

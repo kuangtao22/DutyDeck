@@ -1,7 +1,17 @@
 import { Buffer } from 'node:buffer'
 import { spawn } from 'node:child_process'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
-import { isServerOpsLocalSqliteFilePath, isServerOpsSqliteFileId, parseServerOpsDataRowFilters } from '@proma/shared'
+import {
+  isServerOpsId,
+  isServerOpsLocalSqliteFilePath,
+  isServerOpsSqliteFileId,
+  planServerOpsSqlWrite,
+  parseServerOpsDataRowFilters,
+  parseServerOpsDataWriteResult,
+  SERVER_OPS_DATA_WRITE_MAX_TIMEOUT_MS,
+  SERVER_OPS_DATA_WRITE_STATEMENT_LIMIT,
+} from '@proma/shared'
+import type { ServerOpsDataWriteResult } from '@proma/shared'
 import type { ServerOpsRuntimeDataReadRequest, ServerOpsRuntimeDataReadResult } from './server-ops-runtime-protocol'
 import {
   createServerOpsSqliteExecutionPayload,
@@ -26,7 +36,8 @@ export interface ServerOpsLocalSqliteRuntimeOptions {
 
 /** 判断请求文本字段是否有界且不含控制字符。 */
 function isBoundedText(value: unknown, maximum: number): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= maximum && !/[\u0000-\u001f\u007f]/u.test(value)
+  return typeof value === 'string' && value.length > 0 && value.length <= maximum
+    && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)
 }
 
 /** 在创建子进程前完成本地 SQLite 专属请求校验。 */
@@ -309,6 +320,43 @@ function execute(database, payload, fileSize) {
       truncated: bounded.hasMore || bounded.cellTruncated || bounded.resultTruncated,
       warnings: bounded.cellTruncated ? ['部分单元格内容过长，已截断'] : [] };
   }
+  if (payload.mode === 'sql-write') {
+    const startedAt = Date.now();
+    const statements = Array.isArray(payload.statements) ? payload.statements : [];
+    const results = [];
+    let affectedTotal = 0;
+    /** 只有 DML 的 changes 可作为本条语句影响行数，DDL/SELECT 不能沿用连接上的历史 changes。 */
+    const affectedHeads = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE']);
+    /** 构造不携带 SQL 或底层异常正文的公开失败结果。 */
+    function writeFailure(outcome, errorCode, warnings) {
+      return { writeId: payload.writeId, database: 'main', statementCount: results.length, affectedRows: affectedTotal,
+        committed: false, outcome, errorCode, durationMs: Math.max(0, Date.now() - startedAt), statements: results,
+        warnings: warnings || [] };
+    }
+    /** 事务由执行器统一控制；脚本里的会话控制语句已由父入口再次解析拒绝。 */
+    try { database.exec('BEGIN IMMEDIATE'); }
+    catch (error) { return writeFailure('not-started', 'SERVER_OPS_DATA_WRITE_FAILED'); }
+    try {
+      for (const entry of statements) {
+        const statement = database.prepare(entry.text);
+        const info = affectedHeads.has(String(entry.head)) ? statement.run() : (statement.get(), undefined);
+        const changes = Number(info && info.changes);
+        const affected = affectedHeads.has(String(entry.head)) && Number.isSafeInteger(changes) && changes > 0 ? changes : 0;
+        results.push({ head: String(entry.head), affectedRows: affected });
+        affectedTotal += affected;
+      }
+    } catch (error) {
+      try { database.exec('ROLLBACK'); return writeFailure('rolled-back', 'SERVER_OPS_DATA_WRITE_FAILED'); }
+      catch (ignored) { return writeFailure('unknown', 'SERVER_OPS_DATA_WRITE_FAILED', ['SQLite 回滚确认失败，改动状态未知']); }
+    }
+    try { database.exec('COMMIT'); }
+    catch (error) {
+      try { database.exec('ROLLBACK'); return writeFailure('rolled-back', 'SERVER_OPS_DATA_WRITE_COMMIT_FAILED'); }
+      catch (ignored) { return writeFailure('unknown', 'SERVER_OPS_DATA_WRITE_COMMIT_FAILED', ['SQLite 提交与回滚均未确认，改动状态未知']); }
+    }
+    return { writeId: payload.writeId, database: 'main', statementCount: results.length, affectedRows: affectedTotal,
+      committed: true, outcome: 'committed', durationMs: Math.max(0, Date.now() - startedAt), statements: results, warnings: [] };
+  }
   const tableName = payload.schemaTable;
   if (typeof tableName !== 'string') fail('SERVER_OPS_SQLITE_TABLE_REQUIRED');
   const object = readObject(database, tableName);
@@ -398,10 +446,17 @@ try {
         const header = Buffer.alloc(16);
         if (readSync(descriptor, header, 0, 16, 0) !== 16 || header.toString('binary') !== 'SQLite format 3\u0000') fail('SERVER_OPS_SQLITE_DATABASE_INVALID');
       } finally { closeSync(descriptor); }
-      database = new DatabaseSync(payload.filePath, { readOnly: true, allowExtension: false, defensive: true });
+      /**
+       * 写模式必须真正以可写方式打开，并且**不能**设置 query_only：
+       * 只读保证只属于只读链，写链的执行语义与它完全分离。
+       */
+      const readOnly = payload.mode !== 'sql-write';
+      database = new DatabaseSync(payload.filePath, { readOnly, allowExtension: false, defensive: true });
       database.enableDefensive(true);
       database.enableLoadExtension(false);
-      database.exec('PRAGMA hard_heap_limit = 67108864; PRAGMA query_only = ON; PRAGMA trusted_schema = OFF; PRAGMA busy_timeout = 2000;');
+      database.exec(readOnly
+        ? 'PRAGMA hard_heap_limit = 67108864; PRAGMA query_only = ON; PRAGMA trusted_schema = OFF; PRAGMA busy_timeout = 2000;'
+        : 'PRAGMA hard_heap_limit = 67108864; PRAGMA trusted_schema = OFF; PRAGMA busy_timeout = 2000;');
       const after = statSync(payload.filePath, { bigint: true });
       if (after.dev + ':' + after.ino + ':' + after.birthtimeNs !== payload.localFileId) fail('SERVER_OPS_SQLITE_FILE_CHANGED');
       emit({ ok: true, result: execute(database, payload, before.size) });
@@ -412,6 +467,13 @@ try {
       if (code === 'ENOENT') emit({ ok: false, code: 'SERVER_OPS_SQLITE_FILE_NOT_FOUND' });
       else if (code === 'EACCES' || code === 'EPERM') emit({ ok: false, code: 'SERVER_OPS_SQLITE_LOCAL_FILE_PERMISSION_DENIED' });
       else if (text.includes('locked') || text.includes('busy')) emit({ ok: false, code: 'SERVER_OPS_SQLITE_DATABASE_LOCKED' });
+      /**
+       * 写模式下必须先把「文件不可写」这类写侧原因归类完，
+       * 否则会落进下面的读侧映射（例如把写失败报成「表不存在」）。
+       */
+      else if (payload && payload.mode === 'sql-write' && (text.includes('readonly') || text.includes('read-only')
+        || text.includes('permission'))) emit({ ok: false, code: 'SERVER_OPS_DATA_WRITE_PERMISSION_DENIED' });
+      else if (payload && payload.mode === 'sql-write') emit({ ok: false, code: 'SERVER_OPS_DATA_WRITE_FAILED' });
       else if (text.includes('not authorized') || text.includes('authorization denied')) emit({ ok: false, code: 'SERVER_OPS_DATA_QUERY_PERMISSION_DENIED' });
       else if (text.includes('no such table')) emit({ ok: false, code: 'SERVER_OPS_DATA_QUERY_TABLE_UNAVAILABLE' });
       else if (text.includes('no such column')) emit({ ok: false, code: 'SERVER_OPS_DATA_QUERY_COLUMN_UNAVAILABLE' });
@@ -454,6 +516,13 @@ async function executeLocal(
   if (Buffer.byteLength(requestJson, 'utf8') > MAX_CHILD_REQUEST_BYTES) throw createServerOpsSqlitePublicError('SERVER_OPS_SQLITE_REQUEST_INVALID')
   if (signal?.aborted) throw new Error('SERVER_OPS_DATA_CANCELLED')
 
+  const startedAt = Date.now()
+  /** 写子进程被终止后只能报告状态未知，不能把取消等同于回滚。 */
+  const unknownWriteResult = (errorCode: string): ServerOpsDataWriteResult => ({
+    writeId: String(payload.writeId), database: 'main', statementCount: 0, affectedRows: 0,
+    committed: false, outcome: 'unknown', errorCode, durationMs: Math.max(0, Date.now() - startedAt),
+    statements: [], warnings: ['写入进程在返回事务结果前终止，数据库状态需要重新核对'],
+  })
   return await new Promise<unknown>((resolve, reject) => {
     /** 子进程只继承环境并强制 Electron 使用 Node 模式，不传递任何用户数据。 */
     const child = spawn(executablePath, ['-e', SERVER_OPS_LOCAL_SQLITE_SCRIPT], {
@@ -465,7 +534,8 @@ async function executeLocal(
     let stderrBytes = 0
     let terminal: 'cancelled' | 'timeout' | 'too-large' | undefined
     const timeoutCode = payload.mode === 'sql-query' ? 'SERVER_OPS_DATA_QUERY_TIMEOUT'
-      : payload.mode === 'schema-cell' ? 'SERVER_OPS_DATA_CELL_TIMEOUT' : 'SERVER_OPS_SQLITE_TIMEOUT'
+      : payload.mode === 'sql-write' ? 'SERVER_OPS_DATA_WRITE_TIMEOUT'
+        : payload.mode === 'schema-cell' ? 'SERVER_OPS_DATA_CELL_TIMEOUT' : 'SERVER_OPS_SQLITE_TIMEOUT'
     const timer = setTimeout(() => { terminal = 'timeout'; terminateChild(child) }, Number(payload.timeoutMs))
     const onAbort = (): void => { terminal = 'cancelled'; terminateChild(child) }
     signal?.addEventListener('abort', onAbort, { once: true })
@@ -488,11 +558,20 @@ async function executeLocal(
     child.once('close', (exitCode) => {
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
-      if (terminal === 'cancelled') { reject(new Error('SERVER_OPS_DATA_CANCELLED')); return }
-      if (terminal === 'timeout') { reject(createServerOpsSqlitePublicError(timeoutCode)); return }
+      if (terminal === 'cancelled') {
+        if (payload.mode === 'sql-write') resolve(unknownWriteResult('SERVER_OPS_DATA_WRITE_CANCELLED'))
+        else reject(new Error('SERVER_OPS_DATA_CANCELLED'))
+        return
+      }
+      if (terminal === 'timeout') {
+        if (payload.mode === 'sql-write') resolve(unknownWriteResult('SERVER_OPS_DATA_WRITE_TIMEOUT'))
+        else reject(createServerOpsSqlitePublicError(timeoutCode))
+        return
+      }
       if (terminal === 'too-large') { reject(createServerOpsSqlitePublicError('SERVER_OPS_SQLITE_RESULT_TOO_LARGE')); return }
       if (exitCode !== 0 || stderrBytes > MAX_CHILD_STDERR_BYTES) {
-        reject(createServerOpsSqlitePublicError('SERVER_OPS_SQLITE_READ_FAILED'))
+        if (payload.mode === 'sql-write') resolve(unknownWriteResult('SERVER_OPS_DATA_WRITE_FAILED'))
+        else reject(createServerOpsSqlitePublicError('SERVER_OPS_SQLITE_READ_FAILED'))
         return
       }
       try {
@@ -500,7 +579,8 @@ async function executeLocal(
         if (!envelope.ok) reject(createServerOpsSqlitePublicError(envelope.code))
         else resolve(envelope.result)
       } catch (error) {
-        reject(error instanceof ServerOpsSqlitePublicError ? error : createServerOpsSqlitePublicError('SERVER_OPS_SQLITE_READ_FAILED'))
+        if (payload.mode === 'sql-write') resolve(unknownWriteResult('SERVER_OPS_DATA_WRITE_FAILED'))
+        else reject(error instanceof ServerOpsSqlitePublicError ? error : createServerOpsSqlitePublicError('SERVER_OPS_SQLITE_READ_FAILED'))
       }
     })
     try { child.stdin.end(requestJson) } catch { terminateChild(child) }
@@ -524,4 +604,89 @@ export async function runServerOpsLocalSqliteRead(
   const payload = { ...createServerOpsSqliteExecutionPayload(input), localFileId: input.localFileId }
   const value = await executeLocal(payload, signal, options.executablePath ?? process.execPath)
   return parseServerOpsSqliteExecutionResult(input, value)
+}
+
+/** 本地 SQLite 写执行请求；文件身份与语句计划由主进程在复核后绑定。 */
+export interface ServerOpsLocalSqliteWriteRequest {
+  /** 已由主进程 realpath 化的本地绝对路径。 */
+  filePath: string
+  /** 主进程验证过的本地文件身份，子进程会再核对一次。 */
+  localFileId: string
+  writeId: string
+  /** SQLite 固定主库。 */
+  database: string
+  /** 共享层生成的语句计划；本入口会从正文重新生成并核对一次。 */
+  statements: readonly { text: string; head: string }[]
+  timeoutMs: number
+}
+
+/**
+ * 校验本地写请求。
+ *
+ * 任何越界字段都在开子进程前拒绝：子进程只接受已经过这里判定的窄 payload。
+ *
+ * @param input 写执行请求
+ */
+function validateLocalWriteInput(input: ServerOpsLocalSqliteWriteRequest): void {
+  if (!isServerOpsLocalSqliteFilePath(input.filePath)) throw new Error('SERVER_OPS_SQLITE_PATH_INVALID')
+  if (!isServerOpsSqliteFileId(input.localFileId)) throw new Error('SERVER_OPS_SQLITE_FILE_CHANGED')
+  if (!isServerOpsId(input.writeId)) throw new Error('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+  /** SQLite 只开放主库，不允许借写通道切入附加库。 */
+  if (input.database !== 'main') throw new Error('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+  if (!Array.isArray(input.statements)
+    || input.statements.length < 1 || input.statements.length > SERVER_OPS_DATA_WRITE_STATEMENT_LIMIT) {
+    throw new Error('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+  }
+  for (const statement of input.statements) {
+    if (!isBoundedText(statement.text, 65_536) || !/^[A-Z_]{1,32}$/u.test(statement.head)) {
+      throw new Error('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+    }
+  }
+  /** 跨进程协议不信任调用方携带的 head，父入口按完整脚本重新生成计划并逐项核对。 */
+  try {
+    const verified = planServerOpsSqlWrite(input.statements.map((statement) => statement.text).join(';\n'), 'sqlite').statements
+    if (verified.length !== input.statements.length
+      || verified.some((statement, index) => statement.text !== input.statements[index]?.text || statement.head !== input.statements[index]?.head)) {
+      throw new Error('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+    }
+  } catch {
+    throw new Error('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+  }
+  if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > SERVER_OPS_DATA_WRITE_MAX_TIMEOUT_MS) {
+    throw new Error('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+  }
+}
+
+/**
+ * 在独立、可终止的 Electron Node 子进程中写本机 SQLite 文件。
+ *
+ * 与只读入口共用同一个子进程脚本，但以**可写方式**打开且不设置 `query_only`；
+ * 入口先重新解析语句计划；事务、回滚与受影响行数统计都在子进程内完成。
+ *
+ * @param input 已由主进程绑定文件身份的写请求
+ * @param signal 用户取消信号；返回前会等待子进程 close
+ * @param options 测试可注入 Electron 可执行文件，生产默认使用当前 Electron
+ * @returns 与网络引擎一致的写执行结果合同
+ */
+export async function runServerOpsLocalSqliteWrite(
+  input: ServerOpsLocalSqliteWriteRequest,
+  signal?: AbortSignal,
+  options: ServerOpsLocalSqliteRuntimeOptions = {},
+): Promise<ServerOpsDataWriteResult> {
+  validateLocalWriteInput(input)
+  const payload = {
+    mode: 'sql-write',
+    filePath: input.filePath,
+    localFileId: input.localFileId,
+    writeId: input.writeId,
+    database: input.database,
+    timeoutMs: Math.min(SERVER_OPS_DATA_WRITE_MAX_TIMEOUT_MS, Math.max(250, input.timeoutMs)),
+    statements: input.statements.map((statement) => ({ text: statement.text, head: statement.head })),
+  }
+  /** 子进程 stdin 上限是 64 KiB；超限在这里就拒绝，不把截断的脚本发出去。 */
+  if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > MAX_CHILD_REQUEST_BYTES) {
+    throw new Error('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+  }
+  const value = await executeLocal(payload, signal, options.executablePath ?? process.execPath)
+  return parseServerOpsDataWriteResult(value)
 }

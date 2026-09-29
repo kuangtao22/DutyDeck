@@ -1,6 +1,7 @@
 import { SERVER_OPS_AGENT_ACCESS_MANAGEMENT_CHANNELS } from '@proma/shared'
 import type { ServerOpsAgentAccessImpact } from '@proma/shared'
 import { createHash } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import {
   SERVER_OPS_DATA_QUERY_CHANNELS,
   SERVER_OPS_DATA_QUERY_HISTORY_CHANNELS,
@@ -165,6 +166,25 @@ import { SERVER_OPS_AGENT_READ_CHANNELS, parseServerOpsAgentReadGrant, parseServ
 import { SERVER_OPS_DATABASE_AGENT_POLICY_CHANNELS, parseServerOpsDatabaseAgentPolicyUpdate } from '@proma/shared'
 import type { ServerOpsDatabaseAgentPolicyStore } from './server-ops-database-agent-policy-store'
 import { SERVER_OPS_CONNECTION_DRAFT_CHANNELS, parseServerOpsConnectionDraftDismiss, parseServerOpsConnectionDraftSession } from '@proma/shared'
+import {
+  SERVER_OPS_SCRIPT_CHANNELS,
+  SERVER_OPS_SCRIPT_DRAFT_CHANNELS,
+  parseServerOpsScriptListInput,
+  parseServerOpsScriptListResult,
+  parseServerOpsScriptSaveInput,
+  parseServerOpsScriptSaveResult,
+  parseServerOpsScriptDeleteInput,
+  parseServerOpsScriptDeleteResult,
+  parseServerOpsScriptRunInput,
+  parseServerOpsScriptRun,
+  parseServerOpsScriptCancelRunInput,
+  parseServerOpsScriptRunListInput,
+  parseServerOpsScriptRunListResult,
+  parseServerOpsScriptDraftListResult,
+  parseServerOpsScriptDraftSession,
+  parseServerOpsScriptDraftDismiss,
+} from '@proma/shared'
+import type { ServerOpsScript, ServerOpsScriptSaveInput, ServerOpsScriptRun, ServerOpsScriptRunListInput, ServerOpsScriptDraft } from '@proma/shared'
 import { serverOpsConnectionDraftStore } from './server-ops-connection-draft-store'
 import { captureServerOpsReadBindings, revalidateServerOpsReadBindings } from './server-ops-agent-read-identity'
 import type { ServerOpsTrustService } from './server-ops-trust-service'
@@ -179,6 +199,11 @@ import type { ServerOpsDataQueryHistoryStore } from './server-ops-data-query-his
 import type { ServerOpsAuditStore } from './server-ops-audit-store'
 import { ServerOpsQueryRegistry } from './server-ops-query-registry'
 import { runAuditedServerOpsQuery } from './server-ops-query-audit'
+import { runAuditedServerOpsDataWrite } from './server-ops-query-audit'
+import { createServerOpsWriteFailureResult } from './server-ops-write-result'
+import type { ServerOpsDataWriteResult } from '@proma/shared'
+import { SERVER_OPS_DATA_WRITE_CHANNELS, parseServerOpsDataWriteInput, parseServerOpsDataWriteCancelInput,
+  parseServerOpsDataWriteResult } from '@proma/shared'
 
 /** 运维 IPC handler 的最小签名。 */
 type ServerOpsIpcHandler = (event: IpcMainInvokeEvent, input?: unknown) => unknown
@@ -289,16 +314,56 @@ export interface ServerOpsIpcOptions {
   fileLeases?: Pick<ServerOpsLocalFileLeaseRegistry, 'selectUpload' | 'selectDownload' | 'release' | 'closeOwner'>
   data?: Pick<ServerOpsDataService, 'listSources' | 'upsertSource' | 'deleteSource' | 'probeSource' | 'diagnoseSource' | 'revealSourcePassword' | 'listSchemaTables' | 'describeSchemaTable' | 'readSchemaRows' | 'removeHost'>
     & Partial<Pick<ServerOpsDataService, 'moveSource' | 'setDefaultDatabase' | 'querySource' | 'readSchemaCell' | 'getReadCredentialVersion'
-      | 'discoverCredentials' | 'applyDiscoveredCredential'>>
+      | 'discoverCredentials' | 'applyDiscoveredCredential' | 'writeSource'>>
   /** 本地 SQL 查询历史；不经过数据库 runtime、Agent 或审计。 */
-  queryHistory?: Pick<ServerOpsDataQueryHistoryStore, 'list' | 'save'>
+  queryHistory?: Pick<ServerOpsDataQueryHistoryStore, 'list' | 'save'> & Partial<Pick<ServerOpsDataQueryHistoryStore, 'startWrite' | 'finishWrite'>>
   /** 运维项目：侧栏分组与连接归属的边界。 */
   projects?: Pick<ServerOpsProjectStore, 'list' | 'create' | 'rename' | 'remove'>
+  /** 运维脚本库：项目下的可复用脚本资产，保存与删除不触发任何远端动作。 */
+  scripts?: ServerOpsScriptStoreContract
+  /** 脚本运行记录读取；与 scripts 分开注入，便于只读运行记录的场景。 */
+  scriptRuns?: ServerOpsScriptRunStoreContract
+  /** 脚本执行入口；缺失时界面必须显示"当前版本不支持运行脚本"。 */
+  scriptRunner?: ServerOpsScriptRunnerContract
+  /** Agent 提议的脚本草稿；由 Agent 工具写入、界面领取。 */
+  scriptDrafts?: ServerOpsScriptDraftStoreContract
   resolveOwnerWindow?: (sender: WebContents) => ServerOpsOwnerWindow | null
   showLogSaveDialog?: (window: ServerOpsOwnerWindow, options: ServerOpsLogSaveDialogOptions) => Promise<{ canceled: boolean; filePath?: string }>
   writeTextFileAtomic?: (filePath: string, content: string) => unknown
   now?: () => Date
   requireUserVisibleSession: (sessionId: string) => AgentSessionMeta
+}
+
+/** 脚本库暴露给 IPC 层的窄接口；运行能力单独由 runner 提供。 */
+export interface ServerOpsScriptStoreContract {
+  list: (projectId?: string) => ServerOpsScript[]
+  get: (scriptId: string) => ServerOpsScript | undefined
+  save: (input: ServerOpsScriptSaveInput, origin: 'agent' | 'user') => ServerOpsScript
+  remove: (scriptId: string) => boolean
+}
+
+/** 运行记录读取；写入由 runner 在运行过程中完成。 */
+export interface ServerOpsScriptRunStoreContract {
+  list: (query: ServerOpsScriptRunListInput) => ServerOpsScriptRun[]
+}
+
+/**
+ * 脚本执行入口。
+ *
+ * `windowId` 由 IPC 层从事件方取，用于审计里区分真实发起窗口；
+ * 渲染层不能自带这个身份。
+ */
+export interface ServerOpsScriptRunnerContract {
+  run: (input: { scriptId: string; runId: string; parameters: { name: string; value: string }[]; windowId: number }) => Promise<ServerOpsScriptRun>
+  cancel: (runId: string) => Promise<void>
+}
+
+/** Agent 脚本草稿暴露给 IPC 层的窄接口；草稿只在内存里短暂保留。 */
+export interface ServerOpsScriptDraftStoreContract {
+  list: (sessionId: string) => ServerOpsScriptDraft[]
+  dismiss: (sessionId: string, id: string) => boolean
+  /** 领取并消费草稿，用于把 Agent 提议标记成来源；被别的会话领走时返回 null。 */
+  claim?: (sessionId: string, id: string) => ServerOpsScriptDraft | null
 }
 
 /** 可用于测试和退出清理的注册结果。 */
@@ -419,14 +484,19 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
     ...Object.values(SERVER_OPS_DATA_CHANNELS),
     ...Object.values(SERVER_OPS_DATA_SCHEMA_CHANNELS),
     ...Object.values(SERVER_OPS_DATA_QUERY_CHANNELS),
+    ...Object.values(SERVER_OPS_DATA_WRITE_CHANNELS),
     ...Object.values(SERVER_OPS_DATA_QUERY_HISTORY_CHANNELS),
     ...Object.values(SERVER_OPS_PROJECT_CHANNELS),
+    ...Object.values(SERVER_OPS_SCRIPT_CHANNELS),
+    ...Object.values(SERVER_OPS_SCRIPT_DRAFT_CHANNELS).filter((channel) => channel !== SERVER_OPS_SCRIPT_DRAFT_CHANNELS.CHANGED),
   ]
 
   /** 当前注册器已见过的窗口 owner。 */
   const owners = new Map<string, ServerOpsOwnerWindow>()
   /** 每个窗口只拥有自己启动的 SQL 查询，取消不得按数据源全局广播。 */
   const queries = new ServerOpsQueryRegistry()
+  /** 写请求单独登记：与读取共享同一套所有权语义，但取消/繁忙使用写链自己的稳定码。 */
+  const writes = new ServerOpsQueryRegistry({ busy: 'SERVER_OPS_DATA_WRITE_BUSY', cancelled: 'SERVER_OPS_DATA_WRITE_CANCELLED' }, { preserveOutcome: true, singleFlightPerSource: true })
   /** 当前文件页代次按窗口和主机隔离；对象身份用于失效等待中的旧请求。 */
   const fileOwners = new Map<string, { windowId: number }>()
   /** 同一窗口/主机复用稳定 runtime key，但重新打开必须等待旧资源清理 ACK。 */
@@ -470,6 +540,7 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
       /** listener 引用必须保留，registration dispose 才能精确解绑。 */
       const listener = (): void => {
         queries.closeOwner(window.id)
+        writes.closeOwner(window.id)
         closedListeners.delete(ownerKey)
         try { options.logs?.disposeOwner(ownerKey) } catch { /* 窗口终态清理不能反向击穿 Electron。 */ }
         try { options.trustManagement?.disposeOwner(window.id) } catch { /* 独立清理未提交的信任候选。 */ }
@@ -736,6 +807,69 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
     const { window } = requireOwner(event)
     await queries.cancel(window.id, request)
   })
+  /**
+   * 手工写库：**只对用户开放**。
+   *
+   * 与只读查询同构（窗口所有权、单窗口取消、审计 fail closed），但：
+   * ①窗口 id 是唯一的发起身份，写链没有 Agent 入口；
+   * ②审计只写 `sourceId` + `database`，不写语句正文或指纹；
+   * ③取消与繁忙使用写链自己的稳定码，避免用户看到「查询已取消」。
+   */
+  installHandler(SERVER_OPS_DATA_WRITE_CHANNELS.EXECUTE, async (event, input) => {
+    assertAuthorizedSender(event, options)
+    const request = parseServerOpsDataWriteInput(input)
+    const { window } = requireOwner(event)
+    const data = options.data
+    if (!data?.writeSource) throw new Error('SERVER_OPS_DATA_UNAVAILABLE')
+    if (!options.audit.append) throw new Error('SERVER_OPS_AUDIT_START_WRITE_FAILED')
+    /** 以主进程保存的真实引擎判定支持范围，窗口不能伪造执行器类型。 */
+    const source = data.listSources({}).sources.find((entry) => entry.id === request.sourceId)
+    if (!source || source.engine === 'redis' || source.engine === 'postgresql') {
+      throw new Error('SERVER_OPS_DATA_WRITE_ENGINE_UNSUPPORTED')
+    }
+    /** 在历史、审计与数据库动作前拒绝过期确认，避免同一 sourceId 已指向另一目标。 */
+    if (!isDeepStrictEqual(request.source, source)) throw new Error('SERVER_OPS_DATA_SOURCE_CHANGED')
+    const history = options.queryHistory
+    if (!history?.startWrite || !history.finishWrite) throw new Error('SERVER_OPS_DATA_WRITE_HISTORY_UNAVAILABLE')
+    return writes.run(window.id, { sourceId: request.sourceId, queryId: request.writeId }, async (signal) => {
+      /** 先保存开始事实，失败就不碰数据库；不能依赖 renderer 在 finally 中记历史。 */
+      try { history.startWrite!(request) } catch (error) {
+        if (error instanceof Error && error.message === 'SERVER_OPS_DATA_WRITE_ALREADY_RECORDED') throw error
+        throw new Error('SERVER_OPS_DATA_WRITE_HISTORY_START_FAILED')
+      }
+      const startedAt = Date.now()
+      let executing = false
+      let result: ServerOpsDataWriteResult
+      try {
+        result = await runAuditedServerOpsDataWrite({
+          actor: { actor: 'user', windowId: window.id },
+          summary: { sourceId: request.sourceId, database: request.database },
+          audit: { append: (record) => options.audit.append!(record), prepareForWrites: () => options.audit.prepareForWrites?.() ?? Promise.resolve() },
+          check: () => {
+            if (signal.aborted || window.isDestroyed()) throw new Error('SERVER_OPS_DATA_WRITE_CANCELLED')
+            assertAuthorizedSender(event, options)
+          },
+          execute: async () => {
+            executing = true
+            return parseServerOpsDataWriteResult(await data.writeSource!(request, signal))
+          },
+        })
+      } catch (error) {
+        result = createServerOpsWriteFailureResult(request, error, executing, Date.now() - startedAt)
+      }
+      try { history.finishWrite!(request, result) } catch {
+        /** 已执行的写入不因历史落盘失败变成失败；保留开始记录与真实回执。 */
+        result = { ...result, warnings: [...result.warnings.slice(0, 7), 'SERVER_OPS_DATA_WRITE_HISTORY_RESULT_FAILED'] }
+      }
+      return result
+    })
+  })
+  installHandler(SERVER_OPS_DATA_WRITE_CHANNELS.CANCEL, async (event, input) => {
+    assertAuthorizedSender(event, options)
+    const request = parseServerOpsDataWriteCancelInput(input)
+    const { window } = requireOwner(event)
+    await writes.cancel(window.id, { sourceId: request.sourceId, queryId: request.writeId })
+  })
   /** 查询历史只访问本地配置，但仍要求授权窗口与仍存在的 SQL 数据源。 */
   installHandler(SERVER_OPS_DATA_QUERY_HISTORY_CHANNELS.LIST, (event, input) => {
     assertAuthorizedSender(event, options)
@@ -795,6 +929,75 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
     const parsed = parseServerOpsProjectDeleteInput(input)
     if (!options.projects) throw new Error('SERVER_OPS_PROJECT_UNAVAILABLE')
     options.projects.remove(parsed.projectId)
+  })
+  /** 脚本库只访问本地配置，列表不触发任何远端动作。 */
+  installHandler(SERVER_OPS_SCRIPT_CHANNELS.LIST, (event, input) => {
+    assertAuthorizedSender(event, options)
+    const parsed = parseServerOpsScriptListInput(input)
+    if (!options.scripts) throw new Error('SERVER_OPS_SCRIPT_UNAVAILABLE')
+    return parseServerOpsScriptListResult({ scripts: options.scripts.list(parsed.projectId) })
+  })
+  installHandler(SERVER_OPS_SCRIPT_CHANNELS.SAVE, (event, input) => {
+    assertAuthorizedSender(event, options)
+    const parsed = parseServerOpsScriptSaveInput(input)
+    if (!options.scripts) throw new Error('SERVER_OPS_SCRIPT_UNAVAILABLE')
+    if (!options.projects?.list().some((project) => project.id === parsed.projectId)) throw new Error('SERVER_OPS_PROJECT_NOT_FOUND')
+    /** 来源只由草稿消费结果决定，渲染层不能自报。 */
+    let origin: 'agent' | 'user' = 'user'
+    if (parsed.draftId !== undefined && parsed.draftSessionId !== undefined) {
+      const session = requireOrdinaryTopLevelAgentSession(options.requireUserVisibleSession(parsed.draftSessionId))
+      if (session.archived) throw new Error('SERVER_OPS_AGENT_SESSION_NOT_ALLOWED')
+      const claimed = options.scriptDrafts?.claim?.(parsed.draftSessionId, parsed.draftId) ?? null
+      if (!claimed) throw new Error('SERVER_OPS_SCRIPT_DRAFT_NOT_FOUND')
+      origin = 'agent'
+    }
+    return parseServerOpsScriptSaveResult({ script: options.scripts.save(parsed, origin) })
+  })
+  installHandler(SERVER_OPS_SCRIPT_CHANNELS.DELETE, (event, input) => {
+    assertAuthorizedSender(event, options)
+    const parsed = parseServerOpsScriptDeleteInput(input)
+    if (!options.scripts) throw new Error('SERVER_OPS_SCRIPT_UNAVAILABLE')
+    return parseServerOpsScriptDeleteResult({ deleted: options.scripts.remove(parsed.scriptId) })
+  })
+  /** 运行入口只对已授权主窗口开放，且输入必须带显式确认。 */
+  installHandler(SERVER_OPS_SCRIPT_CHANNELS.RUN, async (event, input) => {
+    assertAuthorizedSender(event, options)
+    const parsed = parseServerOpsScriptRunInput(input)
+    const { window } = requireOwner(event)
+    if (!options.scriptRunner) throw new Error('SERVER_OPS_SCRIPT_RUNNER_UNAVAILABLE')
+    return parseServerOpsScriptRun(await options.scriptRunner.run({
+      scriptId: parsed.scriptId, runId: parsed.runId, parameters: parsed.parameters, windowId: window.id,
+    }))
+  })
+  installHandler(SERVER_OPS_SCRIPT_CHANNELS.CANCEL_RUN, async (event, input) => {
+    assertAuthorizedSender(event, options)
+    const parsed = parseServerOpsScriptCancelRunInput(input)
+    requireOwner(event)
+    if (!options.scriptRunner) throw new Error('SERVER_OPS_SCRIPT_RUNNER_UNAVAILABLE')
+    await options.scriptRunner.cancel(parsed.runId)
+  })
+  installHandler(SERVER_OPS_SCRIPT_CHANNELS.LIST_RUNS, (event, input) => {
+    assertAuthorizedSender(event, options)
+    const parsed = parseServerOpsScriptRunListInput(input)
+    if (!options.scriptRuns) throw new Error('SERVER_OPS_SCRIPT_RUNS_UNAVAILABLE')
+    return parseServerOpsScriptRunListResult({ runs: options.scriptRuns.list(parsed) })
+  })
+  /** Agent 提议的脚本草稿只对仍存活的普通可见会话开放。 */
+  installHandler(SERVER_OPS_SCRIPT_DRAFT_CHANNELS.LIST, (event, input) => {
+    assertAuthorizedSender(event, options)
+    const sessionId = parseServerOpsScriptDraftSession(input)
+    const session = requireOrdinaryTopLevelAgentSession(options.requireUserVisibleSession(sessionId))
+    if (session.archived) throw new Error('SERVER_OPS_AGENT_SESSION_NOT_ALLOWED')
+    if (!options.scriptDrafts) throw new Error('SERVER_OPS_SCRIPT_DRAFT_UNAVAILABLE')
+    return parseServerOpsScriptDraftListResult({ drafts: options.scriptDrafts.list(sessionId) })
+  })
+  installHandler(SERVER_OPS_SCRIPT_DRAFT_CHANNELS.DISMISS, (event, input) => {
+    assertAuthorizedSender(event, options)
+    const target = parseServerOpsScriptDraftDismiss(input)
+    const session = requireOrdinaryTopLevelAgentSession(options.requireUserVisibleSession(target.sessionId))
+    if (session.archived) throw new Error('SERVER_OPS_AGENT_SESSION_NOT_ALLOWED')
+    if (!options.scriptDrafts) throw new Error('SERVER_OPS_SCRIPT_DRAFT_UNAVAILABLE')
+    options.scriptDrafts.dismiss(target.sessionId, target.id)
   })
   installHandler(SERVER_OPS_FILE_CHANNELS.LIST, async (event, input) => {
     assertAuthorizedSender(event, options)
@@ -1312,6 +1515,7 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
   /** 注册失败时逆序、best-effort 回滚所有已安装资源。 */
   function rollbackRegistration(): void {
     queries.closeAll()
+    writes.closeAll()
     for (const unsubscribe of [...subscriptions].reverse()) {
       try { unsubscribe() } catch { /* 保留原注册错误，继续回滚。 */ }
     }
@@ -1346,6 +1550,7 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
       if (disposed) return
       disposed = true
       queries.closeAll()
+      writes.closeAll()
       /** 释放错误延迟到全部资源收口后再抛出。 */
       let firstError: unknown
       for (const unsubscribe of subscriptions) {

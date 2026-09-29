@@ -18,6 +18,7 @@ import { useAtomValue } from 'jotai'
 import { useEditor, EditorContent } from '@tiptap/react'
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model'
 import { TextSelection } from '@tiptap/pm/state'
+import { appendPlainTextTransaction } from '@/lib/agent-input-text'
 import type { Transaction } from '@tiptap/pm/state'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
@@ -197,6 +198,8 @@ interface RichTextInputProps {
 
 /** RichTextInput 对外暴露的命令接口 */
 export interface RichTextInputHandle {
+  /** 将外部请求作为纯文本追加到末尾，保留已有草稿及引用；返回是否实际插入。 */
+  appendPlainText: (text: string) => boolean
   /** 返回最新 Markdown 草稿，并同步尚未提交的编辑。 */
   getMarkdown: () => string
   /** 在光标处插入文件引用（右侧文件面板拖入时调用） */
@@ -1072,6 +1075,15 @@ export const RichTextInput = forwardRef<RichTextInputHandle, RichTextInputProps>
   // 对外暴露命令接口：富文本模式插入 mention 节点并由 htmlToMarkdown 序列化；
   // 默认纯文本或扩展缺失时直接插入同一 @file: 协议，保证引用始终可见、可发送。
   useImperativeHandle(ref, () => ({
+    appendPlainText(text: string): boolean {
+      if (!editor || !editor.isEditable || editor.isDestroyed) return false
+      const transaction = appendPlainTextTransaction(editor.state, text)
+      if (!transaction) return false
+      editor.view.dispatch(transaction)
+      editor.commands.focus('end')
+      flushPendingDraftSync(editor)
+      return true
+    },
     getMarkdown(): string {
       return flushPendingDraftSync(editor ?? undefined)
     },

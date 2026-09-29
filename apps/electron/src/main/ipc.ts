@@ -1,5 +1,12 @@
 import { API_WORKBENCH_CHANNELS, apiWorkbenchManualDenialReason, isOrdinaryTopLevelAgentSession } from '@proma/shared'
 import { registerApiWorkbenchIpc } from './lib/api-workbench/api-ipc'
+import { registerCapabilityFactoryIpc } from './lib/capability-factory/capability-factory-ipc'
+import { getCapabilityFactoryService, shutdownCapabilityFactory } from './lib/capability-factory/capability-factory-singleton'
+import { createCapabilityFactoryRunner } from './lib/capability-factory/capability-factory-run'
+import { createCapabilityFactoryEvaluator } from './lib/capability-factory/capability-factory-evaluate'
+import {
+  createCapabilityFactoryModelCall, resolveCapabilityFactoryModels,
+} from './lib/capability-factory/capability-factory-model-call'
 import { getApiWorkbenchService, hasActiveApiWorkbenchRequests, setApiWorkbenchEventSink, setApiWorkbenchStreamSink, shutdownApiWorkbench } from './lib/api-workbench/api-workbench-singleton'
 /**
  * IPC 处理器模块
@@ -329,12 +336,15 @@ import {
   fetchModels,
   getChannelById,
   getChannelPlanQuota,
+  resolveChannelRuntimeApiKey,
 } from './lib/channel-manager'
 import { loginCodexOAuth, cancelCodexOAuthLogin } from './lib/codex-oauth-service'
 import { loginXaiOAuth, cancelXaiOAuthLogin } from './lib/xai-oauth-service'
 import { resolvePiReasoningCapability } from './lib/adapters/pi-model-registry'
 import { serializeCodexCredentials, serializeXaiCredentials } from '@proma/shared'
-import type { CodexOAuthDeviceCode, CodexOAuthLoginMethod, XaiOAuthDeviceCode } from '@proma/shared'
+import type {
+  CapabilitySceneDefinition, CodexOAuthDeviceCode, CodexOAuthLoginMethod, XaiOAuthDeviceCode,
+} from '@proma/shared'
 import {
   listConversations,
   createConversation,
@@ -522,7 +532,21 @@ import { resolvePathAgainstAgentCwd } from './lib/agent-file-path'
 import { getLocalProjectRootStatusSync } from './lib/project-root-health'
 import { askUserService } from './lib/agent-ask-user-service'
 import { exitPlanService } from './lib/agent-exit-plan-service'
-import { getAgentSessionWorkspacePath, getAgentWorkspacesDir, getConfigDir, getConversationAttachmentsDir, getWorkspaceSkillsDir, getScratchPadPath, getImageGenerationModelsPath, getImageGenerationProfilesPath, getImageModelLegacyCleanupMarkerPath, getLegacyImageModelProfilesBackupPath, getAudioGenerationProfilesPath, resolveAttachmentPath } from './lib/config-paths'
+import {
+  getAgentSessionWorkspacePath,
+  getAgentWorkspacePath,
+  getAgentWorkspacesDir,
+  getAudioGenerationProfilesPath,
+  getConfigDir,
+  getConversationAttachmentsDir,
+  getImageGenerationModelsPath,
+  getImageGenerationProfilesPath,
+  getImageModelLegacyCleanupMarkerPath,
+  getLegacyImageModelProfilesBackupPath,
+  getScratchPadPath,
+  getWorkspaceSkillsDir,
+  resolveAttachmentPath,
+} from './lib/config-paths'
 import { getCachedDefaultAppInfo, saveCachedDefaultAppInfo } from './lib/default-app-cache'
 import { calculateStorageStats, cleanupStorage, cleanupTempFiles } from './lib/storage-service'
 import type { CleanupOptions } from './lib/storage-service'
@@ -2354,6 +2378,86 @@ export function registerIpcHandlers(): void {
         ? await dialog.showOpenDialog(parent, { properties: ['openFile', 'multiSelections'], title: '选择要上传的文件' })
         : await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'], title: '选择要上传的文件' })
       return result.canceled ? [] : result.filePaths
+    },
+  })
+
+  /**
+   * 提示词编排工厂：与运维 / 接口同级的模块。
+   * 与接口工作台一样只信任主窗口；workspace 由会话元数据反查，调用方不能自行声明。
+   */
+  /**
+   * 运行所需的宿主端口：渠道、凭据、代理与"这个会话正在用哪个模型"都只有主进程知道。
+   * **每次运行现建、不缓存**：同一工作区的第二个会话可能用另一个模型。
+   */
+  const capabilityFactoryRunPorts = (sessionId: string) => {
+    const session = requireVisibleSession(sessionId)
+    /** 会话模型是"场景声明的模型在本机找不到时"的兜底；取不到就如实按"没有会话模型"处理。 */
+    const sessionModel = session.channelId && session.modelId
+      ? { channelId: session.channelId, modelId: session.modelId }
+      : null
+    return {
+      resolveModels: (definition: CapabilitySceneDefinition) =>
+        resolveCapabilityFactoryModels(definition, listChannels(), sessionModel),
+      callModel: createCapabilityFactoryModelCall({
+        listChannels,
+        resolveApiKey: resolveChannelRuntimeApiKey,
+        resolveProxyUrl: getEffectiveProxyUrl,
+        sessionModel: () => sessionModel,
+      }),
+    }
+  }
+
+  registerCapabilityFactoryIpc({
+    ipc: ipcMain,
+    isAuthorizedSender: (event) => listAuthorizedDesignWebContents().some((contents) => contents.id === event.sender.id),
+    requireSession: (sessionId) => {
+      const session = requireVisibleSession(sessionId)
+      const workspaceId = session.workspaceId
+      if (!workspaceId || !getAgentWorkspace(workspaceId)) {
+        throw new Error('CAPABILITY_FACTORY_ACCESS_DENIED: 当前会话没有可用项目')
+      }
+      return { id: session.id, workspaceId }
+    },
+    /** 存储根目录落在该工作区自己的目录下：<agent-workspaces>/<slug>/capability-factory/ */
+    resolveRootDir: (workspaceId) => {
+      const workspace = getAgentWorkspace(workspaceId)
+      if (!workspace) throw new Error('CAPABILITY_FACTORY_ACCESS_DENIED: 项目不存在')
+      return join(getAgentWorkspacePath(workspace.slug), 'capability-factory')
+    },
+    getService: (rootDir) => getCapabilityFactoryService(rootDir),
+    /**
+     * 运行接线：模型解析要读"本机渠道"与"这个会话正在用哪个模型"，
+     * 两者都只有主进程知道；runner 本身是闭包，每次运行现建（不缓存，
+     * 否则同一工作区的第二个会话会继承第一个会话的模型）。
+     */
+    /** 两种运行范围共用同一台 runner：整链（runScene）与单步试跑（runStep）。 */
+    runScene: async ({ rootDir, sessionId, sceneId, input, options, onProgress }) => {
+      const service = getCapabilityFactoryService(rootDir)
+      return createCapabilityFactoryRunner({
+        service, ...capabilityFactoryRunPorts(sessionId),
+        ...(onProgress ? { onProgress } : {}),
+      }).run(sceneId, input, options)
+    },
+    runStep: async ({ rootDir, sessionId, sceneId, stepId, input, definition, onProgress }) => {
+      const service = getCapabilityFactoryService(rootDir)
+      return createCapabilityFactoryRunner({
+        service, ...capabilityFactoryRunPorts(sessionId),
+        ...(onProgress ? { onProgress } : {}),
+      }).runStep(sceneId, stepId, input, definition)
+    },
+    /** 导出产物落在工厂根目录下的 deliveries/：直接交给系统文件管理器显示。 */
+    revealDelivery: (absolutePath) => { shell.showItemInFolder(absolutePath) },
+    /** 评测：对数据集的每条用例跑一次整链（与「运行」页共用同一个 runner）。 */
+    runEvaluation: async ({ rootDir, sessionId, sceneId, datasetId }) => {
+      const service = getCapabilityFactoryService(rootDir)
+      const runner = createCapabilityFactoryRunner({
+        service, ...capabilityFactoryRunPorts(sessionId),
+      })
+      return createCapabilityFactoryEvaluator({
+        service,
+        // 保留评测器传入的 saveTask 策略，批量用例不混入用户提交任务。
+        run: runner.run,
+      }).evaluate(sceneId, datasetId)
     },
   })
   setApiWorkbenchEventSink((event) => {

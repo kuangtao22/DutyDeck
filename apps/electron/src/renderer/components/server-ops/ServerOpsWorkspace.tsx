@@ -57,8 +57,6 @@ import {
   serverOpsProjectsAtom,
   serverOpsProjectsErrorAtom,
   serverOpsProjectsStatusAtom,
-  selectedServerOpsConnectionIdAtom,
-  selectedServerOpsProjectIdAtom,
 } from '@/atoms/server-ops-atoms'
 import type { ServerOpsAgentAccessProjection, ServerOpsAgentAccessStatus, ServerOpsHostsStatus } from '@/atoms/server-ops-atoms'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
@@ -100,6 +98,8 @@ import {
   buildServerOpsConnections,
   createServerOpsDataConnectionId,
   createServerOpsSshConnectionId,
+  preserveServerOpsConnectionAfterHostsLoad,
+  shouldApplyServerOpsHostsLoad,
   listServerOpsProjectConnections,
   resolveServerOpsWorkspaceTarget,
   summarizeServerOpsConnections,
@@ -119,6 +119,7 @@ import { getServerOpsDataErrorMessage } from './server-ops-data-display'
 import { ServerOpsFilesWorkspace } from './ServerOpsFilesWorkspace'
 import { ServerOpsDockerConsole } from './ServerOpsDockerConsole'
 import { useServerOpsTransferLeave } from './useServerOpsTransferLeave'
+import { useServerOpsViewPosition } from './useServerOpsViewPosition'
 import { createServerOpsLocalSqliteProbeDraft, importServerOpsLocalSqlite, resolveServerOpsLocalSqliteFileSelection } from './server-ops-local-sqlite-controller'
 
 /** 新建数据源需要的项目服务器上下文。 */
@@ -209,6 +210,9 @@ export const serverOpsDataApi: ServerOpsDataPanelApi = {
   /** 历史同样保留桥接能力缺失，避免包装函数掩盖版本不一致。 */
   get listServerOpsDatabaseQueryHistory() { return window.electronAPI.listServerOpsDatabaseQueryHistory },
   get saveServerOpsDatabaseQueryHistory() { return window.electronAPI.saveServerOpsDatabaseQueryHistory },
+  /** 写接口同样延迟读取：旧 preload 下写模式必须显式禁用，而不是按钮点了没反应。 */
+  get writeServerOpsDatabase() { return window.electronAPI.writeServerOpsDatabase },
+  get cancelServerOpsDatabaseWrite() { return window.electronAPI.cancelServerOpsDatabaseWrite },
 }
 
 /**
@@ -306,6 +310,7 @@ export function getServerOpsOverviewInstanceKey(
 const SERVER_OPS_AUDIT_OPERATION_LABELS: Record<ServerOpsAuditOperation, string> = {
   'data-query': 'SQL 查询',
   'agent-read': 'Agent 只读访问',
+  'data-write': 'SQL 写入',
   connect: '连接',
   exec: '执行命令',
   disconnect: '断开',
@@ -1238,8 +1243,6 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
   const [dataSources, setDataSources] = useAtom(serverOpsDataSourcesAtom)
   const [dataSourcesStatus, setDataSourcesStatus] = useAtom(serverOpsDataSourcesStatusAtom)
   const [dataSourcesError, setDataSourcesError] = useAtom(serverOpsDataSourcesErrorAtom)
-  /** 跨会话保留的当前连接 ID（`ssh:<hostId>` 或 `data:<sourceId>`）。 */
-  const [selectedConnectionId, setSelectedConnectionId] = useAtom(selectedServerOpsConnectionIdAtom)
   /** 当前普通 Agent 会话决定授权身份的一半。 */
   const [currentAgentSessionId] = useAtom(currentAgentSessionIdAtom)
   /** 当前 Pane 可领取的草稿投影，主进程是唯一权威来源。 */
@@ -1280,8 +1283,6 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
   const [projects, setProjects] = useAtom(serverOpsProjectsAtom)
   const [projectsStatus, setProjectsStatus] = useAtom(serverOpsProjectsStatusAtom)
   const [projectsError, setProjectsError] = useAtom(serverOpsProjectsErrorAtom)
-  /** 用户最后选择的项目与写入口。 */
-  const [selectedProjectId, setSelectedProjectId] = useAtom(selectedServerOpsProjectIdAtom)
   /** 筛选属于当前 Pane；记录项目身份以同步隔离上一项目的搜索，不写入业务配置。 */
   const projectBrowseAtom = React.useMemo(() => atom<{ projectId: string | null; kind: ServerOpsConnectionKind | 'all'; query: string }>({ projectId: null, kind: 'all', query: '' }), [])
   const [projectBrowseState, setProjectBrowseState] = useAtom(projectBrowseAtom)
@@ -1428,15 +1429,30 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
   const [readAccessTarget, setReadAccessTarget] = useAtom(readAccessTargetAtom)
   /** 弹窗关闭后恢复到发起操作的卡片按钮。 */
   const readAccessTriggerRef = React.useRef<HTMLElement | null>(null)
-  /** 当前控制台页签。 */
-  const [activeSection, setActiveSection] = React.useState<ServerOpsSection>('overview')
   /**
-   * 中间区域是否停留在项目视图。
+   * 视图位置按 viewScope（会话 + Pane）记忆，但不落盘。
    *
-   * 项目视图是连接清单本身；只有用户显式点进某条连接后才切到连接视图，
-   * 因此应用重启后的默认落点是项目分组，而不是上次那条连接。
+   * 切到接口模块或切换会话会把本组件卸载，若位置只存在组件内就会「回到首页」；
+   * 而应用重启仍应回到项目分组，所以用运行期 atom 而不是 atomWithStorage。
    */
-  const [projectViewActive, setProjectViewActive] = React.useState(true)
+  const viewPosition = useServerOpsViewPosition(viewScope)
+  /** 项目与连接都来自当前会话位置；持久全局值只在 hook 内作为新会话默认。 */
+  const selectedProjectId = viewPosition.projectId
+  const selectedConnectionId = viewPosition.connectionId
+  /** 异步主机刷新读取最新连接，避免把连接选择加入回调依赖后每次切换都重拉主机。 */
+  const selectedConnectionIdRef = React.useRef(selectedConnectionId)
+  selectedConnectionIdRef.current = selectedConnectionId
+  /** 旧 scope 发起的异步读取不得把新 scope 的连接选择写回旧会话。 */
+  const viewScopeRef = React.useRef(viewScope)
+  viewScopeRef.current = viewScope
+  /** 当前控制台页签。 */
+  const activeSection = viewPosition.activeSection
+  /** 中间区域是否停留在项目视图：只有用户显式点进某条连接后才切到连接视图。 */
+  const projectViewActive = viewPosition.projectViewActive
+  const setSelectedProjectId = viewPosition.setProjectId
+  const setSelectedConnectionId = viewPosition.setConnectionId
+  const setActiveSection = React.useCallback((section: ServerOpsSection): void => { viewPosition.update({ activeSection: section }) }, [viewPosition])
+  const setProjectViewActive = React.useCallback((active: boolean): void => { viewPosition.update({ projectViewActive: active }) }, [viewPosition])
   /** 服务器列表抽屉是否展开。 */
   const [drawerOpen, setDrawerOpen] = React.useState(false)
   /** 当前正在编辑的服务器；null 表示新建。 */
@@ -1592,8 +1608,8 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
       setContainerLog(null)
       /** 目标项目下的连接；未迁移条目归入第一个项目。 */
       const targetConnections = listServerOpsProjectConnections(connectionSource, projectId)
-      setSelectedConnectionId((current) => targetConnections.some((connection) => connection.id === current)
-        ? current
+      setSelectedConnectionId(targetConnections.some((connection) => connection.id === selectedConnectionId)
+        ? selectedConnectionId
         : targetConnections[0]?.id ?? null)
     })
   }
@@ -1862,24 +1878,31 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
   const loadHosts = React.useCallback(async (): Promise<void> => {
     /** 在途读取不能覆盖其他 Pane 刚完成的移动或编辑回执。 */
     const hostsAtStart = workspaceStore.get(serverOpsHostsAtom)
+    const viewScopeAtStart = viewScope
     setStatus('loading')
     setError(null)
     try {
       /** 主进程返回的权威服务器列表。 */
       const loaded = await window.electronAPI.listServerOpsHosts()
-      if (workspaceStore.get(serverOpsHostsAtom) !== hostsAtStart) { setStatus('ready'); return }
+      const currentHosts = workspaceStore.get(serverOpsHostsAtom)
+      if (!shouldApplyServerOpsHostsLoad(viewScopeAtStart, viewScopeRef.current, hostsAtStart, currentHosts)) {
+        if (viewScopeAtStart === viewScopeRef.current) setStatus('ready')
+        return
+      }
       setHosts(loaded)
       /** 已删除的服务器对应的连接选择必须一起失效，否则会停留在不存在的连接上。 */
-      setSelectedConnectionId((current) => current === null || loaded.some((host) => createServerOpsSshConnectionId(host.id) === current)
-        ? current
-        : null)
+      setSelectedConnectionId(preserveServerOpsConnectionAfterHostsLoad(selectedConnectionIdRef.current, loaded))
       setStatus('ready')
     } catch (loadError) {
-      if (workspaceStore.get(serverOpsHostsAtom) !== hostsAtStart) { setStatus('ready'); return }
+      const currentHosts = workspaceStore.get(serverOpsHostsAtom)
+      if (!shouldApplyServerOpsHostsLoad(viewScopeAtStart, viewScopeRef.current, hostsAtStart, currentHosts)) {
+        if (viewScopeAtStart === viewScopeRef.current) setStatus('ready')
+        return
+      }
       setError(getErrorMessage(loadError))
       setStatus('error')
     }
-  }, [setError, setHosts, setSelectedConnectionId, setStatus, workspaceStore])
+  }, [setError, setHosts, setSelectedConnectionId, setStatus, viewScope, workspaceStore])
 
   React.useEffect(() => {
     void loadHosts()

@@ -1,0 +1,2414 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DutyDeck · 提示词编排工厂 — 交互设计稿 v20（四环节：运行 / 评测 / 场景定义 / 交付）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   提示词编排工厂 · 交互设计稿 v3
+   v2 的问题：按 1680px 整窗设计（236 固定左栏 + 372 固定右栏），
+   但这个模块实际嵌在右侧工作区面板里 —— 真实宽度范围是
+   300px（MIN_RIGHT_PANEL_WIDTH）到视口 60%，展开工作区默认
+   只占视口 40%（1512 屏约 605px）。观察区因此被挤没。
+
+   v3 用容器查询按面板自身宽度分三档（对齐项目既有做法：
+   AppShell 的 MIN_TODO_PANEL_WIDTH=600 起切双栏、server-ops
+   用 @container 收标题栏）：
+     < 720px  单列：场景选择进头部下拉，观察 / 详情用分段切换
+     720–1039 双列：观察台 + inspector（300）
+     ≥ 1040  三列：场景栏(208) + 观察台 + inspector(320)
+   视觉 token 仍全部取自 globals.css 的 :root / .dark。
+   ============================================================ */
+.light, :root{
+  --background:0 0% 100%; --foreground:0 0% 3.9%;
+  --muted:0 0% 96.1%; --muted-foreground:0 0% 45.1%;
+  --border:0 0% 89.8%; --input:0 0% 89.8%;
+  --primary:0 0% 9%; --primary-foreground:0 0% 98%;
+  --card:0 0% 100%; --popover:0 0% 100%; --dialog:0 0% 100%;
+  --content-area:0 0% 100%; --sidebar-surface:60 14.3% 98.6%; --input-surface:60 14.3% 98.6%;
+  --code-bg:210 13% 12%; --radius:6px;
+  --shadow-sm:0 1px 2px 0 rgb(0 0 0 / .05), 0 1px 1px 0 rgb(0 0 0 / .04);
+  --shadow-md:0 4px 8px -2px rgb(0 0 0 / .08), 0 2px 4px -1px rgb(0 0 0 / .05), 0 0 0 1px rgb(0 0 0 / .04);
+  --shadow-lg:0 12px 24px -6px rgb(0 0 0 / .12), 0 4px 8px -2px rgb(0 0 0 / .06), 0 0 0 1px rgb(0 0 0 / .04);
+  /* 语义色：与 DutyDeck 的低饱和主题同量级（对照其 --destructive 0 84% 60% / 暗色 0 55% 45%），
+     不用高饱和的"设计稿色"——那是 AI 感的来源之一。 */
+  --ok:158 40% 33%;      /* 归属：随包交付（绿） */
+  --fac:214 42% 46%;     /* 归属：工厂内部（蓝） */
+  --warn:35 62% 43%;     /* 草案、待处理 */
+  --bad:0 62% 50%;       /* 失败、invalid */
+}
+.dark{
+  --background:0 0% 10%; --foreground:0 0% 98%;
+  --muted:0 0% 17%; --muted-foreground:0 0% 63.9%;
+  --border:0 0% 22%; --input:0 0% 22%;
+  --primary:0 0% 98%; --primary-foreground:0 0% 9%;
+  --card:0 0% 13%; --popover:0 0% 14%; --dialog:0 0% 16%;
+  --content-area:0 0% 7%; --sidebar-surface:0 0% 10%; --input-surface:0 0% 9%;
+  --shadow-sm:0 1px 3px 0 rgb(0 0 0 / .5), inset 0 1px 0 0 hsl(0 0% 100% / .06);
+  --shadow-md:0 6px 16px -4px rgb(0 0 0 / .55), 0 2px 4px 0 rgb(0 0 0 / .35), inset 0 1px 0 0 hsl(0 0% 100% / .08);
+  --shadow-lg:0 16px 32px -8px rgb(0 0 0 / .6), 0 6px 12px -2px rgb(0 0 0 / .4), inset 0 1px 0 0 hsl(0 0% 100% / .10);
+  --ok:158 38% 55%; --fac:214 42% 63%; --warn:35 62% 58%; --bad:0 55% 58%;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:hsl(var(--content-area));color:hsl(var(--foreground));
+  font-family:'Inter Variable','Inter',-apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC',system-ui,sans-serif;
+  font-feature-settings:'cv11','ss01','ss03','tnum';
+  font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased;overflow:hidden;
+}
+
+/* ---------- 基础件 ---------- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 12px;
+  border-radius:calc(var(--radius) - 2px);font-size:12.5px;font-weight:500;white-space:nowrap;cursor:pointer;border:0;
+  font-family:inherit;transition:background-color .15s,box-shadow .15s,transform .15s,color .15s}
+.btn:active{transform:scale(.97)}
+.btn:focus-visible{outline:none;box-shadow:0 0 0 2px hsl(var(--background)),0 0 0 4px hsl(var(--foreground)/.4)}
+.btn-primary{background:hsl(var(--primary));color:hsl(var(--primary-foreground));
+  box-shadow:inset 0 1px 0 0 hsl(0 0% 100% / .10),0 1px 2px 0 rgb(0 0 0 / .18),0 0 0 1px rgb(0 0 0 / .06)}
+.btn-primary:hover{background:hsl(var(--primary)/.92)}
+.btn-outline{background:hsl(var(--background)/.8);color:hsl(var(--foreground));border:1px solid hsl(var(--border)/.6);box-shadow:0 1px 1px 0 rgb(0 0 0 / .04)}
+.btn-outline:hover{background:hsl(var(--muted))}
+.btn-ghost{background:transparent;color:hsl(var(--foreground))}
+.btn-ghost:hover{background:hsl(var(--muted))}
+.btn-sm{height:28px;padding:0 10px;font-size:12px}
+.btn-icon{width:28px;padding:0}
+.btn[disabled]{opacity:.5;pointer-events:none}
+.badge{display:inline-flex;align-items:center;gap:4px;border-radius:9999px;border:1px solid hsl(var(--border));
+  padding:1px 8px;font-size:11px;font-weight:600;color:hsl(var(--muted-foreground));background:hsl(var(--background));white-space:nowrap}
+.badge.ok{border-color:hsl(var(--ok)/.4);color:hsl(var(--ok));background:hsl(var(--ok)/.08)}
+.badge.warn{border-color:hsl(var(--warn)/.4);color:hsl(var(--warn));background:hsl(var(--warn)/.08)}
+.badge.solid{background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:transparent}
+.mono{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.muted{color:hsl(var(--muted-foreground))}
+.spacer{flex:1}
+
+/* ---------- 模拟整个 DutyDeck 窗口 ---------- */
+.sim{display:flex;height:100vh;min-height:0}
+.sim-app{flex:1;min-width:0;display:flex;background:hsl(0 0% 8%);overflow:hidden}
+.sim-side{width:232px;flex:0 0 auto;background:hsl(0 0% 11%);border-right:1px solid rgb(255 255 255/.07);
+  padding:12px 10px;display:flex;flex-direction:column;gap:6px}
+.sim-side .b{height:22px;border-radius:5px;background:rgb(255 255 255/.06)}
+.sim-side .b.w70{width:70%}
+.sim-side .b.w50{width:50%}
+.sim-side .b.act{background:rgb(255 255 255/.14);height:24px}
+.sim-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:10px;padding:14px 18px;background:hsl(0 0% 9%)}
+.sim-main .ln{height:13px;border-radius:4px;background:rgb(255 255 255/.06)}
+.sim-main .ln.w40{width:40%}.sim-main .ln.w80{width:80%}.sim-main .ln.w65{width:65%}
+.sim-tag{
+  position:absolute;left:14px;bottom:10px;font-size:10.5px;color:rgb(255 255 255/.28);
+  font-family:ui-monospace,Menlo,monospace;letter-spacing:.04em;
+}
+.sim-panel{flex:0 0 auto;min-width:0;border-left:1px solid hsl(var(--border));box-shadow:-8px 0 24px rgb(0 0 0/.18);
+  position:relative;transition:width .18s ease-out}
+
+/* ---------- 面板容器：所有断点看它 ---------- */
+.panel{
+  container-type:inline-size;container-name:factory;
+  height:100%;display:flex;flex-direction:column;background:hsl(var(--content-area));overflow:hidden;
+}
+
+/* ---------- 头部 ---------- */
+.ph{display:flex;align-items:center;gap:8px;height:46px;padding:0 10px;flex:0 0 auto;
+  background:hsl(var(--background));border-bottom:1px solid hsl(var(--border))}
+.ph .ic{width:22px;height:22px;flex:0 0 auto;border-radius:calc(var(--radius) - 2px);background:hsl(var(--primary));
+  color:hsl(var(--primary-foreground));display:grid;place-items:center;font-size:10.5px;font-weight:700}
+.ph .ttl{font-size:13px;font-weight:600;letter-spacing:-.01em;white-space:nowrap}
+.ph .sub{font-size:10.5px;color:hsl(var(--muted-foreground));white-space:nowrap}
+
+/* 与主会话的绑定：面板不承载对话，但要知道为哪个会话干活。
+   常驻显示——绑定状态是「面板 ↔ Agent」融合的关键信息，不能因为窄就藏起来；
+   窄栏只保留状态点与会话号，宽了再补文案。 */
+.agentchip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;max-width:100%;min-width:0;
+  border:1px solid hsl(var(--border)/.7);border-radius:999px;background:hsl(var(--background));
+  cursor:pointer;font-family:inherit;color:inherit}
+.agentchip:hover{background:hsl(var(--muted))}
+.agentchip .adot{width:6px;height:6px;border-radius:50%;background:hsl(var(--ok));flex:0 0 auto}
+.agentchip .atxt{display:none;font-size:11px;color:hsl(var(--muted-foreground));white-space:nowrap}
+.agentchip .aref{font-size:10.5px;color:hsl(var(--muted-foreground))}
+@container factory (min-width: 780px){ .agentchip .atxt{display:inline} }
+
+/* Agent 改动待采纳 */
+.verbar{display:flex;align-items:center;gap:8px;padding:7px 12px;flex:0 0 auto;
+  border-bottom:1px solid hsl(var(--border));background:hsl(var(--warn)/.08);flex-wrap:wrap;row-gap:5px}
+.verbar .vtxt{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+
+/* 场景条面包屑：项目 / 场景 */
+.crumb{display:inline-flex;align-items:center;gap:6px;min-width:0}
+.crumb .proj{font-size:11.5px;color:hsl(var(--muted-foreground));white-space:nowrap}
+.crumb .sep{font-size:10px;color:hsl(var(--muted-foreground)/.7)}
+
+/* 步骤级「让 Agent 看这一步」 */
+.askbtn{height:20px;padding:0 6px;border-radius:4px;border:1px solid hsl(var(--border)/.8);
+  background:hsl(var(--background));color:hsl(var(--muted-foreground));font-size:11px;cursor:pointer;
+  font-family:inherit;line-height:1}
+.askbtn:hover{color:hsl(var(--foreground));border-color:hsl(var(--foreground)/.3);background:hsl(var(--muted))}
+
+/* 场景切换（面板窄时替代左栏） */
+.scenpicker{display:none;align-items:center;gap:6px;height:28px;padding:0 9px;max-width:100%;
+  border:1px solid hsl(var(--border)/.7);border-radius:calc(var(--radius) - 2px);
+  background:hsl(var(--background));cursor:pointer;font-family:inherit;color:inherit;min-width:0}
+.scenpicker:hover{background:hsl(var(--muted))}
+.scenpicker .pn{font-size:10.5px;color:hsl(var(--muted-foreground));white-space:nowrap}
+.scenpicker .sn{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scenpicker .cv{font-size:9px;color:hsl(var(--muted-foreground))}
+
+/* ---------- 主体 ---------- */
+.pbody{flex:1;display:flex;min-height:0}
+.rail{width:208px;flex:0 0 auto;background:hsl(var(--sidebar-surface));border-right:1px solid hsl(var(--border));
+  display:flex;flex-direction:column;min-height:0}
+.rail-head{padding:9px 11px 7px;font-size:10.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;
+  color:hsl(var(--muted-foreground));border-bottom:1px solid hsl(var(--border))}
+.rail-list{overflow:auto;padding:6px}
+.proj{margin-bottom:2px}
+.proj-head{display:flex;align-items:center;gap:7px;padding:6px 7px;border-radius:calc(var(--radius) - 2px);cursor:pointer}
+.proj-head:hover{background:hsl(var(--muted))}
+.proj-head .caret{font-size:9px;color:hsl(var(--muted-foreground));transition:transform .18s ease-out}
+.proj.collapsed .caret{transform:rotate(-90deg)}
+.proj.collapsed .scenes{display:none}
+.proj-head .pname{font-size:12.5px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.proj-head .pcount{font-size:10.5px;color:hsl(var(--muted-foreground))}
+.scenes{display:flex;flex-direction:column;gap:1px;margin:1px 0 4px;padding-left:6px}
+.scene{display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:calc(var(--radius) - 2px);cursor:pointer}
+.scene:hover{background:hsl(var(--muted))}
+.scene.active{background:hsl(var(--primary));color:hsl(var(--primary-foreground))}
+.scene .sdot{width:5px;height:5px;border-radius:50%;background:hsl(var(--muted-foreground));flex:0 0 auto}
+.scene.active .sdot{background:hsl(var(--primary-foreground))}
+.scene .stitle{font-size:12.5px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scene .smeta{font-size:10.5px;color:hsl(var(--muted-foreground))}
+.scene.active .smeta{color:hsl(var(--primary-foreground)/.72)}
+
+/* 观察台 */
+.work{flex:1;min-width:0;display:flex;flex-direction:column;
+  container-type:inline-size;container-name:obs}
+.scenbar{display:flex;align-items:center;gap:8px;padding:8px 12px;flex:0 0 auto;
+  border-bottom:1px solid hsl(var(--border));background:hsl(var(--background))}
+.scenbar .nm{font-size:13.5px;font-weight:600;letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scenbar .flowmini{display:flex;align-items:center;gap:4px;font-size:11px;color:hsl(var(--muted-foreground));white-space:nowrap}
+.stage{flex:1;overflow:auto;padding:10px}
+
+.segview{display:none;gap:2px;padding:6px 8px;flex:0 0 auto;border-bottom:1px solid hsl(var(--border));background:hsl(var(--background))}
+.segview button{flex:1;height:28px;border:1px solid hsl(var(--border)/.7);background:hsl(var(--background));
+  color:hsl(var(--muted-foreground));font-size:12px;font-weight:500;cursor:pointer;font-family:inherit;border-radius:calc(var(--radius) - 2px)}
+.segview button[aria-pressed="true"]{background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:transparent}
+
+/* 本轮 / 历史：中栏顶部 tab（≥600），窄栏改用上面的统一切换器 */
+.worktabs{display:flex;gap:2px;padding:6px 8px 0;flex:0 0 auto;
+  border-bottom:1px solid hsl(var(--border));background:hsl(var(--background))}
+.wtab{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;font-size:12px;font-weight:500;
+  color:hsl(var(--muted-foreground));background:transparent;border:0;border-bottom:2px solid transparent;
+  cursor:pointer;font-family:inherit;border-radius:calc(var(--radius) - 2px) calc(var(--radius) - 2px) 0 0;
+  transition:color .15s,border-color .15s,background-color .15s}
+.wtab:hover{color:hsl(var(--foreground));background:hsl(var(--muted)/.6)}
+.wtab[aria-selected="true"]{color:hsl(var(--foreground));border-bottom-color:hsl(var(--primary))}
+.wtab:focus-visible{outline:none;box-shadow:0 0 0 2px hsl(var(--foreground)/.35)}
+.wbadge{font-size:10.5px;color:hsl(var(--muted-foreground));background:hsl(var(--muted));
+  border-radius:999px;padding:0 6px;line-height:1.5}
+.wtab[aria-selected="true"] .wbadge{background:hsl(var(--primary));color:hsl(var(--primary-foreground))}
+
+/* 一级结构 = 产品的四个环节：运行 / 评测 / 场景定义 / 交付。
+   「提交历史」降为运行下的子视图（面板最窄 300px，五个一级中文标签放不下）。
+   右栏（轨迹/校验/指标/对比）只属于「运行」——其余三个环节不需要它，内容占满整宽。 */
+#histPane,#scenePane,#evalPane,#deliverPane{display:none}
+.panel[data-view="run"][data-sub="history"] #runPane{display:none}
+.panel[data-view="run"][data-sub="history"] #histPane{display:block}
+.panel[data-view="eval"] #runPane,
+.panel[data-view="scene"] #runPane,
+.panel[data-view="deliver"] #runPane{display:none}
+.panel[data-view="eval"] #evalPane{display:block}
+.panel[data-view="scene"] #scenePane{display:block}
+.panel[data-view="deliver"] #deliverPane{display:block}
+
+/* 运行下的子切换只在运行 tab 出现 */
+.subswitch{display:none}
+.panel[data-view="run"] .subswitch{display:flex}
+.subswitch{display:none;gap:2px;padding:7px 8px 0;flex:0 0 auto;background:hsl(var(--background));
+  border-bottom:1px solid hsl(var(--border))}
+.panel[data-view="run"] .subswitch{display:flex}
+.subswitch button{height:26px;padding:0 10px;border:1px solid hsl(var(--border)/.7);
+  background:hsl(var(--background));color:hsl(var(--muted-foreground));font-size:12px;font-family:inherit;
+  cursor:pointer;border-radius:calc(var(--radius) - 2px)}
+.subswitch button[aria-pressed="true"]{background:hsl(var(--muted));color:hsl(var(--foreground))}
+.subswitch .mono{font-size:10.5px;color:hsl(var(--muted-foreground));margin-left:4px}
+
+/* 除运行之外的三个环节：收起场景条与版本条，也收起右栏 */
+.panel[data-view="eval"] .scenbar,.panel[data-view="scene"] .scenbar,.panel[data-view="deliver"] .scenbar,
+.panel[data-view="eval"] .verbar,.panel[data-view="scene"] .verbar,.panel[data-view="deliver"] .verbar,
+.panel[data-view="eval"] .inspector,.panel[data-view="scene"] .inspector,.panel[data-view="deliver"] .inspector{display:none}
+
+/* 场景定义编辑器 */
+.stephead{display:grid;grid-template-columns:auto 16px minmax(0,1fr) auto auto;gap:6px;align-items:center;
+  padding:7px 9px;background:hsl(var(--background)/.5)}
+.editstep.open .stephead{background:hsl(var(--muted)/.6);border-bottom:1px solid hsl(var(--border))}
+.stephead .grip{color:hsl(var(--muted-foreground));cursor:grab;font-size:11px;line-height:1}
+.stephead .en{font-size:10.5px;font-weight:600;width:16px;height:16px;border-radius:50%;display:grid;place-items:center;
+  background:hsl(var(--muted));color:hsl(var(--muted-foreground))}
+.stephead .etitle{height:26px;border:1px solid transparent;border-radius:4px;background:transparent;color:hsl(var(--foreground));
+  font-family:inherit;font-size:12.5px;font-weight:500;padding:0 6px;min-width:0}
+.stephead .etitle:hover{border-color:hsl(var(--border))}
+.stephead .etitle:focus{border-color:hsl(var(--foreground)/.35);background:hsl(var(--input-surface));outline:none}
+.tsel{height:26px;border:1px solid hsl(var(--border));border-radius:4px;background:hsl(var(--input-surface));
+  color:hsl(var(--foreground));font-family:ui-monospace,Menlo,monospace;font-size:11px;padding:0 4px}
+.stepops{display:flex;gap:1px}
+.stepops button{width:24px;height:24px;border:0;background:transparent;color:hsl(var(--muted-foreground));
+  border-radius:4px;cursor:pointer;font-size:12px;font-family:inherit;line-height:1}
+.stepops button:hover{background:hsl(var(--muted));color:hsl(var(--foreground))}
+.insertbar{display:flex;justify-content:center;padding:3px 0;opacity:.4;transition:opacity .15s}
+.insertbar:hover{opacity:1}
+.insertbar button{height:22px;padding:0 10px;border:1px dashed hsl(var(--border));border-radius:999px;
+  background:hsl(var(--background));color:hsl(var(--muted-foreground));font-size:11px;cursor:pointer;font-family:inherit}
+.insertbar button:hover{border-color:hsl(var(--foreground)/.3);color:hsl(var(--foreground))}
+.wire{display:flex;align-items:center;gap:6px;font-size:11px;color:hsl(var(--muted-foreground));padding-top:8px;flex-wrap:wrap}
+.wire code{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:hsl(var(--muted));border-radius:3px;padding:0 5px}
+.wire select{height:22px;border:1px solid hsl(var(--border));border-radius:4px;background:hsl(var(--input-surface));
+  color:hsl(var(--foreground));font-family:ui-monospace,Menlo,monospace;font-size:10.5px}
+.editstep [data-cfg]{display:none}
+.editstep[data-type="llm"] [data-cfg="llm"],
+.editstep[data-type="extract"] [data-cfg="extract"],
+.editstep[data-type="tool"] [data-cfg="tool"]{display:block}
+/* 配置区搬进弹窗后不再挂在 .editstep 下，按类型显示要用弹窗自己的 data-type */
+#nodeHost [data-cfg]{display:none}
+#nodeHost[data-type="llm"] [data-cfg="llm"],
+#nodeHost[data-type="extract"] [data-cfg="extract"],
+#nodeHost[data-type="tool"] [data-cfg="tool"]{display:block}
+.descinput{width:100%;height:30px;border:1px solid hsl(var(--input));border-radius:calc(var(--radius) - 2px);
+  background:hsl(var(--input-surface));color:hsl(var(--foreground));padding:0 9px;font-family:inherit;font-size:12.5px;outline:none}
+.descinput:focus{border-color:hsl(var(--foreground)/.35)}
+.editstep{border:1px solid hsl(var(--border));border-radius:var(--radius);background:hsl(var(--card));overflow:hidden}
+.editstep + .editstep{margin-top:8px}
+.editstep-h{display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:pointer;background:hsl(var(--background)/.5)}
+.editstep-h:hover{background:hsl(var(--muted)/.5)}
+.editstep.open .editstep-h{background:hsl(var(--muted)/.6);border-bottom:1px solid hsl(var(--border))}
+.editstep-h .en{font-size:10.5px;font-weight:600;width:16px;height:16px;border-radius:50%;
+  display:grid;place-items:center;background:hsl(var(--muted));color:hsl(var(--muted-foreground));flex:0 0 auto}
+.editstep-h .et{font-size:12.5px;font-weight:500;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.editstep-b{display:none;padding:10px}
+.editstep.open .editstep-b{display:block}
+.flabel{display:block;font-size:11px;font-weight:500;color:hsl(var(--muted-foreground));margin:0 0 5px}
+.flabel:not(:first-child){margin-top:12px}
+.ptext{width:100%;min-height:104px;resize:vertical;border:1px solid hsl(var(--input));border-radius:calc(var(--radius) - 2px);
+  background:hsl(var(--input-surface));color:hsl(var(--foreground));padding:9px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:11.5px;line-height:1.7;outline:none}
+.ptext:focus{border-color:hsl(var(--foreground)/.35);box-shadow:0 0 0 3px hsl(var(--foreground)/.08)}
+.ptext.dirty{border-color:hsl(var(--warn)/.6)}
+.frow{display:flex;align-items:center;gap:7px;padding:5px 0;border-bottom:1px dashed hsl(var(--border));font-size:11.5px}
+.frow:last-child{border-bottom:0}
+.frow .fn{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;flex:1;min-width:0}
+.frow .ft{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:hsl(var(--muted-foreground))}
+.frow .fx{font-size:10.5px;color:hsl(var(--bad));letter-spacing:.04em}
+.miniinput{height:24px;border:1px solid hsl(var(--input));border-radius:4px;background:hsl(var(--input-surface));
+  color:hsl(var(--foreground));padding:0 7px;font-size:11px;font-family:ui-monospace,Menlo,monospace;outline:none;min-width:0}
+.miniinput:focus{border-color:hsl(var(--foreground)/.35)}
+.dirtybar{display:flex;align-items:center;gap:8px;padding:8px 11px;border-top:1px solid hsl(var(--border));
+  background:hsl(var(--warn)/.08);flex-wrap:wrap;row-gap:5px}
+
+.card{background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:var(--radius);
+  box-shadow:var(--shadow-sm);overflow:hidden}
+.card + .card{margin-top:10px}
+.card-h{display:flex;align-items:center;gap:7px;padding:8px 11px;border-bottom:1px solid hsl(var(--border));
+  background:hsl(var(--background)/.5);flex-wrap:wrap;row-gap:5px}
+.card-h .ct{font-size:12.5px;font-weight:600;white-space:nowrap}
+.card-b{padding:11px}
+.card-f{display:flex;align-items:center;gap:8px;padding:8px 11px;border-top:1px solid hsl(var(--border));background:hsl(var(--muted)/.4)}
+.card-f .hintline{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@container obs (max-width: 640px){ .card-f .hintline{display:none} }
+.hintline{font-size:11px;color:hsl(var(--muted-foreground));line-height:1.6}
+
+/* 步骤流水线：窄容器下 meta 折行 */
+.pipe{display:flex;flex-direction:column}
+.pstep{display:grid;grid-template-columns:22px minmax(0,1fr) auto auto;gap:9px;align-items:center;
+  padding:9px 11px;border-bottom:1px solid hsl(var(--border));cursor:pointer;transition:background-color .2s}
+.pstep:last-child{border-bottom:0}
+.pstep:hover{background:hsl(var(--muted)/.4)}
+.pstep.running{background:hsl(var(--muted)/.6)}
+.pstep .num{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:10.5px;font-weight:600;
+  border:1.5px solid hsl(var(--border));color:hsl(var(--muted-foreground));background:hsl(var(--background))}
+.pstep.done .num{background:hsl(var(--ok));border-color:hsl(var(--ok));color:#fff}
+.pstep.running .num{border-color:hsl(var(--warn));color:hsl(var(--warn));animation:blink 1.2s infinite}
+.pstep.bad .num{background:hsl(var(--bad));border-color:hsl(var(--bad));color:#fff}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
+.pstep .sn{font-size:12.5px;font-weight:500}
+.pstep .sd{font-size:11px;color:hsl(var(--muted-foreground));margin-top:1px;overflow-wrap:anywhere}
+.pstep .tm{font-size:11px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums;white-space:nowrap}
+.pill{font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:4px;border:1px solid hsl(var(--border));
+  color:hsl(var(--muted-foreground));background:hsl(var(--background));white-space:nowrap}
+
+/* ===== 卡片流程图：输入 → 步骤 → 输出一条流；并行组用左侧竖线包住 ===== */
+.fmap{display:flex;flex-direction:column}
+.fconn{display:flex;justify-content:center;color:hsl(var(--muted-foreground)/.5);font-size:11px;line-height:1;padding:4px 0}
+.fnode{position:relative;display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:2px 9px;align-items:center;
+  background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:var(--radius);
+  padding:8px 10px;box-shadow:var(--shadow-sm);cursor:pointer;
+  transition:border-color .15s,background-color .15s}
+.fnode:hover{border-color:hsl(var(--foreground)/.22)}
+.fnode .fn-n{grid-row:1 / span 2;font-size:10.5px;font-weight:600;width:20px;height:20px;border-radius:50%;
+  display:grid;place-items:center;background:hsl(var(--muted));color:hsl(var(--muted-foreground))}
+.fnode .fn-t{font-size:12.5px;font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fnode .fn-d{grid-column:2;font-size:11px;color:hsl(var(--muted-foreground));min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fnode .fn-m{grid-column:3;grid-row:1 / span 2;display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+.fnode .fn-p{font-family:ui-monospace,Menlo,monospace;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;
+  border:1px solid hsl(var(--border));color:hsl(var(--muted-foreground));background:hsl(var(--background))}
+.fnode .fn-time{font-family:ui-monospace,Menlo,monospace;font-size:10px;color:hsl(var(--muted-foreground))}
+.fnode.done{border-left:3px solid hsl(var(--ok))}
+.fnode.bad{border-left:3px solid hsl(var(--bad));background:hsl(var(--bad)/.06)}
+.fnode.running{border-left:3px solid hsl(var(--warn));background:hsl(var(--warn)/.06)}
+.fnode.io{border-style:dashed;background:hsl(var(--muted)/.28)}
+.fnode.io .fn-n{background:transparent;border:1px dashed hsl(var(--border))}
+.fio{display:none;margin-top:6px}
+.fio.on{display:block}
+.fio .inputbox{border-radius:calc(var(--radius) - 2px)}
+.fio .note{border-radius:calc(var(--radius) - 2px);margin-top:6px;border-top:0}
+/* 并行组：左侧竖线 + 组标签，窄栏自动改单列 */
+.fgroup{position:relative;padding-left:13px}
+.fgroup::before{content:'';position:absolute;left:3px;top:0;bottom:0;width:2px;border-radius:1px;
+  background:hsl(var(--border))}
+.fglabel{display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:10.5px;
+  color:hsl(var(--muted-foreground));flex-wrap:wrap;row-gap:4px}
+.fglabel .b{font-family:ui-monospace,Menlo,monospace;font-size:10px;font-weight:600;padding:1px 7px;
+  border-radius:999px;background:hsl(var(--muted));color:hsl(var(--foreground))}
+.fgrid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.fmore{margin-top:6px;font-size:10.5px;color:hsl(var(--muted-foreground))}
+@container obs (max-width:560px){ .fgrid{grid-template-columns:1fr} }
+
+/* ===== 场景定义：固定布局的节点图（不可拖动，自动横排、窄了折行） ===== */
+.dgnodes{display:flex;align-items:flex-start;flex-wrap:wrap;row-gap:10px}
+.dnode{position:relative;flex:0 0 auto;width:152px;margin-right:22px;background:hsl(var(--card));border:1px solid hsl(var(--border));
+  border-radius:var(--radius);padding:7px 9px;box-shadow:var(--shadow-sm);cursor:pointer;
+  display:flex;flex-direction:column;gap:2px;transition:border-color .15s,box-shadow .15s}
+.dnode:hover{border-color:hsl(var(--foreground)/.25)}
+.dnode.sel{border-color:hsl(var(--primary));box-shadow:0 0 0 3px hsl(var(--primary)/.12),var(--shadow-sm)}
+.dnode .dn-top{display:flex;align-items:center;gap:6px}
+.dnode .dn-n{font-size:10px;font-weight:600;width:15px;height:15px;border-radius:50%;display:grid;place-items:center;
+  background:hsl(var(--muted));color:hsl(var(--muted-foreground));flex:0 0 auto}
+.dnode .dn-p{font-family:ui-monospace,Menlo,monospace;font-size:9.5px;padding:0 5px;border-radius:3px;
+  border:1px solid hsl(var(--border));color:hsl(var(--muted-foreground));margin-left:auto}
+.dnode .dn-t{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dnode .dn-d{font-size:10.5px;color:hsl(var(--muted-foreground));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dnode .dn-x{font-size:10px;color:hsl(var(--warn))}
+.dnode.io{border-style:dashed;background:hsl(var(--muted)/.28)}
+.dnode.io .dn-n{background:transparent;border:1px dashed hsl(var(--border))}
+/* 箭头改由节点自带（::after），避免 flex 换行时箭头单独掉到行尾指向空处 */
+.dnode::after{content:'→';position:absolute;right:-16px;top:50%;transform:translateY(-50%);
+  color:hsl(var(--muted-foreground)/.45);font-size:12px}
+.dnode:last-child::after{display:none}
+.darrow{display:none}
+
+/* ===== 步骤卡即图上的节点：只留头部，配置进弹窗 ===== */
+#stepsHost{display:flex;flex-wrap:wrap;row-gap:12px}
+#stepsHost .insertbar{display:none}
+#stepsHost .editstep{position:relative;width:190px;margin-right:22px;box-shadow:var(--shadow-sm);
+  overflow:visible}   /* 基础样式里的 overflow:hidden 会把卡片外的连线裁掉 */
+/* 卡片之间的连线 + 箭头：由源卡片的伪元素绘制，随卡片一起换行，
+   避免独立连接元素在 flex 换行时掉到行尾。真实实现里这条线由 xyflow 的边接管。 */
+#stepsHost .editstep::after{content:'';position:absolute;left:calc(100% + 4px);top:50%;
+  width:12px;height:2px;transform:translateY(-50%);background:hsl(var(--border));border-radius:1px}
+#stepsHost .editstep::before{content:'';position:absolute;left:calc(100% + 16px);top:50%;
+  transform:translateY(-50%);border-left:5px solid hsl(var(--border));
+  border-top:4px solid transparent;border-bottom:4px solid transparent}
+/* 行尾卡片（含最后一张）不画线：CSS 算不出换行位置，由 JS 标 row-end 类 */
+#stepsHost .editstep.row-end::after,
+#stepsHost .editstep.row-end::before{display:none}
+#stepsHost .stephead{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:9px 10px;
+  border-bottom:0;background:hsl(var(--card));cursor:pointer}
+#stepsHost .stephead:hover{background:hsl(var(--muted)/.45)}
+#stepsHost .stephead .grip{display:none}
+#stepsHost .stephead .en{order:1}
+#stepsHost .stephead .tsel{order:2;margin-left:auto}
+#stepsHost .stephead .stepops{order:3;opacity:.55}
+#stepsHost .stephead:hover .stepops{opacity:1}
+#stepsHost .stephead .stepops button:last-child{display:none}   /* 展开按钮已由「点卡片开弹窗」取代 */
+#stepsHost .stephead .stepops button{width:20px;height:20px;font-size:11px}
+#stepsHost .stephead .etitle{order:4;flex:1 1 100%;padding:0;height:auto;font-weight:500;
+  text-overflow:ellipsis;white-space:nowrap;overflow:hidden}
+#stepsHost .editstep > .editstep-b{display:none}
+.relchip{margin-top:7px;font-size:10px;color:hsl(var(--muted-foreground));cursor:pointer;
+  display:inline-flex;align-items:center;gap:3px}
+.relchip:hover{color:hsl(var(--foreground))}
+/* 让「输入契约 → 步骤图 → 输出契约」读起来是一条流，而不是三张并列的卡 */
+.flowjoin{display:flex;justify-content:center;color:hsl(var(--muted-foreground)/.5);font-size:11px;line-height:1;padding:4px 0}
+
+/* ===== 简化：场景信息压成一条；低频项收进折叠区 ===== */
+.scenehead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;row-gap:7px;
+  background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:var(--radius);
+  padding:9px 11px;box-shadow:var(--shadow-sm)}
+.scenehead .shname{height:28px;border:1px solid transparent;border-radius:4px;background:transparent;
+  color:hsl(var(--foreground));font-family:inherit;font-size:13.5px;font-weight:600;padding:0 7px;width:190px}
+.scenehead .shname:hover{border-color:hsl(var(--border))}
+.scenehead .shname:focus{border-color:hsl(var(--foreground)/.35);background:hsl(var(--input-surface));outline:none}
+.scenehead .shdesc{flex:1 1 240px;min-width:140px;height:28px;border:1px solid transparent;border-radius:4px;
+  background:transparent;color:hsl(var(--muted-foreground));font-family:inherit;font-size:12px;padding:0 7px}
+.scenehead .shdesc:hover{border-color:hsl(var(--border))}
+.scenehead .shdesc:focus{border-color:hsl(var(--foreground)/.35);background:hsl(var(--input-surface));outline:none;color:hsl(var(--foreground))}
+
+.foldcard{background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:var(--radius);
+  box-shadow:var(--shadow-sm);margin-top:12px;overflow:hidden}
+.foldhead{display:flex;align-items:center;gap:8px;width:100%;padding:9px 11px;background:transparent;
+  border:0;cursor:pointer;font-family:inherit;color:inherit;text-align:left}
+.foldhead:hover{background:hsl(var(--muted)/.45)}
+.foldhead .cv{font-size:10px;color:hsl(var(--muted-foreground));transition:transform .18s ease-out}
+.foldcard.open .foldhead .cv{transform:rotate(180deg)}
+.foldcard.open .foldbody{display:block !important}
+.foldbody{padding:0 11px 11px}
+.foldbody > .card{margin-top:10px;box-shadow:none}
+
+/* ===== v17：整页改成一条自上而下的卡片流；边框颜色标记归属 =====
+   绿 = 随能力包交付给别的项目；蓝 = 编排工厂内部资产，不随包走。 */
+:root{--fac:212 68% 50%}
+.dark{--fac:212 70% 66%}
+
+/* 折叠容器退化成透明分组：内部卡片直接参与这条竖向流 */
+.foldcard{background:transparent;border:0;box-shadow:none;margin-top:0}
+.foldbody{padding:0;display:block !important}
+.foldhead{display:none}
+.foldbody > .card{margin-top:0;box-shadow:var(--shadow-sm)}
+
+/* 归属色：只留一条左边缘色条 + 徽标。
+   刻意不做整片淡色底——DutyDeck 里强调色的用量极小（徽标、选中条），
+   铺满底色会让界面变成"主题色海报"，那正是 AI 感的来源。 */
+.own{position:relative}
+.own-deliver{border-left:3px solid hsl(var(--ok))}
+.own-factory{border-left:3px solid hsl(var(--fac));background:hsl(var(--fac)/.03)}
+.own-tag{font-size:10px;font-weight:600;letter-spacing:.03em;padding:0 5px;border-radius:3px;white-space:nowrap}
+.own-tag.d{border:1px solid hsl(var(--ok)/.45);color:hsl(var(--ok))}
+.own-tag.f{border:1px solid hsl(var(--fac)/.45);color:hsl(var(--fac))}
+
+/* 图例 */
+.legend{display:flex;align-items:center;gap:10px;font-size:10.5px;color:hsl(var(--muted-foreground));
+  margin-left:auto;flex-wrap:wrap}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.legend .lg-d{background:hsl(var(--ok))}
+.legend .lg-f{background:hsl(var(--fac))}
+
+/* 步骤改成竖向排列，连线与箭头也改成竖向 */
+#stepsHost{flex-direction:column;gap:22px}
+#stepsHost .editstep{width:auto;margin-right:0}
+#stepsHost .editstep::after{left:50%;top:100%;width:2px;height:16px;transform:translateX(-50%);
+  background:hsl(var(--border))}
+#stepsHost .editstep::before{left:50%;top:calc(100% + 15px);transform:translateX(-50%);
+  border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid hsl(var(--border));
+  border-bottom:0}
+#stepsHost .editstep.row-end::after,
+#stepsHost .editstep.row-end::before{display:none}
+/* 步骤卡也是交付物：同样只留色条，不铺底色 */
+#stepsHost .editstep{border-left:3px solid hsl(var(--ok))}
+
+/* ===== 层级规范（本轮）=====
+   规则：卡片只用在「可点开的实体」上（步骤节点）；分区用分隔线，不再一区一张卡。
+   于是得到三层，而不是原来 10 张同等体量的卡：
+     ① 面板面 = sidebar-surface（浅灰 / 暗色 10%）
+     ② 卡片面 = card（白 / 暗色 13%）—— 只有步骤节点用
+     ③ 内容   = 直接落在面板面上，靠发丝分隔线分区
+   sidebar-surface 与 card 在明暗两套主题里都有真实差值，这是层级能立住的前提。 */
+#defLinear{background:hsl(var(--sidebar-surface));border:1px solid hsl(var(--border));
+  border-radius:var(--radius);box-shadow:var(--shadow-sm);overflow:hidden}
+
+/* ① 面板头：不要卡片感，只用一条底线分隔 */
+.scenehead{background:transparent;border:0;border-bottom:1px solid hsl(var(--border));
+  border-radius:0;box-shadow:none;padding:12px 14px}
+
+/* ② 分区：去掉卡片边框与阴影，改为发丝分隔 + 统一内边距 */
+.foldcard,.foldbody{background:transparent;border:0;box-shadow:none}
+.foldbody > .card,.foldbody > .card:first-child{border:0;border-top:1px solid hsl(var(--border));
+  border-radius:0;box-shadow:none;padding:12px 14px;background:transparent;margin:0}
+.foldbody > .card .card-h{padding:0 0 8px;background:transparent;border-bottom:0;min-height:0}
+.foldbody > .card .card-b{padding:0}
+.foldbody > .card .card-h .ct,.foldbody > .card .card-h .badge{font-size:13px}
+.foldbody > .card .card-h .badge{font-size:11px}
+
+/* 归属色条保留 —— 它是分区身份，不是装饰 */
+.foldbody > .card.own-deliver{border-left:3px solid hsl(var(--ok))}
+.foldbody > .card.own-factory{border-left:3px solid hsl(var(--fac))}
+
+/* ③ 步骤区：外层退成普通分区，里面的节点卡才是卡片（唯一有卡片感的东西） */
+.work .card:has(#stepsHost){border:0;border-top:1px solid hsl(var(--border));border-radius:0;
+  box-shadow:none;background:transparent;padding:12px 14px}
+.work .card:has(#stepsHost) > .card-h{padding:0 0 10px;background:transparent;border-bottom:0}
+.work .card:has(#stepsHost) > .card-b{padding:0}
+#stepsHost .editstep{background:hsl(var(--card));border:1px solid hsl(var(--border));
+  border-left:3px solid hsl(var(--ok));border-radius:calc(var(--radius) - 2px)}
+#stepsHost .editstep:hover{border-color:hsl(var(--foreground)/.22);border-left-color:hsl(var(--ok))}
+
+/* 连接符在浅灰底上要更轻，避免抢过内容 */
+.flowjoin{color:hsl(var(--muted-foreground)/.55);font-size:11px}
+
+/* ===== 视觉规范对齐 =====
+   1) 字号收敛到四档：10（辅助）/ 12（正文小）/ 13（正文）/ 14（标题）。
+      一屏出现七八种字号是"没有节奏"，读起来就是模板感。
+   2) 间距收敛到 4 / 8 / 12 / 16 / 24。
+   3) 强调色只出现在：左色条、徽标、状态点、focus ring。 */
+/* 11px：只给微标签（徽标、类型、耗时、编号）——再大就会在窄栏里挤爆 */
+.badge,.own-tag,.pill,.fn-time,.hmeta,.hid,.fn-p,.stephead .en,.dnode .dn-n,.dnode .dn-p,.relchip{font-size:11px}
+/* 12px：真正的可读小字（说明、键值、输入框、标签页） */
+.hintline,.kv dt,.kv dd,.crow .ft,.crow .fx,.miniinput,.tsel,.wire,.wire select,.sechead,
+.metric .k,.arow,.fmore,.legend,.ttime,.sub,.rail-head{font-size:12px}
+/* 13/14px：正文与标题 */
+.fn-t,.ct,.etitle,.hrow .htxt,.acc-row,.sizer button,.sn{font-size:13px}
+.nm,.ttl,.dt,.scenehead .shname{font-size:14px}
+.sechead,.rail-head{letter-spacing:.02em}
+
+/* 竖向连接符（顶层卡片之间） */
+.flowjoin{padding:6px 0;font-size:12px}
+.flowjoin.dashed{color:hsl(var(--fac)/.6);font-size:13px}
+
+/* 短字段不再拉满整宽：宽屏下用两列网格，窄容器自动回落单列 */
+.metagrid{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px}
+@container obs (max-width:640px){ .metagrid{grid-template-columns:1fr} }
+.crow{display:grid;grid-template-columns:minmax(0,1fr) 104px 52px 24px;gap:8px;align-items:center;max-width:560px}
+.crow .miniinput{width:100%}
+.crow + .crow{margin-top:7px}
+@container obs (max-width:520px){ .crow{grid-template-columns:minmax(0,1fr) 78px 46px 24px} }
+
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:hsl(var(--border))}
+.metric{background:hsl(var(--card));padding:10px 11px;min-width:0}
+.metric .k{font-size:10.5px;color:hsl(var(--muted-foreground));letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.metric .v{font-size:21px;font-weight:600;letter-spacing:-.02em;margin-top:2px;font-variant-numeric:tabular-nums}
+.metric .u{font-size:11px;font-weight:400;color:hsl(var(--muted-foreground));margin-left:2px}
+.v.ok{color:hsl(var(--ok))}.v.warn{color:hsl(var(--warn))}.v.bad{color:hsl(var(--bad))}
+.note{display:flex;gap:8px;align-items:flex-start;padding:9px 11px;font-size:11.5px;line-height:1.6;
+  border-top:1px solid hsl(var(--border));background:hsl(var(--warn)/.07)}
+.note .bang{color:hsl(var(--warn));font-weight:700}
+
+.hrow{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:9px;align-items:center;
+  padding:8px 11px;border-bottom:1px solid hsl(var(--border));cursor:pointer;transition:background-color .15s}
+.hrow:last-child{border-bottom:0}
+.hrow:hover{background:hsl(var(--muted)/.5)}
+.hrow.cur{background:hsl(var(--muted)/.7)}
+.hrow .hid{font-size:11px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums}
+.hrow .htxt{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hrow .hmeta{font-size:11px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums;white-space:nowrap}
+.inputbox{background:hsl(var(--input-surface));border:1px solid hsl(var(--border));border-radius:calc(var(--radius) - 2px);
+  padding:9px;font-size:12px;line-height:1.7;overflow:auto;white-space:pre-wrap;font-family:inherit}
+
+/* inspector */
+.inspector{width:320px;flex:0 0 auto;background:hsl(var(--sidebar-surface));border-left:1px solid hsl(var(--border));
+  display:flex;flex-direction:column;min-height:0}
+.tabs{display:flex;gap:1px;padding:7px 7px 0;border-bottom:1px solid hsl(var(--border));background:hsl(var(--background))}
+.tab{padding:7px 9px;font-size:12px;font-weight:500;color:hsl(var(--muted-foreground));background:transparent;border:0;
+  border-bottom:2px solid transparent;cursor:pointer;font-family:inherit;white-space:nowrap;
+  border-radius:calc(var(--radius) - 2px) calc(var(--radius) - 2px) 0 0;transition:color .15s,border-color .15s,background-color .15s}
+.tab:hover{color:hsl(var(--foreground));background:hsl(var(--muted)/.6)}
+.tab[aria-selected="true"]{color:hsl(var(--foreground));border-bottom-color:hsl(var(--primary))}
+.pane{display:none;overflow:auto;padding:11px;flex:1}
+.pane.on{display:block}
+.sechead{font-size:10.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:hsl(var(--muted-foreground));margin:2px 0 7px}
+.sechead:not(:first-child){margin-top:16px}
+
+.trace{border:1px solid hsl(var(--border));border-radius:var(--radius);overflow:hidden;background:hsl(var(--card))}
+.trow{border-bottom:1px solid hsl(var(--border))}
+.trow:last-child{border-bottom:0}
+.thead{display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 9px;cursor:pointer}
+.thead:hover,.trow.open .thead{background:hsl(var(--muted)/.6)}
+.tstat{font-size:12px;text-align:center}
+.tbody{display:none;padding:9px;border-top:1px solid hsl(var(--border));background:hsl(var(--muted)/.3)}
+.trow.open .tbody{display:block}
+.kv{display:grid;grid-template-columns:64px minmax(0,1fr);gap:5px 9px;font-size:11.5px;margin-bottom:7px}
+.kv dt{font-size:10.5px;color:hsl(var(--muted-foreground))}
+.kv dd{overflow-wrap:anywhere}
+pre{background:hsl(var(--code-bg));color:#cdd6e0;border-radius:calc(var(--radius) - 2px);padding:9px;
+  font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;font-size:11px;line-height:1.65;
+  overflow:auto;max-height:240px;white-space:pre}
+.j-key{color:#7fb4e0}.j-str{color:#a5d6a0}.j-cmt{color:#6b7785}
+.schema{background:hsl(var(--code-bg));color:#cdd6e0;border-radius:calc(var(--radius) - 2px);padding:9px;
+  font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;font-size:11px;line-height:1.75;overflow:auto}
+.schema .ln{white-space:pre}
+.schema .fname{color:#e6edf3}.schema .ftype{color:#7fb4e0}.schema .freq{color:#e0857a;font-size:10px}
+.schema .fopt{color:#6b7785;font-size:10px}.schema .fenum{color:#a5d6a0}
+
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:6px 7px;border-bottom:1px solid hsl(var(--border))}
+th{font-size:10.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:hsl(var(--muted-foreground))}
+td{font-variant-numeric:tabular-nums}
+.up{color:hsl(var(--ok))}
+.acc{border:1px solid hsl(var(--border));border-radius:var(--radius);overflow:hidden;background:hsl(var(--card))}
+.acc .ah{padding:8px 10px;background:hsl(var(--muted)/.5);border-bottom:1px solid hsl(var(--border));display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.acc .ab{padding:9px 10px}
+.arow{display:flex;justify-content:space-between;gap:9px;padding:4px 0;border-bottom:1px dashed hsl(var(--border));font-size:11.5px}
+.arow:last-child{border-bottom:0}
+.arow .an{color:hsl(var(--muted-foreground))}
+
+/* 状态条 */
+.statusbar{flex:0 0 auto;height:27px;display:flex;align-items:center;gap:12px;padding:0 11px;
+  background:hsl(var(--background));border-top:1px solid hsl(var(--border));font-size:11px;
+  color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums;overflow:hidden}
+.statusbar .sb{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.led{width:6px;height:6px;border-radius:50%;background:hsl(var(--muted-foreground))}
+.led.run{background:hsl(var(--warn));animation:blink 1.1s infinite}
+.led.done{background:hsl(var(--ok))}
+.progress{width:78px;height:4px;background:hsl(var(--muted));border-radius:2px;overflow:hidden;flex:0 0 auto}
+.progress i{display:block;height:100%;width:0;background:hsl(var(--foreground)/.7);transition:width .25s linear}
+
+/* ============================================================
+   容器断点
+   ============================================================ */
+
+/* ≥1040：三列，左栏出现 */
+@container factory (min-width: 1040px){
+  .scenpicker{display:none}
+}
+@container factory (max-width: 1039px){
+  .rail{display:none}
+  .scenpicker{display:inline-flex}
+  .inspector{width:280px}
+}
+@container factory (min-width: 720px) and (max-width: 1039px){
+  .inspector{width:300px}
+}
+/* ≥600 保持「观察 + 轨迹」并排：过程与结果都要看见，这是本模块的主诉求。
+   600 也是项目自身切双栏的约定（AppShell 的 MIN_TODO_PANEL_WIDTH）。 */
+@container factory (max-width: 599px){
+  .segview{display:flex}
+  .worktabs{display:none}
+  .inspector{width:auto;flex:1;border-left:0;border-top:1px solid hsl(var(--border))}
+  .panel[data-view="run"] .inspector,
+  .panel[data-view="history"] .inspector,
+  .panel[data-view="scene"] .inspector{display:none}
+  .panel[data-view="detail"] .work{display:none}
+  .panel[data-view="detail"] .inspector{display:flex}
+  .ph .sub{display:none}
+  .stage{padding:8px}
+  .statusbar .hide-narrow{display:none}
+}
+/* 更窄：头部与卡片继续收 */
+@container factory (max-width: 519px){
+  .ph{gap:6px;padding:6px 8px;height:auto;flex-wrap:wrap}
+  .ph .ttl{font-size:12.5px}
+  .scenpicker{order:9;flex:1 1 100%;margin-top:2px}
+  .btn-label-narrow{display:none}
+  .scenbar .flowmini{display:none}
+  .statusbar{gap:8px;padding:0 8px}
+  .progress{width:52px}
+}
+/* 观察台内部：步骤行 meta 折行、指标两列（看观察台自身宽度而非面板） */
+@container obs (max-width: 560px){
+  /* 中栏 tab 在窄观察台里必须不换行：收内边距、缩徽标 */
+  .wtab{padding:6px 7px;font-size:11.5px;gap:4px}
+  .wbadge{font-size:10px;padding:0 5px}
+  /* 观察台窄时优先后果信息：项目名交给面板头部/左栏，这里只留场景名 */
+  .crumb .proj,.crumb .sep{display:none}
+  #btnEval .btn-label-narrow{display:none}
+  .pstep{grid-template-columns:20px minmax(0,1fr);row-gap:4px}
+  .pstep .meta{grid-column:2;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .metrics{grid-template-columns:repeat(2,1fr)}
+  .hrow{grid-template-columns:auto minmax(0,1fr) auto}
+  .hrow .hmeta{display:none}
+  .scenbar .flowmini{display:none}
+}
+@container obs (min-width: 561px){
+  .pstep .meta{display:contents}
+}
+
+/* 弹层 */
+.btn-icononly{display:none}
+@container factory (max-width: 519px){
+  .btn-icononly{display:inline}
+}
+.scrim{position:fixed;inset:0;background:rgb(0 0 0/.45);display:none;z-index:40}
+.scrim.on{display:block}
+.dialog{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(620px,92vw);max-height:84vh;
+  background:hsl(var(--dialog));border:1px solid hsl(var(--border));border-radius:var(--radius);box-shadow:var(--shadow-lg);
+  z-index:41;display:none;flex-direction:column;overflow:hidden}
+.dialog.on{display:flex}
+.dialog header{display:flex;align-items:flex-start;gap:10px;padding:14px 16px 10px}
+.dialog header .dt{font-size:14px;font-weight:600}
+.dialog header .dd{font-size:11.5px;color:hsl(var(--muted-foreground));margin-top:2px}
+.dialog .db{padding:0 16px 14px;overflow:auto}
+.dialog footer{display:flex;gap:8px;align-items:center;padding:11px 16px;border-top:1px solid hsl(var(--border));background:hsl(var(--muted)/.4)}
+.x{margin-left:auto;background:transparent;border:0;color:hsl(var(--muted-foreground));cursor:pointer;font-size:15px;padding:3px 5px;border-radius:4px}
+.x:hover{background:hsl(var(--muted));color:hsl(var(--foreground))}
+.field{margin-top:12px}
+.field label{display:block;font-size:11.5px;font-weight:500;margin-bottom:5px;color:hsl(var(--muted-foreground))}
+.ta{width:100%;min-height:160px;resize:vertical;border:1px solid hsl(var(--input));border-radius:calc(var(--radius) - 2px);
+  background:hsl(var(--input-surface));color:hsl(var(--foreground));padding:10px;font-family:inherit;font-size:12.5px;line-height:1.7;outline:none}
+.ta:focus{border-color:hsl(var(--foreground)/.35);box-shadow:0 0 0 3px hsl(var(--foreground)/.08)}
+.seg{display:inline-flex;border:1px solid hsl(var(--border));border-radius:calc(var(--radius) - 2px);overflow:hidden}
+.seg button{background:hsl(var(--background));border:0;padding:6px 11px;font-size:11.5px;cursor:pointer;
+  color:hsl(var(--muted-foreground));font-family:inherit}
+.seg button[aria-pressed="true"]{background:hsl(var(--primary));color:hsl(var(--primary-foreground))}
+
+/* 场景下拉 */
+.menu{position:absolute;z-index:50;display:none;min-width:240px;max-width:min(320px,calc(100% - 20px));
+  background:hsl(var(--popover));border:1px solid hsl(var(--border));border-radius:var(--radius);
+  box-shadow:var(--shadow-lg);padding:5px;top:48px;left:8px}
+.menu.on{display:block}
+.menu .mh{font-size:10.5px;color:hsl(var(--muted-foreground));padding:5px 8px 3px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.menu .mi{display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:calc(var(--radius) - 2px);cursor:pointer;font-size:12.5px}
+.menu .mi:hover{background:hsl(var(--muted))}
+.menu .mi.on{background:hsl(var(--muted))}
+.menu .mi .sn{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.menu .mi .sm{font-size:10.5px;color:hsl(var(--muted-foreground))}
+
+/* 设计说明 */
+.notes{display:flex;flex-direction:column;gap:12px}
+.noteitem{display:grid;grid-template-columns:20px minmax(0,1fr);gap:9px}
+.noteitem .n{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:600;
+  background:hsl(var(--muted));color:hsl(var(--muted-foreground))}
+.noteitem .nt{font-size:12.5px;font-weight:600;margin-bottom:2px}
+.noteitem .nd{font-size:11.5px;color:hsl(var(--muted-foreground));line-height:1.65}
+.noteitem .nd code{background:hsl(var(--muted));border-radius:3px;padding:0 4px;font-size:11px}
+
+/* 宽度调节条 */
+.toast{position:fixed;left:50%;bottom:58px;transform:translateX(-50%) translateY(8px);z-index:70;
+  max-width:min(560px,80vw);background:hsl(var(--popover));border:1px solid hsl(var(--border));
+  border-radius:var(--radius);box-shadow:var(--shadow-lg);padding:8px 12px;font-size:12px;
+  opacity:0;pointer-events:none;transition:opacity .18s,transform .18s}
+.toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+
+.sizer{position:fixed;left:50%;transform:translateX(-50%);bottom:10px;z-index:60;display:flex;align-items:center;gap:6px;
+  background:hsl(var(--popover));border:1px solid hsl(var(--border));border-radius:999px;padding:5px 10px;box-shadow:var(--shadow-lg)}
+.sizer .lb{font-size:10.5px;color:hsl(var(--muted-foreground));margin-right:2px}
+.sizer button{height:24px;padding:0 9px;border-radius:999px;border:1px solid hsl(var(--border));background:hsl(var(--background));
+  font-size:11px;cursor:pointer;font-family:inherit;color:hsl(var(--foreground));font-variant-numeric:tabular-nums}
+.sizer button[aria-pressed="true"]{background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:transparent}
+.sizer .rd{font-size:11px;font-variant-numeric:tabular-nums;color:hsl(var(--foreground));min-width:56px;text-align:right}
+
+/* 面板左边缘拖拽手柄：对应 DutyDeck 真实分栏（MIN_RIGHT_PANEL_WIDTH=300、最大视口 60%） */
+.pghandle{position:absolute;left:-3px;top:0;bottom:0;width:7px;cursor:col-resize;z-index:30;background:transparent;
+  transition:background-color .15s}
+.pghandle:hover,.pghandle.dragging{background:hsl(var(--primary)/.35)}
+.pghandle::after{content:'';position:absolute;left:3px;top:50%;transform:translateY(-50%);
+  width:1px;height:42px;background:hsl(var(--border))}
+
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:hsl(var(--border));border-radius:6px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+<div class="sim">
+
+  <!-- 左侧模拟：DutyDeck 侧栏与主区域，用来还原真实挤压感 -->
+  <div class="sim-app">
+    <div class="sim-side">
+      <div class="b act"></div>
+      <div class="b w70"></div>
+      <div class="b w50"></div>
+      <div class="b w70"></div>
+      <div class="b w50"></div>
+      <div class="b w70"></div>
+    </div>
+    <div class="sim-main" style="position:relative">
+      <div class="ln w40"></div>
+      <div class="ln w80"></div>
+      <div class="ln w65"></div>
+      <div class="ln w80"></div>
+      <div class="ln w40"></div>
+      <span class="sim-tag">← Agent 主区域（示意）</span>
+    </div>
+  </div>
+
+  <!-- 右侧：提示词编排工厂面板，宽度可调 -->
+  <div class="sim-panel" id="simPanel" style="width:605px">
+    <div class="panel" id="panel" data-view="run">
+
+      <!-- ============ 面板头部 ============ -->
+      <header class="ph">
+        <div class="ic">PF</div>
+        <div style="min-width:0;display:flex;flex-direction:column">
+          <span class="ttl">提示词编排工厂</span>
+          <span class="sub">与运维 / 接口同级</span>
+        </div>
+
+        <!-- 与主会话的绑定：面板不承载对话，但必须知道自己在为哪个会话干活 -->
+        <button class="agentchip" onclick="focusSession()" title="点击回到主会话">
+          <span class="adot"></span>
+          <span class="atxt">已绑定会话</span>
+          <span class="aref mono">a1f3</span>
+        </button>
+
+        <!-- 面板窄时替代左栏：场景切换（只列本项目的场景） -->
+        <button class="scenpicker" onclick="toggleMenu(event)" id="scenPicker">
+          <span class="sn" id="pickerScene">账号状态查询</span>
+          <span class="cv">▾</span>
+        </button>
+
+        <div class="spacer"></div>
+        <button class="btn btn-ghost btn-sm btn-icon" onclick="toggleTheme()" id="themeBtn" title="切换深浅色">◐</button>
+        <button class="btn btn-ghost btn-sm btn-icon" onclick="openNotes()" title="设计说明">?</button>
+        <button class="btn btn-outline btn-sm" onclick="openExport()"><span class="btn-label-narrow">导出</span><span class="btn-icononly">↧</span></button>
+        <button class="btn btn-primary btn-sm" onclick="openSubmit()">＋<span class="btn-label-narrow"> 提交任务</span></button>
+
+        <!-- 场景下拉：只列当前项目的场景，项目由 DutyDeck 左侧栏决定 -->
+        <div class="menu" id="sceneMenu">
+          <div class="mh">账号查询箱 · 本项目场景</div>
+          <div class="mi on" onclick="pickMenu(this,'账号状态查询')"><span class="sn">账号状态查询</span><span class="sm">4 步</span></div>
+          <div class="mi" onclick="pickMenu(this,'批量账号巡检')"><span class="sn">批量账号巡检</span><span class="sm">3 步</span></div>
+          <div class="mi" onclick="pickMenu(this,'新建场景…')"><span class="sn muted">＋ 新建场景</span></div>
+        </div>
+      </header>
+
+      <!-- 窄栏统一用一个切换器：本轮 / 历史 / 详情（≥600 换成中栏顶部 tab） -->
+      <div class="segview">
+        <button aria-pressed="true" onclick="setView('run',this)">运行</button>
+        <button aria-pressed="false" onclick="setView('eval',this)">评测</button>
+        <button aria-pressed="false" onclick="setView('scene',this)">场景</button>
+        <button aria-pressed="false" onclick="setView('deliver',this)">交付</button>
+        <button aria-pressed="false" onclick="setView('detail',this)">详情</button>
+      </div>
+
+      <div class="pbody">
+
+        <!-- ============ 左：本项目场景（≥1040 才显示） ============ -->
+        <aside class="rail">
+          <div class="rail-head">本项目场景</div>
+          <div class="rail-list">
+            <div class="scene active" data-scenario="linear" onclick="pickScene(this)">
+              <span class="sdot"></span><span class="stitle">账号状态查询</span><span class="smeta">4 步</span>
+            </div>
+            <div class="scene" data-scenario="parallel" onclick="pickScene(this)">
+              <span class="sdot"></span><span class="stitle">批量账号巡检</span><span class="smeta">含并行组</span>
+            </div>
+            <div class="scene" onclick="pickScene(this)">
+              <span class="sdot"></span><span class="stitle muted">＋ 新建场景</span>
+            </div>
+          </div>
+          <div class="rail-foot">
+            <p>场景属于本项目。切换项目请用 DutyDeck 左侧栏——每个项目的场景互相独立，不在这里混排。</p>
+          </div>
+        </aside>
+
+        <!-- ============ 中：观察台 ============ -->
+        <section class="work">
+
+          <!-- 一级结构：运行 / 提交历史 / 场景定义。
+               轨迹、校验、指标、对比都是「运行」下面的二级内容，其余两个不需要。 -->
+          <div class="worktabs" role="tablist">
+            <button class="wtab" role="tab" aria-selected="true" onclick="setMain('run',this)">运行 <span class="wbadge mono" id="runTabBadge">#b8e1</span></button>
+            <button class="wtab" role="tab" aria-selected="false" onclick="setMain('eval',this)">评测 <span class="wbadge mono">4</span></button>
+            <button class="wtab" role="tab" aria-selected="false" onclick="setMain('scene',this)">场景定义 <span class="wbadge mono" id="sceneTabBadge">v4</span></button>
+            <button class="wtab" role="tab" aria-selected="false" onclick="setMain('deliver',this)">交付 <span class="wbadge mono">v3</span></button>
+          </div>
+
+          <!-- 「运行」下的子视图。降为二级的原因：面板最窄只有 300px，四个一级 tab 各约 75px 已是下限，
+               五个中文标签放不下；而「历史」与「运行」本来就是同一次活动的两种视图。 -->
+          <div class="subswitch" id="runSub">
+            <button aria-pressed="true" onclick="setSub('run',this)">本次运行</button>
+            <button aria-pressed="false" onclick="setSub('history',this)">提交历史 <span class="mono">24</span></button>
+          </div>
+
+          <!-- 以下两块只在「运行」下出现 -->
+          <div class="scenbar">
+            <span class="crumb"><span class="proj">账号查询箱</span><span class="sep">▸</span><span class="nm">账号状态查询</span></span>
+            <span class="flowmini">解析意图 › 抽取参数 › 查询账号 › 生成回答</span>
+            <span class="badge ok">指标 v1 已冻结</span>
+            <div class="spacer"></div>
+            <button class="btn btn-outline btn-sm" id="btnEval" onclick="runEval()" title="按数据集跑一轮评测">▶<span class="btn-label-narrow"> 运行评测</span></button>
+          </div>
+
+          <!-- Agent 改动待采纳：面板与 Agent 共享同一份事实的直接体现 -->
+          <div class="verbar">
+            <span class="badge draft">草案 v5</span>
+            <span class="vtxt">Agent 改了第 2 步的抽取规则 · 3 分钟前</span>
+            <div class="spacer"></div>
+            <button class="btn btn-ghost btn-sm" onclick="alert('打开 v4 → v5 的逐步差异')">查看差异</button>
+            <button class="btn btn-outline btn-sm" onclick="adoptV5(this)">采纳 v5</button>
+          </div>
+
+          <div class="stage">
+            <div id="runPane">
+
+            <div class="card">
+              <div class="card-h">
+                <span class="ct">运行流程</span>
+                <span class="badge ok" id="runBadge">已完成</span>
+                <span class="muted mono" style="font-size:11px" id="runMeta">run #b8e1 · 18.4s</span>
+                <div class="spacer"></div>
+                <span class="hintline">输入 → 步骤 → 输出，一条流</span>
+              </div>
+              <div class="card-b" style="padding:11px">
+
+                <!-- ===== 线性流程 ===== -->
+                <div class="fmap" id="flowLinear">
+                  <div class="fnode io" onclick="toggleIO('ioInput',this)">
+                    <span class="fn-n">▸</span>
+                    <span class="fn-t">输入 · 第十二章 夜航</span>
+                    <span class="fn-d">纯文本 4,218 字 · 08:42 提交</span>
+                    <span class="fn-m"><span class="fn-time">展开</span></span>
+                  </div>
+                  <div class="fio" id="ioInput">
+                    <div class="inputbox" style="max-height:150px">
+第十二章 夜航
+
+林知远把最后一只箱子推进底舱时，甲板上的探照灯正好横扫过来。他压低帽檐，听见身后有人喊他的名字——是周砚，那个在三天前还坚称自己从没上过船的人。
+
+「你骗了所有人。」周砚说，声音被海风吹得断断续续……
+                    </div>
+                  </div>
+                  <div class="fconn">↓</div>
+
+                  <div class="fnode done" data-step="1" onclick="openStepInTrace(1)">
+                    <span class="fn-n">1</span>
+                    <span class="fn-t">解析用户意图</span>
+                    <span class="fn-d">判断要查哪个账号、要哪些字段</span>
+                    <span class="fn-m"><span class="fn-p">llm</span><span class="fn-time">412ms</span></span>
+                  </div>
+                  <div class="fconn">↓</div>
+
+                  <div class="fnode done" data-step="2" onclick="openStepInTrace(2)">
+                    <span class="fn-n">2</span>
+                    <span class="fn-t">抽取查询参数</span>
+                    <span class="fn-d">约束通过 2/2 字段</span>
+                    <span class="fn-m"><span class="fn-p">extract</span><span class="fn-time">786ms</span></span>
+                  </div>
+                  <div class="fconn">↓</div>
+
+                  <div class="fnode done" data-step="3" onclick="openStepInTrace(3)">
+                    <span class="fn-n">3</span>
+                    <span class="fn-t">查询账号</span>
+                    <span class="fn-d">query-account · 虚拟接入</span>
+                    <span class="fn-m"><span class="fn-p">tool</span><span class="fn-time">6ms</span></span>
+                  </div>
+                  <div class="fconn">↓</div>
+
+                  <div class="fnode bad" data-step="4" onclick="openStepInTrace(4)">
+                    <span class="fn-n">4</span>
+                    <span class="fn-t">生成回答</span>
+                    <span class="fn-d">约束未通过：缺 expiresAt · 重试 1 次</span>
+                    <span class="fn-m"><span class="fn-p">extract</span><span class="fn-time">1.2s</span></span>
+                  </div>
+                  <div class="fconn">↓</div>
+
+                  <div class="fnode io" onclick="toggleIO('ioOutput',this)">
+                    <span class="fn-n">▪</span>
+                    <span class="fn-t">输出 · answer</span>
+                    <span class="fn-d">缺必填字段 expiresAt，本次标记 invalid</span>
+                    <span class="fn-m"><span class="fn-time">展开</span></span>
+                  </div>
+                  <div class="fio" id="ioOutput">
+                    <pre style="max-height:130px">{
+  <span class="j-key">"summary"</span>: <span class="j-str">"账号 xiaoming@corp 状态正常，pro 套餐"</span>,
+  <span class="j-key">"status"</span>:  <span class="j-str">"active"</span>
+}</pre>
+                    <div class="note">
+                      <span class="bang">!</span>
+                      <span>按 strict 规则判为 <b>invalid</b>，不计入评测指标；任务本身仍可读可用。</span>
+                    </div>
+                  </div>
+
+                </div>
+
+                <!-- ===== 并行组流程（批量账号巡检） ===== -->
+                <div class="fmap" id="flowParallel" style="display:none">
+                  <div class="fnode io" onclick="toggleIO('ioInput2',this)">
+                    <span class="fn-n">▸</span>
+                    <span class="fn-t">输入 · 待巡检账号 32 个</span>
+                    <span class="fn-d">JSON 列表 · 09:10 提交</span>
+                    <span class="fn-m"><span class="fn-time">展开</span></span>
+                  </div>
+                  <div class="fio" id="ioInput2">
+                    <pre style="max-height:110px">[
+  { <span class="j-key">"accountId"</span>: <span class="j-str">"account-001"</span> },
+  { <span class="j-key">"accountId"</span>: <span class="j-str">"account-002"</span> },
+  <span class="j-cmt">… 共 32 条</span>
+]</pre>
+                  </div>
+                  <div class="fconn">↓</div>
+
+                  <div class="fnode done">
+                    <span class="fn-n">1</span>
+                    <span class="fn-t">拆分账号列表</span>
+                    <span class="fn-d">32 条 → 32 个子任务</span>
+                    <span class="fn-m"><span class="fn-p">map</span><span class="fn-time">4ms</span></span>
+                  </div>
+                  <div class="fconn">↓</div>
+
+                  <div class="fgroup">
+                    <div class="fglabel"><span class="b">并行 ×32</span><span>各账号独立查询、互不依赖 · 并发上限 4</span></div>
+                    <div class="fgrid">
+                      <div class="fnode done">
+                        <span class="fn-n">2</span><span class="fn-t">查询 account-001</span>
+                        <span class="fn-d">query-account</span><span class="fn-m"><span class="fn-time">118ms</span></span>
+                      </div>
+                      <div class="fnode done">
+                        <span class="fn-n">2</span><span class="fn-t">查询 account-002</span>
+                        <span class="fn-d">query-account</span><span class="fn-m"><span class="fn-time">96ms</span></span>
+                      </div>
+                      <div class="fnode bad">
+                        <span class="fn-n">2</span><span class="fn-t">查询 account-003</span>
+                        <span class="fn-d">超时 · 重试 1 次后失败</span><span class="fn-m"><span class="fn-time">3.0s</span></span>
+                      </div>
+                      <div class="fnode done">
+                        <span class="fn-n">2</span><span class="fn-t">查询 account-004</span>
+                        <span class="fn-d">query-account</span><span class="fn-m"><span class="fn-time">102ms</span></span>
+                      </div>
+                    </div>
+                    <div class="fmore">其余 28 个已完成 · 其中 1 个失败</div>
+                  </div>
+
+                  <div class="fconn">↓</div>
+
+                  <div class="fnode done">
+                    <span class="fn-n">3</span>
+                    <span class="fn-t">汇总巡检报告</span>
+                    <span class="fn-d">收齐 32 个子结果 · 失败按容错策略计入</span>
+                    <span class="fn-m"><span class="fn-p">extract</span><span class="fn-time">1.4s</span></span>
+                  </div>
+                  <div class="fconn">↓</div>
+
+                  <div class="fnode io">
+                    <span class="fn-n">▪</span>
+                    <span class="fn-t">输出 · report</span>
+                    <span class="fn-d">31 正常 · 1 失败（partial）</span>
+                    <span class="fn-m"><span class="fn-time">详情</span></span>
+                  </div>
+                </div>
+
+              </div>
+              <div class="card-f">
+                <button class="btn btn-outline btn-sm" onclick="sendToAgent()">把这次运行带到会话</button>
+                <div class="spacer"></div>
+                <span class="hintline">只搬引用与摘要，不替会话发命令</span>
+              </div>
+            </div>
+
+            </div>
+
+            <div id="histPane">
+            <div class="card">
+              <div class="card-h">
+                <span class="ct">提交历史</span>
+                <span class="badge">24 次</span>
+                <div class="spacer"></div>
+                <span class="muted" style="font-size:11px">点任意一条切到本轮查看</span>
+              </div>
+              <div class="hrow cur">
+                <span class="hid mono">#b8e1</span><span class="htxt">第十二章 夜航 · 4,218 字</span>
+                <span class="hmeta">合规 91.7%</span><span class="badge ok">已完成</span>
+              </div>
+              <div class="hrow" onclick="pickRun(this)">
+                <span class="hid mono">#a7f2</span><span class="htxt">第十一章 退潮 · 3,904 字</span>
+                <span class="hmeta">合规 83.3%</span><span class="badge">已完成</span>
+              </div>
+              <div class="hrow" onclick="pickRun(this)">
+                <span class="hid mono">#91cc</span><span class="htxt">第十章 灯下 · 4,510 字</span>
+                <span class="hmeta">合规 100%</span><span class="badge">已完成</span>
+              </div>
+              <div class="hrow" onclick="pickRun(this)">
+                <span class="hid mono">#7f31</span><span class="htxt">第九章 空舱 · 3,220 字</span>
+                <span class="hmeta">第 3 步中断</span><span class="badge warn">已中断</span>
+              </div>
+            </div>
+            </div>
+
+            <!-- ===== 场景定义：提示词与约束都在这里改 ===== -->
+            <!-- ===== ③ 评测：数据集 · 评测历史 · 逐条判据 ===== -->
+            <div id="evalPane">
+
+              <div class="card own own-deliver">
+                <div class="card-h">
+                  <span class="ct">数据集</span>
+                  <span class="badge">d2 · 12 条</span>
+                  <span class="own-tag d">随包交付</span>
+                  <div class="spacer"></div>
+                  <button class="btn btn-ghost btn-sm" onclick="toast('从某次失败运行挑一条，固化成新用例')">从失败运行添加</button>
+                  <button class="btn btn-outline btn-sm" onclick="toast('新建用例：填一条输入，可附期望输出')">＋ 新建用例</button>
+                </div>
+                <div class="hrow"><span class="hid mono">c01</span><span class="htxt">正常账号 · 邮箱标识</span><span class="hmeta">人工</span><span class="badge ok">通过</span></div>
+                <div class="hrow"><span class="hid mono">c07</span><span class="htxt">中文账号名</span><span class="hmeta">失败回灌 · 来自 #a7f2</span><span class="badge bad">未通过</span></div>
+                <div class="hrow"><span class="hid mono">c11</span><span class="htxt">不存在的账号</span><span class="hmeta">人工 · 负样本</span><span class="badge ok">通过</span></div>
+                <div class="card-f"><span class="hintline">用例来源逐条标注（人工 / Agent / 失败回灌）；数据集升版本后历史评测仍可读。</span></div>
+              </div>
+
+              <div class="card">
+                <div class="card-h">
+                  <span class="ct">评测历史</span>
+                  <span class="badge">5 次</span>
+                  <div class="spacer"></div>
+                  <button class="btn btn-outline btn-sm" onclick="runEval()">▶ 运行评测</button>
+                </div>
+                <div class="hrow"><span class="hid mono">e5</span><span class="htxt">12:04</span><span class="hmeta">场景 v5 · d2 · 合规 91.7% · 完成 90.9%</span><span class="badge warn">当前</span></div>
+                <div class="hrow"><span class="hid mono">e4</span><span class="htxt">11:20</span><span class="hmeta">场景 v4 · d2 · 合规 83.3% · 完成 83.3%</span><span class="badge">基线</span></div>
+                <div class="hrow"><span class="hid mono">e3</span><span class="htxt">09:41</span><span class="hmeta">场景 v4 · d1 · 合规 83.3% · 完成 81.8%</span><span class="badge">历史</span></div>
+                <div class="card-f"><span class="hintline">每次评测都带<b>场景版本 + 数据集版本</b>，e4 → e5 的差异才能归因到 v4 → v5 的提示词改动。</span></div>
+              </div>
+
+              <div class="card own own-factory">
+                <div class="card-h">
+                  <span class="ct">逐条判据结果</span>
+                  <span class="badge">来自评审</span>
+                  <span class="own-tag f">工厂内部</span>
+                </div>
+                <div class="card-b">
+                  <div class="crow" style="grid-template-columns:minmax(0,1fr) 64px 84px"><span class="fn">1. 状态与到期时间缺一不可</span><span class="ft">12/12</span><span class="ft">全部通过</span></div>
+                  <div class="crow" style="grid-template-columns:minmax(0,1fr) 64px 84px"><span class="fn">2. 查不到时不得编造</span><span class="ft">8/12</span><span class="fx">最弱项</span></div>
+                  <div class="crow" style="grid-template-columns:minmax(0,1fr) 64px 84px"><span class="fn">3. 状态落在枚举内</span><span class="ft">11/12</span><span class="ft">1 条越界</span></div>
+                  <div class="hintline" style="margin-top:9px">聚合指标回答"多少分"，逐条判据回答"错在哪一条"——后者才是改提示词的依据。</div>
+                </div>
+              </div>
+
+            </div>
+
+            <!-- ===== ④ 交付：导出 · 版本对应 · 接入状态 ===== -->
+            <div id="deliverPane">
+
+              <div class="card own own-deliver">
+                <div class="card-h">
+                  <span class="ct">交付</span>
+                  <span class="badge">包 v3</span>
+                  <span class="own-tag d">随包交付</span>
+                  <div class="spacer"></div>
+                  <button class="btn btn-primary btn-sm" onclick="openExport()">导出能力包</button>
+                </div>
+                <div class="card-b">
+                  <div class="crow" style="grid-template-columns:104px minmax(0,1fr)"><span class="ft">包 v3 对应</span><span class="fn">场景 v4</span></div>
+                  <div class="crow" style="grid-template-columns:104px minmax(0,1fr)"><span class="ft">场景当前</span><span class="fn">v5 · 有未导出的改动</span></div>
+                  <div class="hintline" style="margin-top:9px">包与场景版本必须能互相查到，否则"对方现在用的是哪一版提示词"无从回答。导出仍为人工动作。</div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-h"><span class="ct">导出历史</span><span class="badge">3 次</span></div>
+                <div class="hrow"><span class="hid mono">v3</span><span class="htxt">account-status-query.json</span><span class="hmeta">场景 v4 · 今天 10:02</span><span class="badge">未接入</span></div>
+                <div class="hrow"><span class="hid mono">v2</span><span class="htxt">account-status-query.json</span><span class="hmeta">场景 v3 · 昨天 18:20</span><span class="badge ok">已接入</span></div>
+                <div class="hrow"><span class="hid mono">v1</span><span class="htxt">account-status-query.json</span><span class="hmeta">场景 v2 · 昨天 15:41</span><span class="badge">已废弃</span></div>
+              </div>
+
+              <div class="card">
+                <div class="card-h"><span class="ct">关联项目接入</span><span class="badge">1 个项目</span></div>
+                <div class="card-b">
+                  <div class="crow" style="grid-template-columns:104px minmax(0,1fr)"><span class="ft">账号查询箱</span><span class="fn">已接入 包 v2 · 待升级到 v3</span></div>
+                  <div class="crow" style="grid-template-columns:104px minmax(0,1fr)"><span class="ft">虚拟接入</span><span class="fn">query-account 桩 · src/api/account.ts · 4/4 一致</span></div>
+                  <div class="crow" style="grid-template-columns:104px minmax(0,1fr)"><span class="ft">真实接入</span><span class="fn">该项目已实现真接口（自 v2 起）</span></div>
+                  <div class="hintline" style="margin-top:9px">虚拟接入负责"现在就能跑"，真实接入负责"上线能用"——两者状态必须分开显示。</div>
+                </div>
+              </div>
+
+            </div>
+
+            <div id="scenePane">
+            <div id="defLinear">
+
+              <!-- 场景信息压成一条：名称/描述就地可改，版本与来源只做展示。
+                   设计哲学（面板不承载对话、Agent 是唯一入口）留在设计说明里，不占界面。 -->
+              <div class="scenehead">
+                <input class="shname" value="账号状态查询" oninput="markDirty(this)" />
+                <input class="shdesc" value="根据用户问题查询账号状态与到期时间" oninput="markDirty(this)" />
+                <span class="badge">当前 v4</span>
+                <span class="badge draft" id="draftBadge">草案 v5</span>
+                <div class="spacer"></div>
+                <span class="legend">
+                  <span><i class="lg-d"></i>随能力包交付</span>
+                  <span><i class="lg-f"></i>工厂内部，不交付</span>
+                </span>
+                <button class="btn btn-ghost btn-sm" onclick="focusSession()" title="流程由会话里的 Agent 设计；这里只做取景与搬运">在会话中打开 ↗</button>
+              </div>
+
+              <!-- 输入契约 -->
+              <div class="card own own-deliver">
+                <div class="card-h"><span class="ct">输入契约</span><span class="badge">调用方传什么</span><div class="spacer"></div><span class="own-tag d">随包交付</span></div>
+                <div class="card-b" id="inHost">
+                  <div class="crow">
+                    <input class="miniinput" value="text" />
+                    <input class="miniinput" value="string" />
+                    <span class="fx">必填</span>
+                    <span class="stepops"><button onclick="removeRow(this)" title="删除">✕</button></span>
+                  </div>
+                  <div style="margin-top:7px"><button class="btn btn-ghost btn-sm" onclick="addRow('inHost')">＋ 加输入字段</button></div>
+                </div>
+              </div>
+
+              <!-- 步骤：类型有限、组合自由 -->
+              <div class="card">
+                <div class="card-h">
+                  <span class="ct">步骤</span>
+                  <span class="badge" id="stepCount">4 步</span>
+                  <div class="spacer"></div>
+                  <span class="hintline">点卡片在弹窗里设置详情；卡片之间可加关联</span>
+                </div>
+                <div class="card-b" id="stepsHost" style="padding:10px">
+
+                  <div class="insertbar"><button onclick="insertStep(this)">＋ 在此插入步骤</button></div>
+
+                  <div class="editstep open" data-type="llm">
+                    <div class="stephead">
+                      <span class="grip" title="拖动排序">⠿</span>
+                      <span class="en">1</span>
+                      <input class="etitle" value="解析用户意图" oninput="markDirty(this)" />
+                      <select class="tsel" onchange="changeType(this)">
+                        <option value="llm" selected>llm</option>
+                        <option value="extract">extract</option>
+                        <option value="tool">tool</option>
+                      </select>
+                      <span class="stepops">
+                        <button onclick="moveStep(this,-1)" title="上移">↑</button>
+                        <button onclick="moveStep(this,1)" title="下移">↓</button>
+                        <button onclick="removeStep(this)" title="删除">✕</button>
+                        <button onclick="toggleEdit(this)" title="展开/收起">▾</button>
+                      </span>
+                    </div>
+                    <div class="editstep-b">
+                      <div data-cfg="llm">
+                        <label class="flabel">提示词</label>
+                        <textarea class="ptext" oninput="markDirty(this)">你是账号助手。判断用户想查询哪个账号、需要哪些字段。
+只输出判断结论，不要输出 JSON。</textarea>
+                      </div>
+                      <div data-cfg="extract">
+                        <label class="flabel">提示词</label>
+                        <textarea class="ptext" oninput="markDirty(this)">（切成 extract 后这里写抽取说明）</textarea>
+                        <label class="flabel">判定字段 · 供评审使用（不是运行时强制）</label>
+                        <div class="crow"><input class="miniinput" value="field" /><input class="miniinput" value="string" /><span class="ft">判定</span></div>
+                      </div>
+                      <div data-cfg="tool">
+                        <div class="frow"><span class="fn">能力</span><span class="ft">未绑定</span></div>
+                        <div class="hintline" style="margin-top:7px">选或新建一个能力声明；接入实现由关联项目提供。</div>
+                      </div>
+                      <div class="wire">输入 ←
+                        <select><option>workflow.text</option><option>上一步输出</option><option>常量</option></select>
+                      </div>
+                      <div style="margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="focusSession()">在会话中打开这一步</button></div>
+                    </div>
+                  </div>
+
+                  <div class="insertbar"><button onclick="insertStep(this)">＋ 在此插入步骤</button></div>
+
+                  <div class="editstep open" data-type="extract">
+                    <div class="stephead">
+                      <span class="grip" title="拖动排序">⠿</span>
+                      <span class="en">2</span>
+                      <input class="etitle" value="抽取查询参数" oninput="markDirty(this)" />
+                      <select class="tsel" onchange="changeType(this)">
+                        <option value="llm">llm</option>
+                        <option value="extract" selected>extract</option>
+                        <option value="tool">tool</option>
+                      </select>
+                      <span class="stepops">
+                        <button onclick="moveStep(this,-1)" title="上移">↑</button>
+                        <button onclick="moveStep(this,1)" title="下移">↓</button>
+                        <button onclick="removeStep(this)" title="删除">✕</button>
+                        <button onclick="toggleEdit(this)" title="展开/收起">▾</button>
+                      </span>
+                    </div>
+                    <div class="editstep-b">
+                      <div data-cfg="llm">
+                        <label class="flabel">提示词</label>
+                        <textarea class="ptext" oninput="markDirty(this)">（切成 llm 后这里写提示词）</textarea>
+                      </div>
+                      <div data-cfg="extract">
+                        <label class="flabel">提示词</label>
+                        <textarea class="ptext dirty" oninput="markDirty(this)">从用户的问题里抽取账号标识与需要的字段。
+账号名可能是中文名、邮箱或工号，先原样抽出，不要自己转换。</textarea>
+                        <label class="flabel">判定字段 · 供评审使用（格式要求写在提示词里）</label>
+                        <div class="crow"><input class="miniinput" value="accountId" /><input class="miniinput" value="string" /><span class="ft">判定</span></div>
+                        <div class="frow"><input class="miniinput" style="flex:1" value="fields" /><input class="miniinput" style="width:92px" value="array" /><span class="ft">可选</span></div>
+                        <div style="margin-top:7px"><button class="btn btn-ghost btn-sm">＋ 加约束字段</button></div>
+                      </div>
+                      <div data-cfg="tool">
+                        <div class="frow"><span class="fn">能力</span><span class="ft">未绑定</span></div>
+                      </div>
+                      <div class="wire">输入 ←
+                        <select><option>workflow.text</option><option selected>步骤 1 输出</option><option>常量</option></select>
+                      </div>
+                      <div style="margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="focusSession()">在会话中打开这一步</button></div>
+                    </div>
+                  </div>
+
+                  <div class="insertbar"><button onclick="insertStep(this)">＋ 在此插入步骤</button></div>
+
+                  <div class="editstep" data-type="tool">
+                    <div class="stephead">
+                      <span class="grip" title="拖动排序">⠿</span>
+                      <span class="en">3</span>
+                      <input class="etitle" value="查询账号" oninput="markDirty(this)" />
+                      <select class="tsel" onchange="changeType(this)">
+                        <option value="llm">llm</option>
+                        <option value="extract">extract</option>
+                        <option value="tool" selected>tool</option>
+                      </select>
+                      <span class="stepops">
+                        <button onclick="moveStep(this,-1)" title="上移">↑</button>
+                        <button onclick="moveStep(this,1)" title="下移">↓</button>
+                        <button onclick="removeStep(this)" title="删除">✕</button>
+                        <button onclick="toggleEdit(this)" title="展开/收起">▾</button>
+                      </span>
+                    </div>
+                    <div class="editstep-b">
+                      <div data-cfg="tool">
+                        <div class="frow"><span class="fn">能力</span><span class="ft">query-account（read）</span></div>
+                        <div class="frow"><span class="fn">虚拟接入</span><span class="ft">src/api/account.ts · 4/4 一致</span></div>
+                        <div class="hintline" style="margin-top:7px">工具步骤没有提示词——行为由契约决定。</div>
+                      </div>
+                      <div data-cfg="llm">
+                        <label class="flabel">提示词</label>
+                        <textarea class="ptext" oninput="markDirty(this)">（切成 llm 后这里写提示词）</textarea>
+                      </div>
+                      <div data-cfg="extract">
+                        <label class="flabel">提示词</label>
+                        <textarea class="ptext" oninput="markDirty(this)">（切成 extract 后这里写提示词）</textarea>
+                      </div>
+                      <div class="wire">入参绑定 ←
+                        <select><option selected>步骤 2.accountId</option><option>workflow.text</option></select>
+                      </div>
+                      <div style="margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="focusSession()">在会话中打开这一步</button></div>
+                    </div>
+                  </div>
+
+                  <div class="insertbar"><button onclick="insertStep(this)">＋ 在此插入步骤</button></div>
+
+                  <div class="editstep" data-type="extract">
+                    <div class="stephead">
+                      <span class="grip" title="拖动排序">⠿</span>
+                      <span class="en">4</span>
+                      <input class="etitle" value="生成回答" oninput="markDirty(this)" />
+                      <select class="tsel" onchange="changeType(this)">
+                        <option value="llm">llm</option>
+                        <option value="extract" selected>extract</option>
+                        <option value="tool">tool</option>
+                      </select>
+                      <span class="stepops">
+                        <button onclick="moveStep(this,-1)" title="上移">↑</button>
+                        <button onclick="moveStep(this,1)" title="下移">↓</button>
+                        <button onclick="removeStep(this)" title="删除">✕</button>
+                        <button onclick="toggleEdit(this)" title="展开/收起">▾</button>
+                      </span>
+                    </div>
+                    <div class="editstep-b">
+                      <div data-cfg="extract">
+                        <label class="flabel">提示词</label>
+                        <textarea class="ptext" oninput="markDirty(this)">根据账号信息回答用户。必须给出状态与到期时间；
+查不到到期时间时不要编造，留空并说明。</textarea>
+                        <label class="flabel">判定字段 · 供评审使用（格式要求写在提示词里）</label>
+                        <div class="crow"><input class="miniinput" value="summary" /><input class="miniinput" value="string" /><span class="ft">判定</span></div>
+                        <div class="frow"><input class="miniinput" style="flex:1" value="status" /><input class="miniinput" style="width:92px" value="string" /><span class="fx">必填</span></div>
+                        <div class="frow"><input class="miniinput" style="flex:1" value="expiresAt" /><input class="miniinput" style="width:92px" value="string" /><span class="fx">必填</span></div>
+                        <div class="hintline" style="margin-top:8px">本次这条运行就是缺了 <span class="mono">expiresAt</span> 被判 invalid——提示词里已经补了「不要编造，留空并说明」。</div>
+                      </div>
+                      <div data-cfg="llm">
+                        <label class="flabel">提示词</label>
+                        <textarea class="ptext" oninput="markDirty(this)">（切成 llm 后这里写提示词）</textarea>
+                      </div>
+                      <div data-cfg="tool">
+                        <div class="frow"><span class="fn">能力</span><span class="ft">未绑定</span></div>
+                      </div>
+                      <div class="wire">输入 ←
+                        <select><option>workflow.text</option><option selected>步骤 3 输出</option><option>常量</option></select>
+                      </div>
+                      <div style="margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="focusSession()">在会话中打开这一步</button></div>
+                    </div>
+                  </div>
+
+                  <div class="insertbar"><button onclick="insertStep(this)">＋ 在此插入步骤</button></div>
+
+                  <div style="text-align:center;margin-top:4px">
+                    <button class="btn btn-outline btn-sm" onclick="addStep()">＋ 添加步骤</button>
+                  </div>
+
+                </div>
+              </div>
+
+              <div class="flowjoin">↓</div>
+              <!-- 低频项收进折叠区：输入契约（运行时由脚本搬进来）、输出、能力声明、评审 -->
+              <div class="foldcard">
+                <button class="foldhead" onclick="toggleFold(this)">
+                  <span class="ct">契约与评审</span>
+                  <span class="badge">4 项</span>
+                  <div class="spacer"></div>
+                  <span class="hintline">低频项，默认收起</span>
+                  <span class="cv">▾</span>
+                </button>
+                <div class="foldbody" id="foldBody" style="display:none">
+
+              <!-- 输出：只声明形态，不声明约束。
+                   真正约束模型输出的是提示词；这里声明的东西是给接入方看、并驱动评审的。 -->
+              <div class="card own own-deliver">
+                <div class="card-h">
+                  <span class="ct">输出</span>
+                  <span class="badge">接入方拿到什么</span>
+                  <div class="spacer"></div>
+                  <span class="own-tag d">随包交付</span>
+                </div>
+                <div class="card-b">
+                  <div class="metagrid">
+                    <div>
+                      <label class="flabel">形态</label>
+                      <input class="descinput" value="结构化（字段见下）" oninput="markDirty(this)" />
+                    </div>
+                    <div>
+                      <label class="flabel">来源</label>
+                      <input class="descinput" value="步骤 4 的输出" oninput="markDirty(this)" />
+                    </div>
+                  </div>
+                  <label class="flabel">字段（声明给接入方，不是运行时强制）</label>
+                  <div id="outHost">
+                    <div class="crow">
+                      <input class="miniinput" value="answer" />
+                      <input class="miniinput" value="string" />
+                      <span class="ft">文本</span>
+                      <span class="stepops"><button onclick="removeRow(this)" title="删除">✕</button></span>
+                    </div>
+                    <div style="margin-top:7px"><button class="btn btn-ghost btn-sm" onclick="addRow('outHost')">＋ 加字段</button></div>
+                  </div>
+                  <div class="hintline" style="margin-top:10px">格式要求写在提示词里；这里只声明接入方会拿到什么，并驱动评审。</div>
+                </div>
+              </div>
+
+              <!-- 能力声明 -->
+              <div class="card own own-deliver">
+                <div class="card-h">
+                  <span class="ct">能力声明</span>
+                  <span class="badge">1 个</span>
+                  <div class="spacer"></div>
+                  <span class="own-tag d">随包交付</span>
+                </div>
+                <div class="card-b">
+                  <div class="frow"><span class="fn">query-account</span><span class="ft">read · 4 字段</span></div>
+                  <div style="margin-top:7px"><button class="btn btn-ghost btn-sm" onclick="toast('新建能力声明：填输入输出契约与副作用等级')">＋ 新建能力声明</button></div>
+                </div>
+              </div>
+
+              <!-- 评审：工厂的资产，用于优化与修改，不属于交付契约 -->
+              <div class="card own own-factory">
+                <div class="card-h">
+                  <span class="ct">评审</span>
+                  <span class="badge">归编排工厂</span>
+                  <span class="badge ok">判据已冻结 v1</span>
+                  <div class="spacer"></div>
+                  <span class="own-tag f">工厂内部</span>
+                  <button class="btn btn-ghost btn-sm" onclick="unlockMetric()">解除冻结以修改</button>
+                </div>
+                <div class="card-b">
+                  <label class="flabel">评审判据</label>
+                  <textarea class="ptext" style="min-height:86px;font-family:inherit" oninput="markDirty(this)">1. 必须给出账号状态与到期时间，缺一不可；
+2. 查不到到期时间时不得编造，须说明「未查到」；
+3. 状态必须落在 active / suspended / expired 之内。</textarea>
+                  <label class="flabel">评审提示词（模型评审判用时）</label>
+                  <textarea class="ptext" style="min-height:72px" oninput="markDirty(this)">按上面的判据逐条核对这条输出，给出每条是否满足；
+只依据输出与判据，不要引入外部知识或补全缺失信息。</textarea>
+                  <label class="flabel">指标与权重</label>
+                  <div class="crow"><input class="miniinput" value="任务完成率" /><input class="miniinput" value="0.4" /><span class="ft">正向</span><span class="stepops"></span></div>
+                  <div class="crow"><input class="miniinput" value="参数正确率" /><input class="miniinput" value="0.4" /><span class="ft">正向</span><span class="stepops"></span></div>
+                  <div class="crow"><input class="miniinput" value="编造率" /><input class="miniinput" value="0.2" /><span class="ft">反向</span><span class="stepops"></span></div>
+                  <div class="hintline" style="margin-top:10px">工厂内部资产，用于优化提示词；随包只导出判据文本。冻结后勿随迭代改动。</div>
+                </div>
+              </div>
+
+                </div>
+              </div>
+
+              <div class="dirtybar" style="border:0;border-top:1px solid hsl(var(--border));border-radius:0;background:hsl(var(--warn)/.07);padding:10px 14px">
+                <span class="badge draft">有 2 处未保存的改动</span>
+                <div class="spacer"></div>
+                <button class="btn btn-outline btn-sm" onclick="discardDraft()">放弃</button>
+                <button class="btn btn-primary btn-sm" onclick="saveDraft()">保存为草案 v6</button>
+                <button class="btn btn-outline btn-sm" onclick="adoptAndRerun()">采纳并重跑</button>
+              </div>
+
+            </div>
+
+            <!-- 并行场景的定义结构（选中「批量账号巡检」时显示） -->
+            <div id="defParallel" style="display:none">
+              <div class="card">
+                <div class="card-h">
+                  <span class="ct">场景定义 · 批量账号巡检</span>
+                  <span class="badge">含并行组</span>
+                  <div class="spacer"></div>
+                  <span class="hintline">与线性场景同构，只是多了一层「并行组」容器</span>
+                </div>
+                <div class="card-b" style="padding:11px">
+                  <div class="fmap">
+                    <div class="fnode io">
+                      <span class="fn-n">▸</span><span class="fn-t">输入 · accounts</span>
+                      <span class="fn-d">array&lt;{ accountId: string }&gt;</span>
+                    </div>
+                    <div class="fconn">↓</div>
+                    <div class="fnode done">
+                      <span class="fn-n">1</span><span class="fn-t">拆分列表</span>
+                      <span class="fn-d">对数组每一项展开下游组</span>
+                      <span class="fn-m"><span class="fn-p">map</span></span>
+                    </div>
+                    <div class="fconn">↓</div>
+                    <div class="fgroup">
+                      <div class="fglabel"><span class="b">并行组</span><span>缺省并发 4 · 单项失败的处理策略在这里定</span></div>
+                      <div class="fgrid">
+                        <div class="fnode done">
+                          <span class="fn-n">2</span><span class="fn-t">查询账号</span>
+                          <span class="fn-d">query-account</span>
+                          <span class="fn-m"><span class="fn-p">tool</span></span>
+                        </div>
+                        <div class="fnode done">
+                          <span class="fn-n">3</span><span class="fn-t">抽取状态</span>
+                          <span class="fn-d">strict · 2 字段</span>
+                          <span class="fn-m"><span class="fn-p">extract</span></span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="fconn">↓</div>
+                    <div class="fnode done">
+                      <span class="fn-n">4</span><span class="fn-t">汇总报告</span>
+                      <span class="fn-d">扇入：收齐 N 个子结果</span>
+                      <span class="fn-m"><span class="fn-p">extract</span></span>
+                    </div>
+                  </div>
+                  <div class="hintline" style="margin-top:10px">
+                    新增的不是节点类型，而是一种<b>步骤容器</b>：并行组内部可以放任意步骤链，组本身承担扇出与扇入。这样「类型收敛、组合自由」的规则不被破坏。
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            </div>
+
+          </div>
+        </section>
+
+        <!-- ============ 右：inspector ============ -->
+        <aside class="inspector">
+          <div class="tabs" role="tablist">
+            <button class="tab" role="tab" aria-selected="true" onclick="tab('trace')">轨迹</button>
+            <button class="tab" role="tab" aria-selected="false" onclick="tab('check')">校验</button>
+            <button class="tab" role="tab" aria-selected="false" onclick="tab('metric')">指标</button>
+            <button class="tab" role="tab" aria-selected="false" onclick="tab('compare')">对比</button>
+          </div>
+
+          <div class="pane on" id="pane-trace">
+            <div class="sechead">run #b8e1 · 逐步轨迹</div>
+            <div class="trace" id="traceList">
+              <div class="trow open">
+                <div class="thead" onclick="tog(this)">
+                  <span class="tstat" style="color:hsl(var(--ok))">✓</span>
+                  <div><div class="sn" style="font-size:12.5px">1 · 解析用户意图</div><div class="muted mono" style="font-size:10.5px">llm · 412ms</div></div>
+                  <span class="muted" style="font-size:10px">▾</span>
+                </div>
+                <div class="tbody">
+                  <div class="kv"><dt>输入</dt><dd>第十二章 夜航（4,218 字）</dd></div>
+                  <div class="sechead" style="margin:0 0 5px">实际提示词</div>
+                  <pre>你是账号助手。判断用户想查询哪个账号、需要哪些字段。
+只输出判断结论，不要输出 JSON。</pre>
+                </div>
+              </div>
+              <div class="trow">
+                <div class="thead" onclick="tog(this)">
+                  <span class="tstat" style="color:hsl(var(--ok))">✓</span>
+                  <div><div class="sn" style="font-size:12.5px">2 · 抽取查询参数</div><div class="muted mono" style="font-size:10.5px">extract · 786ms</div></div>
+                  <span class="muted" style="font-size:10px">▾</span>
+                </div>
+                <div class="tbody">
+                  <div class="kv"><dt>校验</dt><dd>通过 · 2/2 必填字段</dd></div>
+                  <pre>{
+  <span class="j-key">"accountId"</span>: <span class="j-str">"xiaoming@corp"</span>,
+  <span class="j-key">"fields"</span>: [<span class="j-str">"status"</span>, <span class="j-str">"expiresAt"</span>]
+}</pre>
+                </div>
+              </div>
+              <div class="trow">
+                <div class="thead" onclick="tog(this)">
+                  <span class="tstat" style="color:hsl(var(--ok))">✓</span>
+                  <div><div class="sn" style="font-size:12.5px">3 · 查询账号</div><div class="muted mono" style="font-size:10.5px">tool · 6ms</div></div>
+                  <span class="muted" style="font-size:10px">▾</span>
+                </div>
+                <div class="tbody">
+                  <div class="kv"><dt>入参</dt><dd class="mono">{ accountId: "xiaoming@corp" }</dd></div>
+                  <pre>{
+  <span class="j-key">"status"</span>: <span class="j-str">"active"</span>,
+  <span class="j-key">"expiresAt"</span>: <span class="j-str">"2026-12-31"</span>,
+  <span class="j-key">"plan"</span>: <span class="j-str">"pro"</span>
+}</pre>
+                </div>
+              </div>
+              <div class="trow">
+                <div class="thead" onclick="tog(this)">
+                  <span class="tstat" style="color:hsl(var(--warn))">◐</span>
+                  <div><div class="sn" style="font-size:12.5px">4 · 生成回答</div><div class="muted mono" style="font-size:10.5px">重试 1 次 · 未通过</div></div>
+                  <span class="muted" style="font-size:10px">▾</span>
+                </div>
+                <div class="tbody">
+                  <div class="kv">
+                    <dt>状态</dt><dd><b style="color:hsl(var(--warn))">invalid</b> · 不计入准确率</dd>
+                    <dt>原因</dt><dd>缺少必填字段 <span class="mono">expiresAt</span></dd>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="hintline" style="margin-top:9px">轨迹逐步留痕，可据此只重跑失败步骤及其下游。</div>
+          </div>
+
+          <div class="pane" id="pane-check">
+            <div class="sechead">本次运行的约束校验</div>
+            <div class="schema">
+<div class="ln">{</div>
+<div class="ln">  <span class="fname">summary</span>:   <span class="ftype">string</span>  <span class="freq">必填</span></div>
+<div class="ln">  <span class="fname">status</span>:    <span class="ftype">string</span>  <span class="freq">必填</span></div>
+<div class="ln">                <span class="fenum">∈ active|suspended|expired</span></div>
+<div class="ln">  <span class="fname">expiresAt</span>: <span class="ftype">string</span>  <span class="freq">必填</span></div>
+<div class="ln">  <span class="fname">note</span>:      <span class="ftype">string</span>  <span class="fopt">可选</span></div>
+<div class="ln">}</div>
+            </div>
+            <div class="hintline" style="margin-top:8px">一份 schema 驱动三件事：自动生成提示词里的格式说明、运行时强校验、评测器知道该比对哪些字段。</div>
+            <div class="sechead">strictness</div>
+            <div class="acc">
+              <div class="ah"><span class="badge warn">strict</span><span class="muted" style="font-size:11.5px">不合法即重试</span></div>
+              <div class="ab">
+                <div class="arow"><span class="an">maxAttempts</span><span class="av mono">2</span></div>
+                <div class="arow"><span class="an">本次合规率</span><span class="av mono">91.7%</span></div>
+                <div class="arow"><span class="an">有效样本</span><span class="av mono">11 / 12</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="pane" id="pane-metric">
+            <div class="sechead">评测指标</div>
+            <div class="acc">
+              <div class="ah"><span class="badge ok">已冻结 v1</span><span class="muted" style="font-size:11.5px">2026-09-27</span></div>
+              <div class="ab">
+                <div class="arow"><span class="an">evaluator</span><span class="av mono">tool-trace</span></div>
+                <div class="arow"><span class="an">任务完成率</span><span class="av mono">权重 0.4</span></div>
+                <div class="arow"><span class="an">参数正确率</span><span class="av mono">权重 0.4</span></div>
+                <div class="arow"><span class="an">编造率</span><span class="av mono">权重 0.2（反向）</span></div>
+                <div class="arow"><span class="an">判据来源</span><span class="av">项目接口定义 + 需求</span></div>
+              </div>
+            </div>
+            <div class="hintline" style="margin-top:8px">冻结后迭代提示词不再改动指标；改指标是独立动作，改完需重算基线。</div>
+            <div class="sechead">本次运行</div>
+            <div class="acc">
+              <div class="ab">
+                <div class="arow"><span class="an">约束合规率</span><span class="av mono">91.7%</span></div>
+                <div class="arow"><span class="an">有效样本</span><span class="av mono">11 / 12</span></div>
+                <div class="arow"><span class="an">任务完成率</span><span class="av mono">90.9%</span></div>
+                <div class="arow"><span class="an">参数正确率</span><span class="av mono">81.8%</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="pane" id="pane-compare">
+            <div class="sechead">本次 #b8e1 ↔ 基线 #a7f2</div>
+            <table>
+              <thead><tr><th>指标</th><th>基线</th><th>本次</th><th>变化</th></tr></thead>
+              <tbody>
+                <tr><td>约束合规率</td><td>83.3%</td><td>91.7%</td><td class="up">+8.4</td></tr>
+                <tr><td>任务完成率</td><td>83.3%</td><td>90.9%</td><td class="up">+7.6</td></tr>
+                <tr><td>参数正确率</td><td>75.0%</td><td>81.8%</td><td class="up">+6.8</td></tr>
+                <tr><td>编造率</td><td>16.7%</td><td>9.1%</td><td class="up">−7.6</td></tr>
+              </tbody>
+            </table>
+            <div class="hintline" style="margin-top:8px">两次运行使用同一份已冻结指标、同一模型与温度、同一批输入，差异可归因到提示词改动。若指标未冻结，本页拒绝给出结论。</div>
+            <div class="sechead">成本</div>
+            <div class="acc"><div class="ab">
+              <div class="arow"><span class="an">本次调用</span><span class="av mono">12 × 4 = 48</span></div>
+              <div class="arow"><span class="an">输入 tokens</span><span class="av mono">86.4k</span></div>
+            </div></div>
+          </div>
+        </aside>
+      </div>
+
+      <footer class="statusbar">
+        <span class="sb"><span class="led done" id="led"></span><span id="runState">空闲 · #b8e1 已完成</span></span>
+        <span class="progress"><i id="prog"></i></span>
+        <span class="sb hide-narrow">指标 v1 已冻结</span>
+        <span class="spacer"></span>
+        <span class="sb">导出为人工动作</span>
+      </footer>
+    </div>
+  </div>
+</div>
+
+<!-- 宽度调节 -->
+<div class="sizer">
+  <span class="lb">面板宽度：拖面板左边缘自由调整</span>
+  <button onclick="setWidth(300)">最窄 300</button>
+  <button onclick="setWidth(Math.floor(window.innerWidth*0.4))">自适应 40%</button>
+  <button onclick="setWidth(Math.floor(window.innerWidth*0.6))">最宽 60%</button>
+  <span class="rd" id="widthRead">605px · 双列</span>
+</div>
+<!-- 面板左边缘的拖拽手柄：与 DutyDeck 真实分栏一致（最小 300、最大视口 60%） -->
+<div class="pghandle" id="pgHandle" title="拖动调整面板宽度"></div>
+<div class="toast" id="toast"></div>
+
+<!-- ======================= 提交任务 ======================= -->
+<div class="scrim" id="submitScrim" onclick="closeSubmit()"></div>
+<div class="dialog" id="submitDialog" role="dialog" aria-modal="true">
+  <header>
+    <div>
+      <div class="dt">提交任务</div>
+      <div class="dd">场景：账号状态查询 · 4 步 · 指标 v1 已冻结</div>
+    </div>
+    <button class="x" onclick="closeSubmit()" aria-label="关闭">✕</button>
+  </header>
+  <div class="db">
+    <div class="field">
+      <label>输入方式</label>
+      <div class="seg">
+        <button aria-pressed="true">粘贴正文</button>
+        <button aria-pressed="false" onclick="segPick(this)">选择本地文件</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>任务名称（留空自动取首行）</label>
+      <input class="ta" style="min-height:auto;height:34px;padding:7px 10px" placeholder="第十二章 夜航" />
+    </div>
+    <div class="field">
+      <label>正文</label>
+      <textarea class="ta" placeholder="把要处理的内容粘进来，例如小说的一个章节、一段账号信息、一批待处理数据…"></textarea>
+      <div class="hintline" style="margin-top:6px">提交后工作流自动运行，可在「运行过程」逐步查看；不需要再对话。运行会消耗模型调用。</div>
+    </div>
+  </div>
+  <footer>
+    <button class="btn btn-primary" onclick="startSubmit()">开始运行</button>
+    <button class="btn btn-outline" onclick="closeSubmit()">取消</button>
+    <span class="spacer"></span>
+    <span class="muted" style="font-size:11px">本次调用 4 步</span>
+  </footer>
+</div>
+
+<!-- ======================= 导出能力包 ======================= -->
+<div class="scrim" id="exportScrim" onclick="closeExport()"></div>
+<div class="dialog" id="exportDialog" role="dialog" aria-modal="true">
+  <header>
+    <div><div class="dt">导出能力包</div><div class="dd">packageVersion 1.0.0 · specVersion 1</div></div>
+    <button class="x" onclick="closeExport()" aria-label="关闭">✕</button>
+  </header>
+  <div class="db">
+    <div class="hintline" style="margin-bottom:10px">能力包自包含，不引用 DutyDeck 的任何内部概念：不含工具名、不含工作区路径、不含凭据，消费方项目不需要安装 DutyDeck。</div>
+    <pre>{
+  <span class="j-key">"kind"</span>: <span class="j-str">"proma-ai-capability-package"</span>,
+  <span class="j-key">"packageVersion"</span>: <span class="j-str">"1.0.0"</span>,
+  <span class="j-key">"specVersion"</span>: <span class="j-str">1</span>,
+  <span class="j-key">"name"</span>: <span class="j-str">"account-status-query"</span>,
+  <span class="j-key">"inputs"</span>:  { <span class="j-key">"text"</span>: { <span class="j-key">"type"</span>: <span class="j-str">"string"</span> } },
+  <span class="j-key">"outputs"</span>: { <span class="j-key">"answer"</span>: { <span class="j-key">"stepId"</span>: <span class="j-str">"answer"</span> } },
+  <span class="j-key">"steps"</span>: [ <span class="j-cmt">/* llm / extract / tool 四步，含 outputSchema 与 strictness */</span> ],
+  <span class="j-key">"capabilities"</span>: [ <span class="j-cmt">/* query-account，消费方绑定自己的实现 */</span> ],
+  <span class="j-key">"modelSlots"</span>: [ { <span class="j-key">"id"</span>: <span class="j-str">"main"</span>, <span class="j-key">"model"</span>: <span class="j-str">"claude-sonnet-5"</span> } ],
+  <span class="j-key">"acceptance"</span>: { <span class="j-key">"evaluator"</span>: <span class="j-str">"tool-trace"</span>, <span class="j-key">"frozenAt"</span>: <span class="j-str">1790000000000</span> },
+  <span class="j-key">"evidence"</span>:   { <span class="j-key">"metrics"</span>: { <span class="j-key">"task"</span>: <span class="j-str">0.909</span> }, <span class="j-key">"invalidRate"</span>: <span class="j-str">0.083</span> }
+}</pre>
+    <div class="hintline" style="margin-top:9px">随包附参考 runner（零依赖、只用 fetch），保证「工厂里通过」与「产品里通过」是同一套执行语义。</div>
+  </div>
+  <footer>
+    <button class="btn btn-primary" onclick="closeExport()">导出到文件…</button>
+    <button class="btn btn-outline" onclick="closeExport()">取消</button>
+    <span class="spacer"></span>
+    <span class="muted" style="font-size:11px">导出需人工触发</span>
+  </footer>
+</div>
+
+<!-- ======================= 设计说明 ======================= -->
+<div class="scrim" id="nodeScrim" onclick="closeNodeDialog()"></div>
+<div class="dialog" id="nodeDialog" role="dialog" aria-modal="true" aria-labelledby="nodeTitle">
+  <header>
+    <div>
+      <div class="dt" id="nodeTitle">编辑步骤</div>
+      <div class="dd" id="nodeSub">配置只作用于这一步；改完回到列表点「保存为草案」</div>
+    </div>
+    <button class="x" onclick="closeNodeDialog()" aria-label="关闭">✕</button>
+  </header>
+  <div class="db" id="nodeHost"></div>
+  <footer>
+    <button class="btn btn-primary" onclick="closeNodeDialog()">完成</button>
+    <span class="spacer"></span>
+    <button class="btn btn-ghost btn-sm" onclick="toast('选择要关联的卡片：连线类型有 reference / depends-on')">＋ 添加关联</button>
+  </footer>
+</div>
+
+<div class="scrim" id="notesScrim" onclick="closeNotes()"></div>
+<div class="dialog" id="notesDialog" role="dialog" aria-modal="true">
+  <header>
+    <div><div class="dt">交互设计说明 v11</div><div class="dd">场景定义：图在上看结构，编辑器在下拿全宽</div></div>
+    <button class="x" onclick="closeNotes()" aria-label="关闭">✕</button>
+  </header>
+  <div class="db">
+    <div class="notes">
+      <div class="noteitem"><span class="n">01</span><div>
+        <div class="nt">产品模型：面板 + Agent 才是一个完整产品（本轮纠正）</div>
+        <div class="nd">v7 我在场景定义页里放了一张「让 Agent 设计流程」的卡：一个输入框 + 一个生成按钮。这是<b>自相矛盾</b>——前面才把对话从面板里删掉，这等于又把对话藏回面板，而且藏得更难发现（一个只有一句话输入框的伪对话）。<br>正确的模型是：<b>面板是仪表盘与操作台，Agent 是唯一的设计与对话入口</b>。所以面板里不能有任何「发起 Agent 生成」的入口——没有设计期的输入框，也没有「让 Agent 重写这一步」这类隐含命令的按钮。<br>面板能做的是两件事：<b>取景</b>（显示场景现在什么样、这次跑出了什么）和<b>搬运</b>（把某次运行、某一步作为引用带到会话）。改流程的动作发生在会话里，结果以<b>草案</b>回到面板等采纳。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">02</span><div>
+        <div class="nt">「写死」是两层东西，必须分开</div>
+        <div class="nd"><b>第一层是缺陷，我认</b>：v6 的编辑器只是「一个填好的例子」——步骤固定 4 个、不能增删换序、每步形态照账号查询写死，而且<b>数据流被藏起来了</b>（每步只能吃上一步输出）。<br><b>第二层是必要约束，不能放开</b>：步骤类型只有 <code>llm</code> / <code>extract</code> / <code>tool</code>，评测器类型只有 <code>extraction</code> / <code>tool-trace</code>。放成「任意结构」后，参考 runner 无法执行、评测器无法给分、跨版本比较不成立，模块会退回成绘图工具。<br>正确做法是<b>类型收敛、组合自由</b>：任意缝隙插入、删除、上移下移、改标题、切换类型（只换「能配什么」，公共字段保留）、每步声明<b>输入来源</b>（workflow.text / 上一步输出 / 常量）。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">03</span><div>
+        <div class="nt">场景的结构：六个概念，前三个是定义、后三个是事实</div>
+        <div class="nd"><b>定义</b>（可编辑、有版本）——① 场景：名称/描述/输入输出契约，这是交付给别的项目的那个东西；② 步骤：执行单元，类型决定它能配什么（llm→提示词；extract→提示词+输出约束；tool→能力绑定）；③ 数据流：每一步的输入从哪来，显式声明，不靠隐式上下文。<br><b>事实</b>（只读、不可改）——④ 能力声明：对外部世界的需求，由接入方绑定实现；⑤ 运行：一次执行，带完整轨迹；⑥ 评测：在一批输入上的质量结论，指标冻结。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">04</span><div>
+        <div class="nt">项目与场景是两件事：面板只认当前项目</div>
+        <div class="nd">面板绑在 DutyDeck 当前项目上，左栏只列<b>本项目的场景</b>，不再混排其它项目；窄栏时的场景下拉也只列本项目。切换项目用 DutyDeck 自己的左侧栏，每个项目的场景互相独立。项目名保留在场景条的面包屑里（<code>账号查询箱 ▸ 账号状态查询</code>），但它只是上下文标签，不是选择器。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">05</span><div>
+        <div class="nt">融合通道一：共享同一份事实</div>
+        <div class="nd">场景定义、版本、运行记录都存工作区里，面板和 Agent 读写同一份，没有第二套真相。Agent 改了提示词 → 场景出新版本 → 面板顶部出现提示条「<b>草案 v5</b> · Agent 改了第 2 步的抽取规则」，带「查看差异 / 采纳 v5」。注意：Agent 的改动默认是<b>草案</b>，不会自动生效。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">06</span><div>
+        <div class="nt">融合通道二：面板 → 会话只传结构化引用</div>
+        <div class="nd">「把这次运行带到会话」「把这条输出带到会话」、以及失败步骤旁的 <code>↗</code>，这三个动作都<b>只搬运、不发命令</b>：把 <code>{项目, 场景, 版本, 运行, 步骤}</code> 作为引用连同有界摘要带进当前会话，你不需要复述「第 4 步少了 expiresAt 那个字段」。<br>刻意不写「让 Agent 分析这次运行」——面板无法保证会话真的会去做某件事，许愿式的按钮是不诚实的 UI。带过去之后说什么，由你在会话里决定。<br>摘要有界（不塞整份轨迹），避免上下文膨胀与二次成本。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">07</span><div>
+        <div class="nt">融合通道三：会话 → 面板只做定位</div>
+        <div class="nd">Agent 改完场景后，它的工具回执里带一行「工厂已更新 · 查看」的可点击入口，点击聚焦本面板并定位到该场景。这是 Agent → 面板的唯一通道：它不改动面板内容，只做定位，避免两处都能编辑。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">08</span><div>
+        <div class="nt">面板不承载对话，这条边界要守住</div>
+        <div class="nd">头部有一枚「<b>已绑定会话 a1f3</b>」的标记（点它切回主会话），但面板里没有输入框、没有消息流。要跟 Agent 说话就去主会话，要提交与观察就留在这里。理由：同一个项目里两处都能对话，会立刻产生「刚才那句话是在哪儿说的」。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">09</span><div>
+        <div class="nt">权限边界：Agent 能做什么、不能做什么</div>
+        <div class="nd"><b>Agent 可以</b>：建草稿、改提示词出新版本、读运行记录与轨迹。<b>人来做</b>：采纳版本（面板上的「采纳 v5」）、导出能力包、提交任务。理由：采纳决定之后用哪套提示词，导出会改变另一个项目的行为，两者都不适合让 Agent 自主生效。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">10</span><div>
+        <div class="nt">观察台内部还有一层自适应</div>
+        <div class="nd">观察台自己是第二个容器：宽度不足 560px 时，步骤行的「类型 + 耗时」折到标题下面一行，指标从四列变两列，提交历史隐藏指标列。<b>判据看观察台宽度而不是面板宽度</b>——双列模式下观察台只有 300 多像素。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">11</span><div>
+        <div class="nt">断点与宽度</div>
+        <div class="nd"><code>&lt;600px</code> 单列（场景进头部下拉、观察/详情分段切换）、<code>600–1039px</code> 双列、<code>≥1040px</code> 三列。605px 是 1512 屏展开工作区的默认宽度，最常用。底部宽度条可直接切 300 / 360 / 480 / 605 / 720 / 880 / 1120 试。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">12</span><div>
+        <div class="nt">Agent 建流仍然主张，但入口在会话里</div>
+        <div class="nd">「流程由 Agent 设计」这个主张不变——从零手搭一条四步流程要写四段提示词、定义三组约束，而 Agent 读一遍项目就能给出可跑的草案，人再改。<b>但这个动作发生在会话里，不在面板里</b>：你在会话里说要做什么，Agent 产出草案，面板顶部出现「草案 v5 · Agent 改了第 2 步的抽取规则」，你在这里采纳或继续改。<br>面板为此只提供两样东西：<b>联动状态</b>（这个场景的来源、当前是 v4 生效还是 v5 待采纳）和一个<b>定位入口</b>「在会话中打开此场景」。<br>这一步能成立的前提是 Agent 读得到项目（接口定义、数据模型、技术栈），否则它只能凭描述猜，产出的字段对不上真实项目。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">13</span><div>
+        <div class="nt">运行流程改成卡片流：更简约的地方不在卡片，而在合并</div>
+        <div class="nd">先说结论：<b>卡片画成流程图本身不会让线性流程更省地方</b>——节点有 padding、节点之间要留连接线，四个步骤比原来的行列表还高一点。它是为「结构」付费，不是为「简约」付费。<br>真正的简约来自<b>合并</b>：原来「本次提交卡 + 运行过程卡 + 本次输出卡」三张卡，现在合成一条流——<b>输入节点 → 步骤节点 → 输出节点</b>，砍掉两个卡头、一层嵌套和它们之间的空白。输入正文与输出 JSON 默认收起（点节点展开），所以流程默认是紧凑的。<br>顺带把「输入」和「输出」也做成节点，是有意为之：它们和步骤在执行意义上没有区别（一个从上一步拿数据，一个从工作流输入拿数据），画成同一种东西才解释得通「为什么输出可以直接映射某个步骤的字段」。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">14</span><div>
+        <div class="nt">并行组：新增的是「步骤容器」，不是节点类型</div>
+        <div class="nd">左栏第二个场景「批量账号巡检」演示了扇出与扇入：拆列表 → <b>并行组</b>（组内可放任意步骤链）→ 汇总。关键设计判断是——<b>并行不作为新的节点类型，而作为一层容器</b>。这样「类型只有 llm / extract / tool」这条收敛规则不被破坏，组合自由度却扩大了。<br>窄栏下并行组自动从两列变单列（看的是观察台自己的宽度）。<br><b>并行带出两个必须定清楚的问题</b>（稿子里我先用「partial」表达了立场，但没有替你定）：①<b>扇入语义</b>——汇总节点是「全部成功才继续」还是「收到可用的部分结果就继续」？②<b>部分失败怎么算</b>——并行 32 个里 1 个失败，这次运行记 success 还是 partial？这直接决定评测里 invalid / failed 的分类，不能等实现时再拍。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">15</span><div>
+        <div class="nt">一级结构：运行 / 提交历史 / 场景定义（本轮）</div>
+        <div class="nd">之前这三个 tab 被夹在场景条和版本条<b>下面</b>，看起来像是「运行视图内部的切换」；而且切到「场景定义」时，右栏还在显示上一次运行的轨迹——不相关。<br>现在把它们提为<b>内容区的一级结构</b>（内容区最顶端），并定下层级：<b>二级只有「运行」才有</b>——轨迹、校验、指标、对比都挂在运行下；切到「提交历史」或「场景定义」时右栏整体收起，内容占满整宽。<br>顺带拿到一个不小的收益：场景定义编辑器原来被右栏挤到 300 多像素，现在能拿到整个内容宽度，提示词文本框宽度翻倍。这也是「其他模块不需要轨迹」的直接好处，不只是视觉上更干净。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">16</span><div>
+        <div class="nt">场景定义改成固定布局流程图（本轮）</div>
+        <div class="nd">用户问「能否类似画布一样，只是排版固定不能修改」——背景是截图里那个真问题：宽屏（1120px）下表单被拉满，名称、描述、契约字段都是全宽输入框，右侧大片空白，结构一点看不出来。<br><b>我的判断：方向对，但不能把编辑搬进节点卡。</b>图上节点卡宽 152px，而提示词编辑需要 600px 以上——把 textarea 塞进节点等于把编辑废掉。所以采用的形状是<b>图在上看结构、编辑器在下拿全宽</b>：顶部新增「场景流程」固定布局节点图（输入 → 1 llm → 2 extract → 3 tool → 4 extract → 输出，自动横排、窄了折行、<b>不可拖动</b>），点节点定位并展开下面编辑区里的对应步骤；编辑区仍是全宽的单步表单，提示词拿满宽度。<br>顺带修掉截图里的空白问题：名称/描述改成<b>两列网格</b>（`metagrid`），输入/输出契约行改成<b>限宽四列</b>（`crow`，max-width 560px），窄容器自动回落单列——短字段不再被拉到 1100px 宽。<br><b>与画布的真正区别</b>：画布是自由摆放 + 人拖拽；这里是<b>自动排布 + 只读结构</b>。真实实现应当用仓库已有的 <code>@xyflow/react</code> 加已落地的 ELK 布局 Worker，并设 <code>nodesDraggable=false</code>——也就是「画布的能力，去掉摆放的自由度」。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">17</span><div>
+        <div class="nt">面板宽度：DutyDeck 本来就会自适应，不用拖（本轮）</div>
+        <div class="nd">用户问「面板宽度现在是固定几个，能自适应吗，我拖动查看不方便」。查了代码，这件事不用我们做——<b>DutyDeck 已经会自适应</b>：<code>isExpandedWorkspaceTab()</code> 对所有 <code>WorkspaceComponentTab</code>（运维、接口、以及本模块）返回 true，所以首次打开这个面板时会走「展开工作区」分支，默认宽度 = <code>EXPANDED_WORKSPACE_DEFAULT_VIEWPORT_RATIO = 2/5</code>，即<b>视口 40%</b>（1512 屏约 605px）；最小宽度 <code>MIN_EXPANDED_WORKSPACE_PANEL_WIDTH = 360</code>，上限 <code>RIGHT_PANEL_MAX_VIEWPORT_RATIO = 3/5</code>。用户手动拖过之后宽度存进 <code>widePanelWidthOverride</code> 记住。<br>所以「固定几个」其实是<b>我为了演示加的档位按钮</b>——那确实不好用。本轮把它换成<b>拖面板左边缘自由调整</b>（约束与代码一致：300 ~ 视口 60%），并把读数改成「605px · 双列」这样直接标出当前落在哪一档，拖动时能连续看到断点跳变。另外保留「最窄 300 / 自适应 40% / 最宽 60%」三个快捷值。<br><b>设计侧的正面回答</b>：模块本身从 300 到视口 60% 全程可用，3 个断点（600 / 1040）+ 观察台自身断点（560）就是为此做的；<b>但断点之间不会连续变化</b>——这不是缺陷，连续变形意味着任何宽度都不是最优。真正该做的自适应不是「跟着宽度连续变」，而是「跟着任务变」：编辑场景定义时需要宽度，看运行流程时不需要——DutyDeck 已有 <code>widePanelWidthOverride</code> 这套机制，将来可以让「场景定义」这个 tab 请求更宽的宽度。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">18</span><div>
+        <div class="nt">流程卡片与编辑合并、配置进弹窗（本轮）</div>
+        <div class="nd">用户提议「把流程卡片和下面的输入合并，每个卡片点击弹窗设置详情，卡片可以自定义添加关联」——这个方向我赞成，而且它<b>解决了我上一轮提出的那个反对意见</b>：我当时说「节点卡放不下长提示词」，但那是对<b>行内编辑</b>成立，对<b>弹窗</b>不成立——弹窗宽度与面板无关，605px 的面板里也能开一个 620px 的编辑器，长提示词照样舒服。<br>所以本轮改成：步骤卡就是图上的节点（178px，只留编号、类型、标题、操作），<b>点卡片开弹窗配置</b>（提示词、输出约束、输入来源都在弹窗里），卡片下面一行「＋ 关联」用来加边。整个页面因此只剩三样东西：场景信息、节点图、底部操作条——比上一轮「图 + 一长串表单」专注得多，宽屏也不再有大片空白。<br><b>另外两个判断</b>：①「自定义添加关联」意味着<b>图不再是纯线性，自动排布必须跟着边重算</b>（ELK），否则加一条边后节点位置不动会让连线交叉得没法看——这也意味着「固定布局」的含义从「位置永远不变」变成「位置由系统算、人不能拖」；②自由连线必须<b>带校验</b>（环、悬空节点、类型不兼容的边），而 Canvas 已经有 `bound / unresolved / incompatible` 这套判定，应当直接复用它的规则，不要另发明一套。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">19</span><div>
+        <div class="nt">约束归提示词，评审归工厂（本轮）</div>
+        <div class="nd">用户指出：「输出契约应该是存文本吧，它其实就是一个评审标准；首先约束输出的是在提示词；而评审的提示词归编排工厂，它用于优化、修改才对吧？」——<b>对了一大半，有一处要修正</b>。<br><b>对的部分（三条，我认）</b>：①真正约束模型输出的是<b>提示词</b>，schema 不做约束——它只做判定；②输出不该叫「契约」，它更像<b>评审标准</b>；③评审是<b>工厂的资产</b>，用途是优化与修改提示词，不是交付物。<br><b>要修正的一处</b>：说「输出契约存文本」只在输出是<b>自由文本</b>时成立。结构化抽取场景下输出是结构化的，评审需要字段级精确率/召回率，光存文本不够。正确的切法是<b>按用途拆，不按形态拆</b>：<br>· <b>输出（契约部分）</b>：只声明「接入方会拿到什么形态 + 哪些字段」——这仍然是契约，因为接入方要知道拿什么；<br>· <b>判定字段（原「输出约束」）</b>：工厂用来判断这次输出是否有效/正确的字段清单，<b>不是运行时强制</b>；<br>· <b>评审判据 + 评审提示词 + 指标权重</b>：工厂内部资产，用于优化修改。<br>所以 v14 做了三处重命名与挪位：「输出契约」→「**输出**」（强调只声明形态，格式要求在提示词里）；节点弹窗里的「输出约束」→「**判定字段 · 供评审使用**」；「评判指标」→「**评审**」（含评审判据文本、评审提示词、指标权重三块，并标注归工厂）。<br><b>顺带定了一条交付边界</b>：随能力包<b>只导出判据文本</b>（让接入方知道「合格长什么样」），<b>不导出评审执行器与数据集</b>——这与「评审是工厂资产、数据集不进包」一致。代价是消费方无法自行复算分数，只能信任包里的 evidence。</div>
+      </div></div>
+      <div class="noteitem"><span class="n">20</span><div>
+        <div class="nt">简化场景定义：9 张卡 → 1 行 + 1 图 + 1 折叠区（本轮）</div>
+        <div class="nd">用户说「再简化场景定义模块，现在还是太复杂」。数了一下确实离谱：<b>9 张卡片一列排到底</b>——与会话联动、场景、输入契约、步骤、输出、能力声明、评审、操作条，其中还有三段 2–4 行的解释性文案。<br><b>三处减法</b>：①<b>两张卡压成一条信息行</b>：「与会话联动」＋「场景元信息」合并成 `.scenehead`——名称与描述就地可编辑，版本徽标（当前 v4 / 草案 v5）在旁边，右侧一个「在会话中打开 ↗」；②<b>低频项折叠</b>：「输入契约 / 输出 / 能力声明 / 评审」四项收进一张默认收起的「契约与评审」卡（`toggleFold`；输入契约卡由 `initFold` 在初始化时搬进折叠区，避免重写 DOM）；③<b>删掉解释性文案</b>——「面板不承载对话，Agent 是唯一入口」「真正约束模型的是提示词……」「评审是工厂的资产……」这些都是<b>说给评审者听的设计哲学，不是给用户看的界面文案</b>，全部收进设计说明弹层，界面上各留一句话。<br>结果：主视线只有「场景信息行 → 节点图」两块，要用契约与评审再展开。这也是本轮最值得记的一条方法论：<b>设计文档里的论证不该常驻在界面上</b>——它是我们讨论用的，不是产品的一部分。</div>
+      </div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* 交互原型脚本：只做状态演示，无外部依赖 */
+
+/** 设置面板宽度。约束与真实 DutyDeck 分栏一致：最小 300（MIN_RIGHT_PANEL_WIDTH）、
+ *  最大视口 60%（RIGHT_PANEL_MAX_VIEWPORT_RATIO=3/5）。 */
+function setPanelWidth(w){
+  var max = Math.floor(window.innerWidth * 0.6);
+  w = Math.max(300, Math.min(max, Math.round(w)));
+  document.getElementById('simPanel').style.width = w + 'px';
+  var tier = w >= 1040 ? '三列' : w >= 600 ? '双列' : '单列';
+  document.getElementById('widthRead').textContent = w + 'px · ' + tier;
+}
+function setWidth(w){ setPanelWidth(w); }
+
+/** 拖左边缘自由改宽度：验证连续拖动下的表现，而不只是几个固定档位 */
+var dragState = null;
+function onDragMove(e){
+  if (!dragState) return;
+  setPanelWidth(dragState.startW - (e.clientX - dragState.startX));
+}
+function endDrag(){
+  dragState = null;
+  var h = document.getElementById('pgHandle');
+  if (h) h.classList.remove('dragging');
+  document.removeEventListener('mousemove', onDragMove);
+  document.removeEventListener('mouseup', endDrag);
+}
+function startDrag(e){
+  e.preventDefault();
+  dragState = { startX: e.clientX, startW: document.getElementById('simPanel').getBoundingClientRect().width };
+  var h = document.getElementById('pgHandle');
+  if (h) h.classList.add('dragging');
+  document.addEventListener('mousemove', onDragMove);
+  document.addEventListener('mouseup', endDrag);
+}
+document.getElementById('pgHandle').addEventListener('mousedown', startDrag);
+window.addEventListener('resize', function(){
+  setPanelWidth(document.getElementById('simPanel').getBoundingClientRect().width);
+});
+
+/** 统一视图状态：run（本轮）/ history（历史）/ detail（详情，仅窄栏）。
+ *  宽栏的顶部 tab 与窄栏的分段切换器共用这一个状态，避免两套记忆。 */
+function setPanelView(view){
+  document.getElementById('panel').setAttribute('data-view', view);
+  var segOrder = ['run','eval','scene','deliver','detail'];
+  document.querySelectorAll('.segview button').forEach(function(b, i){
+    b.setAttribute('aria-pressed', segOrder[i] === view ? 'true' : 'false');
+  });
+  var wtOrder = ['run','eval','scene','deliver'];
+  document.querySelectorAll('.worktabs .wtab').forEach(function(b, i){
+    b.setAttribute('aria-selected', wtOrder[i] === view ? 'true' : 'false');
+  });
+  if (view === 'run') setSub('run');
+}
+/** 运行 tab 下的子视图：本次运行 / 提交历史 */
+function setSub(sub){
+  var panel = document.getElementById('panel');
+  panel.setAttribute('data-sub', sub);
+  var order = ['run','history'];
+  document.querySelectorAll('.subswitch button').forEach(function(b, i){
+    b.setAttribute('aria-pressed', order[i] === sub ? 'true' : 'false');
+  });
+}
+function setSubFromTab(sub, btn){ setSub(sub); }
+function setView(view){ setPanelView(view); }
+function setMain(view){ setPanelView(view); }
+
+/** 场景下拉 */
+function toggleMenu(e){
+  if (e) e.stopPropagation();
+  document.getElementById('sceneMenu').classList.toggle('on');
+}
+function pickMenu(el, proj, scene){
+  document.querySelectorAll('#sceneMenu .mi').forEach(function(m){ m.classList.remove('on'); });
+  el.classList.add('on');
+  document.getElementById('pickerScene').textContent = scene;
+  document.querySelector('.scenbar .nm').textContent = scene;
+  document.getElementById('sceneMenu').classList.remove('on');
+}
+document.addEventListener('click', function(){ document.getElementById('sceneMenu').classList.remove('on'); });
+
+function pickScene(el){
+  document.querySelectorAll('.scene').forEach(function(s){ s.classList.remove('active'); });
+  el.classList.add('active');
+  var name = el.querySelector('.stitle').textContent;
+  document.querySelector('.scenbar .nm').textContent = name;
+  document.getElementById('pickerScene').textContent = name;
+  /* 场景决定运行流程的形状：线性 vs 含并行组 */
+  var shape = el.getAttribute('data-scenario') || 'linear';
+  document.getElementById('panel').setAttribute('data-scenario', shape);
+  document.getElementById('flowLinear').style.display = shape === 'parallel' ? 'none' : 'flex';
+  document.getElementById('flowParallel').style.display = shape === 'parallel' ? 'flex' : 'none';
+  document.getElementById('defLinear').style.display = shape === 'parallel' ? 'none' : 'block';
+  document.getElementById('defParallel').style.display = shape === 'parallel' ? 'block' : 'none';
+  var mini = document.querySelector('.scenbar .flowmini');
+  if (mini) mini.textContent = shape === 'parallel' ? '拆分 → 并行 ×32 → 汇总' : '解析意图 › 抽取参数 › 查询账号 › 生成回答';
+  var rb = document.getElementById('runBadge'), rm = document.getElementById('runMeta');
+  if (shape === 'parallel'){
+    if (rb){ rb.className = 'badge warn'; rb.textContent = '完成 · partial'; }
+    if (rm) rm.textContent = 'run #c02a · 41.6s · 并发 4';
+  } else {
+    if (rb){ rb.className = 'badge ok'; rb.textContent = '已完成'; }
+    if (rm) rm.textContent = 'run #b8e1 · 18.4s';
+  }
+}
+
+/** 输入 / 输出节点的正文展开：默认收起，保持流程紧凑 */
+function toggleIO(id, node){
+  var box = document.getElementById(id);
+  if (!box) return;
+  box.classList.toggle('on');
+  var hint = node ? node.querySelector('.fn-time') : null;
+  if (hint) hint.textContent = box.classList.contains('on') ? '收起' : '展开';
+}
+/** 点流程里的步骤卡片 → 跳右栏轨迹并展开同一步 */
+function openStepInTrace(step){
+  var panel = document.getElementById('panel');
+  if (panel.getBoundingClientRect().width < 600) setPanelView('detail');
+  tab('trace');
+  var rows = document.querySelectorAll('#traceList .trow');
+  rows.forEach(function(r){ r.classList.remove('open'); });
+  if (rows[step - 1]) rows[step - 1].classList.add('open');
+}
+
+/* ===== 与 Agent 的融合：面板 ↔ 会话，只传结构化引用，不传自然语言复述 ===== */
+var toastTimer = null;
+function toast(msg){
+  var el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function(){ el.classList.remove('on'); }, 2800);
+}
+/** 面板 → 会话：只搬引用与有界摘要，不替会话发命令（面板不承载 Agent 入口） */
+function sendToAgent(){ toast('已把「账号查询箱 / 账号状态查询 · run #b8e1」的引用带到会话 a1f3'); }
+function askRun(){ toast('已把 run #b8e1 的引用与轨迹摘要带到会话 a1f3'); }
+/** 更细一级：只说哪一步，不带全文 */
+function askStep(e, n){
+  e.stopPropagation();
+  toast('已把第 ' + n + ' 步的输入、渲染后提示词与校验明细作为引用发送到会话 a1f3');
+}
+/** 采纳是人工动作：Agent 只能产出草案，不能自己生效 */
+function adoptV5(btn){
+  btn.textContent = '已采纳 v5';
+  btn.disabled = true;
+  var bar = document.querySelector('.verbar');
+  bar.style.background = 'hsl(var(--ok)/.08)';
+  bar.querySelector('.badge').className = 'badge ok';
+  bar.querySelector('.badge').textContent = '当前 v5';
+  bar.querySelector('.vtxt').textContent = '已采纳 Agent 的改动 · 上一版 v4 仍保留可回滚';
+  toast('已采纳草案 v5（人工动作，Agent 不能自己生效）');
+}
+function focusSession(){ toast('切回主会话 a1f3（面板不承载对话，只做定位）'); }
+
+/* ===== 场景定义编辑：步骤可增删改序、类型可切换、提示词与约束在这里改 ===== */
+function toggleEdit(btn){ var s = btn.closest('.editstep'); if (s) s.classList.toggle('open'); }
+/** 切换步骤类型：只换它能配什么，公共字段（标题、输入来源）保留 */
+function changeType(sel){
+  var step = sel.closest('.editstep');
+  if (!step) return;
+  step.setAttribute('data-type', sel.value);
+  markDirty(sel);
+}
+/** 上移 / 下移：只在相邻的步骤之间交换，不跨插入点和卡片边界 */
+function moveStep(btn, dir){
+  var step = btn.closest('.editstep');
+  if (!step) return;
+  var sib = dir < 0 ? step.previousElementSibling : step.nextElementSibling;
+  if (!sib || !sib.classList.contains('editstep')) return;
+  if (dir < 0) step.parentElement.insertBefore(step, sib);
+  else step.parentElement.insertBefore(sib, step);
+  renumber();
+  markDirty(btn);
+}
+function removeStep(btn){
+  var step = btn.closest('.editstep');
+  if (!step) return;
+  step.remove();
+  renumber();
+  toast('已删除该步骤（未保存，可放弃改动恢复）');
+}
+/** 在任意插入点插入一个步骤——这是「步骤自定义」的最小保证 */
+function insertStep(btn){
+  var bar = btn.parentElement;
+  bar.insertAdjacentHTML('afterend', stepTemplate('llm'));
+  renumber();
+  markDirty(btn);
+}
+function addStep(){
+  document.getElementById('stepsHost').insertAdjacentHTML('beforeend', stepTemplate('llm'));
+  renumber();
+  initNodeCards();
+  toast('已在末尾添加一个 llm 步骤');
+}
+/** 序号与计数随时重排，避免删掉中间一步后编号错乱 */
+function renumber(){
+  var steps = document.querySelectorAll('#stepsHost .editstep');
+  steps.forEach(function(s, i){
+    var n = s.querySelector('.en');
+    if (n) n.textContent = i + 1;
+  });
+  var c = document.getElementById('stepCount');
+  if (c) c.textContent = steps.length + ' 步';
+  markRowEnds();
+}
+/** 标出每行的最后一张卡：连线只画给同一行内的下一张，换行处不留指向空处的箭头。
+ *  CSS 无法感知换行，只能布局后比较 offsetTop。窗口或面板尺寸变化时需重算。 */
+function markRowEnds(){
+  var host = document.getElementById('stepsHost');
+  if (!host) return;
+  var steps = Array.prototype.slice.call(host.querySelectorAll('.editstep'));
+  /* 步骤已改成竖向排列、不会再换行，所以只有最后一张不画连线 */
+  steps.forEach(function(s, i){ s.classList.toggle('row-end', i === steps.length - 1); });
+}
+window.addEventListener('resize', markRowEnds);
+document.getElementById('pgHandle') && document.getElementById('pgHandle').addEventListener('mouseup', function(){
+  setTimeout(markRowEnds, 220);   // 拖动面板宽度后重新判断换行
+});
+/** 新步骤的最小模板：三种类型的配置区都在，靠 data-type 只显示对应的那份 */
+function stepTemplate(type){
+  var title = type === 'tool' ? '调用外部能力' : type === 'extract' ? '抽取结构化结果' : '新步骤';
+  var opt = function(v){ return '<option value="' + v + '"' + (v === type ? ' selected' : '') + '>' + v + '</option>'; };
+  return '<div class="editstep open" data-type="' + type + '">' +
+    '<div class="stephead">' +
+      '<span class="grip" title="拖动排序">⠿</span><span class="en">1</span>' +
+      '<input class="etitle" value="' + title + '" />' +
+      '<select class="tsel" onchange="changeType(this)">' + opt('llm') + opt('extract') + opt('tool') + '</select>' +
+      '<span class="stepops">' +
+        '<button onclick="moveStep(this,-1)" title="上移">↑</button>' +
+        '<button onclick="moveStep(this,1)" title="下移">↓</button>' +
+        '<button onclick="removeStep(this)" title="删除">✕</button>' +
+        '<button onclick="toggleEdit(this)" title="展开/收起">▾</button>' +
+      '</span>' +
+    '</div>' +
+    '<div class="editstep-b">' +
+      '<div data-cfg="llm"><label class="flabel">提示词</label>' +
+        '<textarea class="ptext" placeholder="写这一步的提示词…"></textarea></div>' +
+      '<div data-cfg="extract"><label class="flabel">提示词</label>' +
+        '<textarea class="ptext" placeholder="说明要抽取什么…"></textarea>' +
+        '<label class="flabel">判定字段 · 供评审使用</label>' +
+        '<div class="frow"><input class="miniinput" style="flex:1" value="field" />' +
+          '<input class="miniinput" style="width:92px" value="string" /><span class="fx">必填</span></div></div>' +
+      '<div data-cfg="tool"><div class="frow"><span class="fn">能力</span><span class="ft">未绑定</span></div>' +
+        '<div class="hintline" style="margin-top:7px">选或新建一个能力声明；接入实现由关联项目提供。</div></div>' +
+      '<div class="wire">输入 ← <select><option>workflow.text</option><option>上一步输出</option><option>常量</option></select></div>' +
+      '<div style="margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="focusSession()">在会话中打开这一步</button></div>' +
+    '</div>' +
+  '</div>';
+}
+/** 契约字段：输入与输出共用一个最小行模板 */
+function addRow(hostId){
+  var host = document.getElementById(hostId);
+  if (!host) return;
+  var div = document.createElement('div');
+  div.className = 'crow';
+  div.innerHTML = '<input class="miniinput" placeholder="字段名" />' +
+    '<input class="miniinput" value="string" />' +
+    '<span class="fx">必填</span>' +
+    '<span class="stepops"><button onclick="removeRow(this)" title="删除">✕</button></span>';
+  var addBtn = host.querySelector('div[style] button');
+  if (addBtn) addBtn.parentElement.parentElement.insertBefore(div, addBtn.parentElement);
+  else host.appendChild(div);
+  markDirty(div);
+}
+function removeRow(btn){ var row = btn.closest('.crow, .frow'); if (row) row.remove(); }
+
+/** 折叠「契约与评审」：低频项默认收起，主视线只留场景信息与节点图 */
+function toggleFold(btn){
+  var card = btn.closest('.foldcard');
+  if (card) card.classList.toggle('open');
+}
+/** 初始化简化后的结构：把「输入契约」卡搬进折叠区，与输出/能力声明/评审放在一起 */
+(function initFold(){
+  var body = document.getElementById('foldBody');
+  var inHost = document.getElementById('inHost');
+  if (!body || !inHost) return;
+  var card = inHost.closest('.card');
+  if (card) body.insertBefore(card, body.firstChild);
+  insertFlowJoins();
+  if (typeof renumber === 'function') renumber();   // 初始化时标出最后一张卡（不画连线）
+})();
+/** 给竖向流补连接符：交付链用 ↓；进入工厂内部的评审用虚线 ⇣ 并注明不参与执行 */
+function insertFlowJoins(){
+  var body = document.getElementById('foldBody');
+  if (!body) return;
+  Array.prototype.forEach.call(body.querySelectorAll('.flowjoin'), function(j){ j.remove(); });
+  var cards = Array.prototype.filter.call(body.children, function(el){ return el.classList.contains('card'); });
+  cards.forEach(function(c, i){
+    if (i === cards.length - 1) return;
+    var next = cards[i + 1];
+    var toFactory = next.classList.contains('own-factory');
+    var join = document.createElement('div');
+    join.className = 'flowjoin' + (toFactory ? ' dashed' : '');
+    join.textContent = toFactory ? '⇣ 不参与执行' : '↓';
+    c.insertAdjacentElement('afterend', join);
+  });
+}
+
+/* ===== 步骤卡即节点：配置区搬进弹窗，卡片只留头部 ===== */
+var nodeBodies = [];
+function initNodeCards(){
+  var host = document.getElementById('nodeHost');
+  var steps = document.querySelectorAll('#stepsHost .editstep');
+  Array.prototype.forEach.call(steps, function(step, i){
+    if (step.dataset.wired === '1') return;   // 新增步骤后重跑时不重复接线
+    step.dataset.wired = '1';
+    var body = step.querySelector('.editstep-b');
+    if (body){
+      body.style.display = 'none';
+      host.appendChild(body);          // 真正编辑用的 DOM 搬进弹窗，卡片不再承载表单
+      nodeBodies.push(body);
+    }
+    var rel = document.createElement('div');
+    rel.className = 'relchip';
+    rel.textContent = '＋ 关联';
+    rel.title = '给这个卡片加一条关联（真实实现用 xyflow 画边）';
+    rel.addEventListener('click', function(e){
+      e.stopPropagation();
+      toast('选择要关联的卡片：可加 reference / depends-on 两类边');
+    });
+    step.appendChild(rel);
+    step.querySelector('.stephead').addEventListener('click', function(e){
+      if (e.target.closest('.stepops')) return;   // 上移/下移/删除不打开弹窗
+      openNodeDialog(i);
+    });
+  });
+}
+/** 打开某个步骤的详情弹窗：弹窗宽度与面板无关，长提示词也能舒服编辑 */
+function openNodeDialog(i){
+  nodeBodies.forEach(function(b, k){ b.style.display = k === i ? 'block' : 'none'; });
+  var step = document.querySelectorAll('#stepsHost .editstep')[i];
+  var type = step ? step.getAttribute('data-type') : '';
+  var title = step ? step.querySelector('.etitle').value : '';
+  document.getElementById('nodeTitle').textContent = '编辑 · ' + title;
+  document.getElementById('nodeSub').textContent = '类型 ' + type + ' · 配置只作用于这一步；改完回到列表点「保存为草案」';
+  document.getElementById('nodeHost').setAttribute('data-type', type);
+  document.getElementById('nodeScrim').classList.add('on');
+  document.getElementById('nodeDialog').classList.add('on');
+}
+function closeNodeDialog(){
+  document.getElementById('nodeScrim').classList.remove('on');
+  document.getElementById('nodeDialog').classList.remove('on');
+}
+initNodeCards();
+
+function selectDefNode(idx){
+  var nodes = document.querySelectorAll('.dgnodes .dnode');
+  nodes.forEach(function(n){ n.classList.remove('sel'); });
+  if (nodes[idx]) nodes[idx].classList.add('sel');
+  if (idx === 0){ toast('输入契约在下面的「输入契约」里改'); return; }
+  if (idx === nodes.length - 1){ toast('输出契约在下面的「输出契约」里改'); return; }
+  var steps = document.querySelectorAll('#stepsHost .editstep');
+  var step = steps[idx - 1];
+  if (!step) return;
+  steps.forEach(function(s){ s.classList.remove('open'); });
+  step.classList.add('open');
+  step.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  toast('已定位到第 ' + idx + ' 步的编辑区');
+}
+/** 标记已改动：只提示，不落库——避免边打字边产生版本 */
+function markDirty(el){
+  el.classList.add('dirty');
+  var badge = document.getElementById('draftBadge');
+  if (badge) { badge.textContent = '有未保存改动'; }
+  var tabBadge = document.getElementById('sceneTabBadge');
+  if (tabBadge) { tabBadge.textContent = 'v6·草稿'; }
+}
+function saveDraft(){
+  document.querySelectorAll('.ptext.dirty').forEach(function(t){ t.classList.remove('dirty'); });
+  document.getElementById('draftBadge').textContent = '草案 v6 未采纳';
+  document.getElementById('draftBadge').className = 'badge draft';
+  document.getElementById('sceneTabBadge').textContent = 'v6·草稿';
+  toast('已保存为草案 v6（不会影响当前生效的 v4）');
+}
+function discardDraft(){
+  document.querySelectorAll('.ptext.dirty').forEach(function(t){ t.classList.remove('dirty'); });
+  document.getElementById('draftBadge').textContent = '没有未保存改动';
+  document.getElementById('draftBadge').className = 'badge';
+  document.getElementById('sceneTabBadge').textContent = 'v4';
+  toast('已放弃未保存的改动');
+}
+/** 采纳 + 立刻重跑：迭代提示词的主循环，做成一步 */
+function adoptAndRerun(){
+  saveDraft();
+  setPanelView('run');
+  toast('已采纳草案 v6，并按当前输入重跑一次');
+  setTimeout(startSubmit, 220);
+}
+function unlockMetric(){
+  toast('解除冻结需要重算基线：历史对比会失效，确认后才会真正解开');
+}
+
+function tab(name){
+  var order = ['trace','check','metric','compare'];
+  var tabs = document.querySelectorAll('.tab');
+  for (var i=0;i<tabs.length;i++){ tabs[i].setAttribute('aria-selected', order[i]===name ? 'true':'false'); }
+  document.querySelectorAll('.pane').forEach(function(p){ p.classList.remove('on'); });
+  var pane = document.getElementById('pane-'+name);
+  if (pane) pane.classList.add('on');
+}
+function tog(el){ el.parentElement.classList.toggle('open'); }
+
+function toggleInput(){
+  /* 旧的三卡版遗留入口：输入/输出正文展开已改为流程节点上的 toggleIO */
+  toggleIO('ioInput');
+}
+function pickRun(el){
+  document.querySelectorAll('.hrow').forEach(function(r){ r.classList.remove('cur'); });
+  el.classList.add('cur');
+  /* 点历史某条 → 切回本轮视图看那一次；标签上标明在看哪一次 */
+  var id = el.querySelector('.hid').textContent;
+  document.getElementById('runTabBadge').textContent = id;
+  setPanelView('run');
+  var stage = document.querySelector('.stage');
+  if (stage) stage.scrollTop = 0;
+  toast('已切到 ' + id + '（历史运行）· 点标签可回到最新 #b8e1');
+}
+function toggleTheme(){
+  document.documentElement.classList.toggle('dark');
+}
+
+function openSubmit(){ document.getElementById('submitScrim').classList.add('on'); document.getElementById('submitDialog').classList.add('on'); }
+function closeSubmit(){ document.getElementById('submitScrim').classList.remove('on'); document.getElementById('submitDialog').classList.remove('on'); }
+function segPick(btn){
+  btn.parentElement.querySelectorAll('button').forEach(function(b){ b.setAttribute('aria-pressed','false'); });
+  btn.setAttribute('aria-pressed','true');
+}
+
+/** 开始运行：逐步点亮 → 产出本次输出 → 写入历史 */
+function startSubmit(){
+  closeSubmit();
+  setPanelView('run');
+  var steps = Array.prototype.slice.call(document.querySelectorAll('#flowLinear .fnode[data-step]'));
+  steps.forEach(function(s){ s.classList.remove('done','running','bad'); s.querySelector('.fn-time').textContent='—'; s.querySelector('.fn-d').textContent='等待中'; });
+  document.getElementById('led').className = 'led run';
+  var rb = document.getElementById('runBadge'); rb.className='badge'; rb.textContent='运行中';
+  var state = document.getElementById('runState');
+  var prog = document.getElementById('prog'); prog.style.width='0%';
+  var descs = ['判断要查哪个账号、要哪些字段','约束通过 2/2 字段','query-account · 虚拟接入','约束未通过：缺 expiresAt · 重试 1 次'];
+  var i = 0;
+  function tick(){
+    if (i > 0){
+      var prev = steps[i-1];
+      prev.classList.remove('running'); prev.classList.add('done');
+      prev.querySelector('.fn-d').textContent = descs[i-1];
+      prev.querySelector('.fn-time').textContent = (200 + Math.round(Math.random()*900)) + 'ms';
+    }
+    if (i >= steps.length){
+      var last = steps[steps.length-1];
+      last.classList.remove('done'); last.classList.add('bad');
+      last.querySelector('.fn-d').textContent = descs[3];
+      last.querySelector('.fn-time').textContent = '1.2s';
+      document.getElementById('led').className='led done';
+      rb.className='badge warn'; rb.textContent='完成 · 1 步 invalid';
+      state.textContent='完成 · 本次提交 #c4d9 · 2.4s';
+      document.getElementById('runMeta').textContent='run #c4d9 · 2.4s';
+      prog.style.width='100%';
+      prependHistory();
+      return;
+    }
+    steps[i].classList.add('running');
+    steps[i].querySelector('.fn-d').textContent = '运行中…';
+    state.textContent = '运行中 · 第 ' + (i+1) + ' / ' + steps.length + ' 步';
+    prog.style.width = Math.round(((i+1)/steps.length)*100) + '%';
+    i++;
+    setTimeout(tick, 600);
+  }
+  tick();
+}
+function prependHistory(){
+  var card = document.querySelector('.hrow').parentElement;
+  var head = card.querySelector('.card-h');
+  card.querySelectorAll('.hrow').forEach(function(r){ r.classList.remove('cur'); });
+  var row = document.createElement('div');
+  row.className='hrow cur';
+  row.innerHTML = '<span class="hid mono">#c4d9</span><span class="htxt">刚提交的内容 · 4,013 字</span>' +
+    '<span class="hmeta">合规 —</span><span class="badge warn">1 步 invalid</span>';
+  head.insertAdjacentElement('afterend', row);
+}
+
+function runEval(){
+  var btn = document.getElementById('btnEval');
+  if (btn.disabled) return;
+  btn.disabled = true; btn.textContent = '评测中…';
+  setTimeout(function(){ btn.disabled=false; btn.textContent='运行评测'; }, 1400);
+}
+function openExport(){ document.getElementById('exportScrim').classList.add('on'); document.getElementById('exportDialog').classList.add('on'); }
+function closeExport(){ document.getElementById('exportScrim').classList.remove('on'); document.getElementById('exportDialog').classList.remove('on'); }
+function openNotes(){ document.getElementById('notesScrim').classList.add('on'); document.getElementById('notesDialog').classList.add('on'); }
+function closeNotes(){ document.getElementById('notesScrim').classList.remove('on'); document.getElementById('notesDialog').classList.remove('on'); }
+
+
+document.addEventListener('keydown', function(e){
+  if (e.key === 'Escape'){ closeSubmit(); closeExport(); closeNotes(); }
+});
+
+/** 评审入口：URL 带 #dark / #submit / #notes 时直接进入对应状态 */
+(function boot(){
+  var h = location.hash;
+  var m = h.match(/w(\d+)/);
+  if (m) setWidth(parseInt(m[1],10));
+  if (h.indexOf('dark') >= 0) document.documentElement.classList.add('dark');
+  if (h.indexOf('history') >= 0){ setPanelView('run'); setSub('history'); }
+  if (h.indexOf('eval') >= 0) setPanelView('eval');
+  if (h.indexOf('deliver') >= 0) setPanelView('deliver');
+  if (h.indexOf('scenedef') >= 0) setPanelView('scene');
+  if (h.indexOf('parallel') >= 0){
+    var ps = document.querySelector('.scene[data-scenario="parallel"]');
+    if (ps) pickScene(ps);
+  }
+  if (h.indexOf('detail') >= 0) setPanelView('detail');
+  if (h.indexOf('nodeopen') >= 0) openNodeDialog(1);
+  if (h.indexOf('submit') >= 0) openSubmit();
+  if (h.indexOf('notes') >= 0) openNotes();
+})();
+</script>
+</body>
+</html>

@@ -31,6 +31,7 @@ import {
   normalizeServerOpsSqlQueryError,
 } from './server-ops-query-runtime'
 import { buildServerOpsRowFilterSql, getServerOpsRowFilterPublicError } from './server-ops-row-filter-sql'
+import { openServerOpsMySqlConnection } from './server-ops-mysql-connection'
 import { runServerOpsPostgresqlRead } from './server-ops-postgresql-adapter'
 
 const SERVER_OPS_POSTGRESQL_CANCEL_CHANNEL_TIMEOUT_MS = 2_000
@@ -697,37 +698,6 @@ async function runOptionalRead<T>(
   }
 }
 
-/**
- * 等待 MySQL 完成认证；取消会立即结算，避免 destroy 后驱动不再发 connect/error 导致悬挂。
- * @param connection 本次尝试独占的底层连接
- * @param signal 共享总时限与用户撤销信号
- * @returns 认证完成；失败或取消时拒绝
- */
-async function waitForMySqlConnection(connection: MySqlConnection, signal?: AbortSignal): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    /** 移除握手阶段监听，后续查询由 promise 驱动处理错误。 */
-    const cleanup = (): void => {
-      signal?.removeEventListener('abort', onAbort)
-      connection.removeListener('connect', onConnect)
-      connection.removeListener('error', onError)
-    }
-    /** 连接成功时解除仅用于握手的监听。 */
-    const onConnect = (): void => { cleanup(); resolve() }
-    /** 握手失败保留原始驱动错误码，用于判定是否允许 preferred 回退。 */
-    const onError = (error: Error): void => { cleanup(); reject(error) }
-    /** 先结算再销毁，防止同步 close/error 竞争改变取消原因。 */
-    const onAbort = (): void => {
-      cleanup()
-      reject(new Error('SERVER_OPS_DATA_CANCELLED'))
-      connection.destroy()
-    }
-    connection.once('connect', onConnect)
-    connection.once('error', onError)
-    signal?.addEventListener('abort', onAbort, { once: true })
-    if (signal?.aborted) onAbort()
-  })
-}
-
 /** 在独占通道上执行 MySQL 读取；preferred 仅在认证前明确无 TLS 时允许一次新通道回退。 */
 async function readMySql(
   input: ServerOpsDataRuntimeInput,
@@ -736,50 +706,26 @@ async function readMySql(
   /** 当前尝试的底层通道与驱动连接，失败回退前必须同时释放。 */
   let channel: Duplex | undefined
   let connection: MySqlConnection | undefined
-  /** 初次连接按配置请求 TLS；只有明确无 TLS 才能把下一次尝试设为明文。 */
-  let useTls = input.tlsMode !== 'disabled'
   try {
-    for (;;) {
-      channel = await dependencies.createChannel()
-      if (dependencies.signal?.aborted) throw new Error('SERVER_OPS_DATA_CANCELLED')
-      connection = createMysqlConnection({
-        host: input.tlsMode === 'verify' ? input.tlsServerName : input.address,
-        port: input.port,
-        user: input.username,
-        password: input.password,
-        /** probe 验证完整配置；SQL 绑定已授权库，其余读取不受默认库失效影响。 */
-        ...(resolveServerOpsMySqlHandshakeDatabase(input) === undefined
-          ? {} : { database: resolveServerOpsMySqlHandshakeDatabase(input) }),
-        stream: channel,
-        connectTimeout: dependencies.timeoutMs,
-        ...(useTls ? { ssl: {
-          rejectUnauthorized: input.tlsMode === 'verify',
-          verifyIdentity: input.tlsMode === 'verify',
-        } } : {}),
-      })
-      // 取消/销毁后迟到的驱动错误也必须被消费，不能使 utility 进程崩溃。
-      connection.on('error', () => undefined)
-      try {
-        await waitForMySqlConnection(connection, dependencies.signal)
-        break
-      } catch (error) {
-        connection.destroy()
-        connection = undefined
-        channel.destroy()
-        channel = undefined
-        if (dependencies.signal?.aborted) throw new Error('SERVER_OPS_DATA_CANCELLED')
-        if (input.tlsMode !== 'preferred' || !useTls || readErrorCode(error) !== 'HANDSHAKE_NO_SSL_SUPPORT') throw error
-        // 此错误只在 mysql2 检查服务端 capability 且尚未发送认证材料时产生。
-        useTls = false
-      }
-    }
-    /** mysql2 在升级 TLS 后把 stream 替换成 TLSSocket，以实际流识别加密状态。 */
-    const stream = (connection as unknown as { stream: Duplex & { encrypted?: boolean } }).stream
-    if (useTls && stream.encrypted !== true) throw Object.assign(new Error('TLS 未建立'), { code: 'HANDSHAKE_SSL_ERROR' })
-    /** verified 只在真实 TLS 流且驱动已完成证书与主机名验证后报告。 */
-    const tlsStatus: ServerOpsDataTlsStatus = stream.encrypted === true
-      ? input.tlsMode === 'verify' ? 'verified' : 'encrypted'
-      : 'plaintext'
+    /**
+     * TLS 校验、`preferred` 明文回退与加密状态判定统一由连接构造助手负责，
+     * 与写链共用同一实现：安全相关的连接逻辑只允许有一份。
+     * 本函数只负责把已就绪的连接交给读取逻辑，并在结算时释放资源。
+     */
+    const opened = await openServerOpsMySqlConnection({
+      address: input.address,
+      port: input.port,
+      username: input.username,
+      password: input.password,
+      /** probe 验证完整配置；SQL 绑定已授权库，其余读取不受默认库失效影响。 */
+      ...(resolveServerOpsMySqlHandshakeDatabase(input) === undefined
+        ? {} : { database: resolveServerOpsMySqlHandshakeDatabase(input) }),
+      tlsMode: input.tlsMode,
+      tlsServerName: input.tlsServerName,
+    }, { ...dependencies, createConnection: createMysqlConnection })
+    connection = opened.connection
+    channel = opened.channel
+    const tlsStatus: ServerOpsDataTlsStatus = opened.tlsStatus
     /** 在查询阶段继续响应撤销；循环外执行保证不会因 SQL 错误回退或重放。 */
     const releaseAbortBinding = bindServerOpsSqlQueryAbort(dependencies.signal, () => { connection?.destroy() })
     try {

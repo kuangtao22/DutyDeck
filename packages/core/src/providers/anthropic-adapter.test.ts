@@ -66,3 +66,34 @@ describe('AnthropicAdapter headers', () => {
     expect(request.headers['api-key']).toBeUndefined()
   })
 })
+
+describe('AnthropicAdapter 显式关闭思考', () => {
+  test('Given GLM 默认开启思考 When 调用方关闭 Then 请求显式发送 disabled', () => {
+    const adapter = new AnthropicAdapter('zhipu-coding')
+    const request = adapter.buildStreamRequest({
+      baseUrl: 'https://open.bigmodel.cn/api/anthropic', apiKey: 'test-key',
+      modelId: 'glm-5.3', history: [], userMessage: '只返回 JSON',
+      thinkingEnabled: false, readImageAttachments: () => [],
+    })
+    expect(JSON.parse(request.body).thinking).toEqual({ type: 'disabled' })
+  })
+
+  test('Given 不支持禁用字段的 Token Plan When 关闭思考 Then 仍省略 thinking', () => {
+    const adapter = new AnthropicAdapter('qwen-token-plan')
+    const request = adapter.buildStreamRequest({
+      baseUrl: 'https://example.invalid', apiKey: 'test-key',
+      modelId: 'qwen3.7-max', history: [], userMessage: '测试',
+      thinkingEnabled: false, readImageAttachments: () => [],
+    })
+    expect(JSON.parse(request.body).thinking).toBeUndefined()
+  })
+})
+
+describe('AnthropicAdapter 流内错误', () => {
+  test('Given HTTP 成功后返回 error 事件 When 解析 Then 保留服务端错误供调用方结束请求', () => {
+    const adapter = new AnthropicAdapter('zhipu-coding')
+    expect(adapter.parseSSELine(JSON.stringify({
+      type: 'error', error: { type: 'overloaded_error', message: '模型暂时繁忙' },
+    }))).toEqual([{ type: 'error', error: '模型暂时繁忙' }])
+  })
+})

@@ -77,6 +77,42 @@ export function createServerOpsDataConnectionId(sourceId: string): string {
   return `${DATA_CONNECTION_PREFIX}${sourceId}`
 }
 
+/**
+ * 主机列表刷新后校验当前连接。
+ *
+ * 主机接口只对 SSH 资产有权威性，不能用它判断数据连接是否存在；数据连接由独立的数据源
+ * 列表负责收口。此前把两类连接一起校验，会在每次主机刷新时误清数据库选择。
+ *
+ * @param connectionId 当前统一连接 ID
+ * @param hosts 最新主机列表
+ * @returns 仍有效的连接 ID；已删除的 SSH 主机返回 null
+ */
+export function preserveServerOpsConnectionAfterHostsLoad(
+  connectionId: string | null,
+  hosts: readonly ServerOpsHost[],
+): string | null {
+  if (connectionId === null || connectionId.startsWith(DATA_CONNECTION_PREFIX)) return connectionId
+  return hosts.some((host) => createServerOpsSshConnectionId(host.id) === connectionId) ? connectionId : null
+}
+
+/**
+ * 判断主机读取回执是否仍属于发起时的会话与资产版本。
+ *
+ * @param startedViewScope 发起读取时的会话与 Pane 标识
+ * @param currentViewScope 当前会话与 Pane 标识
+ * @param hostsAtStart 发起读取时的主机数组引用
+ * @param currentHosts 当前 Store 中的主机数组引用
+ * @returns 只有 scope 未变且期间没有其他写入时才允许应用回执
+ */
+export function shouldApplyServerOpsHostsLoad(
+  startedViewScope: string,
+  currentViewScope: string,
+  hostsAtStart: readonly ServerOpsHost[],
+  currentHosts: readonly ServerOpsHost[],
+): boolean {
+  return startedViewScope === currentViewScope && hostsAtStart === currentHosts
+}
+
 /** 把数据源引擎映射为连接类别。 */
 function toConnectionKind(engine: ServerOpsDataSource['engine']): ServerOpsConnectionKind {
   return engine === 'redis' ? 'redis' : 'database'

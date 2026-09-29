@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import * as React from 'react'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
+import { Provider, createStore } from 'jotai'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type {
   ServerOpsAgentAccess,
@@ -52,6 +53,8 @@ import { buildServerOpsConnections, resolveServerOpsWorkspaceTarget } from './se
 import type { ServerOpsConnection } from './server-ops-connections'
 import { createServerOpsSqlQueryHistoryController } from './server-ops-sql-query-history-controller'
 import { createServerOpsSqlQueryController } from './server-ops-sql-query-controller'
+import { useServerOpsViewPosition } from './useServerOpsViewPosition'
+import type { ServerOpsViewPositionController } from './useServerOpsViewPosition'
 
 test('Given 实际工作区加载旧 preload When 进入 SQL 工作台 Then 禁用执行并明确提示重启而非伪装为可调用接口', async () => {
   /** 保存测试前的全局窗口，避免兼容性用例影响其它组件。 */
@@ -261,6 +264,55 @@ interface MinimalEventTarget {
   addEventListener: () => void
   removeEventListener: () => void
 }
+
+/** 暴露生产 hook 的当前投影与动作，供真实卸载、重挂载回归驱动。 */
+function ServerOpsViewPositionProbe({
+  viewScope,
+  onProjection,
+}: {
+  viewScope: string
+  onProjection: (projection: ServerOpsViewPositionController) => void
+}): null {
+  const projection = useServerOpsViewPosition(viewScope)
+  React.useEffect(() => { onProjection(projection) }, [onProjection, projection])
+  return null
+}
+
+test('Given 两个会话各自进入连接页 When 切换模块并重挂载 Then 各自恢复完整项目连接与区段', async () => {
+  const host = createReconciliationRoot()
+  const store = createStore()
+  let projection: ServerOpsViewPositionController | null = null
+  const onProjection = (next: ServerOpsViewPositionController): void => { projection = next }
+  const renderScope = async (viewScope: string): Promise<void> => {
+    await act(async () => {
+      host.render(<Provider store={store}><ServerOpsViewPositionProbe viewScope={viewScope} onProjection={onProjection} /></Provider>)
+    })
+  }
+  try {
+    await renderScope('session-a:single')
+    act(() => {
+      projection?.setProjectId('project-a')
+      projection?.setConnectionId('data:source-a')
+      projection?.update({ projectViewActive: false, activeSection: 'logs' })
+    })
+    await renderScope('session-b:single')
+    act(() => {
+      projection?.setProjectId('project-b')
+      projection?.setConnectionId('ssh:host-b')
+      projection?.update({ projectViewActive: false, activeSection: 'files' })
+    })
+    await renderScope('session-a:single')
+    expect(projection).toMatchObject({ projectId: 'project-a', connectionId: 'data:source-a', projectViewActive: false, activeSection: 'logs' })
+    /** 切到接口模块会卸载运维工作区，但 Provider 与运行期 atoms 仍存在。 */
+    await act(async () => { host.render(<Provider store={store}><></></Provider>) })
+    projection = null
+    await renderScope('session-a:single')
+    expect(projection).toMatchObject({ projectId: 'project-a', connectionId: 'data:source-a', projectViewActive: false, activeSection: 'logs' })
+  } finally {
+    act(() => host.unmount())
+    host.restore()
+  }
+})
 
 /** 创建只执行日志生命周期探针的最小 React reconciliation 宿主。 */
 function createReconciliationRoot(): {

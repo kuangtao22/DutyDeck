@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>编排工厂 · 场景下拉交互稿</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* 取值全部对齐 DutyDeck 的 globals.css（:root）。本页只做一件事：
+   确认「场景切换 + 管理」的下拉交互，所以刻意只画面板本身。 */
+:root{
+  --background:0 0% 100%;--foreground:0 0% 3.9%;--muted:0 0% 96.1%;--muted-foreground:0 0% 45.1%;
+  --border:0 0% 89.8%;--input:0 0% 89.8%;--card:0 0% 100%;--popover:0 0% 100%;--primary:0 0% 9%;
+  --primary-foreground:0 0% 98%;--secondary:0 0% 96.1%;--content-area:0 0% 100%;
+  --input-surface:60 14.3% 98.6%;--radius:6px;
+  --shadow-sm:0 1px 2px 0 rgb(0 0 0 / .05),0 1px 1px 0 rgb(0 0 0 / .04);
+  --shadow-lg:0 12px 24px -6px rgb(0 0 0 / .12),0 4px 8px -2px rgb(0 0 0 / .06),0 0 0 1px rgb(0 0 0 / .04);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:hsl(0 0% 8%);color:hsl(var(--foreground));
+  font-family:'Inter','PingFang SC',-apple-system,system-ui,sans-serif;font-size:13px;
+  font-feature-settings:'cv11','ss01','ss03','tnum';-webkit-font-smoothing:antialiased;
+  padding:22px 26px 70px;display:flex;justify-content:center}
+.panel{width:605px;height:640px;background:hsl(var(--content-area));border:1px solid hsl(var(--border));
+  border-radius:var(--radius);box-shadow:var(--shadow-lg);overflow:hidden;display:flex;flex-direction:column}
+.phead{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid hsl(var(--border));
+  background:hsl(var(--background));position:relative}
+.trigger{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border:0;border-radius:4px;
+  background:transparent;color:hsl(var(--foreground));font-family:inherit;font-size:13px;font-weight:500;
+  cursor:pointer;max-width:100%}
+.trigger:hover{background:hsl(var(--muted))}
+.trigger .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trigger .cv{font-size:10px;color:hsl(var(--muted-foreground))}
+.wl{font-size:11px;color:hsl(var(--muted-foreground));white-space:nowrap}
+.menu{position:absolute;top:40px;left:8px;z-index:20;width:238px;background:hsl(var(--popover));
+  border:1px solid hsl(var(--border));border-radius:var(--radius);box-shadow:var(--shadow-lg);padding:4px}
+.item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:4px;cursor:pointer;font-size:13px}
+.item:hover{background:hsl(var(--muted))}
+.item .tick{width:14px;font-size:11px;color:hsl(var(--foreground))}
+.item .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item .ver{font-family:ui-monospace,Menlo,monospace;font-size:10px;color:hsl(var(--muted-foreground))}
+.sep{height:1px;background:hsl(var(--border));margin:4px 0}
+.newrow{display:flex;align-items:center;gap:6px;padding:5px 8px 3px}
+.newrow input{flex:1;min-width:0;height:28px;border:1px solid hsl(var(--input));border-radius:4px;
+  background:hsl(var(--input-surface));color:hsl(var(--foreground));padding:0 8px;font-size:12px;font-family:inherit;outline:none}
+.newrow input:focus{border-color:hsl(var(--foreground)/.35)}
+.newrow button{width:28px;height:28px;border:1px solid hsl(var(--border));border-radius:4px;
+  background:hsl(var(--background));color:hsl(var(--foreground));cursor:pointer;font-size:14px;line-height:1}
+.newrow button:hover{background:hsl(var(--muted))}
+.body{flex:1;overflow:auto;padding:12px}
+.meta{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:9px}
+.badge{font-size:11px;font-weight:600;padding:1px 8px;border-radius:999px;border:1px solid hsl(var(--border));
+  color:hsl(var(--muted-foreground));background:hsl(var(--background));white-space:nowrap}
+.badge.solid{border-color:transparent;background:hsl(var(--secondary));color:hsl(var(--foreground))}
+.mono{font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}
+.desc{font-size:12px;color:hsl(var(--muted-foreground));line-height:1.6;margin-bottom:10px}
+.step{display:flex;align-items:center;gap:8px;border:1px solid hsl(var(--border));border-radius:4px;
+  padding:7px 9px;margin-bottom:6px;background:hsl(var(--card))}
+.step .n{font-family:ui-monospace,Menlo,monospace;font-size:10px;color:hsl(var(--muted-foreground))}
+.step .tt{flex:1;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.step .ty{font-family:ui-monospace,Menlo,monospace;font-size:10px;color:hsl(var(--muted-foreground))}
+.empty{margin:34px auto 0;max-width:340px;text-align:center}
+.empty .t{font-size:13px;font-weight:500;margin-bottom:6px}
+.empty .d{font-size:12px;color:hsl(var(--muted-foreground));line-height:1.7}
+.foot{border-top:1px solid hsl(var(--border));padding:7px 10px;font-size:11px;color:hsl(var(--muted-foreground));
+  line-height:1.6;background:hsl(var(--background))}
+.states{position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:50;display:flex;gap:6px;
+  align-items:center;background:hsl(var(--popover));border:1px solid hsl(var(--border));border-radius:999px;
+  padding:5px 12px;box-shadow:var(--shadow-lg);color:hsl(var(--foreground))}
+.states .lb{font-size:11px;color:hsl(var(--muted-foreground));margin-right:2px}
+.states button{height:24px;padding:0 10px;border-radius:999px;border:1px solid hsl(var(--border));
+  background:hsl(var(--background));font-size:11px;font-family:inherit;cursor:pointer;color:hsl(var(--foreground))}
+.states button[aria-pressed="true"]{background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:transparent}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div class="panel">
+  <div class="phead">
+    <button class="trigger" onclick="toggleMenu()">
+      <span class="nm" id="triggerName">账号状态查询</span>
+      <span class="cv">▾</span>
+    </button>
+    <span class="wl">账号查询箱</span>
+    <span style="flex:1"></span>
+  </div>
+
+  <div class="menu hidden" id="menu">
+    <div class="item" onclick="pick('账号状态查询', this)">
+      <span class="tick">✓</span><span class="nm">账号状态查询</span><span class="ver">v4</span>
+    </div>
+    <div class="item" onclick="pick('批量账号巡检', this)">
+      <span class="tick"></span><span class="nm">批量账号巡检</span><span class="ver">v2</span>
+    </div>
+    <div class="item" onclick="pick('小说角色提取', this)">
+      <span class="tick"></span><span class="nm">小说角色提取</span><span class="ver">v1</span>
+    </div>
+    <div class="sep"></div>
+    <div class="newrow">
+      <input placeholder="新场景名称" />
+      <button title="新建场景" onclick="demoCreate()">＋</button>
+    </div>
+  </div>
+
+  <div class="body" id="bodyScene">
+    <div class="meta">
+      <span class="badge mono">v4</span>
+      <span class="badge solid">草案待采纳</span>
+      <span class="badge">4 步</span>
+      <span class="badge">1 个输入</span>
+    </div>
+    <p class="desc">根据用户问题查询账号状态与到期时间</p>
+    <div class="step"><span class="n">1</span><span class="tt">解析用户意图</span><span class="ty">llm</span></div>
+    <div class="step"><span class="n">2</span><span class="tt">抽取查询参数</span><span class="ty">extract</span></div>
+    <div class="step"><span class="n">3</span><span class="tt">查询账号</span><span class="ty">tool</span></div>
+    <div class="step"><span class="n">4</span><span class="tt">生成回答</span><span class="ty">extract</span></div>
+  </div>
+
+  <div class="body hidden" id="bodyEmpty">
+    <div class="empty">
+      <div class="t">这个项目还没有编排场景</div>
+      <div class="d">
+        场景由会话里的 Agent 设计：跟它说「帮我做一个××的工作流」，草案会回到这里等你采纳。<br>
+        也可以用左上角的菜单新建一个。
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">场景草稿保存在本机工作区，不进入项目仓库。运行、评测与导出能力包还没接。</div>
+</div>
+
+<div class="states">
+  <span class="lb">状态</span>
+  <button id="s0" aria-pressed="true" onclick="show('scene')">默认</button>
+  <button id="s1" aria-pressed="false" onclick="show('menu')">下拉展开</button>
+  <button id="s2" aria-pressed="false" onclick="show('empty')">空态</button>
+</div>
+
+<script>
+/** 切换面板状态：默认 / 下拉展开 / 空态。 */
+function show(state){
+  var menu = document.getElementById('menu');
+  var scene = document.getElementById('bodyScene');
+  var empty = document.getElementById('bodyEmpty');
+  menu.classList.toggle('hidden', state !== 'menu');
+  scene.classList.toggle('hidden', state === 'empty');
+  empty.classList.toggle('hidden', state !== 'empty');
+  var ids = ['s0', 's1', 's2'];
+  var names = ['scene', 'menu', 'empty'];
+  for (var i = 0; i < ids.length; i++) {
+    document.getElementById(ids[i]).setAttribute('aria-pressed', String(names[i] === state));
+  }
+}
+
+/** 展开 / 收起下拉。 */
+function toggleMenu(){
+  document.getElementById('menu').classList.toggle('hidden');
+}
+
+/** 选中一个场景：把勾移到这一项并更新触发体 —— 演示「选中一个看一个」的关键动作。 */
+function pick(name, el){
+  var items = document.querySelectorAll('#menu .item');
+  for (var i = 0; i < items.length; i++) items[i].querySelector('.tick').textContent = '';
+  el.querySelector('.tick').textContent = '✓';
+  document.getElementById('triggerName').textContent = name;
+  toggleMenu();
+}
+
+/** 新建场景：真实实现是「名称非空 → 创建 → 自动选中」，这里只提示。 */
+function demoCreate(){
+  toggleMenu();
+  alert('新建场景：名称非空时立刻创建并自动选中');
+}
+
+/** 便于评审与截图：URL 带 #menu / #empty 时直接进入对应状态。 */
+(function boot(){
+  var hash = location.hash;
+  if (hash.indexOf('menu') >= 0) show('menu');
+  if (hash.indexOf('empty') >= 0) show('empty');
+})();
+</script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 import { SERVER_OPS_AGENT_ACCESS_MANAGEMENT_CHANNELS } from '@proma/shared'
 import { describe, expect, spyOn, test } from 'bun:test'
-import { SERVER_OPS_IPC_CHANNELS, SERVER_OPS_TRUST_CHANNELS, SERVER_OPS_DOCKER_CHANNELS, SERVER_OPS_FILE_CHANNELS, SERVER_OPS_CONSOLE_IPC_CHANNELS, SERVER_OPS_TRANSFER_CHANNELS, SERVER_OPS_DATA_CHANNELS, SERVER_OPS_DATA_SCHEMA_CHANNELS, SERVER_OPS_PROJECT_CHANNELS } from '@proma/shared'
+import { SERVER_OPS_IPC_CHANNELS, SERVER_OPS_TRUST_CHANNELS, SERVER_OPS_DOCKER_CHANNELS, SERVER_OPS_FILE_CHANNELS, SERVER_OPS_CONSOLE_IPC_CHANNELS, SERVER_OPS_TRANSFER_CHANNELS, SERVER_OPS_DATA_CHANNELS, SERVER_OPS_DATA_SCHEMA_CHANNELS, SERVER_OPS_PROJECT_CHANNELS, SERVER_OPS_SCRIPT_CHANNELS, SERVER_OPS_SCRIPT_DRAFT_CHANNELS, SERVER_OPS_DATA_WRITE_CHANNELS } from '@proma/shared'
 import type { AgentSessionMeta, ServerOpsAuditListResult, ServerOpsConnectionState, ServerOpsHost, ServerOpsLogExitEvent, ServerOpsLogOutputEvent, ServerOpsTerminalExitEvent, ServerOpsTerminalOutputEvent, ServerOpsUpsertHostInput } from '@proma/shared'
 import type { IpcMainInvokeEvent, WebContents } from 'electron'
 import { registerServerOpsIpcHandlers } from './server-ops-ipc'
@@ -9,6 +9,7 @@ import { ServerOpsAgentAccessStore } from './server-ops-agent-access-store'
 import { ServerOpsFileService } from './server-ops-file-service'
 import { ServerOpsSftpRuntimeError } from '../../../utility/server-ops/server-ops-sftp-runtime'
 import { SERVER_OPS_AGENT_READ_CHANNELS, SERVER_OPS_DATABASE_AGENT_POLICY_CHANNELS, SERVER_OPS_DATA_QUERY_CHANNELS, SERVER_OPS_DATA_QUERY_HISTORY_CHANNELS, isServerOpsAuditRecord } from '@proma/shared'
+import type { ServerOpsDataWriteResult } from '@proma/shared'
 import { SERVER_OPS_CONNECTION_DRAFT_CHANNELS } from '@proma/shared'
 import { serverOpsConnectionDraftStore } from './server-ops-connection-draft-store'
 
@@ -158,6 +159,66 @@ function createAgentAccessHarness(options: {
 }
 
 describe('服务器运维 IPC', () => {
+  test('Given 写入与历史记录 When 执行或记录失败 Then 先记开始且不把结果保存失败当数据库失败', async () => {
+    /** 仅替身数据库，确认跨 IPC 生命周期的真实调用顺序。 */
+    const calls: string[] = []
+    const result: ServerOpsDataWriteResult = { writeId: 'write-1', database: 'app', statementCount: 1, affectedRows: 2, committed: true, outcome: 'committed', durationMs: 2, statements: [{ head: 'UPDATE', affectedRows: 2 }], warnings: [] }
+    let rejectStart = false
+    let rejectFinish = false
+    const fixture = createAgentAccessHarness({
+      data: {
+        listSources: () => ({ sources: [{ id: 'source-1', engine: 'mysql', transport: 'direct', address: '127.0.0.1', port: 3306, label: '测试', database: 'app', tlsMode: 'disabled', hasPassword: false, createdAt: 1, updatedAt: 1 }] }),
+        upsertSource: () => { throw new Error('NOT_USED') }, deleteSource: () => {}, removeHost: () => {},
+        probeSource: async () => { throw new Error('NOT_USED') }, diagnoseSource: async () => { throw new Error('NOT_USED') },
+        revealSourcePassword: () => ({ password: null }), listSchemaTables: async () => ({ databases: [], tables: [] }),
+        describeSchemaTable: async () => ({ columns: [], indexes: [] }), readSchemaRows: async () => ({ columns: [], rows: [], offset: 0, limit: 50, truncated: false }),
+        writeSource: async () => { calls.push('write'); return structuredClone(result) },
+      },
+      queryHistory: {
+        list: () => ({ entries: [] }), save: () => ({ entries: [] }),
+        startWrite: () => { calls.push('start'); if (rejectStart) throw new Error('PRIVATE_DISK_ERROR') },
+        finishWrite: (_input, receipt) => { calls.push('finish'); expect(receipt.committed).toBe(true); if (rejectFinish) throw new Error('PRIVATE_DISK_ERROR') },
+      },
+    })
+    const source = { id: 'source-1', engine: 'mysql' as const, transport: 'direct' as const, address: '127.0.0.1', port: 3306, label: '测试', database: 'app', tlsMode: 'disabled' as const, hasPassword: false, createdAt: 1, updatedAt: 1 }
+    const request = { sourceId: 'source-1', source, database: 'app', writeId: 'write-1', sql: 'UPDATE t SET n=1' }
+    try {
+      await expect(invoke(fixture.handlers, SERVER_OPS_DATA_WRITE_CHANNELS.EXECUTE, fixture.sender, request)).resolves.toMatchObject({ committed: true })
+      expect(calls).toEqual(['start', 'write', 'finish'])
+      calls.length = 0; rejectStart = true
+      await expect(invoke(fixture.handlers, SERVER_OPS_DATA_WRITE_CHANNELS.EXECUTE, fixture.sender, request)).rejects.toThrow('SERVER_OPS_DATA_WRITE_HISTORY_START_FAILED')
+      expect(calls).toEqual(['start'])
+      calls.length = 0; rejectStart = false; rejectFinish = true
+      await expect(invoke(fixture.handlers, SERVER_OPS_DATA_WRITE_CHANNELS.EXECUTE, fixture.sender, request)).resolves.toMatchObject({ committed: true, warnings: ['SERVER_OPS_DATA_WRITE_HISTORY_RESULT_FAILED'] })
+      expect(calls).toEqual(['start', 'write', 'finish'])
+    } finally { fixture.registration.dispose() }
+  })
+
+  test('Given 确认后另一窗口修改数据源 When 执行旧快照 Then 在历史审计与数据库前拒绝', async () => {
+    const calls: string[] = []
+    const confirmedSource = { id: 'source-1', engine: 'mysql' as const, transport: 'direct' as const, address: 'db-old.internal', port: 3306, label: '业务库', database: 'app', tlsMode: 'disabled' as const, hasPassword: false, createdAt: 1, updatedAt: 1 }
+    const fixture = createAgentAccessHarness({
+      data: {
+        listSources: () => ({ sources: [{ ...confirmedSource, address: 'db-new.internal', updatedAt: 2 }] }),
+        upsertSource: () => { throw new Error('NOT_USED') }, deleteSource: () => {}, removeHost: () => {},
+        probeSource: async () => { throw new Error('NOT_USED') }, diagnoseSource: async () => { throw new Error('NOT_USED') },
+        revealSourcePassword: () => ({ password: null }), listSchemaTables: async () => ({ databases: [], tables: [] }),
+        describeSchemaTable: async () => ({ columns: [], indexes: [] }), readSchemaRows: async () => ({ columns: [], rows: [], offset: 0, limit: 50, truncated: false }),
+        writeSource: async () => { calls.push('write'); throw new Error('NOT_USED') },
+      },
+      queryHistory: {
+        list: () => ({ entries: [] }), save: () => ({ entries: [] }),
+        startWrite: () => { calls.push('history-start') }, finishWrite: () => { calls.push('history-finish') },
+      },
+      auditAppend: (input) => { calls.push('audit'); return { ...input, id: 'audit-1', timestamp: 1 } },
+    })
+    try {
+      await expect(invoke(fixture.handlers, SERVER_OPS_DATA_WRITE_CHANNELS.EXECUTE, fixture.sender, {
+        sourceId: confirmedSource.id, source: confirmedSource, database: 'app', writeId: 'write-stale', sql: 'UPDATE t SET n=1',
+      })).rejects.toThrow('SERVER_OPS_DATA_SOURCE_CHANGED')
+      expect(calls).toEqual([])
+    } finally { fixture.registration.dispose() }
+  })
   test('Given 授权窗口与完整数据源快照 When 设置默认数据库 Then 严格分派并重验读取绑定', async () => {
     const calls: unknown[] = []
     const source = {
@@ -1003,8 +1064,11 @@ describe('服务器运维 IPC', () => {
       ...Object.values(SERVER_OPS_DATA_CHANNELS),
       ...Object.values(SERVER_OPS_DATA_SCHEMA_CHANNELS),
       ...Object.values(SERVER_OPS_DATA_QUERY_CHANNELS),
+      ...Object.values(SERVER_OPS_DATA_WRITE_CHANNELS),
       ...Object.values(SERVER_OPS_DATA_QUERY_HISTORY_CHANNELS),
-      ...Object.values(SERVER_OPS_PROJECT_CHANNELS)])
+      ...Object.values(SERVER_OPS_PROJECT_CHANNELS),
+      ...Object.values(SERVER_OPS_SCRIPT_CHANNELS),
+      ...Object.values(SERVER_OPS_SCRIPT_DRAFT_CHANNELS).filter((channel) => channel !== SERVER_OPS_SCRIPT_DRAFT_CHANNELS.CHANGED)])
     expect(await invoke(handlers, SERVER_OPS_IPC_CHANNELS.LIST_HOSTS, sender)).toEqual([createHost()])
     expect(await invoke(handlers, SERVER_OPS_IPC_CHANNELS.UPSERT_HOST, sender, {
       host: {
@@ -1370,7 +1434,7 @@ describe('服务器运维 IPC', () => {
       'unsubscribe-connection-state',
     ])
     /** 数量随 SERVER_OPS_* 通道常量增长：新增通道必须同步这里。 */
-    expect(cleanup.filter((entry) => entry.startsWith('remove-handler:'))).toHaveLength(81)
+    expect(cleanup.filter((entry) => entry.startsWith('remove-handler:'))).toHaveLength(91)
   })
 
   test('dispose 中首个 unsubscribe 失败仍解绑 closed listener、释放 owner 和全部 handler', async () => {
@@ -1390,7 +1454,7 @@ describe('服务器运维 IPC', () => {
     expect(cleanup).toContain('remove-closed')
     expect(cleanup).toContain('dispose-owner:window:7')
     /** 与上一处保持同一口径：新增 IPC 通道后两处都要更新。 */
-    expect(cleanup.filter((entry) => entry.startsWith('remove-handler:'))).toHaveLength(81)
+    expect(cleanup.filter((entry) => entry.startsWith('remove-handler:'))).toHaveLength(91)
     expect(handlers.size).toBe(0)
     expect(() => registration.dispose()).not.toThrow()
     expect(cleanup).toEqual(afterFirstDispose)

@@ -1,6 +1,15 @@
 import { describe, expect, test } from 'bun:test'
 import { ServerOpsReadScheduler } from './server-ops-read-scheduler'
 
+test('Given 写执行提交后取消 When 队列返回结果 Then 保留实际终态且释放来源', async () => {
+  const scheduler = new ServerOpsReadScheduler()
+  const controller = new AbortController()
+  const outcome = await scheduler.run('source-1', async () => { controller.abort(); return { committed: true } }, { signal: controller.signal, preserveExecutionOutcome: true })
+  expect(outcome.committed).toBe(true)
+  await expect(scheduler.run('source-1', async () => 'next')).resolves.toBe('next')
+  scheduler.dispose()
+})
+
 /** 人工控制在途读取完成时刻，验证队列真实调度次序。 */
 function deferred(): { promise: Promise<string>; resolve: (value: string) => void } {
   let resolve!: (value: string) => void

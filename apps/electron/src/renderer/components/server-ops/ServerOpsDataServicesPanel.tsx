@@ -17,6 +17,9 @@ import type {
   ServerOpsDataDiagnoseInput,
   ServerOpsDataDiagnosticsResult,
   ServerOpsDataProbeResult,
+  ServerOpsDataWriteCancelInput,
+  ServerOpsDataWriteInput,
+  ServerOpsDataWriteResult,
   ServerOpsDataSource,
   ServerOpsDataSourceDeleteInput,
   ServerOpsDataSourceListInput,
@@ -78,6 +81,9 @@ import type { ServerOpsSchemaBrowserProjection } from './ServerOpsSchemaBrowser'
 
 /** 数据服务面板需要的 Renderer 侧 API；由工作区注入 preload bridge。 */
 export interface ServerOpsDataPanelApi {
+  /** 手工写库；可选成员，旧 preload 下界面据此显式禁用写模式。 */
+  writeServerOpsDatabase?: (input: ServerOpsDataWriteInput) => Promise<ServerOpsDataWriteResult>
+  cancelServerOpsDatabaseWrite?: (input: ServerOpsDataWriteCancelInput) => Promise<void>
   listServerOpsDataSources(input: ServerOpsDataSourceListInput): Promise<ServerOpsDataSourceListResult>
   upsertServerOpsDataSource(input: ServerOpsDataSourceUpsertInput): Promise<ServerOpsDataSourceUpsertResult>
   /** 成功选库后只保存默认库；兼容尚未提供此能力的旧 bridge。 */

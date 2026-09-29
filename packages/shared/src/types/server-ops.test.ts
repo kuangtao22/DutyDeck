@@ -489,6 +489,35 @@ describe('服务器运维共享合同', () => {
     expect(isServerOpsAuditRecord({ ...agentStart, phase: 'result', outcome: 'pending' })).toBe(false)
   })
 
+  test('Given 用户点击运行脚本 When 校验审计 Then 绑定单一目标且 Agent 不得发起', () => {
+    /** SQL 脚本运行：绑定数据源与目标库。 */
+    const sqlRun = {
+      id: 'audit-1', operationId: 'operation-1', timestamp: 1, windowId: 3, sourceId: 'source-1',
+      actor: 'user', operation: 'data-write', resourceType: 'data-write', database: 'chebenben',
+      phase: 'start', outcome: 'pending',
+    } as const
+    /** SSH 脚本运行：绑定主机，不得携带库名。 */
+    const sshRun = {
+      id: 'audit-2', operationId: 'operation-2', timestamp: 2, windowId: 3, hostId: 'host-1',
+      actor: 'user', operation: 'data-write', resourceType: 'data-write', phase: 'result', outcome: 'success',
+    } as const
+
+    expect(isServerOpsAuditRecord(sqlRun)).toBe(true)
+    expect(isServerOpsAuditRecord(sshRun)).toBe(true)
+    expect(isServerOpsAuditRecord({ ...sqlRun, actor: 'agent', sessionId: 'session-1', windowId: undefined })).toBe(false)
+    expect(isServerOpsAuditRecord({ ...sqlRun, hostId: 'host-1' })).toBe(false)
+    expect(isServerOpsAuditRecord({ ...sqlRun, sourceId: undefined })).toBe(false)
+    expect(isServerOpsAuditRecord({ ...sqlRun, operationId: undefined })).toBe(false)
+    expect(isServerOpsAuditRecord({ ...sqlRun, windowId: undefined, sessionId: 'legacy-session' })).toBe(false)
+    expect(isServerOpsAuditRecord({ ...sshRun, database: 'chebenben' })).toBe(false)
+    expect(isServerOpsAuditRecord({ ...sqlRun, database: undefined })).toBe(false)
+    expect(isServerOpsAuditRecord({ ...sqlRun, resourceType: undefined })).toBe(false)
+    expect(isServerOpsAuditRecord({ ...sqlRun, resourceType: 'data-query' })).toBe(false)
+    expect(isServerOpsAuditRecord({ ...sqlRun, command: 'rm -rf /', commandTruncated: false })).toBe(false)
+    expect(isServerOpsAuditRecord({ ...sqlRun, outcome: 'success', exitCode: 0 })).toBe(false)
+    expect(isServerOpsAuditRecord({ ...sqlRun, queryHash: `sha256:${'a'.repeat(64)}` })).toBe(false)
+  })
+
   test('Given 用户管理主机信任 When 校验审计 Then 强制窗口、operationId 与 host-trust 资源类别', () => {
     const trustRecord = {
       id: 'audit-1', operationId: 'operation-1', timestamp: 1, windowId: 3, hostId: 'host-1',

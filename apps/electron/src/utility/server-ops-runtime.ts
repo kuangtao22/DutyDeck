@@ -7,11 +7,15 @@ import { runServerOpsDataRead } from './server-ops/server-ops-data-runtime'
 import { runServerOpsSqliteRead, getServerOpsSqlitePublicError } from './server-ops/server-ops-sqlite-runtime'
 import type { ServerOpsSqliteChannelFactory } from './server-ops/server-ops-sqlite-runtime'
 import { runServerOpsLocalSqliteRead } from './server-ops/server-ops-local-sqlite-runtime'
+import { createServerOpsDataWriteDependencies, executeServerOpsDataWrite,
+  normalizeServerOpsDataWriteError, ServerOpsDataWriteError } from './server-ops/server-ops-write-dispatch'
 import type { ServerOpsDataRuntimeInput } from './server-ops/server-ops-data-runtime'
 import { getServerOpsSqlQueryPublicError } from './server-ops/server-ops-query-runtime'
 import { getServerOpsRowFilterPublicError } from './server-ops/server-ops-row-filter-sql'
 import type { ServerOpsRuntimeDataReadRequest } from './server-ops/server-ops-runtime-protocol'
-import type { ServerOpsTerminalExitEvent } from '@proma/shared'
+import type { ServerOpsRuntimeDataWriteRequest } from './server-ops/server-ops-runtime-protocol'
+import { createConnection as createMysqlConnection } from 'mysql2'
+import type { ServerOpsDataWriteResult, ServerOpsTerminalExitEvent } from '@proma/shared'
 import { ServerOpsConsoleRuntimeController } from './server-ops/server-ops-console-runtime'
 import type { ServerOpsConsoleRuntimeChannel } from './server-ops/server-ops-console-runtime'
 import {
@@ -93,6 +97,16 @@ const activeDataReads = new Map<string, {
   fail: (code: string, message: string) => void
 }>()
 
+/** 活跃数据库写入；与读取分开登记，取消仍需匹配完整跨进程身份。 */
+const activeDataWrites = new Map<string, {
+  hostId: string
+  connectionId: string
+  controller: AbortController
+  cancelTransport: () => void
+  fail: (code: string, message: string) => void
+}>()
+
+
 if (!parentPort) {
   console.error('[ServerOpsRuntime] Electron parentPort 不可用')
   process.exit(1)
@@ -142,8 +156,18 @@ function handleRequest(raw: unknown): void {
     case 'server-ops.data-read':
       dataRead(request.input)
       return
+    case 'server-ops.data-write':
+      dataWrite(request.input)
+      return
     case 'server-ops.data-cancel': {
       const active = activeDataReads.get(request.requestId)
+      if (!active || active.hostId !== request.hostId || active.connectionId !== request.connectionId) return
+      active.controller.abort()
+      active.cancelTransport()
+      return
+    }
+    case 'server-ops.data-write-cancel': {
+      const active = activeDataWrites.get(request.requestId)
       if (!active || active.hostId !== request.hostId || active.connectionId !== request.connectionId) return
       active.controller.abort()
       active.cancelTransport()
@@ -222,6 +246,8 @@ function handleRequest(raw: unknown): void {
     case 'server-ops.shutdown':
       for (const active of activeDataReads.values()) { active.controller.abort(); active.cancelTransport() }
       activeDataReads.clear()
+      for (const active of activeDataWrites.values()) { active.controller.abort(); active.cancelTransport() }
+      activeDataWrites.clear()
       for (const connectionId of [...connections.keys()]) disconnect(connectionId, '应用正在退出')
       for (const connectionId of [...pendingClients.keys()]) disconnect(connectionId, '应用正在退出', false)
       post({ type: 'server-ops.stopped' })
@@ -729,6 +755,116 @@ function dataRead(input: ServerOpsRuntimeDataReadRequest): void {
       publicError?.code ?? 'SERVER_OPS_DATA_CHANNEL_FAILED',
       publicError?.message ?? '无法建立到数据库的通道',
     )
+  })
+}
+
+/**
+ * 执行一次写库脚本。
+ *
+ * 与只读读取共用同一套「登记 → 超时 → 结算」语义，但**只支持直连**：
+ * 经跳板的写需要另一套通道生命周期与终止语义，在没做对之前显式拒绝，
+ * 而不是让它落到读写行为不明的路径上。
+ *
+ * 语句的切分、会话控制拒绝与写类别判定都已在主进程完成，这里只执行。
+ *
+ * @param input 已由协议解析器校验过的写请求
+ */
+function dataWrite(input: ServerOpsRuntimeDataWriteRequest): void {
+  if (input.transport !== 'direct') {
+    post({ type: 'server-ops.error', requestId: input.requestId, hostId: input.hostId, connectionId: input.connectionId,
+      code: 'SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', message: '经跳板的写库尚未支持，请为该数据源配置直连' })
+    return
+  }
+  const startedAt = Date.now()
+  /** 单次写只允许结算一次：超时、取消与正常完成共用该标志。 */
+  let settled = false
+  /** 本次写持有的直连 socket 与驱动连接，结算时一起销毁。 */
+  let activeChannel: Duplex | undefined
+  let activeConnection: { destroy: () => void } | undefined
+  /** 是否已经成功建立驱动连接；用于区分「连不上」与「执行失败」两类错误。 */
+  /** 执行器与驱动共享的取消信号。 */
+  const controller = new AbortController()
+  /** timeout 或失败触发 abort 时保留原始终态分类，不能降级成用户取消。 */
+  let terminalError: { code: string; message: string } | undefined
+  /** 销毁本次写持有的全部底层资源；只用一条收口路径。 */
+  const releaseResources = (): void => {
+    const connection = activeConnection
+    const channel = activeChannel
+    activeConnection = undefined
+    activeChannel = undefined
+    if (connection) { try { connection.destroy() } catch { /* 驱动可能已自行关闭。 */ } }
+    if (channel && !channel.destroyed) { try { channel.destroy() } catch { /* 通道可能已被远端关闭。 */ } }
+  }
+  activeDataWrites.set(input.requestId, {
+    hostId: input.hostId,
+    connectionId: input.connectionId,
+    controller,
+    cancelTransport: releaseResources,
+    fail: (code, message) => {
+      if (settled || controller.signal.aborted) return
+      terminalError = { code, message }
+      controller.abort()
+      releaseResources()
+    },
+  })
+  /** 清理资源并返回结构化事务结果；收到引擎结果后不再用取消状态覆盖它。 */
+  const finishResult = (result: ServerOpsDataWriteResult): void => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    releaseResources()
+    activeDataWrites.delete(input.requestId)
+    post({ type: 'server-ops.data-write-result', requestId: input.requestId, hostId: input.hostId, connectionId: input.connectionId, result })
+  }
+  /** 清除定时器并以稳定错误码回报。 */
+  const finishError = (code: string, message: string): void => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    releaseResources()
+    activeDataWrites.delete(input.requestId)
+    post({ type: 'server-ops.error', requestId: input.requestId, hostId: input.hostId, connectionId: input.connectionId, code, message })
+  }
+  const timer = setTimeout(() => {
+    activeDataWrites.get(input.requestId)?.fail('SERVER_OPS_DATA_WRITE_TIMEOUT', '数据库写入超时')
+  }, input.timeoutMs)
+  /**
+   * 执行语义全部交给可测核心：分引擎执行、错误归一化与「连不上 vs 写入失败」的区分
+   * 都在 `executeServerOpsDataWrite` 里，并由它的单元测试覆盖。
+   * 这里只负责消息循环侧的生命周期：登记、超时、取消与结果回传。
+   */
+  const write = executeServerOpsDataWrite(input, {
+    signal: controller.signal,
+    onChannelOpened: (channel) => { activeChannel = channel },
+    onConnectionOpened: (connection) => { activeConnection = connection },
+  }, createServerOpsDataWriteDependencies(createDirectSocket))
+  void write.then((result) => {
+    /** 超时分类属于 runtime 墙钟事实；保留引擎返回的事务 outcome 与已执行统计。 */
+    finishResult(terminalError !== undefined && !result.committed
+      ? { ...result, errorCode: terminalError.code }
+      : result)
+  }).catch((error: unknown) => {
+    if (controller.signal.aborted) {
+      /** 建链或驱动被强制终止时没有事务确认，只能返回 unknown，不能声称已取消且未生效。 */
+      finishResult({
+        writeId: input.writeId,
+        database: input.database,
+        statementCount: 0,
+        affectedRows: 0,
+        committed: false,
+        outcome: 'unknown',
+        errorCode: terminalError?.code ?? 'SERVER_OPS_DATA_WRITE_CANCELLED',
+        durationMs: Math.max(0, Date.now() - startedAt),
+        statements: [],
+        warnings: ['写入连接在返回事务结果前终止，数据库状态需要重新核对'],
+      })
+      return
+    }
+    /** 核心已把异常归一化成稳定码；极端情况下未归一化的异常按「还没连上」失败关闭。 */
+    const normalized = error instanceof ServerOpsDataWriteError
+      ? error
+      : normalizeServerOpsDataWriteError(error, false)
+    finishError(normalized.code, normalized.publicMessage)
   })
 }
 

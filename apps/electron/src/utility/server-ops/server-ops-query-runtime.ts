@@ -35,6 +35,18 @@ const QUERY_PUBLIC_ERROR_MESSAGES = new Map<string, string>([
   ['SERVER_OPS_DATA_CELL_REDACTED', '敏感字段不允许查看完整内容'],
   ['SERVER_OPS_DATA_CELL_TOO_LARGE', '单元格完整内容超过 1 MiB 安全上限'],
   ['SERVER_OPS_DATA_CELL_TIMEOUT', '单元格完整内容读取超时'],
+  /**
+   * 写执行的稳定码必须与读码登记在同一张公开表里。
+   *
+   * 读链的错误收口只透传白名单命中项，未登记的写码会被降级成通用读失败码——
+   * SQLite 侧已经踩过这个坑，MySQL 侧提前堵上。
+   */
+  ['SERVER_OPS_DATA_WRITE_FAILED', 'SQL 写入失败，请按运行结果核对事务状态'],
+  ['SERVER_OPS_DATA_WRITE_COMMIT_FAILED', 'SQL 写入提交确认失败，请核对实际数据'],
+  ['SERVER_OPS_DATA_WRITE_CANCELLED', 'SQL 写入已请求取消，请按运行结果核对事务状态'],
+  ['SERVER_OPS_DATA_WRITE_TIMEOUT', 'SQL 写入超时，请核对实际数据'],
+  ['SERVER_OPS_DATA_WRITE_PERMISSION_DENIED', '数据库账号没有写入权限，请改用具备写权限的账号'],
+  ['SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', '经跳板的写库尚未支持，请为该数据源配置直连'],
 ])
 
 /** 表不存在或不可用的 MySQL 驱动错误码。 */

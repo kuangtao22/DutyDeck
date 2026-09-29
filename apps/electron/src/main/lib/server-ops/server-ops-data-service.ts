@@ -31,6 +31,15 @@ import type {
   ServerOpsDataSourceUpsertResult,
   ServerOpsDiscoveredCredentialApplyInput,
   ServerOpsDiscoveredCredentialApplyResult,
+  ServerOpsDataWriteInput,
+  ServerOpsDataWriteResult,
+} from '@proma/shared'
+import {
+  parseServerOpsDataWriteInput,
+  parseServerOpsDataWriteResult,
+  planServerOpsSqlWrite,
+  SERVER_OPS_DATA_WRITE_DEFAULT_TIMEOUT_MS,
+  SERVER_OPS_DATA_WRITE_MAX_TIMEOUT_MS,
 } from '@proma/shared'
 import {
   applyServerOpsDiscoveredCredential,
@@ -58,6 +67,7 @@ import type { ServerOpsDataSourceStore, ServerOpsStoredDataSource } from './serv
 import type { ServerOpsDataSourceCredentialStore } from './server-ops-data-credential-store'
 import type { ServerOpsConfigTransaction } from './server-ops-config-transaction'
 import { ServerOpsReadScheduler } from './server-ops-read-scheduler'
+import { createServerOpsWriteFailureResult } from './server-ops-write-result'
 import type {
   ServerOpsDataSchemaCache,
   ServerOpsDataSchemaCacheScope,
@@ -67,6 +77,7 @@ import type {
   ServerOpsRuntimeDataDiagnosticsResult,
   ServerOpsRuntimeDataReadRequest,
   ServerOpsRuntimeDataReadResult,
+  ServerOpsRuntimeDataWriteRequest,
   ServerOpsRuntimeDataSchemaRowsResult,
   ServerOpsRuntimeDataSchemaTableResult,
   ServerOpsRuntimeDataSchemaTablesResult,
@@ -88,6 +99,8 @@ interface ServerOpsDataConnectionContract {
 /** 数据服务依赖的 SSH runtime 能力。 */
 interface ServerOpsDataRuntimeContract {
   dataRead(input: Omit<ServerOpsRuntimeDataReadRequest, 'requestId'>, signal?: AbortSignal): Promise<ServerOpsRuntimeDataReadResult>
+  /** 手工写库；与读取分开的生命周期，但共用同一套身份与调度约束。 */
+  dataWrite(input: Omit<ServerOpsRuntimeDataWriteRequest, 'requestId'>, signal?: AbortSignal): Promise<ServerOpsDataWriteResult>
 }
 
 /** 数据服务可替换依赖，全部按最小能力注入便于单测。 */
@@ -735,6 +748,101 @@ export class ServerOpsDataService {
       || result.queryId !== parsedInput.queryId
       || result.database !== parsedInput.database) throw new Error('SERVER_OPS_DATA_UNEXPECTED_RESULT')
     return result
+  }
+
+  /**
+   * 执行一次手工写库脚本。
+   *
+   * 与只读查询的关键差异：
+   * ①**只允许用户发起**——带会话上下文的调用（Agent、自动化、委派）一律拒绝，
+   *   写能力不能顺着只读工具链漏给模型；
+   * ②主进程与 utility 使用同一语句规划器校验，跨进程入口再次拒绝会话控制；
+   * ③只支持直连的 MySQL 与本地 SQLite，其余组合在发起前明确拒绝。
+   *
+   * @param input 渲染层提交的写请求
+   * @param signal 取消信号
+   * @param context 调用方上下文；携带会话身份即视为 Agent 调用并拒绝
+   * @returns 写执行结果
+   */
+  async writeSource(input: ServerOpsDataWriteInput, signal?: AbortSignal, context?: ServerOpsReadContext): Promise<ServerOpsDataWriteResult> {
+    this.assertUsable()
+    this.checkReadCaller(signal, context)
+    /** 写链没有 Agent 入口；出现会话身份说明调用方越界。 */
+    if (context?.ownerSessionId !== undefined) throw new Error('SERVER_OPS_DATA_WRITE_AGENT_FORBIDDEN')
+    const parsedInput = parseServerOpsDataWriteInput(input)
+    /** 发出请求后失败只能按未知收口；校验和排队中拒绝则确定没有开始。 */
+    let dispatched = false
+    const startedAt = this.now()
+    try {
+      /** 执行前固定真实连接配置；label、projectId 与 updatedAt 不属于安全身份。 */
+      const expectedSource = this.requireSource(parsedInput.sourceId)
+      /** 用户确认的公开快照必须仍是当前版本，避免跨窗口编辑后把旧确认写到新目标。 */
+      const expectedPublicSource = parseServerOpsDataSource(this.toPublicSource(expectedSource))
+      if (!isDeepStrictEqual(parsedInput.source, expectedPublicSource)) throw new Error('SERVER_OPS_DATA_SOURCE_CHANGED')
+      if (expectedSource.engine !== 'mysql' && expectedSource.engine !== 'sqlite') {
+        throw new Error('SERVER_OPS_DATA_WRITE_ENGINE_UNSUPPORTED')
+      }
+      /** 经跳板的写需要另一套通道所有权与终止语义，未实现前明确拒绝。 */
+      if (expectedSource.transport !== 'direct') throw new Error('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED')
+      this.assertDirectTransportIsSafe(expectedSource)
+      /** 切分、会话控制拒绝与「必须含写语句」都在共享层判定，主进程与 utility 共用同一份规则。 */
+      const plan = planServerOpsSqlWrite(parsedInput.sql, expectedSource.engine === 'sqlite' ? 'sqlite' : 'mysql')
+      const password = expectedSource.credentialRef === undefined
+        ? undefined
+        : this.dependencies.credentials.resolveSecret(expectedSource.credentialRef)
+      const timeoutMs = Math.min(
+        SERVER_OPS_DATA_WRITE_MAX_TIMEOUT_MS,
+        parsedInput.timeoutMs ?? SERVER_OPS_DATA_WRITE_DEFAULT_TIMEOUT_MS,
+      )
+      /** 排队期间配置可能变化：复用同一份身份与密文复核，避免把写打到新目标上。 */
+      const validate = (): void => {
+        this.assertUsable()
+        this.assertLocalFileCurrent(expectedSource)
+        const current = this.requireSource(expectedSource.id)
+        if (!sameDataReadIdentity(expectedSource, current)) throw new Error('SERVER_OPS_DATA_SOURCE_CHANGED')
+        if (!isDeepStrictEqual(parseServerOpsDataSource(this.toPublicSource(current)), expectedPublicSource)) {
+          throw new Error('SERVER_OPS_DATA_SOURCE_CHANGED')
+        }
+        const currentPassword = current.credentialRef === undefined
+          ? undefined
+          : this.dependencies.credentials.resolveSecret(current.credentialRef)
+        if (currentPassword !== password) throw new Error('SERVER_OPS_DATA_SOURCE_CHANGED')
+      }
+      /** 写与读共用同一个每源串行队列，终态不使用只读的撤销规则。 */
+      const result = await this.scheduler.run(expectedSource.id, async () => {
+        validate()
+        dispatched = true
+        return await this.dependencies.runtime.dataWrite({
+          hostId: SERVER_OPS_DATA_DIRECT_HOST_ID,
+          connectionId: this.uuid(),
+          transport: 'direct',
+          engine: expectedSource.engine,
+          ...(expectedSource.address === undefined ? {} : { address: expectedSource.address }),
+          ...(expectedSource.port === undefined ? {} : { port: expectedSource.port }),
+          ...(expectedSource.filePath === undefined ? {} : { filePath: expectedSource.filePath }),
+          ...(expectedSource.localFileId === undefined ? {} : { localFileId: expectedSource.localFileId }),
+          database: parsedInput.database,
+          ...(expectedSource.username === undefined ? {} : { username: expectedSource.username }),
+          ...(password === undefined ? {} : { password }),
+          tlsMode: expectedSource.tlsMode,
+          ...(expectedSource.tlsServerName === undefined ? {} : { tlsServerName: expectedSource.tlsServerName }),
+          timeoutMs,
+          writeId: parsedInput.writeId,
+          statements: plan.statements.map((statement) => ({ text: statement.text, head: statement.head })),
+        }, signal)
+      }, { signal, ownerSessionId: context?.ownerSessionId, check: context?.check, validate, preserveExecutionOutcome: true })
+      /** 回执固定归属于发起时目标；配置变更或删除不能抹掉已发生的写入。 */
+      const parsedResult = parseServerOpsDataWriteResult(result)
+      if (parsedResult.writeId !== parsedInput.writeId || parsedResult.database !== parsedInput.database) {
+        throw new Error('SERVER_OPS_DATA_UNEXPECTED_RESULT')
+      }
+      /** 写后元数据可能变化，按需失效缓存；缓存失败不能伪装成数据库失败。 */
+      try { this.dependencies.schemaCache?.invalidate({ sourceId: parsedInput.sourceId, database: parsedInput.database }) }
+      catch { parsedResult.warnings = [...parsedResult.warnings.slice(0, 7), '写入已结束，但本地结构缓存刷新失败，请手动刷新'] }
+      return parsedResult
+    } catch (error) {
+      return createServerOpsWriteFailureResult(parsedInput, error, dispatched, this.now() - startedAt)
+    }
   }
 
   /** 主机删除或退出清理时丢弃该主机全部在途读取归属。 */

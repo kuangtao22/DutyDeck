@@ -52,6 +52,12 @@ const SQLITE_PUBLIC_ERROR_MESSAGES = new Map<string, string>([
   ['SERVER_OPS_SQLITE_RESULT_TOO_LARGE', 'SQLite 返回结果超过安全上限'],
   ['SERVER_OPS_SQLITE_REQUEST_INVALID', 'SQLite 读取请求无效'],
   ['SERVER_OPS_SQLITE_READ_FAILED', 'SQLite 读取失败，请检查文件状态与读取权限'],
+  /** 写执行与只读读取共用同一份公开错误白名单，写侧稳定码必须登记在这里，否则会被降级成读失败。 */
+  ['SERVER_OPS_DATA_WRITE_FAILED', 'SQLite 写入失败，请按运行结果核对事务状态'],
+  ['SERVER_OPS_DATA_WRITE_COMMIT_FAILED', 'SQLite 提交确认失败，请核对实际数据'],
+  ['SERVER_OPS_DATA_WRITE_PERMISSION_DENIED', 'SQLite 文件不可写，请检查文件权限'],
+  ['SERVER_OPS_DATA_WRITE_TIMEOUT', 'SQLite 写入超时，请核对实际数据'],
+  ['SERVER_OPS_DATA_WRITE_CANCELLED', 'SQLite 写入已请求取消，请按运行结果核对事务状态'],
   ['SERVER_OPS_DATA_SCHEMA_FILTERS_INVALID', '筛选条件无效或字段不可用于筛选'],
   ['SERVER_OPS_DATA_CELL_CHANGED', '该单元格所在行或内容已变化，请刷新后重试'],
   ['SERVER_OPS_DATA_CELL_REDACTED', '敏感字段不允许查看完整内容'],

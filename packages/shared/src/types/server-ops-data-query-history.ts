@@ -1,4 +1,6 @@
 import { isServerOpsId } from './server-ops'
+import { parseServerOpsDataWriteResult } from './server-ops-data-write'
+import type { ServerOpsDataWriteResult } from './server-ops-data-write'
 
 /** 单个数据源数据库最多保留的 SQL 查询历史条数。 */
 export const SERVER_OPS_DATA_QUERY_HISTORY_LIMIT = 100
@@ -24,6 +26,16 @@ export interface ServerOpsDataQueryHistoryRecordInput extends ServerOpsDataQuery
 export interface ServerOpsDataQueryHistoryEntry extends ServerOpsDataQueryHistoryRecordInput {
   id: string
   createdAt: number
+  /** 由主进程记录的逐次写执行；旧 SQL 历史没有运行事实。 */
+  execution?: ServerOpsDataWriteHistoryExecution
+}
+
+/** 开始先持久化，结束再补回执；缺少回执代表未确认，不能推断成功或仍在运行。 */
+export interface ServerOpsDataWriteHistoryExecution {
+  writeId: string
+  startedAt: number
+  finishedAt?: number
+  result?: ServerOpsDataWriteResult
 }
 
 /** 单个 scope 的完整有界 SQL 查询历史。 */
@@ -92,7 +104,7 @@ export function parseServerOpsDataQueryHistoryRecordInput(value: unknown): Serve
 /** 解析单条已持久化历史。 */
 function parseHistoryEntry(value: unknown): ServerOpsDataQueryHistoryEntry {
   if (!isRecord(value)
-    || !hasExactKeys(value, new Set(['id', 'sourceId', 'database', 'sql', 'createdAt']))
+    || !hasExactKeys(value, new Set(['id', 'sourceId', 'database', 'sql', 'createdAt', ...(value.execution === undefined ? [] : ['execution'])]))
     || !isServerOpsId(value.id)
     || !isServerOpsId(value.sourceId)
     || !isDatabaseName(value.database)
@@ -100,12 +112,27 @@ function parseHistoryEntry(value: unknown): ServerOpsDataQueryHistoryEntry {
     || !isTimestamp(value.createdAt)) {
     throw new Error('SERVER_OPS_DATA_QUERY_HISTORY_RESULT_INVALID')
   }
+  /** 运行回执必须与历史的库和运行身份一致，禁止串库或半个终态。 */
+  let execution: ServerOpsDataWriteHistoryExecution | undefined
+  if (value.execution !== undefined) {
+    const raw = value.execution
+    if (!isRecord(raw) || !hasExactKeys(raw, new Set(['writeId', 'startedAt', ...(raw.result === undefined ? [] : ['result', 'finishedAt'])]))
+      || !isServerOpsId(raw.writeId) || !isTimestamp(raw.startedAt)
+      || (raw.result !== undefined && (!isTimestamp(raw.finishedAt) || raw.finishedAt < raw.startedAt))) {
+      throw new Error('SERVER_OPS_DATA_QUERY_HISTORY_RESULT_INVALID')
+    }
+    const result = raw.result === undefined ? undefined : parseServerOpsDataWriteResult(raw.result)
+    if (result && (result.database !== value.database || result.writeId !== raw.writeId)) throw new Error('SERVER_OPS_DATA_QUERY_HISTORY_RESULT_INVALID')
+    execution = { writeId: raw.writeId, startedAt: raw.startedAt,
+      ...(result === undefined ? {} : { finishedAt: raw.finishedAt as number, result }) }
+  }
   return {
     id: value.id,
     sourceId: value.sourceId,
     database: value.database,
     sql: value.sql,
     createdAt: value.createdAt,
+    ...(execution === undefined ? {} : { execution }),
   }
 }
 

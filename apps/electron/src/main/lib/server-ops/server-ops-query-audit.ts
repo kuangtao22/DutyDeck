@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import type { ServerOpsAuditAppendInput, ServerOpsAuditRecord } from '@proma/shared'
+import { getServerOpsDataWriteOutcome } from '@proma/shared'
+import type { ServerOpsAuditAppendInput, ServerOpsAuditRecord, ServerOpsDataWriteResult } from '@proma/shared'
 
 /** 只读 SQL 结果的最小预算合同。 */
 interface QueryResult { rows: unknown[][]; rowCount: number; truncated: boolean; warnings: string[] }
@@ -69,5 +70,68 @@ export async function runAuditedServerOpsQuery<T extends QueryResult>(options: Q
     if (Buffer.byteLength(JSON.stringify(result, null, 2), 'utf8') > 32_768) throw new Error('SERVER_OPS_SQL_RESULT_TOO_LARGE')
   }
   options.check()
+  return result
+}
+
+/** 写执行的审计摘要：只带目标身份与库，不含 SQL 正文、表名或语句内容。 */
+interface WriteAuditSummary { sourceId: string; database: string }
+/** 写执行的审计选项；actor 只允许用户，写链没有 Agent 入口。 */
+interface WriteAuditOptions<T extends ServerOpsDataWriteResult> {
+  summary: WriteAuditSummary
+  actor: { actor: 'user'; windowId: number }
+  audit: { append(input: ServerOpsAuditAppendInput): ServerOpsAuditRecord; prepareForWrites?: () => Promise<void> }
+  check: () => void
+  execute: () => Promise<T>
+}
+
+/**
+ * 写执行的审计顺序：开始记录写失败必须 fail closed，结果记录写失败只降级成公开警告。
+ *
+ * 与只读查询共用同一套失败分类与「不暴露原始异常」的纪律，但 operation/resourceType 是
+ * `data-write`，且**不带 queryHash 与 tables**——写链的审计不保存语句正文或指纹之外的语义。
+ *
+ * @param options 摘要、来源、审计边界与执行闭包
+ * @returns 执行结果；结果审计失败时附带公开警告
+ */
+export async function runAuditedServerOpsDataWrite<T extends ServerOpsDataWriteResult>(options: WriteAuditOptions<T>): Promise<T> {
+  options.check()
+  try { await options.audit.prepareForWrites?.() } catch (error) { throw new Error(getAuditStartErrorCode(error)) }
+  options.check()
+  /** 开始与结果共享同一个 operationId，供审计页关联同一次写入。 */
+  const common = {
+    ...options.actor, ...options.summary,
+    operation: 'data-write' as const, resourceType: 'data-write' as const, operationId: randomUUID(),
+  }
+  /** 墙钟只用于有界耗时，不接收调用方提交的时间。 */
+  const startedAt = Date.now()
+  try { options.audit.append({ ...common, phase: 'start', outcome: 'pending' }) } catch (error) { throw new Error(getAuditStartErrorCode(error)) }
+  let result: T
+  try {
+    options.check()
+    result = await options.execute()
+  } catch (error) {
+    /** 写的执行事实优先，执行后的取消或权限变化不能覆盖原始结果。 */
+    const runtimeCode = error !== null && typeof error === 'object' && 'code' in error ? (error as { code?: unknown }).code : undefined
+    const candidateCode = typeof runtimeCode === 'string' ? runtimeCode : error instanceof Error ? error.message : ''
+    /** 只返回有界的大写领域码，不透传任何驱动正文。 */
+    const errorCode = candidateCode.length <= 128 && /^SERVER_OPS_[A-Z_]+$/.test(candidateCode) ? candidateCode : 'SERVER_OPS_DATA_WRITE_FAILED'
+    /** 没有结构化回执就没有提交/回滚事实，审计必须保守标记为未知。 */
+    try { options.audit.append({ ...common, phase: 'result', outcome: 'unknown', errorCode, durationMs: Math.min(86_400_000, Math.max(0, Date.now() - startedAt)) }) } catch { /* 已发生的事实不因审计失败改写。 */ }
+    throw new Error(errorCode)
+  }
+  try {
+    /** 审计状态必须保留事务事实：部分生效或无法确认不能降格成普通失败。 */
+    const writeOutcome = getServerOpsDataWriteOutcome(result)
+    const auditOutcome = writeOutcome === 'committed'
+      ? 'success'
+      : writeOutcome === 'partial' || writeOutcome === 'unknown' ? 'unknown' : 'error'
+    options.audit.append({ ...common, phase: 'result', outcome: auditOutcome,
+      ...(writeOutcome === 'committed' ? {} : { errorCode: result.errorCode ?? 'SERVER_OPS_DATA_WRITE_OUTCOME_UNKNOWN' }),
+      durationMs: Math.min(86_400_000, Math.max(0, Date.now() - startedAt)) })
+  } catch {
+    /** 写已经发生：结果审计失败只能降级成公开警告，不能伪装成写入失败。 */
+    result = structuredClone(result)
+    result.warnings = [...result.warnings.slice(0, 7), 'SERVER_OPS_AUDIT_RESULT_WRITE_FAILED']
+  }
   return result
 }

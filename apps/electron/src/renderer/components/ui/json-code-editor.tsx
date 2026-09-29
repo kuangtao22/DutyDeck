@@ -101,14 +101,14 @@ function getJsonHighlightTheme(): string {
 }
 
 /** 仅为当前可见行生成 token 装饰，避免大工作流产生全量高亮开销。 */
-function createVisibleJsonDecorations(view: EditorView, theme: string): DecorationSet {
+function createVisibleJsonDecorations(view: EditorView, theme: string, language: 'json' | 'markdown'): DecorationSet {
   /** 收集已按文档顺序排列的装饰范围。 */
   const ranges: Range<Decoration>[] = []
 
   for (const line of collectVisibleJsonLines(view.state, view.visibleRanges)) {
     if (!isJsonCodeEditorLineHighlightable(line.text)) continue
     /** Shiki 尚未完成懒加载时保留纯文本，加载完成后插件会主动刷新。 */
-    const highlighted = highlightToTokens({ code: line.text, language: 'json', theme })
+    const highlighted = highlightToTokens({ code: line.text, language, theme })
     const tokens = highlighted?.lines[0]
     if (!tokens) continue
 
@@ -127,52 +127,57 @@ function createVisibleJsonDecorations(view: EditorView, theme: string): Decorati
   return Decoration.set(ranges, true)
 }
 
-/** CodeMirror 视口插件：响应滚动、文档和主题变化，并负责释放观察器。 */
-const visibleJsonHighlight = ViewPlugin.fromClass(class {
-  decorations: DecorationSet
-  /** 当前主题决定 Shiki token 颜色。 */
-  private theme = getJsonHighlightTheme()
-  /** 标记异步高亮初始化完成前组件是否已卸载。 */
-  private destroyed = false
-  /** 监听应用深浅主题类名切换。 */
-  private readonly themeObserver: MutationObserver
+/** 复用视口级高亮：只装饰已显示的行；可编辑输入与只读查看器共用主题和资源管理。 */
+export function createVisibleCodeHighlight(language: 'json' | 'markdown'): Extension {
+  return ViewPlugin.fromClass(class {
+    decorations: DecorationSet
+    /** 当前主题决定 Shiki token 颜色。 */
+    private theme = getJsonHighlightTheme()
+    /** 标记异步高亮初始化完成前组件是否已卸载。 */
+    private destroyed = false
+    /** 监听应用深浅主题类名切换。 */
+    private readonly themeObserver: MutationObserver
 
-  constructor(private readonly view: EditorView) {
-    this.decorations = createVisibleJsonDecorations(view, this.theme)
-    this.themeObserver = new MutationObserver(() => {
-      const nextTheme = getJsonHighlightTheme()
-      if (nextTheme === this.theme) return
-      this.theme = nextTheme
-      this.view.dispatch({ effects: refreshJsonHighlightEffect.of(null) })
-    })
-    this.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
-
-    void highlightCode({ code: '{}', language: 'json', theme: this.theme })
-      .then(() => {
-        if (!this.destroyed) this.view.dispatch({ effects: refreshJsonHighlightEffect.of(null) })
+    constructor(private readonly view: EditorView) {
+      this.decorations = createVisibleJsonDecorations(view, this.theme, language)
+      this.themeObserver = new MutationObserver(() => {
+        const nextTheme = getJsonHighlightTheme()
+        if (nextTheme === this.theme) return
+        this.theme = nextTheme
+        this.view.dispatch({ effects: refreshJsonHighlightEffect.of(null) })
       })
-      .catch(() => {
-        // 高亮失败时继续以可复制的纯文本展示完整 JSON。
-      })
-  }
+      this.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
 
-  update(update: ViewUpdate): void {
-    /** 显式刷新事务用于高亮器就绪或主题变化。 */
-    const needsExplicitRefresh = update.transactions.some((transaction) =>
-      transaction.effects.some((effect) => effect.is(refreshJsonHighlightEffect)),
-    )
-    if (update.docChanged || update.viewportChanged || needsExplicitRefresh) {
-      this.decorations = createVisibleJsonDecorations(update.view, this.theme)
+      void highlightCode({ code: '', language, theme: this.theme })
+        .then(() => {
+          if (!this.destroyed) this.view.dispatch({ effects: refreshJsonHighlightEffect.of(null) })
+        })
+        .catch(() => {
+          // 高亮失败时仍保留完整正文，编辑和复制不受影响。
+        })
     }
-  }
 
-  destroy(): void {
-    this.destroyed = true
-    this.themeObserver.disconnect()
-  }
-}, {
-  decorations: (plugin) => plugin.decorations,
-})
+    update(update: ViewUpdate): void {
+      /** 显式刷新事务用于高亮器就绪或主题变化。 */
+      const needsExplicitRefresh = update.transactions.some((transaction) =>
+        transaction.effects.some((effect) => effect.is(refreshJsonHighlightEffect)),
+      )
+      if (update.docChanged || update.viewportChanged || needsExplicitRefresh) {
+        this.decorations = createVisibleJsonDecorations(update.view, this.theme, language)
+      }
+    }
+
+    destroy(): void {
+      this.destroyed = true
+      this.themeObserver.disconnect()
+    }
+  }, {
+    decorations: (plugin) => plugin.decorations,
+  })
+}
+
+/** 原有只读 JSON 查看器保持原来的语言与行为。 */
+const visibleJsonHighlight = createVisibleCodeHighlight('json')
 
 /** 定义只读 JSON 查看器的稳定布局与主题变量。 */
 const jsonCodeEditorTheme = EditorView.theme({

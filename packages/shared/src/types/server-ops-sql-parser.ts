@@ -252,6 +252,12 @@ const SQL_DIAGNOSTICS: Readonly<Record<string, ServerOpsSqlDiagnosticDescriptor>
   SERVER_OPS_SQL_TOO_LARGE: { category: 'policy', message: 'SQL 长度超过安全上限' },
   SERVER_OPS_SQL_TOO_COMPLEX: { category: 'policy', message: 'SQL 结构超过安全复杂度上限' },
   SERVER_OPS_SQL_COMMENTS_UNSUPPORTED: { category: 'unsupported', message: '暂不支持 SQL 注释' },
+  SERVER_OPS_SQL_UNCLOSED_COMMENT: { category: 'syntax', message: '注释未闭合' },
+  SERVER_OPS_SQL_STATEMENT_LIMIT: { category: 'policy', message: '脚本语句条数超过上限' },
+  SERVER_OPS_SQL_DELIMITER_UNSUPPORTED: { category: 'unsupported', message: '暂不支持 DELIMITER 自定义分隔符' },
+  SERVER_OPS_SQL_DOLLAR_QUOTE_UNSUPPORTED: { category: 'unsupported', message: '暂不支持 $ 引用体或位置参数' },
+  SERVER_OPS_SQL_STATEMENT_REJECTED: { category: 'policy', message: '脚本包含不允许在写入通道执行的语句' },
+  SERVER_OPS_SQL_WRITE_REQUIRED: { category: 'policy', message: '写入通道只接受包含写操作的脚本' },
   SERVER_OPS_SQL_VARIABLE_UNSUPPORTED: { category: 'unsupported', message: '暂不支持 SQL 变量' },
   SERVER_OPS_SQL_STRING_MODE_UNSAFE: { category: 'policy', message: '当前字符串写法无法安全解析' },
   SERVER_OPS_SQL_INVALID_IDENTIFIER: { category: 'syntax', message: '标识符格式不正确' },
@@ -321,8 +327,25 @@ function isWordPart(character: string): boolean {
   return /[A-Za-z0-9_$]/u.test(character)
 }
 
-/** 将 SQL 完整切分为有界 token；注释、变量和模式相关字符串在此直接拒绝。 */
-function tokenize(sql: string, dialect: ServerOpsSqlDialect): Token[] {
+/**
+ * 词法化行为开关。
+ *
+ * 只读查询与写脚本共用同一个词法器，避免两套方言规则长期漂移；
+ * 两者的唯一差别就是注释策略。
+ */
+interface TokenizeOptions {
+  /**
+   * 注释策略。
+   *
+   * `reject` 是默认值，保持只读查询的既有合同；
+   * `skip` 供写脚本切分使用——真实迁移脚本几乎都带注释，不放宽则这类脚本完全无法运行。
+   * 只放宽注释，字符串模式、变量与转义等其它限制一律不放宽。
+   */
+  comments?: 'reject' | 'skip'
+}
+
+/** 将 SQL 完整切分为有界 token；默认拒绝注释、变量和模式相关字符串。 */
+function tokenize(sql: string, dialect: ServerOpsSqlDialect, options: TokenizeOptions = {}): Token[] {
   if (new TextEncoder().encode(sql).byteLength > MAX_SQL_BYTES) fail('SERVER_OPS_SQL_TOO_LARGE', 0, sql.length)
   const tokens: Token[] = []
   let index = 0
@@ -340,8 +363,29 @@ function tokenize(sql: string, dialect: ServerOpsSqlDialect): Token[] {
       continue
     }
     const next = sql[index + 1] ?? ''
-    if ((character === '-' && next === '-') || (character === '/' && next === '*') || character === '#') {
-      fail('SERVER_OPS_SQL_COMMENTS_UNSUPPORTED', index, index + (character === '#' ? 1 : 2))
+    const following = sql[index + 2] ?? ''
+    /** MySQL 只有 `--` 后紧跟空白或控制字符时才把它视为行注释。 */
+    const isDashComment = character === '-' && next === '-'
+      && (dialect !== 'mysql' || following === '' || /[\s\u0000-\u001f\u007f]/u.test(following))
+    const isBlockComment = character === '/' && next === '*'
+    const isHashComment = character === '#' && dialect === 'mysql'
+    if (isDashComment || isBlockComment || isHashComment) {
+      if (options.comments !== 'skip') fail('SERVER_OPS_SQL_COMMENTS_UNSUPPORTED', index, index + (character === '#' ? 1 : 2))
+      if (isBlockComment) {
+        /** MySQL/MariaDB 会执行这两类“注释”里的 SQL，不能把它们从审批计划中静默删掉。 */
+        if (dialect === 'mysql' && (following === '!' || sql.slice(index, index + 4).toUpperCase() === '/*M!')) {
+          fail('SERVER_OPS_SQL_STATEMENT_REJECTED', index, Math.min(sql.length, index + 4))
+        }
+        /** 块注释必须闭合，否则后面的语句边界无法判断。 */
+        const closingAt = sql.indexOf('*/', index + 2)
+        if (closingAt < 0) fail('SERVER_OPS_SQL_UNCLOSED_COMMENT', index, sql.length)
+        index = closingAt + 2
+      } else {
+        /** 行注释读到行尾；没有换行时读到文件结束。 */
+        const lineEnd = sql.indexOf('\n', index)
+        index = lineEnd < 0 ? sql.length : lineEnd + 1
+      }
+      continue
     }
     if (character === '@') fail('SERVER_OPS_SQL_VARIABLE_UNSUPPORTED', index, index + 1)
     if (character === '\\') {
@@ -1248,4 +1292,157 @@ function renderExpression(expression: SqlExpression, dialect: ServerOpsSqlDialec
       break
   }
   return precedence < parentPrecedence ? `(${rendered})` : rendered
+}
+
+/** 单个写脚本允许包含的最大语句条数。 */
+export const SERVER_OPS_SQL_SCRIPT_STATEMENT_LIMIT = 200
+
+/**
+ * 只读语句的首关键字白名单。
+ *
+ * 刻意**不含 `WITH`**：`WITH x AS (...) INSERT INTO ...` 这类 CTE 写入会被误判成只读，
+ * 因此宁可把 `WITH` 一律按写入处理。
+ */
+const SERVER_OPS_SQL_READ_ONLY_HEADS: ReadonlySet<string> = new Set(['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'TABLE', 'VALUES'])
+
+/**
+ * 会话控制语句首关键字。
+ *
+ * 事务由执行器统一控制，因此这些语句一律整脚本拒绝，而不是交由引擎各自解释。
+ */
+const SERVER_OPS_SQL_SESSION_CONTROL_HEADS: ReadonlySet<string> = new Set([
+  'USE', 'SET', 'DELIMITER', 'START', 'BEGIN', 'COMMIT', 'END', 'ROLLBACK', 'SAVEPOINT', 'RELEASE', 'LOCK', 'UNLOCK',
+  /** SQLite 的外部文件、连接级配置与独立事务控制入口。 */
+  'ATTACH', 'DETACH', 'PRAGMA', 'VACUUM',
+])
+
+/**
+ * 取出一条语句的首关键字。
+ *
+ * 复用同一个词法器而不是对原文做正则：语句可能以注释开头（`-- 说明\nUPDATE ...`），
+ * 正则会把注释里的单词当成语句类型。
+ *
+ * @param statement 已切分的单条语句
+ * @param dialect SQL 方言
+ * @returns 大写首关键字；无法判定时返回 `UNKNOWN`
+ */
+export function getServerOpsSqlStatementHead(statement: string, dialect: ServerOpsSqlDialect): string {
+  const tokens = tokenize(statement, dialect, { comments: 'skip' })
+  for (const token of tokens) {
+    if (token.kind === 'eof') break
+    if (token.kind === 'word') return token.value.toUpperCase()
+    /** 括号开头的语句（例如 `(SELECT ...) UNION ...`）没有可判定的写类别，按未知处理。 */
+    break
+  }
+  return 'UNKNOWN'
+}
+
+/** 判断首关键字是否属于必须拒绝的会话控制语句。 */
+export function isServerOpsSqlSessionControlHead(head: string): boolean {
+  return SERVER_OPS_SQL_SESSION_CONTROL_HEADS.has(head)
+}
+
+/** 判断首关键字是否属于只读语句。 */
+export function isServerOpsSqlReadOnlyHead(head: string): boolean {
+  return SERVER_OPS_SQL_READ_ONLY_HEADS.has(head)
+}
+
+/** 写脚本计划中的单条语句。 */
+export interface ServerOpsSqlWriteStatement {
+  /** 原样保留注释与格式的语句正文。 */
+  text: string
+  /** 大写首关键字。 */
+  head: string
+  /** 是否为写语句；只读语句可以与写语句混排，但不能全是只读。 */
+  mutating: boolean
+}
+
+/** 写脚本计划。 */
+export interface ServerOpsSqlWritePlan {
+  statements: ServerOpsSqlWriteStatement[]
+}
+
+/**
+ * 把写脚本编译成可逐条执行的计划。
+ *
+ * 三条拒绝规则都在这里定死，主进程与 utility 共用同一份判定：
+ * ①会话控制语句（事务由执行器统一控制）；②没有写语句的脚本（写通道不该被用来跑只读查询，
+ * 那样会绕过只读链的敏感列遮罩与结果预算）；③语句条数超限（由切分器负责）。
+ *
+ * @param sql 脚本正文
+ * @param dialect SQL 方言
+ * @returns 逐条语句及其写类别
+ */
+export function planServerOpsSqlWrite(sql: string, dialect: ServerOpsSqlDialect): ServerOpsSqlWritePlan {
+  const statements = splitServerOpsSqlStatements(sql, dialect).map((text) => {
+    const head = getServerOpsSqlStatementHead(text, dialect)
+    if (isServerOpsSqlSessionControlHead(head)) fail('SERVER_OPS_SQL_STATEMENT_REJECTED', 0, sql.length)
+    return { text, head, mutating: !isServerOpsSqlReadOnlyHead(head) }
+  })
+  if (!statements.some((statement) => statement.mutating)) fail('SERVER_OPS_SQL_WRITE_REQUIRED', 0, sql.length)
+  return { statements }
+}
+
+/**
+ * 把一段写脚本切成可逐条执行的语句。
+ *
+ * 刻意复用与只读查询**完全相同**的方言词法器（{@link tokenize}），
+ * 而不是另写一个切分器：两套词法规则迟早会漂移，最终变成两套注入判定。
+ * 与读路径的唯一差别是允许跳过注释——真实迁移脚本几乎都带注释，不放宽则这类脚本无法运行。
+ *
+ * 语句按 token 的源偏移从**原文**切片，因此注释与格式原样保留：
+ * 确认界面上看到的正文与实际发往数据库的一字不差，不会出现「审批的是模板、执行的是另一样」。
+ *
+ * @param sql 脚本正文
+ * @param dialect SQL 方言
+ * @returns 去掉首尾空白后的非空语句列表
+ */
+export function splitServerOpsSqlStatements(sql: string, dialect: ServerOpsSqlDialect): string[] {
+  const tokens = tokenize(sql, dialect, { comments: 'skip' })
+  const statements: string[] = []
+  let start = 0
+  /**
+   * 当前片段里是否出现过真正的 token。
+   *
+   * 注释在切分时要保留，因此按原文切片；但「只有注释」的片段不是可执行语句，
+   * 必须靠这个标记区分，否则纯注释脚本会被当成一条语句发往数据库。
+   */
+  let hasContent = false
+
+  /** 收集一条语句；空片段（连续分号或纯注释）直接跳过。 */
+  const pushStatement = (text: string, content: boolean): void => {
+    if (!content) return
+    const trimmed = text.trim()
+    if (!trimmed) return
+    if (statements.length >= SERVER_OPS_SQL_SCRIPT_STATEMENT_LIMIT) fail('SERVER_OPS_SQL_STATEMENT_LIMIT', 0, sql.length)
+    statements.push(trimmed)
+  }
+
+  for (const token of tokens) {
+    if (token.kind === 'eof') {
+      pushStatement(sql.slice(start, token.from), hasContent)
+      break
+    }
+    /**
+     * `$$`、`$tag$` 引用体与 PostgreSQL 位置参数都会让语句边界失效。
+     * 词法器把 `$` 视为单词字符，因此任何以 `$` 开头的词都拒绝，宁可拒绝也不猜边界。
+     */
+    if (token.kind === 'word' && token.value.startsWith('$')) {
+      fail('SERVER_OPS_SQL_DOLLAR_QUOTE_UNSUPPORTED', token.from, token.to)
+    }
+    /** DELIMITER 之后分号不再是语句结束符，整脚本拒绝。 */
+    if (token.kind === 'word' && token.value.toUpperCase() === 'DELIMITER') {
+      fail('SERVER_OPS_SQL_DELIMITER_UNSUPPORTED', token.from, token.to)
+    }
+    if (token.kind === 'punctuation' && token.value === ';') {
+      pushStatement(sql.slice(start, token.from), hasContent)
+      start = token.to
+      hasContent = false
+      continue
+    }
+    hasContent = true
+  }
+  /** 只有注释或空白的脚本没有可执行内容，按不完整 SQL 拒绝。 */
+  if (statements.length === 0) fail('SERVER_OPS_SQL_INVALID', 0, sql.length)
+  return statements
 }

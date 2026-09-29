@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>提示词编排工厂 · 业务地图与界面对照</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* 与 DutyDeck globals.css 的 :root / .dark 取值一致；本页是文档不是原型，只用中性面与发丝线。 */
+:root{
+  --background:0 0% 100%;--foreground:0 0% 3.9%;--muted:0 0% 96.1%;--muted-foreground:0 0% 45.1%;
+  --border:0 0% 89.8%;--card:0 0% 100%;--content-area:0 0% 100%;--sidebar-surface:60 14.3% 98.6%;
+  --primary:0 0% 9%;--primary-foreground:0 0% 98%;--radius:6px;
+  --shadow-sm:0 1px 2px 0 rgb(0 0 0 / .05), 0 1px 1px 0 rgb(0 0 0 / .04);
+  --ok:158 40% 33%;--fac:214 42% 46%;--warn:35 62% 43%;--bad:0 62% 50%;
+}
+.dark{
+  --background:0 0% 10%;--foreground:0 0% 98%;--muted:0 0% 17%;--muted-foreground:0 0% 63.9%;
+  --border:0 0% 22%;--card:0 0% 13%;--content-area:0 0% 7%;--sidebar-surface:0 0% 10%;
+  --primary:0 0% 98%;--primary-foreground:0 0% 9%;
+  --shadow-sm:0 1px 3px 0 rgb(0 0 0 / .5), inset 0 1px 0 0 hsl(0 0% 100% / .06);
+  --ok:158 38% 55%;--fac:214 42% 63%;--warn:35 62% 58%;--bad:0 55% 58%;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:hsl(var(--content-area));color:hsl(var(--foreground));
+  font-family:'Inter','PingFang SC',-apple-system,system-ui,sans-serif;font-size:13px;line-height:1.6;
+  font-feature-settings:'cv11','ss01','ss03','tnum';-webkit-font-smoothing:antialiased;padding:28px 32px 60px}
+.wrap{max-width:1180px;margin:0 auto}
+h1{font-size:19px;font-weight:600;letter-spacing:-.01em}
+.lede{margin-top:6px;color:hsl(var(--muted-foreground));font-size:13px;max-width:82ch}
+h2{font-size:13px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;
+  color:hsl(var(--muted-foreground));margin:34px 0 12px}
+.tag{font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;border:1px solid hsl(var(--border));
+  color:hsl(var(--muted-foreground));white-space:nowrap}
+.tag.ok{border-color:hsl(var(--ok)/.45);color:hsl(var(--ok));background:hsl(var(--ok)/.07)}
+.tag.half{border-color:hsl(var(--warn)/.45);color:hsl(var(--warn));background:hsl(var(--warn)/.07)}
+.tag.miss{border-color:hsl(var(--bad)/.45);color:hsl(var(--bad));background:hsl(var(--bad)/.07)}
+code{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;background:hsl(var(--muted));
+  border-radius:3px;padding:1px 5px}
+
+/* 四环节主线 */
+.stages{display:grid;grid-template-columns:repeat(4,1fr);gap:0;align-items:stretch}
+@media (max-width:1040px){.stages{grid-template-columns:1fr 1fr}}
+@media (max-width:640px){.stages{grid-template-columns:1fr}}
+.stage{position:relative;background:hsl(var(--card));border:1px solid hsl(var(--border));
+  border-right:0;padding:14px 16px 16px}
+.stage:last-child{border-right:1px solid hsl(var(--border))}
+.stage:first-child{border-radius:var(--radius) 0 0 var(--radius)}
+.stage:last-child{border-radius:0 var(--radius) var(--radius) 0}
+@media (max-width:1040px){
+  .stage{border-right:1px solid hsl(var(--border));border-radius:0}
+  .stage:nth-child(odd){border-radius:var(--radius) 0 0 0}
+}
+.stage .no{font-size:11px;color:hsl(var(--muted-foreground));font-family:ui-monospace,Menlo,monospace}
+.stage h3{font-size:14px;font-weight:600;margin:2px 0 4px}
+.stage .q{font-size:12px;color:hsl(var(--muted-foreground));min-height:38px}
+.stage dl{margin-top:10px;border-top:1px solid hsl(var(--border));padding-top:9px}
+.stage dt{font-size:11px;color:hsl(var(--muted-foreground));letter-spacing:.02em;margin-top:7px}
+.stage dt:first-child{margin-top:0}
+.stage dd{font-size:12.5px}
+.stage .verdict{margin-top:10px;display:flex;gap:6px;align-items:center}
+
+/* 迭代回环 */
+.loop{margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  font-size:12px;color:hsl(var(--muted-foreground))}
+.loop .arc{flex:1 1 320px;height:26px;border:1px dashed hsl(var(--border));border-top:0;
+  border-radius:0 0 10px 10px;position:relative}
+.loop .arc span{position:absolute;right:-2px;bottom:-9px;font-size:12px}
+
+/* 主键区块 */
+.spine{margin-top:12px;background:hsl(var(--sidebar-surface));border:1px solid hsl(var(--border));
+  border-left:3px solid hsl(var(--fac));border-radius:var(--radius);padding:13px 16px}
+.spine b{font-weight:600}
+
+/* 对照表 */
+table{width:100%;border-collapse:collapse;background:hsl(var(--card));
+  border:1px solid hsl(var(--border));border-radius:var(--radius);overflow:hidden}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid hsl(var(--border));font-size:12.5px;vertical-align:top}
+th{font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;
+  color:hsl(var(--muted-foreground));background:hsl(var(--sidebar-surface))}
+tr:last-child td{border-bottom:0}
+td.mono{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:hsl(var(--muted-foreground))}
+
+/* 缺口清单 */
+.gaps{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:820px){.gaps{grid-template-columns:1fr}}
+.gapcard{background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:var(--radius);padding:13px 15px}
+.gapcard h4{font-size:12.5px;font-weight:600;margin-bottom:7px;display:flex;align-items:center;gap:7px}
+.gapcard ul{list-style:none}
+.gapcard li{font-size:12.5px;padding:5px 0;border-bottom:1px solid hsl(var(--border));display:flex;gap:8px}
+.gapcard li:last-child{border-bottom:0}
+.gapcard li .n{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:hsl(var(--muted-foreground));flex:0 0 22px}
+.gapcard li .why{color:hsl(var(--muted-foreground));font-size:11.5px;display:block}
+.foot{margin-top:34px;padding-top:14px;border-top:1px solid hsl(var(--border));
+  font-size:12px;color:hsl(var(--muted-foreground))}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>提示词编排工厂 · 业务地图与界面对照</h1>
+  <p class="lede">
+    这个产品实际有四个环节：<b>定义 → 运行 → 评测 → 交付</b>。本页把每个环节的入口、状态、历史、产出列出来，
+    再和当前界面对照 —— 目的是在继续调视觉之前，先把"哪一块还没有界面"摊清楚。
+  </p>
+
+  <h2>四个环节</h2>
+  <div class="stages">
+
+    <div class="stage">
+      <div class="no">① 定义</div>
+      <h3>场景定义</h3>
+      <div class="q">这个能力长什么样：步骤、提示词、输入输出、需要外部提供什么。</div>
+      <dl>
+        <dt>入口</dt><dd>「场景定义」tab</dd>
+        <dt>状态</dt><dd>当前生效 <code>v4</code> / 草案 <code>v5</code> 待采纳</dd>
+        <dt>历史</dt><dd><b>版本列表与回滚</b>（缺）</dd>
+        <dt>产出</dt><dd>一份可运行的场景定义（含版本）</dd>
+      </dl>
+      <div class="verdict"><span class="tag half">有，缺版本历史</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="no">② 运行</div>
+      <h3>跑一次</h3>
+      <div class="q">用一条真实输入跑一遍，看每一步的过程和这一次的结果。</div>
+      <dl>
+        <dt>入口</dt><dd>「运行」tab + 提交任务</dd>
+        <dt>状态</dt><dd>运行中 / 完成 / partial / 中断</dd>
+        <dt>历史</dt><dd>提交历史（有）</dd>
+        <dt>产出</dt><dd>一次运行记录 + 完整轨迹</dd>
+      </dl>
+      <div class="verdict"><span class="tag half">有，缺取消与批量</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="no">③ 评测</div>
+      <h3>量化好坏</h3>
+      <div class="q">这套提示词到底好不好、比上一版好了吗。产品的心脏在这里。</div>
+      <dl>
+        <dt>入口</dt><dd><b>缺</b>（现在只是运行页右栏一个按钮）</dd>
+        <dt>前置</dt><dd><b>数据集</b>：用例从哪来、谁维护（缺）</dd>
+        <dt>历史</dt><dd><b>评测记录</b>（缺）</dd>
+        <dt>产出</dt><dd>一组指标 + 与基线的差异</dd>
+      </dl>
+      <div class="verdict"><span class="tag miss">半个：能看单次分数，无历史无数据集</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="no">④ 交付</div>
+      <h3>给别的项目用</h3>
+      <div class="q">把这个能力交给关联项目接入，并且知道它接得怎么样。</div>
+      <dl>
+        <dt>入口</dt><dd>顶栏「导出」（只有动作，没有页面）</dd>
+        <dt>状态</dt><dd><b>缺</b>：导出过几次、哪个版本、对方接没接</dd>
+        <dt>历史</dt><dd><b>导出记录</b>（缺）</dd>
+        <dt>产出</dt><dd>能力包文件 + 接入说明</dd>
+      </dl>
+      <div class="verdict"><span class="tag miss">半个：有导出预览，无状态无回流</span></div>
+    </div>
+
+  </div>
+
+  <div class="loop">
+    <span>迭代环：评测发现哪几条没过 → 回定义改 → 再评测 → 与基线对比</span>
+    <span class="arc"><span>↩</span></span>
+  </div>
+
+  <h2>贯穿四个环节的主键：版本</h2>
+  <div class="spine">
+    四个环节必须能被同一个身份串起来：<b>场景 ID + 版本号</b>。定义产出 <code>v5</code>；运行记录挂在 <code>v5</code> 上；
+    评测分数属于 <code>(v5, 数据集版本)</code>；交付出去的能力包也是 <code>v5</code>。<br>
+    <b>当前缺口</b>：版本只出现在「场景定义」页。运行记录只有 <code>run id</code>、评测只有分数、导出没有版本号 ——
+    于是"改了提示词之后，之前那些运行记录是哪一版的"答不上来。这是结构问题，不是 UI 问题。
+  </div>
+
+  <h2>界面地图：当前 vs 应有</h2>
+  <table>
+    <thead><tr><th>环节</th><th>当前界面</th><th>应有界面</th><th>差在哪</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>定义</b></td>
+        <td>「场景定义」tab</td>
+        <td>同左 + 版本列表/回滚</td>
+        <td>Agent 会反复改，没有回滚用户不敢让它放手改</td>
+      </tr>
+      <tr>
+        <td><b>运行</b></td>
+        <td>「运行」tab（含提交历史）</td>
+        <td>同左 + 取消 / 批量 / 只重跑失败步</td>
+        <td>300 章的小说现在要提交 300 次</td>
+      </tr>
+      <tr>
+        <td><b>评测</b></td>
+        <td class="mono">运行页右栏的「指标/对比」两页</td>
+        <td><b>独立一级 tab</b>：数据集 + 评测历史 + 版本对比 + 逐条判据结果</td>
+        <td>核心动作藏在别人的右栏里；无数据集、无历史</td>
+      </tr>
+      <tr>
+        <td><b>交付</b></td>
+        <td class="mono">顶栏一个「导出」按钮</td>
+        <td><b>独立一级 tab</b>：导出历史 + 包版本对应 + 关联项目接入状态</td>
+        <td>只出不进：不知道谁在用、用的哪版、有没有改坏</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>缺口清单</h2>
+  <div class="gaps">
+    <div class="gapcard">
+      <h4><span class="tag miss">P0</span>不做就用不起来</h4>
+      <ul>
+        <li><span class="n">01</span><span>数据集无入口<span class="why">没有数据集，评测只能跑上一次的输入，和"再提交一次"没区别</span></span></li>
+        <li><span class="n">02</span><span>失败案例回灌缺失<span class="why">迭代闭环 = 失败→固化成用例→改→重跑。缺了它评测集永远是初始那几条</span></span></li>
+        <li><span class="n">03</span><span>版本历史与回滚<span class="why">没有回滚，用户就不敢让 Agent 放手改</span></span></li>
+        <li><span class="n">04</span><span>空态与新建流程<span class="why">新项目打开是空的、新建场景之后是什么，整段没设计</span></span></li>
+      </ul>
+    </div>
+    <div class="gapcard">
+      <h4><span class="tag half">P1</span>用起来会疼</h4>
+      <ul>
+        <li><span class="n">05</span><span>批量提交与排队<span class="why">一本小说 300 章；连续提交 10 个任务的排队状态也没有</span></span></li>
+        <li><span class="n">06</span><span>只重跑失败步骤<span class="why">文案里承诺过，界面上没有这个动作</span></span></li>
+        <li><span class="n">07</span><span>评测历史与版本对比<span class="why">要证明 v4 比 v3 好，需要两次评测都在</span></span></li>
+        <li><span class="n">08</span><span>逐条判据的通过情况<span class="why">现在只有聚合分数，看不到"第 3 条判据有 4 个用例没过"</span></span></li>
+        <li><span class="n">09</span><span>取消 / 中断运行<span class="why">历史里有"已中断"，却没有取消按钮</span></span></li>
+        <li><span class="n">10</span><span>成本可见<span class="why">评测是烧钱的，状态条只有"预算内"三个字</span></span></li>
+        <li><span class="n">11</span><span>虚拟接入 → 真实接入<span class="why">现在只有"桩 / 4 比 4 一致"，没有"该项目已接真接口"</span></span></li>
+        <li><span class="n">12</span><span>包版本与场景版本对应<span class="why">导出后场景继续改，包还是旧的，两者关系没表达</span></span></li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>建议的界面结构</h2>
+  <table>
+    <thead><tr><th>tab</th><th>承担什么</th></tr></thead>
+    <tbody>
+      <tr><td><b>运行</b></td><td>提交任务 · 本次流程与输出 · <b>提交历史作为它的子视图</b></td></tr>
+      <tr><td><b>评测</b></td><td>数据集管理 · 运行评测 · 评测历史 · 版本对比 · 逐条判据结果</td></tr>
+      <tr><td><b>场景定义</b></td><td>步骤与提示词 · 契约与评审 · 版本列表与回滚</td></tr>
+      <tr><td><b>交付</b></td><td>导出能力包 · 导出历史 · 包与版本对应 · 关联项目接入状态</td></tr>
+    </tbody>
+  </table>
+  <p class="foot">
+    为什么把「提交历史」并进「运行」而不是继续当一级 tab：面板最窄只有 300px，四个 tab 各约 75px 是下限；
+    五个 tab 会挤到 60px 以下，中文标签放不下。而「历史」与「运行」本来就是同一次活动的两种视图。
+    <br><br>
+    这份地图只回答"界面该有哪些板块"。每个板块内部的交互（比如数据集怎么建、用例怎么从失败运行里长出来）
+    等这张结构确认后再逐个展开。
+  </p>
+
+</div>
+</body>
+</html>

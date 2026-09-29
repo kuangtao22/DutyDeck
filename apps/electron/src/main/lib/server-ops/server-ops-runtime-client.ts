@@ -19,12 +19,14 @@ import type { ServerOpsConsoleAck, ServerOpsConsoleExitEvent, ServerOpsConsoleId
   ServerOpsConsoleOutputEvent, ServerOpsConsoleResizeInput, ServerOpsTerminalExitEvent, ServerOpsTerminalOutputAck,
   ServerOpsTerminalOutputEvent } from '@proma/shared'
 import type { ServerOpsConsoleRuntimeStart } from '../../../utility/server-ops/server-ops-console-runtime'
+import type { ServerOpsDataWriteResult } from '@proma/shared'
 import {
   parseServerOpsRuntimeMessage,
   type ServerOpsRuntimeConnectRequest,
   type ServerOpsRuntimeConnectResult,
   type ServerOpsRuntimeDataReadRequest,
   type ServerOpsRuntimeDataReadResult,
+  type ServerOpsRuntimeDataWriteRequest,
   type ServerOpsRuntimeExecResult,
   type ServerOpsRuntimeLogExitReason,
   type ServerOpsRuntimeMessage,
@@ -95,6 +97,17 @@ interface PendingDataRead {
   /** 收到取消后继续占用 pending，直到 utility 确认底层资源已释放。 */
   cancelRequested: boolean
   /** 请求结算时移除 AbortSignal 监听，避免长期会话积累闭包。 */
+  removeAbortListener: () => void
+}
+
+/** 与读取同构的写请求状态；取消同样保留到 utility 确认资源已释放。 */
+interface PendingDataWrite {
+  hostId: string
+  connectionId: string
+  resolve: (result: ServerOpsDataWriteResult) => void
+  reject: (error: ServerOpsRuntimeError) => void
+  timeout: ReturnType<typeof setTimeout>
+  cancelRequested: boolean
   removeAbortListener: () => void
 }
 
@@ -218,6 +231,8 @@ export class ServerOpsRuntimeClient {
   private readonly pendingExecs = new Map<string, PendingExec>()
   /** 在途的数据服务读取；同一 hostId 的连接关闭时必须立即拒绝。 */
   private readonly pendingDataReads = new Map<string, PendingDataRead>()
+  /** 在途写请求；与读取分开登记，取消同样按完整身份匹配。 */
+  private readonly pendingDataWrites = new Map<string, PendingDataWrite>()
   /** SFTP 在途请求最多 64 个，窗口资源归属单独保留至显式关闭。 */
   private readonly pendingSftp = new Map<string, PendingSftp>()
   private readonly sftpOwners = new Map<string, Map<string, string>>()
@@ -325,6 +340,13 @@ export class ServerOpsRuntimeClient {
       pending.removeAbortListener()
       pending.reject(new ServerOpsRuntimeError('SERVER_OPS_CONNECTION_CLOSED', 'SSH 连接已断开'))
       this.pendingDataReads.delete(requestId)
+    }
+    for (const [requestId, pending] of this.pendingDataWrites) {
+      if (pending.hostId !== hostId || pending.connectionId !== connectionId) continue
+      clearTimeout(pending.timeout)
+      pending.removeAbortListener()
+      pending.reject(new ServerOpsRuntimeError('SERVER_OPS_DATA_WRITE_OUTCOME_UNKNOWN', '数据库写入结果无法确认，请先核对数据'))
+      this.pendingDataWrites.delete(requestId)
     }
     this.port?.postMessage({ type: 'server-ops.disconnect', hostId, connectionId })
   }
@@ -546,6 +568,64 @@ export class ServerOpsRuntimeClient {
     })
   }
 
+  /**
+   * 下发一次写库请求。
+   *
+   * 与 `dataRead` 同构：主进程侧 deadline 比 utility 自身超时略长，先拿到 utility 的分类结果；
+   * 取消消息无法送达时终止共享 utility，确保失联的写事务不会继续占用底层资源。
+   *
+   * @param input 已由调用方完成身份复核与语句切分的写请求
+   * @param signal 取消信号
+   * @returns 写执行结果
+   */
+  async dataWrite(input: Omit<ServerOpsRuntimeDataWriteRequest, 'requestId'>, signal?: AbortSignal): Promise<ServerOpsDataWriteResult> {
+    /** 直连不依赖 SSH 连接，只有经由隧道时才要求连接仍然活跃。 */
+    if (input.transport === 'ssh' && this.activeConnections.get(input.connectionId) !== input.hostId) {
+      throw new ServerOpsRuntimeError('SERVER_OPS_CONNECTION_NOT_ACTIVE', 'SSH 连接未激活')
+    }
+    await this.start()
+    if (signal?.aborted) throw new ServerOpsRuntimeError('SERVER_OPS_DATA_WRITE_CANCELLED', '数据库写入已取消')
+    /** 本次写入的跨进程请求 ID，只在本 client 生命周期内唯一。 */
+    const requestId = this.dependencies.uuid()
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (this.pendingDataWrites.get(requestId) !== pending) return
+        this.pendingDataWrites.delete(requestId)
+        pending.removeAbortListener()
+        /** utility 未在总预算内确认终态时终止进程，写事务不会留在一个失联的进程里。 */
+        this.stop()
+        reject(new ServerOpsRuntimeError('SERVER_OPS_DATA_WRITE_TIMEOUT', '数据库写入超时，结果需要核对'))
+      }, input.timeoutMs + 1000)
+      /** AbortSignal 只发送一次精确取消，pending 保留到取消 ACK。 */
+      const onAbort = (): void => {
+        const current = this.pendingDataWrites.get(requestId)
+        if (!current || current.cancelRequested) return
+        current.cancelRequested = true
+        try {
+          this.port?.postMessage({ type: 'server-ops.data-write-cancel', requestId, hostId: input.hostId, connectionId: input.connectionId })
+        } catch {
+          /** 取消没有送达时只能终止整个 utility；是否已提交无法从本地推断。 */
+          this.stop()
+        }
+      }
+      const removeAbortListener = (): void => signal?.removeEventListener('abort', onAbort)
+      const pending: PendingDataWrite = {
+        hostId: input.hostId, connectionId: input.connectionId, resolve, reject, timeout,
+        cancelRequested: false, removeAbortListener,
+      }
+      this.pendingDataWrites.set(requestId, pending)
+      signal?.addEventListener('abort', onAbort, { once: true })
+      try {
+        this.port?.postMessage({ type: 'server-ops.data-write', input: { ...input, requestId } })
+      } catch {
+        clearTimeout(timeout)
+        this.pendingDataWrites.delete(requestId)
+        removeAbortListener()
+        reject(new ServerOpsRuntimeError('SERVER_OPS_DATA_DISPATCH_FAILED', '数据库写入请求下发失败'))
+      }
+    })
+  }
+
   /** 向精确远程 PTY 写入用户输入。 */
   input(hostId: string, connectionId: string, data: string): void {
     this.port?.postMessage({ type: 'server-ops.terminal-input', hostId, connectionId, data })
@@ -626,6 +706,7 @@ export class ServerOpsRuntimeClient {
     this.rejectPending(new ServerOpsRuntimeError('SERVER_OPS_RUNTIME_STOPPED', 'SSH 运行时已停止'))
     this.rejectPendingExec(new ServerOpsRuntimeError('SERVER_OPS_RUNTIME_STOPPED', 'SSH 运行时已停止'))
     this.rejectPendingDataReads(new ServerOpsRuntimeError('SERVER_OPS_RUNTIME_STOPPED', 'SSH 运行时已停止'))
+    this.rejectPendingDataWrites(new ServerOpsRuntimeError('SERVER_OPS_DATA_WRITE_OUTCOME_UNKNOWN', '数据库写入结果无法确认，请先核对数据'))
     this.rejectPendingLogStarts(new ServerOpsRuntimeError('SERVER_OPS_RUNTIME_STOPPED', 'SSH 运行时已停止'))
     this.finishAllLogStreams('error', 'SERVER_OPS_RUNTIME_STOPPED')
     this.finishAllConsoles(new ServerOpsRuntimeError('SERVER_OPS_RUNTIME_STOPPED', 'SSH 运行时已停止'))
@@ -763,6 +844,26 @@ export class ServerOpsRuntimeClient {
       pending.reject(new ServerOpsRuntimeError('SERVER_OPS_DATA_CANCELLED', '数据库读取已取消'))
       return
     }
+    if (message.type === 'server-ops.data-write-result') {
+      const pending = this.pendingDataWrites.get(message.requestId)
+      if (!pending || pending.hostId !== message.hostId || pending.connectionId !== message.connectionId) return
+      clearTimeout(pending.timeout)
+      this.pendingDataWrites.delete(message.requestId)
+      pending.removeAbortListener()
+      /** utility 的终态结果比取消意图更权威；已提交成功不能被改写成“已取消”。 */
+      pending.resolve(message.result)
+      return
+    }
+    if (message.type === 'server-ops.data-write-cancelled') {
+      const pending = this.pendingDataWrites.get(message.requestId)
+      if (!pending || !pending.cancelRequested || pending.hostId !== message.hostId || pending.connectionId !== message.connectionId) return
+      clearTimeout(pending.timeout)
+      this.pendingDataWrites.delete(message.requestId)
+      pending.removeAbortListener()
+      /** ACK 只证明底层资源已停止，不能证明事务已回滚。 */
+      pending.reject(new ServerOpsRuntimeError('SERVER_OPS_DATA_WRITE_OUTCOME_UNKNOWN', '数据库写入结果无法确认，请先核对数据'))
+      return
+    }
     if (message.type === 'server-ops.error' && message.requestId) {
       /** 对应 requestId 的待处理连接。 */
       const pending = this.pendingConnects.get(message.requestId)
@@ -776,6 +877,15 @@ export class ServerOpsRuntimeClient {
         dataRead.removeAbortListener()
         dataRead.reject(dataRead.cancelRequested
           ? new ServerOpsRuntimeError('SERVER_OPS_DATA_CANCELLED', '数据库读取已取消')
+          : new ServerOpsRuntimeError(message.code, message.message))
+      }
+      const dataWrite = this.pendingDataWrites.get(message.requestId)
+      if (dataWrite && dataWrite.hostId === message.hostId && dataWrite.connectionId === message.connectionId) {
+        clearTimeout(dataWrite.timeout)
+        this.pendingDataWrites.delete(message.requestId)
+        dataWrite.removeAbortListener()
+        dataWrite.reject(dataWrite.cancelRequested
+          ? new ServerOpsRuntimeError('SERVER_OPS_DATA_WRITE_OUTCOME_UNKNOWN', '数据库写入结果无法确认，请先核对数据')
           : new ServerOpsRuntimeError(message.code, message.message))
       }
       return
@@ -879,6 +989,13 @@ export class ServerOpsRuntimeClient {
         pending.removeAbortListener()
         pending.reject(new ServerOpsRuntimeError('SERVER_OPS_CONNECTION_CLOSED', 'SSH 连接已断开'))
       }
+      for (const [requestId, pending] of this.pendingDataWrites) {
+        if (pending.connectionId !== message.event.connectionId) continue
+        clearTimeout(pending.timeout)
+        this.pendingDataWrites.delete(requestId)
+        pending.removeAbortListener()
+        pending.reject(new ServerOpsRuntimeError('SERVER_OPS_DATA_WRITE_OUTCOME_UNKNOWN', '数据库写入结果无法确认，请先核对数据'))
+      }
       for (const listener of this.exitListeners) listener(message.event)
     }
   }
@@ -907,6 +1024,7 @@ export class ServerOpsRuntimeClient {
     this.rejectPending(error)
     this.rejectPendingExec(error)
     this.rejectPendingDataReads(error)
+    this.rejectPendingDataWrites(new ServerOpsRuntimeError('SERVER_OPS_DATA_WRITE_OUTCOME_UNKNOWN', '数据库写入结果无法确认，请先核对数据'))
     this.rejectPendingLogStarts(error)
     this.finishAllLogStreams('error', error.code)
     this.finishAllConsoles(error)
@@ -1002,6 +1120,16 @@ export class ServerOpsRuntimeClient {
       pending.reject(error)
     }
     this.pendingDataReads.clear()
+  }
+
+  /** 拒绝并清理全部在途写请求；runtime 失联时事务结果一律不能由本地猜测。 */
+  private rejectPendingDataWrites(error: ServerOpsRuntimeError): void {
+    for (const pending of this.pendingDataWrites.values()) {
+      clearTimeout(pending.timeout)
+      pending.removeAbortListener()
+      pending.reject(error)
+    }
+    this.pendingDataWrites.clear()
   }
 
   /** 拒绝并清理全部待启动日志流。 */

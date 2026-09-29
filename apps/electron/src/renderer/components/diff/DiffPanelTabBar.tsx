@@ -6,7 +6,7 @@
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { Blocks, Brain, Braces, CalendarDays, Clock, Columns2, FolderOpen, Globe, ListTodo, MessageCircle, PanelRight, Plus, Repeat2, Server, ServerCog, SquareTerminal, Workflow, X } from 'lucide-react'
+import { Blocks, Brain, Braces, CalendarDays, Clock, Columns2, Factory, FolderOpen, Globe, ListTodo, MessageCircle, PanelRight, Plus, Repeat2, Server, ServerCog, SquareTerminal, Workflow, X } from 'lucide-react'
 import { OBSIDIAN_NAME, ObsidianIcon } from '@/components/obsidian/obsidian-brand'
 import { cn } from '@/lib/utils'
 import { getScrollLeftToRevealTab } from '@/lib/tab-visibility'
@@ -522,14 +522,6 @@ export function DiffPanelTabBar({
                   <Brain className="size-3.5" />
                   打开项目记忆
                 </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => onOpenWorkspaceComponent('server-ops')}>
-                  <Server className="size-3.5" />
-                  打开服务器运维
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => onOpenWorkspaceComponent('api-workbench')}>
-                  <Braces className="size-3.5" />
-                  打开接口工作台
-                </DropdownMenuItem>
               </>
             )}
             {onOpenChat && (
@@ -553,13 +545,35 @@ export function DiffPanelTabBar({
                 打开 {OBSIDIAN_NAME}
               </DropdownMenuItem>
             )}
-            {onOpenCanvas && (
+            {/*
+             * 自研模块单独一组，与上面的上游默认功能用分割线隔开。
+             * 顺序按日常使用频率：画布 → 运维 → 接口 → 编排工厂。
+             */}
+            {(onOpenCanvas || onOpenWorkspaceComponent) && (
               <>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem disabled={openCanvasDisabled} onSelect={onOpenCanvas}>
-                  <Workflow className="size-3.5" />
-                  打开画布
-                </DropdownMenuItem>
+                {onOpenCanvas && (
+                  <DropdownMenuItem disabled={openCanvasDisabled} onSelect={onOpenCanvas}>
+                    <Workflow className="size-3.5" />
+                    打开画布
+                  </DropdownMenuItem>
+                )}
+                {onOpenWorkspaceComponent && (
+                  <>
+                    <DropdownMenuItem onSelect={() => onOpenWorkspaceComponent('server-ops')}>
+                      <Server className="size-3.5" />
+                      打开服务器运维
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => onOpenWorkspaceComponent('api-workbench')}>
+                      <Braces className="size-3.5" />
+                      打开接口工作台
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => onOpenWorkspaceComponent('capability-factory')}>
+                      <Factory className="size-3.5" />
+                      打开编排工厂
+                    </DropdownMenuItem>
+                  </>
+                )}
               </>
             )}
           </DropdownMenuContent>

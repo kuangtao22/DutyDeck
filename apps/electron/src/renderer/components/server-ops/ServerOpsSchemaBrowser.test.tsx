@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import * as React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { ServerOpsDataRowFilters, ServerOpsDataSourceCellInput, ServerOpsDataSourceRowsInput } from '@proma/shared'
+import { ServerOpsDataReadStatus } from './ServerOpsSchemaBrowserView'
 import {
   createServerOpsSchemaBrowserController,
   createServerOpsSchemaIdleProjection,
@@ -770,3 +771,21 @@ describe('数据连接表浏览', () => {
     expect(html).toContain('Redis')
   })
 })
+  test('Given 首次读取数据库 When 渲染状态区 Then 不重复显示加载行（选库器已有提示）', () => {
+    /** 选库器已经显示「正在读取数据库…」，再叠一条进度行只是噪音。 */
+    const html = renderToStaticMarkup(<ServerOpsDataReadStatus
+      state={{ ...createServerOpsSchemaIdleProjection(), status: 'loading' }}
+      onRetry={() => undefined}
+    />)
+    expect(html).toBe('')
+  })
+
+  test('Given 刷新时画面仍是上次结果 When 渲染状态区 Then 明确说明数据是旧的', () => {
+    /** 这种情况不能静默：列表里是上一轮的数据，用户需要知道自己看的不是最新的。 */
+    const html = renderToStaticMarkup(<ServerOpsDataReadStatus
+      state={{ ...createServerOpsSchemaIdleProjection(), status: 'loading', collectedAt: 1_700_000_000_000 }}
+      onRetry={() => undefined}
+    />)
+    expect(html).toContain('正在刷新…')
+    expect(html).toContain('当前显示上次成功结果')
+  })

@@ -197,7 +197,8 @@
     "vite": "^6.0.3",
     "word-extractor": "1.0.4",
     "ws": "8.19.0",
-    "zod": "^4.0.0"
+    "zod": "^4.0.0",
+    "@proma/capability-runner": "workspace:*"
   },
   "electronmon": {
     "patterns": [

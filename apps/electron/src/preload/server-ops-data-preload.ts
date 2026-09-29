@@ -3,6 +3,10 @@ import {
   SERVER_OPS_DATA_SCHEMA_CHANNELS,
   SERVER_OPS_DATA_QUERY_CHANNELS,
   SERVER_OPS_DATA_QUERY_HISTORY_CHANNELS,
+  SERVER_OPS_DATA_WRITE_CHANNELS,
+  parseServerOpsDataWriteInput,
+  parseServerOpsDataWriteCancelInput,
+  parseServerOpsDataWriteResult,
   parseServerOpsDataQueryHistoryRecordInput,
   parseServerOpsDataQueryHistoryResultForScope,
   parseServerOpsDataQueryHistoryScope,
@@ -65,6 +69,9 @@ import type {
   ServerOpsDataQueryHistoryRecordInput,
   ServerOpsDataQueryHistoryResult,
   ServerOpsDataQueryHistoryScope,
+  ServerOpsDataWriteInput,
+  ServerOpsDataWriteResult,
+  ServerOpsDataWriteCancelInput,
 } from '@proma/shared'
 
 /** 数据服务 preload 调用主进程所需的最小接口。 */
@@ -75,6 +82,13 @@ export interface ServerOpsDataPreload {
   /** 当前库只读 SQL 与精确请求取消，两个入口共用窗口所有权。 */
   queryServerOpsDatabase(input: ServerOpsDataQueryInput): Promise<ServerOpsDataQueryResult>
   cancelServerOpsDatabaseQuery(input: ServerOpsDataQueryCancelInput): Promise<void>
+  /**
+   * 手工写库。
+   *
+   * 只接受包含写语句的脚本；切分与拒绝规则在主进程共享层判定，界面侧不做二次解释。
+   */
+  writeServerOpsDatabase(input: ServerOpsDataWriteInput): Promise<ServerOpsDataWriteResult>
+  cancelServerOpsDatabaseWrite(input: ServerOpsDataWriteCancelInput): Promise<void>
   /** 列出当前数据源数据库的本地 SQL 查询历史。 */
   listServerOpsDatabaseQueryHistory(input: ServerOpsDataQueryHistoryScope): Promise<ServerOpsDataQueryHistoryResult>
   /** 保存一次成功执行的 SQL，并返回当前 scope 的完整有界历史。 */
@@ -115,6 +129,13 @@ export function createServerOpsDataPreload(invoke: ServerOpsDataInvoke): ServerO
     cancelServerOpsDatabaseQuery: async (input) => {
       const result = await invoke(SERVER_OPS_DATA_QUERY_CHANNELS.CANCEL, parseServerOpsDataQueryCancelInput(input))
       if (result !== undefined) throw new Error('SERVER_OPS_SQL_CANCEL_RESULT_INVALID')
+    },
+    writeServerOpsDatabase: async (input) => parseServerOpsDataWriteResult(
+      await invoke(SERVER_OPS_DATA_WRITE_CHANNELS.EXECUTE, parseServerOpsDataWriteInput(input)),
+    ),
+    cancelServerOpsDatabaseWrite: async (input) => {
+      const result = await invoke(SERVER_OPS_DATA_WRITE_CHANNELS.CANCEL, parseServerOpsDataWriteCancelInput(input))
+      if (result !== undefined) throw new Error('SERVER_OPS_DATA_WRITE_CANCEL_RESULT_INVALID')
     },
     listServerOpsDatabaseQueryHistory: async (input) => {
       const scope = parseServerOpsDataQueryHistoryScope(input)

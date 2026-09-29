@@ -51,6 +51,7 @@ export type ServerOpsAuditOperation =
   | 'docker-restart'
   | 'agent-read'
   | 'data-query'
+  | 'data-write'
   | 'file-mkdir' | 'file-rename' | 'file-delete' | 'file-save' | 'file-save-as' | 'file-upload' | 'file-download'
 
 /** 审计记录处于远程动作开始或完成阶段。 */
@@ -60,7 +61,7 @@ export type ServerOpsAuditPhase = 'start' | 'result'
 export type ServerOpsAuditOutcome = 'pending' | 'success' | 'error' | 'unknown'
 
 /** 需要独立资源语义的审计对象类别。 */
-export type ServerOpsAuditResourceType = 'host-trust' | 'docker-container' | 'remote-file' | 'ops-resource' | 'data-query'
+export type ServerOpsAuditResourceType = 'host-trust' | 'docker-container' | 'remote-file' | 'ops-resource' | 'data-query' | 'data-write'
 
 /** Agent 只读运维工具允许写入审计的有界动作。 */
 export type ServerOpsAuditReadAction =
@@ -610,7 +611,7 @@ function isServerOpsAuditOperation(value: unknown): value is ServerOpsAuditOpera
     || value === 'service-enable' || value === 'service-disable'
     || value === 'trust-replace' || value === 'trust-revoke'
     || value === 'docker-start' || value === 'docker-stop' || value === 'docker-restart'
-    || value === 'agent-read' || value === 'data-query'
+    || value === 'agent-read' || value === 'data-query' || value === 'data-write'
     || value === 'file-mkdir' || value === 'file-rename' || value === 'file-delete' || value === 'file-save'
     || value === 'file-save-as' || value === 'file-upload' || value === 'file-download'
 }
@@ -628,8 +629,13 @@ export function isServerOpsAuditActorOperation(actor: unknown, operation: unknow
     || operation === 'docker-start' || operation === 'docker-stop' || operation === 'docker-restart'
     || operation === 'agent-read' || operation === 'data-query'
     || typeof operation === 'string' && operation.startsWith('file-') && isServerOpsAuditOperation(operation)
+  /**
+   * 手工写库只能由用户在运维界面显式开启并触发，所以显式列出而不是并入任何前缀判定；
+   * Agent 分支（上方）不包含它，模型不能运行脚本。
+   */
   if (actor === 'user') return typeof operation === 'string'
-    && (operation === 'data-query' || operation.startsWith('service-') || operation.startsWith('trust-') || operation.startsWith('docker-') || operation.startsWith('file-'))
+    && (operation === 'data-query' || operation === 'data-write'
+      || operation.startsWith('service-') || operation.startsWith('trust-') || operation.startsWith('docker-') || operation.startsWith('file-'))
     && isServerOpsAuditOperation(operation)
   return false
 }
@@ -647,7 +653,15 @@ export function isServerOpsAuditRecord(value: unknown): value is ServerOpsAuditR
   const isAgentReadOperation = value.operation === 'agent-read'
   /** SQL 查询对窗口用户与普通 Agent 使用同一有界审计形状。 */
   const isDataQueryOperation = value.operation === 'data-query'
-  if (isAgentReadOperation) {
+  /** 用户点击运行的脚本：SQL 绑数据源、SSH 绑主机，两者互斥，且不允许 Agent 发起。 */
+  const isDataWriteOperation = value.operation === 'data-write'
+  if (isDataWriteOperation) {
+    /** 是否绑定合法服务器主机。 */
+    const hasHost = isServerOpsId(value.hostId)
+    /** 是否绑定合法数据源。 */
+    const hasSource = isServerOpsId(value.sourceId)
+    if (hasHost === hasSource) return false
+  } else if (isAgentReadOperation) {
     /** 是否绑定合法服务器主机。 */
     const hasHost = isServerOpsId(value.hostId)
     /** 是否绑定合法数据源。 */
@@ -693,7 +707,9 @@ export function isServerOpsAuditRecord(value: unknown): value is ServerOpsAuditR
   if (isFileOperation && (value.operationId === undefined || typeof value.resourceId !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(value.resourceId))) return false
   if (isAgentReadOperation !== (value.resourceType === 'ops-resource')) return false
   if (isDataQueryOperation !== (value.resourceType === 'data-query')) return false
-  if (!isTrustOperation && !isDockerOperation && !isFileOperation && !isAgentReadOperation && !isDataQueryOperation && value.resourceType !== undefined) return false
+  if (isDataWriteOperation !== (value.resourceType === 'data-write')) return false
+  if (!isTrustOperation && !isDockerOperation && !isFileOperation && !isAgentReadOperation
+    && !isDataQueryOperation && !isDataWriteOperation && value.resourceType !== undefined) return false
   if (isDataQueryOperation) {
     if (value.operationId === undefined || typeof value.queryHash !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(value.queryHash)
       || typeof value.database !== 'string' || value.database.length < 1 || value.database.length > 64 || /\p{Cc}/u.test(value.database)
@@ -733,8 +749,19 @@ export function isServerOpsAuditRecord(value: unknown): value is ServerOpsAuditR
       if (name !== undefined && (typeof name !== 'string' || name.length < 1 || name.length > maximum
         || name.trim().length === 0 || /\p{Cc}/u.test(name))) return false
     }
-  } else if (!isDataQueryOperation && (value.scope !== undefined || value.database !== undefined || value.table !== undefined)) {
+  } else if (!isDataQueryOperation && !isDataWriteOperation
+    && (value.scope !== undefined || value.database !== undefined || value.table !== undefined)) {
     return false
+  }
+  /** 脚本运行只允许用户从运维界面发起，并且必须能关联同一次运行的开始与结果。 */
+  if (isDataWriteOperation) {
+    if (value.operationId === undefined || value.actor !== 'user' || value.windowId === undefined) return false
+    /** SQL 脚本必须给出目标库；SSH 脚本不得携带库名。 */
+    if (isServerOpsId(value.sourceId)) {
+      if (typeof value.database !== 'string' || value.database.length < 1 || value.database.length > 64 || /\p{Cc}/u.test(value.database)) return false
+    } else if (value.database !== undefined) {
+      return false
+    }
   }
   if (isDockerOperation && value.operationId === undefined) return false
   /** Agent 读取审计只保存动作及资源，不允许携带日志或命令正文。 */

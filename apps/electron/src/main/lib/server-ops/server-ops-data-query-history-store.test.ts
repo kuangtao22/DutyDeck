@@ -2,12 +2,18 @@ import { afterEach, describe, expect, spyOn, test } from 'bun:test'
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ServerOpsDataQueryHistoryRecordInput } from '@proma/shared'
+import type { ServerOpsDataQueryHistoryRecordInput, ServerOpsDataSource } from '@proma/shared'
 import { writeJsonFileAtomicSecure } from '../safe-file'
 import { ServerOpsDataQueryHistoryStore } from './server-ops-data-query-history-store'
 
 /** 每项测试创建的隔离配置根，结束后统一删除。 */
 const directories: string[] = []
+
+/** 写入确认时绑定的公开数据源快照，仅用于临时历史配置。 */
+const writeSource: ServerOpsDataSource = {
+  id: 'source-1', engine: 'mysql', transport: 'direct', address: '127.0.0.1', port: 3306,
+  label: '历史测试', database: 'app', tlsMode: 'disabled', hasPassword: false, createdAt: 1, updatedAt: 1,
+}
 
 afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
@@ -41,6 +47,45 @@ function readSnapshotSourceIds(snapshot: object | null): string[] {
 }
 
 describe('Server Ops SQL 查询历史 Store', () => {
+  test('Given 旧版 SQL 历史 When 新写执行记入历史 Then 不改旧文件且新运行文件权限为 0600', () => {
+    /** 两种历史分开保存，兼容仍在运行的旧版客户端。 */
+    const configDir = createConfigDir()
+    const store = new ServerOpsDataQueryHistoryStore(configDir)
+    store.save(createInput('SELECT 1'))
+    const oldPath = join(configDir, 'server-ops', 'query-history.json')
+    const oldBytes = readFileSync(oldPath, 'utf8')
+    store.startWrite({ ...createInput('UPDATE t SET n = 1'), source: writeSource, writeId: 'write-new' })
+    expect(readFileSync(oldPath, 'utf8')).toBe(oldBytes)
+    expect(lstatSync(join(configDir, 'server-ops', 'write-history.json')).mode & 0o777).toBe(0o600)
+    expect(store.list({ sourceId: 'source-1', database: 'app' }).entries).toHaveLength(2)
+  })
+
+  test('Given 同一 SQL 连续写入 When 记录两次开始和结束 Then 保留独立运行结果且重建后可恢复', () => {
+    /** 历史运行只写本用例目录，重复 SQL 不得折叠两次实际执行。 */
+    const configDir = createConfigDir()
+    let now = 100
+    const store = new ServerOpsDataQueryHistoryStore(configDir, { now: () => now++ })
+    const input = { ...createInput('UPDATE t SET n = n + 1'), source: writeSource, writeId: 'write-1' }
+    store.startWrite(input)
+    store.finishWrite(input, { writeId: input.writeId, database: 'app', statementCount: 1, affectedRows: 2, committed: true, outcome: 'committed', durationMs: 8, statements: [{ head: 'UPDATE', affectedRows: 2 }], warnings: [] })
+    store.startWrite({ ...input, writeId: 'write-2' })
+    const entries = new ServerOpsDataQueryHistoryStore(configDir).list({ sourceId: input.sourceId, database: input.database }).entries
+    expect(entries).toHaveLength(2)
+    expect(entries[0]?.execution).toMatchObject({ writeId: 'write-2', startedAt: 102 })
+    expect(entries[0]?.execution?.result).toBeUndefined()
+    expect(entries[1]?.execution).toMatchObject({ writeId: 'write-1', startedAt: 100, finishedAt: 101, result: { outcome: 'committed', affectedRows: 2 } })
+  })
+
+  test('Given 已保存运行身份 When 重发相同请求或写入不同目标回执 Then 拒绝覆盖或重放', () => {
+    const store = new ServerOpsDataQueryHistoryStore(createConfigDir())
+    const input = { ...createInput('UPDATE t SET n = 0'), source: writeSource, writeId: 'write-1' }
+    store.startWrite(input)
+    expect(() => store.startWrite(input)).toThrow('SERVER_OPS_DATA_WRITE_ALREADY_RECORDED')
+    expect(() => store.finishWrite(input, { writeId: 'write-other', database: 'app', statementCount: 0, affectedRows: 0, committed: false, outcome: 'unknown', durationMs: 1, statements: [], warnings: [] }))
+      .toThrow('SERVER_OPS_DATA_UNEXPECTED_RESULT')
+    expect(store.list({ sourceId: input.sourceId, database: input.database }).entries[0]?.execution?.result).toBeUndefined()
+  })
+
   test('Given 已保存历史 When 重建 Store Then 从安全 JSON 恢复且文件权限为 0600', () => {
     const configDir = createConfigDir()
     const store = new ServerOpsDataQueryHistoryStore(configDir)

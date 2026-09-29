@@ -45,6 +45,8 @@ export * from './server-ops-sql-parser'
 export * from './server-ops-postgresql-identifiers'
 export * from './server-ops-project'
 export * from './server-ops-connection-move'
+export * from './server-ops-script'
+export * from './server-ops-data-write'
 
 // 环境检测相关类型
 export * from './environment'
@@ -118,3 +120,7 @@ export * from './api-workbench-ipc'
 export * from './api-workbench-sharing'
 export * from './api-workbench-sse'
 export * from './api-workbench-cases'
+
+export * from './capability-factory'
+
+export * from './capability-factory-ipc'
