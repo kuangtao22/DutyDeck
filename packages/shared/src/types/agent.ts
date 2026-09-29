@@ -640,6 +640,7 @@ export type AgentEvent =
 
 /** Proma 内部事件类型 */
 export type PromaEvent =
+  | { type: 'run_file_changes'; snapshot: import('./agent-run-file-changes').AgentRunFileChangesSnapshot }
   | { type: 'permission_request'; request: PermissionRequest }
   | { type: 'permission_resolved'; requestId: string; behavior: 'allow' | 'deny' }
   | { type: 'ask_user_request'; request: AskUserRequest }
@@ -1935,6 +1936,7 @@ export const AGENT_IPC_CHANNELS = {
   /** 获取指定会话中仍由主进程持有的 deferred queue 快照。 */
   GET_QUEUED_MESSAGES: 'agent:get-queued-messages',
   /** 获取会话 SDKMessage（Phase 4 新格式） */
+  GET_RUN_FILE_CHANGES: 'agent:get-run-file-changes',
   GET_SDK_MESSAGES: 'agent:get-sdk-messages',
   /** 更新会话标题 */
   UPDATE_TITLE: 'agent:update-title',

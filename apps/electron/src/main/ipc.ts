@@ -1,3 +1,4 @@
+import { readAgentRunFileChanges } from './lib/agent-run-file-change-store'
 import { API_WORKBENCH_CHANNELS, apiWorkbenchManualDenialReason, isOrdinaryTopLevelAgentSession } from '@proma/shared'
 import { registerApiWorkbenchIpc } from './lib/api-workbench/api-ipc'
 import { registerCapabilityFactoryIpc } from './lib/capability-factory/capability-factory-ipc'
@@ -5420,6 +5421,12 @@ export function registerIpcHandlers(): void {
     return browserController.closeTab(input.sessionId, input.tabId)
   })
 
+
+  // 只读本轮统计元数据，不读取当前工作区重算历史。
+  ipcMain.handle(AGENT_IPC_CHANNELS.GET_RUN_FILE_CHANGES, (_, id: string) => {
+    requireVisibleSession(id)
+    return readAgentRunFileChanges(id)
+  })
 
   // 获取 Agent 会话 SDKMessage（Phase 4 新格式）
   ipcMain.handle(

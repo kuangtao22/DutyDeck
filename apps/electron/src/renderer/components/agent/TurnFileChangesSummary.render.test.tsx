@@ -73,6 +73,13 @@ describe('本轮文件改动汇总渲染', () => {
     expect(html).not.toContain('本轮未检测到受管范围内的文件改动')
     // 已有更准确的解释，不再叠加命令行范围说明。
     expect(html).not.toContain('本轮有命令行工具调用')
+    expect(html).toContain('另有改动未计入统计')
+  })
+
+  test('Given 未完整跟踪但有无法归属的改动 When 渲染 Then 仍展示证据而非静默', () => {
+    const html = renderSummary({ turnMessages: [], runObserved: false, runUnattributed: true })
+
+    expect(html).toContain('本轮检测到共享目录有改动，但无法归属到本会话')
   })
 
   test('Given 未完整跟踪且无改动 When 渲染 Then 保持静默不写结论', () => {
@@ -137,5 +144,102 @@ describe('本轮文件改动汇总渲染', () => {
     })
 
     expect(html).toContain('本轮文件改动 1')
+  })
+})
+
+
+describe('结构化文件行统计', () => {
+  test('Given 精确和未知混合 When 渲染 Then 标明部分总计且未知不伪造零值', () => {
+    const html = renderSummary({ turnMessages: [], runFiles: [
+      { path: '/p/src/a.ts', status: 'modified', statsState: 'complete', additions: 4, deletions: 2 },
+      { path: '/p/README.md', status: 'unknown', statsState: 'unavailable' },
+    ] })
+    expect(html).toContain('+4')
+    expect(html).toContain('−2')
+    expect(html).toContain('已统计部分文件')
+    expect(html).toContain('暂无行数统计')
+    expect(html).toContain('代码')
+    expect(html).toContain('配置与文档')
+    expect(html).not.toContain('+0')
+  })
+  test('Given 文件已还原 When 渲染 Then 从路径和总计剔除', () => {
+    const html = renderSummary({ turnMessages: [], runObserved: true, runPaths: ['/p/a.ts'], runFiles: [
+      { path: '/p/a.ts', status: 'unchanged', statsState: 'complete', additions: 0, deletions: 0 },
+    ] })
+    expect(html).not.toContain('a.ts')
+    expect(html).toContain('未检测到')
+  })
+  test('Given 删除和二进制 When 渲染 Then 保留文件状态并说明统计边界', () => {
+    const html = renderSummary({ turnMessages: [], runFiles: [
+      { path: '/p/deleted.ts', status: 'deleted', statsState: 'complete', additions: 0, deletions: 3 },
+      { path: '/p/photo.png', status: 'added', statsState: 'binary' },
+    ] })
+    expect(html).toContain('已删除')
+    expect(html).toContain('二进制')
+    expect(html).toContain('当前工作区')
+  })
+
+  test('Given 工具相对路径与主进程绝对路径相同 When 渲染 Then 按 basePath 合并为一行', () => {
+    const html = renderSummary({
+      turnMessages: [],
+      basePath: '/p',
+      runPaths: ['src/a.ts'],
+      runFiles: [{ path: '/p/src/a.ts', status: 'modified', statsState: 'complete', additions: 1, deletions: 0 }],
+    })
+
+    expect(html).toContain('本轮文件改动 1')
+  })
+
+  test('Given 同名文件来自不同目录 When 渲染 Then 展示父目录帮助区分', () => {
+    const html = renderSummary({ turnMessages: [], basePath: '/p', runFiles: [
+      { path: '/p/src/index.ts', status: 'modified', statsState: 'complete', additions: 1, deletions: 0 },
+      { path: '/p/tests/index.ts', status: 'modified', statsState: 'complete', additions: 2, deletions: 0 },
+    ] })
+
+    expect(html).toContain('>src</span>')
+    expect(html).toContain('>tests</span>')
+  })
+
+  test('Given 超过八个文件 When 首次渲染 Then 默认只展示前八项并提供原生展开按钮', () => {
+    const runFiles = Array.from({ length: 9 }, (_, index) => ({
+      path: `/p/src/file-${index}.ts`,
+      status: 'modified' as const,
+      statsState: 'complete' as const,
+      additions: 1,
+      deletions: 0,
+    }))
+    const html = renderSummary({ turnMessages: [], runFiles })
+
+    expect(html).toContain('展开其余 1 项')
+    expect(html).toContain('aria-expanded="false"')
+    expect(html).not.toContain('file-8.ts')
+  })
+
+  test('Given 产物先出现且第九项是代码 When 默认折叠 Then 仍按分类优先展示代码', () => {
+    const artifacts = Array.from({ length: 8 }, (_, index) => ({
+      path: `/p/dist/artifact-${index}.png`,
+      status: 'modified' as const,
+      statsState: 'complete' as const,
+      additions: 1,
+      deletions: 0,
+    }))
+    const html = renderSummary({ turnMessages: [], runFiles: [
+      ...artifacts,
+      { path: '/p/src/critical.ts', status: 'modified', statsState: 'complete', additions: 1, deletions: 0 },
+    ] })
+
+    expect(html).toContain('critical.ts')
+    expect(html).not.toContain('artifact-7.png')
+    expect(html).toContain('aria-controls=')
+    expect(html).toContain('aria-labelledby=')
+  })
+
+  test('Given 已列文件精确但另有无法归属改动 When 渲染 Then 总计仍标记为部分统计', () => {
+    const html = renderSummary({ turnMessages: [], runUnattributed: true, runFiles: [
+      { path: '/p/a.ts', status: 'modified', statsState: 'complete', additions: 3, deletions: 1 },
+    ] })
+
+    expect(html).toContain('已统计部分文件')
+    expect(html).toContain('另有改动未计入统计')
   })
 })

@@ -1,3 +1,4 @@
+import { removeAgentRunFileChanges } from './agent-run-file-change-store'
 /**
  * Agent 会话管理器
  *
@@ -984,6 +985,9 @@ export function deleteAgentSession(id: string): void {
   markAgentSessionDeleting(id)
   const removed = index.sessions.splice(idx, 1)[0]!
   writeIndex(index)
+
+  // 统计和会话同生命周期，删除会话时不遗留历史文件路径。
+  try { removeAgentRunFileChanges(id) } catch (error) { console.warn('[本轮文件统计] 清理失败', error) }
 
   // 删除消息文件
   const filePath = getAgentSessionMessagesPath(id)

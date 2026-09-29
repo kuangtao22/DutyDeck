@@ -1,3 +1,5 @@
+import { mergeAgentRunFileChangesSnapshot } from '@/lib/agent-run-file-changes'
+import { agentRunFileChangesAtom } from '@/atoms/agent-atoms'
 /**
  * AgentView — Agent 模式主视图容器
  *
@@ -1260,6 +1262,15 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
     const requestId = ++messagesRequestIdRef.current
     const requestMutationVersion = messagesMutationVersionRef.current
     let cancelled = false
+    // 历史统计与消息并行读取；切换会话后丢弃迟到结果，revision 保留更晚的实时事件。
+    void window.electronAPI.getAgentRunFileChanges(sessionId).then(snapshots => {
+      if (cancelled || requestId !== messagesRequestIdRef.current) return
+      store.set(agentRunFileChangesAtom, previous => {
+        const current = previous.get(sessionId) ?? []
+        const merged = snapshots.reduce((records, snapshot) => mergeAgentRunFileChangesSnapshot(records, snapshot), current)
+        return merged === current ? previous : new Map(previous).set(sessionId, merged)
+      })
+    }).catch(error => console.warn('[本轮文件统计] 历史加载失败', error))
     window.electronAPI.getAgentSessionSDKMessages(sessionId)
       .then((sdkMsgs) => {
         if (cancelled || requestId !== messagesRequestIdRef.current) return

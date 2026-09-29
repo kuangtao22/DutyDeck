@@ -218,6 +218,8 @@ export interface PiAgentQueryOptions extends AgentQueryInput {
   onPiEntryBindings?: (bindings: Record<string, string>) => void
   onModelResolved?: (model: string) => void
   onContextWindow?: (contextWindow: number) => void
+  /** 权限已通过后的前后采集；失败不得改变工具结果。 */
+  onFileChangeCapture?: (capture: import('@proma/shared').AgentFileChangeCapture) => Promise<void>
   onRetry?: (update: import('./pi-retry-control').PiRetryUpdate) => void
   /** 渲染进程创建的本轮流式开始时间，用于隔离迟到的 native retry 事件。 */
   retryRunStartedAt?: number
@@ -749,16 +751,18 @@ function resolveGuardedRealPath(path: string): string {
 }
 
 interface ToolWrapOptions {
+  /** 内置写工具采集钩子；业务工具不自动继承。 */
+  onFileChangeCapture?: PiAgentQueryOptions['onFileChangeCapture']
   canUseTool?: PiAgentQueryOptions['canUseTool']
 }
 
-function wrapToolWithPermission<TParams extends TSchema, TDetails, TState>(
+export function wrapToolWithPermission<TParams extends TSchema, TDetails, TState>(
   definition: ToolDefinition<TParams, TDetails, TState>,
   options: ToolWrapOptions,
 ): ToolDefinition<TParams, TDetails, TState> {
   const canUseTool = options.canUseTool
   const executionMode = 'sequential' as const
-  if (!canUseTool) return { ...definition, executionMode }
+  if (!canUseTool && !options.onFileChangeCapture) return { ...definition, executionMode }
   return {
     ...definition,
     executionMode,
@@ -777,13 +781,29 @@ function wrapToolWithPermission<TParams extends TSchema, TDetails, TState>(
         }
         updatedParams = restorePiInput(definition.name, rawInput, permission.updatedInput)
       }
-      return definition.execute(
-        toolCallId,
-        updatedParams as typeof params,
-        signal,
-        onUpdate as AgentToolUpdateCallback<TDetails> | undefined,
-        ctx,
-      ) as Promise<AgentToolResult<TDetails>>
+      /** 只按获准后的最终路径读取；拒绝授权时不会到达这里。 */
+      const filePath = (definition.name === 'write' || definition.name === 'edit')
+        && typeof updatedParams.path === 'string' ? updatedParams.path : undefined
+      /** 采集错误只影响统计可信度，不能把成功的业务写入变成工具失败。 */
+      const capture = async (phase: import('@proma/shared').AgentFileChangeCapture['phase']): Promise<boolean> => {
+        try { await options.onFileChangeCapture?.({ phase, path: filePath }); return true }
+        catch (error) { console.warn('[本轮文件统计] 工具采集失败', error); return false }
+      }
+      /** 前采集失败时仍允许业务执行，但之后只能记录未知，不能接受迟到基线。 */
+      const capturedBefore = filePath ? await capture('before') : true
+      try {
+        return await definition.execute(
+          toolCallId,
+          updatedParams as typeof params,
+          signal,
+          onUpdate as AgentToolUpdateCallback<TDetails> | undefined,
+          ctx,
+        ) as AgentToolResult<TDetails>
+      } finally {
+        // 失败或取消仍可能部分落盘；终端只复核已有文件，绝不事后构造基线。
+        if (filePath) await capture(capturedBefore ? 'after' : 'invalidate')
+        else if (definition.name === 'bash' || definition.name === 'powershell') await capture('verify')
+      }
     },
   }
 }
@@ -1377,6 +1397,7 @@ function buildBuiltinToolDefinitions(
   cwd: string,
   canUseTool: PiAgentQueryOptions['canUseTool'],
   runtimeEnv: AgentRuntimeEnv | undefined,
+  onFileChangeCapture?: PiAgentQueryOptions['onFileChangeCapture'],
 ): ToolDefinition[] {
   const shellTool = selectPiBuiltinShellTool(process.platform, runtimeEnv)
   const definitions = [
@@ -1403,7 +1424,7 @@ function buildBuiltinToolDefinitions(
   ] as unknown as ToolDefinition[]
 
   return definitions.map((tool) =>
-    wrapToolWithPermission(tool as unknown as ToolDefinition<TSchema, unknown, unknown>, { canUseTool }) as ToolDefinition)
+    wrapToolWithPermission(tool as unknown as ToolDefinition<TSchema, unknown, unknown>, { canUseTool, onFileChangeCapture }) as ToolDefinition)
 }
 
 function appendWindowsBaseModeInstruction(systemPrompt: string, runtimeEnv: AgentRuntimeEnv | undefined): string {
@@ -1592,6 +1613,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           cwd,
           input.canUseTool,
           input.runtimeEnv,
+          input.onFileChangeCapture,
         ),
         ...buildPromaProductToolDefinitions(sdk, input.canUseTool),
         ...wrapCustomToolDefinitions(input.customTools, input.canUseTool),

@@ -124,3 +124,4 @@ export * from './api-workbench-cases'
 export * from './capability-factory'
 
 export * from './capability-factory-ipc'
+export * from './agent-run-file-changes'

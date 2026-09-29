@@ -599,3 +599,25 @@ describe('Pi utility 强制关闭合同', () => {
     await expect(currentIterator.next()).resolves.toMatchObject({ done: true })
   })
 })
+
+
+test('Given 本轮文件采集钩子 When 跨 utility 执行 Then 不序列化函数且 RPC 等待宿主完成', async () => {
+  const captures: string[] = []
+  const input: PiAgentQueryOptions = { ...createQueryInput('capture-session'),
+    onFileChangeCapture: async capture => { captures.push(`${capture.phase}:${capture.path}`) },
+  }
+  const adapter = new PiUtilityAdapter()
+  const iterator = adapter.query(input, 'capture-query')[Symbol.asyncIterator]()
+  const pendingNext = iterator.next()
+  await waitUntil(() => runtimeStates.length === 1)
+  const start = runtimeStates[0]!.requestPayloads[0] as { input?: Record<string, unknown> }
+  expect(start.input?.onFileChangeCapture).toBeUndefined()
+  await adapter.handleRuntimeRequest(createAgentRuntimeRequest(AGENT_RUNTIME_METHODS.CAPABILITY_FILE_CHANGE,
+    { queryId: 'capture-query', sessionId: 'capture-session', capture: { phase: 'after', path: '/a.ts' } },
+    { queryId: 'capture-query', sessionId: 'capture-session' }))
+  expect(captures).toEqual(['after:/a.ts'])
+  runtimeStates[0]!.stop.resolve()
+  runtimeStates[0]!.eventListener?.({ kind: 'event', method: AGENT_RUNTIME_METHODS.EVENT_QUERY_END,
+    queryId: 'capture-query', sessionId: 'capture-session', payload: {} } as AgentRuntimeEvent)
+  await expect(pendingNext).resolves.toMatchObject({ done: true })
+})

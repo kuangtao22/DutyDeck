@@ -23,6 +23,8 @@ export const CANVAS_EXECUTION_TOOL_TIMEOUT_MS = 15 * 60_000
 export function getParentRequestTimeoutMs(method: string, payload: unknown): number | undefined {
   /** 当前跨进程能力请求声明的工具名；非工具请求保持 undefined。 */
   const toolName = (payload as { toolName?: unknown } | null)?.toolName
+  // 统计是旁路能力，宿主不可达时最多等待两秒，避免拖住工具取消。
+  if (method === AGENT_RUNTIME_METHODS.CAPABILITY_FILE_CHANGE) return 2_000
   if (method === AGENT_RUNTIME_METHODS.CAPABILITY_CAN_USE_TOOL) return undefined
   if (method === AGENT_RUNTIME_METHODS.CAPABILITY_CUSTOM_TOOL && typeof toolName === 'string' && CANVAS_AGENT_TOOLS.has(toolName)) {
     return undefined

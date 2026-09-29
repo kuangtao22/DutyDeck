@@ -11,10 +11,16 @@
  * 消息的创建时间落在哪个 run 的时间区间内来定位分桶，不依赖消息顺序或回复文本。
  */
 
+import type { AgentRunFileChange, AgentRunFileChangesSnapshot } from '@proma/shared'
+
 import { arePathsEqual } from './session-file-changes'
 
 /** 单轮运行的文件改动记录。 */
 export interface AgentRunFileChanges {
+  /** 主进程本轮净变化快照，不包含正文。 */
+  files?: AgentRunFileChange[]
+  /** 防止迟到的历史 IPC 覆盖较新的运行中快照。 */
+  revision?: number
   /** 本轮运行标识（渲染进程 startedAt 的字符串形式）。 */
   runId: string
   /** 本轮运行开始时间戳（毫秒）。 */
@@ -122,9 +128,10 @@ export function upsertAgentRunFileChanges(
     next = records.map((record, index) => (index === existingIndex ? updated : record))
   }
 
-  return next.length > MAX_TRACKED_AGENT_RUNS
-    ? next.slice(next.length - MAX_TRACKED_AGENT_RUNS)
-    : next
+  // 只淘汰缺失持久统计的旧热记录；已加载历史与消息保持同生命周期。
+  const transient = next.filter(record => record.files === undefined)
+  const expired = new Set(transient.slice(0, Math.max(0, transient.length - MAX_TRACKED_AGENT_RUNS)))
+  return expired.size > 0 ? next.filter(record => !expired.has(record)) : next
 }
 
 /**
@@ -332,4 +339,25 @@ export function groupAgentFileChangesByCategory(paths: readonly string[]): Agent
       label: AGENT_FILE_CHANGE_CATEGORY_LABELS[category],
       paths: buckets.get(category)!,
     }))
+}
+
+/** 将权威主进程快照合并到本轮记录；旧 revision 不允许覆盖新数据。 */
+export function mergeAgentRunFileChangesSnapshot(
+  records: readonly AgentRunFileChanges[],
+  snapshot: AgentRunFileChangesSnapshot,
+  caseInsensitive = false,
+): AgentRunFileChanges[] {
+  const existing = records.find(record => record.runId === snapshot.runId)
+  if (existing?.revision !== undefined && existing.revision >= (snapshot.revision ?? 0)) return records as AgentRunFileChanges[]
+  const merged: AgentRunFileChanges = {
+    ...existing, runId: snapshot.runId, startedAt: snapshot.startedAt,
+    endedAt: snapshot.endedAt ?? existing?.endedAt,
+    observed: existing?.observed ?? false,
+    paths: mergeTurnFilePaths(existing?.paths ?? [], snapshot.files.map(file => file.path), caseInsensitive),
+    files: snapshot.files, revision: snapshot.revision,
+    hasUnattributedChanges: existing?.hasUnattributedChanges === true || snapshot.hasUnattributedChanges === true,
+  }
+  return existing
+    ? records.map(record => record === existing ? merged : record)
+    : [...records, merged].sort((left, right) => left.startedAt - right.startedAt)
 }
