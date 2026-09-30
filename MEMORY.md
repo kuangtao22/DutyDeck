@@ -1338,3 +1338,5 @@
 - 2026-09-30：Copilot 的空模型目录是有效登录状态，不能回退旧账号或静态全集；真实 Pi 0.85.1 离线 runtime 已证实按 `availableModelIds` 限制目录。刷新必须按“渠道 + 凭据快照”去重并条件回写，换号时更新时间严格递增以隔离额度缓存；GPT/Claude 必须按模型真实 API 分流推理参数。额度沿用上游使用的 GitHub 内部接口，显示失败不阻断 Agent；尚未用真实订阅账号完成联网登录与额度验收。
 - 2026-09-30：MCP 配置能力仅开放给有主进程写守卫的普通用户会话，新增或改配置先关闭，握手/工具发现成功后条件启用，下一轮生效；验证回写必须检查最新配置，避免覆盖人工编辑。带秘密 headers/env 的连接禁止由 Agent 改目标，OAuth client secret 绑定工作区、服务、URL、clientId 与 tokenEndpoint，弹窗需冻结发起工作区，防切换后误写。秘密使用系统加密保护的凭据文件，不能把它描述为直接存入 Keychain。
 - 2026-09-30：隔离工作树不能把整套 node_modules 软链回主仓库：workspace 包会因此解析到 main 的旧 shared 导出。应在工作树用 `bun install --frozen-lockfile --ignore-scripts` 建立独立 workspace 链接；UI 验收可复用主仓库已安装的 Electron 二进制，配临时 userData 和假 IPC，不触及真实账号。Bun 的模块 mock 测试需隔离运行，避免组合执行造成假失败。
+
+- 2026-09-30：用户要求“合并到主线程”后，已将 `codex/upstream-model-mcp-copilot` 的 MiMo V2.6、MCP 配置/OAuth、Copilot 登录/额度三个提交快进合入本地 `main`（`7cfb3f68 → 8b0515a5`），无冲突，业务代码与已验收分支一致。主工作区复验 29 个文件共 236 项测试通过、8 个工作区类型检查通过；Pi 保持 0.85.1。尚未推送、发布或重启客户端；保留 Codex 管理的开发工作树。
