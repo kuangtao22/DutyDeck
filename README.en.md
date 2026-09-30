@@ -105,7 +105,7 @@ DutyDeck is a modified edition of Proma, not an official release:
 
 - **License**: AGPL-3.0-only, identical to upstream. Full terms in [LICENSE](./LICENSE).
 - **Upstream baseline**: the fully merged upstream content baseline is `v0.19.31` (2026-09-05); later official versions are ported selectively, so features here are not equivalent to the latest official release.
-- **Version numbering**: `0.19.53-bone.10` means "upstream version + this repository's build number"; `-bone.<n>` only marks this repository's own release order.
+- **Version numbering**: `0.19.53-bone.11` means "upstream version + this repository's build number"; `-bone.<n>` only marks this repository's own release order.
 - **Added by this repository**: canvas, server operations workbench, API workbench, today activity, plus the permission confirmations, auditing and local encryption around them.
 - **Attribution**: upstream copyright belongs to Proma's author and contributors; this repository's modifications are likewise licensed to everyone under AGPL-3.0.
 
