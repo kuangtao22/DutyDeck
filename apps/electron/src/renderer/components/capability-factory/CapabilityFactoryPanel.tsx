@@ -334,7 +334,7 @@ export function CapabilityFactoryPanel({ sessionId, workspaceLabel }: Capability
               ref={ref}
               type="button"
               variant="outline"
-              className="h-8 min-w-0 max-w-[48%] gap-1.5 border-border/60 bg-background/40 px-2 text-xs font-normal"
+              className="ml-auto h-8 min-w-0 max-w-[48%] gap-1.5 border-border/60 bg-background/40 px-2 text-xs font-normal"
               aria-label="切换编排场景"
             >
               <span className="flex-1 truncate text-left">{current ? current.definition.name : '选择场景'}</span>
