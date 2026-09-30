@@ -4252,3 +4252,22 @@ describe('普通 Agent Canvas Tool Provider', () => {
     expect(result.details).not.toHaveProperty('batch')
   })
 })
+
+test('Given 画布交付工具参数 When 校验两种提交 Then 只接受 id+evidenceId 或 id+text', () => {
+  /** 采用真实 Provider schema 和 Pi 参数校验器，避免仅测独立类型。 */
+  const fixture = createFixture()
+  /** 发送给模型的实际交付工具。 */
+  const tool = createCanvasToolRun(fixture.dependencies, fixture.context).piCustomTools.find(item => item.name === 'canvas_task')!
+  for (const submission of [{ id: 'report', evidenceId: 'proof' }, { id: 'answer', text: '答复' }]) {
+    /** 两种合法提交均应通过真实 Pi 校验。 */
+    const args = { action: 'complete', submissions: [submission] }
+    expect(Value.Check(tool.parameters, args)).toBeTrue()
+    expect(() => validateToolArguments(tool, { type: 'toolCall', id: 'complete', name: tool.name, arguments: args })).not.toThrow()
+  }
+  for (const submission of [{ id: 'report' }, { id: 'report', evidenceId: 'proof', text: '已验证' }]) {
+    /** 缺少内容和混合字段都必须在实际工具执行前拒绝。 */
+    const args = { action: 'complete', submissions: [submission] }
+    expect(Value.Check(tool.parameters, args)).toBeFalse()
+    expect(() => validateToolArguments(tool, { type: 'toolCall', id: 'complete', name: tool.name, arguments: args })).toThrow()
+  }
+})

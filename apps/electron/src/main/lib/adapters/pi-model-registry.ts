@@ -9,6 +9,8 @@ import {
   CODEX_GPT_54_55_CONTEXT_WINDOW,
   CODEX_GPT_54_MINI_CONTEXT_WINDOW,
   CODEX_GPT_56_CONTEXT_WINDOW,
+  CODEX_GPT_6_CONTEXT_WINDOW,
+  isGpt6AstraFamily,
   extractZhipuCodingTeamApiToken,
   inferContextWindow,
   inferCodexAlignedGPT5ContextWindow,
@@ -70,8 +72,8 @@ const CODEX_MAX_TOKENS = 128_000
 const UNSUPPORTED_CODEX_MODEL_IDS = new Set([
   'gpt-5.3-codex-spark',
 ])
-// GPT-6 Astra 与 GPT-5.6 系列统一按 372K 上下文注册。
-const CODEX_GPT_6_ASTRA_CONTEXT_WINDOW = CODEX_GPT_56_CONTEXT_WINDOW
+/** 官方 Proma 的 Codex 退役家族策略，仅作用于 Codex 渠道。 */
+const UNSUPPORTED_CODEX_MODEL_PREFIXES = ['gpt-5.4', 'gpt-5.5'] as const
 /**
  * 将 Codex 已标记的 GPT-5.x 上下文窗口外推到同名第三方模型。
  *
@@ -387,8 +389,40 @@ const CODEX_MODEL_PATCHES: PiCatalogModelPatch[] = [
     reasoning: true,
     thinkingLevelMap: compilePiReasoningCapabilities('openai-responses', 'gpt-6-astra')?.thinkingLevelMap,
     input: ['text', 'image'],
-    cost: ZERO_MODEL_COST,
-    contextWindow: CODEX_GPT_6_ASTRA_CONTEXT_WINDOW,
+    // 仅目录缺失时使用 Pi 0.87.1 发布目录的兜底价格；已有模型始终保留官方完整费用。
+    cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5,
+      tiers: [{ inputTokensAbove: 272_000, input: 20, output: 75, cacheRead: 2, cacheWrite: 25 }] },
+    contextWindow: CODEX_GPT_6_CONTEXT_WINDOW,
+    maxTokens: CODEX_MAX_TOKENS,
+  },
+  {
+    id: 'gpt-6-sol',
+    name: 'GPT-6 Sol',
+    api: 'openai-codex-responses',
+    provider: 'openai-codex',
+    baseUrl: CODEX_BASE_URL,
+    reasoning: true,
+    thinkingLevelMap: compilePiReasoningCapabilities('openai-responses', 'gpt-6-sol')?.thinkingLevelMap,
+    input: ['text', 'image'],
+    // 仅目录缺失时使用 Pi 0.87.1 发布目录的兜底价格；已有模型始终保留官方完整费用。
+    cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5,
+      tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.4, cacheWrite: 5 }] },
+    contextWindow: CODEX_GPT_6_CONTEXT_WINDOW,
+    maxTokens: CODEX_MAX_TOKENS,
+  },
+  {
+    id: 'gpt-6-luna',
+    name: 'GPT-6 Luna',
+    api: 'openai-codex-responses',
+    provider: 'openai-codex',
+    baseUrl: CODEX_BASE_URL,
+    reasoning: true,
+    thinkingLevelMap: compilePiReasoningCapabilities('openai-responses', 'gpt-6-luna')?.thinkingLevelMap,
+    input: ['text', 'image'],
+    // 仅目录缺失时使用 Pi 0.87.1 发布目录的兜底价格；已有模型始终保留官方完整费用。
+    cost: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125,
+      tiers: [{ inputTokensAbove: 272_000, input: 0.2, output: 0.75, cacheRead: 0.02, cacheWrite: 0.25 }] },
+    contextWindow: CODEX_GPT_6_CONTEXT_WINDOW,
     maxTokens: CODEX_MAX_TOKENS,
   },
   {
@@ -412,7 +446,9 @@ const CODEX_MODEL_PATCHES: PiCatalogModelPatch[] = [
     reasoning: true,
     thinkingLevelMap: CODEX_56_THINKING_LEVEL_MAP,
     input: ['text', 'image'],
-    cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+    // 仅目录缺失时使用 Pi 0.87.1 发布目录的兜底价格；已有模型始终保留官方完整费用。
+    cost: { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5,
+      tiers: [{ inputTokensAbove: 272_000, input: 8, output: 30, cacheRead: 0.8, cacheWrite: 10 }] },
     contextWindow: CODEX_GPT_56_CONTEXT_WINDOW,
     maxTokens: CODEX_MAX_TOKENS,
   },
@@ -425,7 +461,9 @@ const CODEX_MODEL_PATCHES: PiCatalogModelPatch[] = [
     reasoning: true,
     thinkingLevelMap: CODEX_56_THINKING_LEVEL_MAP,
     input: ['text', 'image'],
-    cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
+    // 仅目录缺失时使用 Pi 0.87.1 发布目录的兜底价格；已有模型始终保留官方完整费用。
+    cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5,
+      tiers: [{ inputTokensAbove: 272_000, input: 4, output: 18, cacheRead: 0.4, cacheWrite: 5 }] },
     contextWindow: CODEX_GPT_56_CONTEXT_WINDOW,
     maxTokens: CODEX_MAX_TOKENS,
   },
@@ -438,7 +476,9 @@ const CODEX_MODEL_PATCHES: PiCatalogModelPatch[] = [
     reasoning: true,
     thinkingLevelMap: CODEX_56_THINKING_LEVEL_MAP,
     input: ['text', 'image'],
-    cost: { input: 1, output: 6, cacheRead: 0.1, cacheWrite: 0 },
+    // 仅目录缺失时使用 Pi 0.87.1 发布目录的兜底价格；已有模型始终保留官方完整费用。
+    cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25,
+      tiers: [{ inputTokensAbove: 272_000, input: 0.4, output: 1.8, cacheRead: 0.04, cacheWrite: 0.5 }] },
     contextWindow: CODEX_GPT_56_CONTEXT_WINDOW,
     maxTokens: CODEX_MAX_TOKENS,
   },
@@ -824,6 +864,14 @@ export function stripLegacyAgentSdkContextSuffix(modelId: string | undefined): s
   return modelId?.replace(/\[1m\]$/i, '')
 }
 
+/** 保留 Codex 返回的合法 Astra SKU 请求 ID；不把相似名称当作同一模型。 */
+function createCodexAstraFamilyModel(models: readonly PiCatalogModel[], modelId: string): PiCatalogModel | undefined {
+  if (!isGpt6AstraFamily(modelId)) return undefined
+  /** 使用已验证的 Astra 能力，仅替换请求 ID 与展示名。 */
+  const baseline = findCatalogModelById(models, 'gpt-6-astra')
+  return baseline ? { ...baseline, id: modelId, name: `GPT-6 Astra (${modelId})` } : undefined
+}
+
 function mergeCodexModels(models: readonly PiCatalogModel[]): PiCatalogModel[] {
   const merged = models.map((model) => ({ ...model }))
   const indexById = new Map(merged.map((model, index) => [model.id, index]))
@@ -831,7 +879,8 @@ function mergeCodexModels(models: readonly PiCatalogModel[]): PiCatalogModel[] {
     const existingIndex = indexById.get(patch.id)
     const existing = existingIndex !== undefined ? merged[existingIndex] : undefined
     if (existingIndex !== undefined && existing) {
-      merged[existingIndex] = { ...existing, ...patch }
+      // 能力补丁不能覆盖目录费率及长上下文阶梯，否则费用展示和预算限制会失真。
+      merged[existingIndex] = { ...existing, ...patch, cost: existing.cost }
     } else if (isCompleteCatalogModel(patch)) {
       indexById.set(patch.id, merged.length)
       merged.push(patch)
@@ -860,7 +909,12 @@ function isCompleteCatalogModel(model: PiCatalogModelPatch): model is PiCatalogM
  * 返回值：剔除下线 ID 后的模型数组，保持原有顺序。
  */
 export function filterSupportedCodexModels(models: readonly PiCatalogModel[]): PiCatalogModel[] {
-  return models.filter((model) => !UNSUPPORTED_CODEX_MODEL_IDS.has(model.id.trim().toLowerCase()))
+  return models.filter((model) => {
+    /** 只匹配完整家族边界，避免误伤相似但不同的模型 ID。 */
+    const modelId = model.id.trim().toLowerCase()
+    return !UNSUPPORTED_CODEX_MODEL_IDS.has(modelId)
+      && !UNSUPPORTED_CODEX_MODEL_PREFIXES.some((prefix) => modelId === prefix || modelId.startsWith(`${prefix}-`))
+  })
 }
 
 export async function getCodexCatalogModels(): Promise<PiCatalogModel[]> {
@@ -894,8 +948,9 @@ export async function buildCodexModel(sdk: PiSdk, input: CodexModelInput) {
   const runtimeModels = filterSupportedCodexModels(modelRuntime.getModels('openai-codex'))
   const codexModels = await getCodexCatalogModels()
   const model = resolvedModelId
-    ? runtimeModels.find((candidate) => candidate.id === resolvedModelId)
-      ?? findCatalogModelById(codexModels, resolvedModelId)
+    ? findCatalogModelById(codexModels, resolvedModelId)
+      ?? runtimeModels.find((candidate) => candidate.id === resolvedModelId)
+      ?? createCodexAstraFamilyModel(codexModels, resolvedModelId)
     : runtimeModels[0]
 
   if (!model) {
@@ -907,9 +962,20 @@ export async function buildCodexModel(sdk: PiSdk, input: CodexModelInput) {
   return { modelRuntime, model }
 }
 
-/** 列出 Pi SDK 内置的 ChatGPT (Codex) 模型 ID，供渲染层"模型拉取"使用。 */
-export async function listCodexModels(): Promise<{ id: string; name: string }[]> {
-  return (await getCodexCatalogModels()).map((m) => ({ id: m.id, name: m.name }))
+/** 通过 Pi 可用性接口列出 Codex 模型；0.87 当前仍返回静态目录，不代表实时订阅授权。 */
+export async function listCodexModels(
+  credentials: CodexOAuthCredentials,
+  sdk?: PiSdk,
+): Promise<{ id: string; name: string }[]> {
+  /** 可注入真实或测试 runtime；凭据只存在于当前实例的内存中。 */
+  const piSdk = sdk ?? await import('@earendil-works/pi-coding-agent')
+  /** 关闭模型网络发现，避免拉取列表隐式刷新或产生额外网络访问。 */
+  const modelRuntime = await piSdk.ModelRuntime.create({
+    credentials: createCodexRuntimeCredentialStore(credentials),
+    allowModelNetwork: false,
+  })
+  return filterSupportedCodexModels(await modelRuntime.getAvailable('openai-codex'))
+    .map((model) => ({ id: model.id, name: model.name }))
 }
 
 export async function getXaiCatalogModels(): Promise<PiCatalogModel[]> {

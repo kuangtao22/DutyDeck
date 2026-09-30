@@ -1,6 +1,7 @@
 import { Type } from 'typebox'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { ServerOpsConnectionDraftAgent } from '../server-ops/server-ops-connection-draft-agent'
+import { serializePiToolResultPayload } from './pi-tool-result-json'
 
 /** 连接草稿只接受公开身份，不接收密码、私钥路径、会话或项目授权。 */
 export function buildServerOpsConnectionTools(
@@ -53,7 +54,8 @@ export function buildServerOpsConnectionTools(
       const draft = drafts.prepare(params, signal)
       const result = { draftId: draft.id, kind: draft.input.kind, expiresAt: draft.expiresAt, status: 'pending-review',
         nextStep: '已生成连接草稿，请在当前会话的运维面板选择项目并审阅，填写凭据后测试、保存。尚未保存或建立连接。' }
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }], details: result }
+      const serialized = serializePiToolResultPayload(result)
+      return { content: [{ type: 'text' as const, text: serialized.text }], details: serialized.details }
     },
   })] as ToolDefinition[]
 }

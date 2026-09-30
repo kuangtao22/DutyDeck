@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { validateToolArguments } from '@earendil-works/pi-ai'
+import type { JsonObject as PiJsonObject, JsonValue as PiJsonValue } from '@earendil-works/pi-ai'
 import type { ComfyObjectInfo, JsonObject, MediaAssetRef, MediaRemoteDescriptor, MediaRunSnapshot } from '@proma/shared'
 import type { CanvasToolRunContext } from '../design/canvas-tool-provider'
 import { AgentPermissionService } from '../agent-permission-service'
@@ -13,9 +14,22 @@ import { MediaConfigStore } from './media-config-store'
 import { MediaResourceService } from './media-resource-service'
 import { MediaRunService } from './media-run-service'
 import { createMediaToolRun, type MediaToolProviderDependencies } from './media-tool-provider'
+import { normalizePiToolResultDetails } from '../adapters/pi-tool-result-json'
 
 /** 每个集成用例使用独立配置、快照和运行目录。 */
 const temporaryDirectories: string[] = []
+
+/** 测试输入经过与业务工具结果相同的 JSON 边界后再交给 Pi 校验器。 */
+function piToolArguments(input: Record<string, unknown>): PiJsonObject {
+  const normalized = normalizePiToolResultDetails(input)
+  if (!isPiJsonObject(normalized)) throw new Error('测试工具参数必须是 JSON 对象')
+  return normalized
+}
+
+/** 区分 JSON 对象与数组，避免用类型断言绕过 Pi 0.87 的参数合同。 */
+function isPiJsonObject(value: PiJsonValue): value is PiJsonObject {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true })
@@ -71,7 +85,9 @@ async function executeTool(
   const tool = tools.find((candidate) => candidate.name === name)
   if (!tool) throw new Error(`工具不存在: ${name}`)
   /** 穿透 Pi 实际参数校验，避免工具 schema 与执行器各自通过却无法真实调用。 */
-  const validated = validateToolArguments(tool, { type: 'toolCall', id: toolCallId, name, arguments: input })
+  const validated = validateToolArguments(tool, {
+    type: 'toolCall', id: toolCallId, name, arguments: piToolArguments(input),
+  })
   return tool.execute(toolCallId, validated as never, undefined as never, undefined as never, undefined as never)
 }
 

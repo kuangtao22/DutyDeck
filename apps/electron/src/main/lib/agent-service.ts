@@ -568,6 +568,7 @@ export async function runPreparedAgent(
                   stoppedByUser: opts?.stoppedByUser ?? false,
                   startedAt: opts?.startedAt,
                   resultSubtype: opts?.resultSubtype,
+                  terminalReason: opts?.terminalReason,
                   resultErrors: opts?.resultErrors,
                   backgroundTasksPending: opts?.backgroundTasksPending,
                 })
@@ -716,6 +717,8 @@ export async function runAgentHeadless(
     resultSubtype?: string
     /** 完成回调中的错误详情必须随终态一起传到业务执行器。 */
     resultErrors?: string[]
+    /** 完成回调中的 Host 终止原因，用于区分交付验收和运行故障。 */
+    terminalReason?: string
   }): HeadlessAgentRunTerminalOptions => {
     /** 优先使用 completion 自带的权威代次，早期异常回退已捕获的启动代次。 */
     const terminalRunGeneration = options?.runGeneration ?? runGeneration
@@ -729,6 +732,7 @@ export async function runAgentHeadless(
       startedAt: options?.startedAt ?? activeStartedAt,
       ...(terminalRunGeneration !== undefined ? { runGeneration: terminalRunGeneration } : {}),
       ...(options?.resultSubtype !== undefined ? { resultSubtype: options.resultSubtype } : {}),
+      ...(options?.terminalReason !== undefined ? { terminalReason: options.terminalReason } : {}),
       ...(options?.resultErrors?.length ? { resultErrors: [...options.resultErrors] } : {}),
     }
   }
@@ -787,6 +791,7 @@ export async function runAgentHeadless(
                   stoppedByUser: opts?.stoppedByUser ?? false,
                   startedAt: opts?.startedAt,
                   resultSubtype: opts?.resultSubtype,
+                  terminalReason: opts?.terminalReason,
                   resultErrors: opts?.resultErrors,
                   backgroundTasksPending: opts?.backgroundTasksPending,
                 })

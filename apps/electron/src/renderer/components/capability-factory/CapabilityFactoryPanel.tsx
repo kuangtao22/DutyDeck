@@ -41,8 +41,9 @@ function CapabilityFactoryHistoryMenu({
   onOpen: () => void
   onSelect: (runId: string) => void
 }): React.ReactElement {
+  // 右侧工作区位于全局窗口拖拽层内；非 modal 菜单避免 pointerdown 被外层焦点/拖拽处理吞掉。
   return (
-    <DropdownMenu onOpenChange={(open) => { if (open) onOpen() }}>
+    <DropdownMenu modal={false} onOpenChange={(open) => { if (open) onOpen() }}>
       <DropdownMenuTrigger asChild>
         <Button type="button" variant="outline" size="sm" className="h-9 shrink-0 gap-1.5 px-2.5 text-xs" aria-label="打开运行历史">
           <History className="size-3.5" aria-hidden="true" />
@@ -50,31 +51,33 @@ function CapabilityFactoryHistoryMenu({
           <ChevronDown className="size-3.5 text-muted-foreground" aria-hidden="true" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-80">
+      <DropdownMenuContent align="end" className="z-[240] w-80">
         <DropdownMenuLabel>运行历史</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {error ? <p className="px-2 py-1.5 text-xs text-destructive">{error}</p> : null}
-        {!error && runs === null ? <p className="px-2 py-1.5 text-xs text-muted-foreground">正在读取运行记录…</p> : null}
-        {!error && runs?.length === 0 ? <p className="px-2 py-1.5 text-xs text-muted-foreground">暂无历史记录</p> : null}
-        {runs?.map((run) => {
-          const status = describeRunStatus(run)
-          const review = describeReviewStatus(run)
-          const target = run.definitionTarget === 'draft' ? '候选草案 · ' : ''
-          const subject = run.kind === 'step'
-            ? `单步 · ${run.steps.find((step) => step.stepId === run.stepId)?.title ?? run.stepId}`
-            : '整条流程'
-          return (
-            <DropdownMenuItem key={run.id} onSelect={() => onSelect(run.id)} className="items-start gap-2 py-2">
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-xs">{target}{subject} · v{run.sceneVersion}</div>
-                <div className="truncate text-[11px] text-muted-foreground">
-                  {status.label} · {review.label} · {new Date(run.startedAt).toLocaleString('zh-CN', { hour12: false })}
+        <div className="max-h-72 overflow-y-auto">
+          {error ? <p className="px-2 py-1.5 text-xs text-destructive">{error}</p> : null}
+          {!error && runs === null ? <p className="px-2 py-1.5 text-xs text-muted-foreground">正在读取运行记录…</p> : null}
+          {!error && runs?.length === 0 ? <p className="px-2 py-1.5 text-xs text-muted-foreground">暂无历史记录</p> : null}
+          {runs?.map((run) => {
+            const status = describeRunStatus(run)
+            const review = describeReviewStatus(run)
+            const target = run.definitionTarget === 'draft' ? '候选草案 · ' : ''
+            const subject = run.kind === 'step'
+              ? `单步 · ${run.steps.find((step) => step.stepId === run.stepId)?.title ?? run.stepId}`
+              : '整条流程'
+            return (
+              <DropdownMenuItem key={run.id} onSelect={() => onSelect(run.id)} className="items-start gap-2 py-2">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs">{target}{subject} · v{run.sceneVersion}</div>
+                  <div className="truncate text-[11px] text-muted-foreground">
+                    {status.label} · {review.label} · {new Date(run.startedAt).toLocaleString('zh-CN', { hour12: false })}
+                  </div>
                 </div>
-              </div>
-              <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{formatDuration(run.startedAt, run.finishedAt)}</span>
-            </DropdownMenuItem>
-          )
-        })}
+                <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{formatDuration(run.startedAt, run.finishedAt)}</span>
+              </DropdownMenuItem>
+            )
+          })}
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -303,7 +306,7 @@ export function CapabilityFactoryPanel({ sessionId, workspaceLabel }: Capability
 
   return (
     /** relative：场景抽屉在自己的面板内绝对定位，不会飞到窗口最左边。 */
-    <Tabs value={paneTab} onValueChange={(value) => setPaneTab(value as FactoryPaneTab)} className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+    <Tabs value={paneTab} onValueChange={(value) => setPaneTab(value as FactoryPaneTab)} className="titlebar-no-drag relative flex min-h-0 min-w-0 flex-1 flex-col">
       {/* ① 顶栏：图标 + 模块名 在左，选择器在右（与运维工具栏同构） */}
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/40 px-3 py-3">
         {/*

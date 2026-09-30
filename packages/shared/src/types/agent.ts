@@ -1,3 +1,4 @@
+import { isGpt6AstraFamily, isGpt6LunaFamily, isGpt6SolFamily } from '../utils/model-family'
 import type { ProviderType } from './channel'
 import type { CanvasNodeReference } from './canvas'
 
@@ -96,11 +97,16 @@ export const CODEX_FAST_MODE_MODEL_IDS = [
   'gpt-5.6-terra',
   'gpt-5.6-luna',
   'gpt-6-astra',
+  'gpt-6-sol',
+  'gpt-6-luna',
 ] as const
 
 /** 模型 ID 是否可通过 ChatGPT Codex OAuth 使用 Fast Mode。 */
 export function isCodexFastModeSupportedModel(modelId: string | undefined): boolean {
-  return modelId !== undefined && (CODEX_FAST_MODE_MODEL_IDS as readonly string[]).includes(modelId.toLowerCase())
+  return isGpt6AstraFamily(modelId)
+    || isGpt6SolFamily(modelId)
+    || isGpt6LunaFamily(modelId)
+    || (modelId !== undefined && (CODEX_FAST_MODE_MODEL_IDS as readonly string[]).includes(modelId.toLowerCase()))
 }
 
 /**
@@ -1654,6 +1660,8 @@ export interface AgentStreamCompletePayload {
   runGeneration?: number
   /** SDK result 消息的 subtype（success / error_max_turns / error_max_budget_usd / error_during_execution 等） */
   resultSubtype?: string
+  /** SDK result 的终止原因（例如 completion_blocked），用于区分交付验收与运行故障。 */
+  terminalReason?: string
   /** SDK result 消息携带的错误详情（error_during_execution 等场景下的真实错误原因，用于展示具体错误） */
   resultErrors?: string[]
   /** 本轮主体结束但仍有后台任务/定时任务在飞行：UI 进入"空闲可输入"态，等待任务完成自动唤醒 */

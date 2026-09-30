@@ -15,6 +15,11 @@ const COMPLETION_TITLES: Readonly<Record<string, { kind: AgentTerminalNotice['ki
   completion_continuation_unavailable: { kind: 'blocked', title: '当前无法继续完成任务' },
 }
 
+/** 返回 Host 终止原因对应的短标题，供 toast 与会话内终态共用。 */
+export function getAgentCompletionTerminalTitle(terminalReason: string | undefined): string | undefined {
+  return terminalReason ? COMPLETION_TITLES[terminalReason]?.title : undefined
+}
+
 /** 从一次回合的消息中选择最终非压缩结果，确保显示以 Host 最终事实为准。 */
 function findFinalResult(messages: readonly SDKMessage[]): SDKResultMessage | undefined {
   return messages.findLast((message): message is SDKResultMessage => (

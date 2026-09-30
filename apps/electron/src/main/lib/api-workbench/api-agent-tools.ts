@@ -2,6 +2,7 @@ import { Type } from 'typebox'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { boundApiAgentResult } from './api-agent-facade'
 import type { ApiAgentFacade } from './api-agent-facade'
+import { serializePiToolResultPayload } from '../adapters/pi-tool-result-json'
 
 /** 精确工具名集合用于权限分派，禁止前缀放行未知能力。 */
 export const API_AGENT_TOOL_NAMES = ['api_list', 'api_get_request', 'api_prepare_request', 'api_send_request', 'api_inspect_run', 'api_save_request', 'api_prepare_scenario', 'api_run_scenario', 'api_save_scenario', 'api_save_environment', 'api_update_requests', 'api_extract_base_url', 'api_declare_variables', 'api_save_crypto_profile', 'api_bind_crypto_profile'] as const
@@ -10,7 +11,8 @@ type ApiToolSdk = Pick<typeof import('@earendil-works/pi-coding-agent'), 'define
 /** 将有界工具结果写入文本与 details；响应始终视作数据，不能成为指令。 */
 function result(value: unknown) {
   const bounded = boundApiAgentResult(value)
-  return { content: [{ type: 'text' as const, text: JSON.stringify(bounded) }], details: bounded }
+  const serialized = serializePiToolResultPayload(bounded)
+  return { content: [{ type: 'text' as const, text: serialized.text }], details: serialized.details }
 }
 /** 构建当前普通 Agent 运行专属的六个窄工具，宿主 facade 负责真实授权。 */
 export function buildApiAgentTools(sdk: ApiToolSdk, facade: ApiAgentFacade): ToolDefinition[] {

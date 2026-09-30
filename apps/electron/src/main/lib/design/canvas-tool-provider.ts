@@ -1263,7 +1263,7 @@ export function createCanvasToolRun(
   const tools: ToolDefinition[] = [
     defineCanvasTool({
       name: 'canvas_task', label: '画布任务交付',
-      description: '执行前 start 登记交付；跨回合先 status 查看并 resume 原 taskId。created 是新节点，updated 是原节点新产物。读取真实证据后 complete；recover 复验原要求，rebind 只允许关联 Host 记录的新建操作。缺少必要输入/能力用 block。不能降低要求、重置预算或拿报告代替成片。',
+      description: '执行前 start 登记交付；跨回合先 status 查看并 resume 原 taskId。created 是新节点，updated 是原节点新产物。读取真实证据后 complete；证据类提交只能是 {id,evidenceId}，文本 response 只能是 {id,text}，两者不能同时出现。recover 复验原要求，rebind 只允许关联 Host 记录的新建操作。缺少必要输入/能力用 block。不能降低要求、重置预算或拿报告代替成片。',
       parameters: Type.Object({
         action: Type.Union((['start', 'status', 'resume', 'recover', 'rebind', 'complete', 'block'] as const).map(value => Type.Literal(value))),
         canvasId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
@@ -1287,11 +1287,17 @@ export function createCanvasToolRun(
             contentCoverage: Type.Union([Type.Literal('technical'), Type.Literal('sampled'), Type.Literal('full')]),
           }, { additionalProperties: false })),
         }, { additionalProperties: false }), { minItems: 1, maxItems: 32 })),
-        submissions: Type.Optional(Type.Array(Type.Object({
-          id: Type.String({ minLength: 1, maxLength: 64 }),
-          evidenceId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
-          text: Type.Optional(Type.String({ minLength: 1, maxLength: 16_384 })),
-        }, { additionalProperties: false }), { minItems: 1, maxItems: 32 })),
+        /** 证据引用与文本响应分成互斥 schema，避免模型生成 evidenceId+text 的非法组合。 */
+        submissions: Type.Optional(Type.Array(Type.Union([
+          Type.Object({
+            id: Type.String({ minLength: 1, maxLength: 64 }),
+            evidenceId: Type.String({ minLength: 1, maxLength: 128 }),
+          }, { additionalProperties: false }),
+          Type.Object({
+            id: Type.String({ minLength: 1, maxLength: 64 }),
+            text: Type.String({ minLength: 1, maxLength: 16_384 }),
+          }, { additionalProperties: false }),
+        ]), { minItems: 1, maxItems: 32 })),
         reason: Type.Optional(Type.String({ minLength: 1, maxLength: 2048 })),
         blockedStatus: Type.Optional(Type.Union([Type.Literal('blocked'), Type.Literal('needs-input')])),
       }, { additionalProperties: false }),
@@ -3155,12 +3161,13 @@ ${dependencies.orchestration ? buildCanvasOrchestrationGuidance(context) : ''}
 ${CANVAS_PROFESSIONAL_DESIGN_GUIDANCE}
 请基于完整用户语义、项目上下文和工具 schema 自主决定是否读取、创建、修改或运行画布，不要按“首页”或“设计”等关键词硬编码。
 
-跨专业任务采用持久委托时，由画布编排 Agent 维护下述交付合同，普通 Agent 不重复启动同一合同。直接执行画布任务时先用 canvas_task status 查询；存在未完成任务就按 taskId resume，首次执行才用 canvas_task start 在写入前登记真实交付要求，并按可用能力自主读取、配置、执行、验证和修复。response 仅适用于文本本身就是用户交付，不能用它代替要求的节点或真实生成结果。canvas_read 返回 content/configuration/adopted 证据，canvas_inspect_images 返回真实图像检查的 inspection 证据；用 evidenceId 完成全部要求后调用 canvas_task complete。配置已保存不表示可运行，媒体采用不表示质量通过。音视频 metadataOnly 与 WebView 源码不能代替内容或交互检查，缺少能力时 canvas_task block 报告具体原因。完成前 Host 会复验产物版本；有合法下一步的未完成任务在原会话和预算内继续，不能重建运行或降低交付要求来绕过核验。普通能力咨询和无需画布产物的问答不必登记任务。任务要求新增产物时，保留源输入，读取新产物作为完成证据。
+跨专业任务采用持久委托时，由画布编排 Agent 维护下述交付合同，普通 Agent 不重复启动同一合同。直接执行画布任务时先用 canvas_task status 查询；存在未完成任务就按 taskId resume，首次执行才用 canvas_task start 在写入前登记真实交付要求，并按可用能力自主读取、配置、执行、验证和修复。response 仅适用于文本本身就是用户交付，不能用它代替要求的节点或真实生成结果。canvas_read 返回 content/configuration/adopted 证据，canvas_inspect_images 返回真实图像检查的 inspection 证据；用 evidenceId 完成全部要求后调用 canvas_task complete。提交时严格二选一：content/configuration/adopted/inspection 只提交 \`{id,evidenceId}\`，response 只提交 \`{id,text}\`，绝不在同一项中同时提交 text 与 evidenceId，也不能把说明文字塞入证据提交。配置已保存不表示可运行，媒体采用不表示质量通过。音视频 metadataOnly 与 WebView 源码不能代替内容或交互检查，缺少能力时 canvas_task block 报告具体原因。完成前 Host 会复验产物版本；有合法下一步的未完成任务在原会话和预算内继续，不能重建运行或降低交付要求来绕过核验。普通能力咨询和无需画布产物的问答不必登记任务。任务要求新增产物时，保留源输入，读取新产物作为完成证据。
 音视频采用要求根据用途填写 mediaReview（stage、contentCoverage、音轨/时长/尺寸）。technical 仅适合技术素材，sampled 只代表有限抽样；完整成片视听验收需 full，能力不足明确 block，不能省略条件或降级。当前可用 canvas_inspect_media_content 时先读取真实采用素材，再在下一轮看过实际样本后 canvas_review_media；同批盲评不允许，样本只供紧接着的模型请求，重看时重新检查同一素材而非生成。完成提交评审后的 evidence.evidenceId，元数据、检查前ID或报告正文不能替代评审。
 
 当任务需要网页原型、图片设计稿、文档或多个可关联产物时，先读取并遵循 \`canvas-production\` Skill。Skill 不可用时按以下最小规则继续：产物类型会改变交付结果且用户未说明时，只询问一次；用户已明确类型时直接执行；明确要求修改项目 HTML、React、组件或其它代码文件时继续普通 Agent。
 
 先依据当前任务的用途、受众、交付、已有素材、阶段和成本约束选择制作模式，再按真实模型/工作流能力选择生成模式。单项试验可直接完成，系列产物先统一规范，多镜头视频先导演规划，已有素材剪辑先梳理素材和时间线；工程与研究沿各自的专业分工，不套用导演。产品推广、教程、叙事、氛围展示各按卖点与行动引导、步骤正确、角色因果、视听节奏来评审。解释推荐模式的依据和用户影响，不按关键词、节点数量或模型名称硬编码。复杂生产或适配评审时按 canvas-production 入口读取 references/production-review.md。
+
 精确尺寸、文案、几何适配或反复失败时，读取 canvas-production 的 references/production-recovery.md，选择可验证精度匹配的真实制作能力。新图片任务冻结配置提示词；优化应先改配置再创建候选，retry保持原快照。updated+inspection用于本合同启动后生成并检查的候选，existing+inspection用于已有版本；检查完成、质量通过、正式采用分别汇报。无法验证时明确说明，不为补证据重生成。工作流图片通过原resume定向重试，预算内恢复沿用当前策略，正数扩额需要确认；failure/nextAction先引导读取原节点，不能盲目重跑。
 
 只评审时不创建或运行导演；已有当前有效方案时直接读取评审，不重跑导演。创建或运行导演还必须符合本轮工具能力；permissionCeiling=plan 时只读取现有方案并给出规划建议，不调用执行工具，也不声称已保存或运行导演。尚未采用持久委托、用户已授权规划、制作或修复多镜头视频且缺少适用方案时，普通 Agent 创建或复用导演 Canvas Agent，通过 canvas_run_agent 单独产出方案，读取真实正文后由主 Agent 评审，再安排各阶段生成；不要从未经评审的规划起点直接运行整个工作流。固定分支 Agent 完成本职方案，不递归创建或调度其它 Agent。方案明确镜头时长、机位/运动、动作起止、转场、关键帧和资产来源、图片/视频/声音提示词、音轨与验收；连续动作可复用精确素材，切镜不强制首尾相等，规划尾帧不保证成片实际末帧一致。

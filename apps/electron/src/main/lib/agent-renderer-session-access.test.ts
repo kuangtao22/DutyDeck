@@ -22,6 +22,7 @@ const PURE_VALIDATION_CALLS = new Set([
 
 /** 参数名为 id、且语义上表示 Agent session 的既有通道。 */
 const SESSION_ID_ALIAS_CHANNELS = new Set([
+  'GET_RUN_FILE_CHANGES',
   'GET_SDK_MESSAGES',
   'UPDATE_TITLE',
   'UPDATE_SESSION_MODEL',
@@ -183,6 +184,7 @@ const RENDERER_HANDLER_POLICIES: Record<FullChannelKey, RendererHandlerPolicy> =
     'REORDER_WORKSPACES',
     'RESTORE_WORKSPACE_PROJECT_ROOT',
     'SAVE_MCP_API_KEY',
+    'SAVE_MCP_OAUTH_CLIENT_SECRET',
     'SAVE_FILES_TO_WORKSPACE',
     'SAVE_MCP_CONFIG',
     'SEARCH_MESSAGES',
@@ -223,6 +225,8 @@ const RENDERER_HANDLER_POLICIES: Record<FullChannelKey, RendererHandlerPolicy> =
     'DELETE',
     'FETCH_MODELS',
     'GET_PLAN_QUOTA',
+    'GITHUB_COPILOT_OAUTH_CANCEL',
+    'GITHUB_COPILOT_OAUTH_LOGIN',
     'LIST',
     'TEST',
     'TEST_DIRECT',
@@ -479,6 +483,7 @@ const RENDERER_HANDLER_POLICIES: Record<FullChannelKey, RendererHandlerPolicy> =
     'EXIT_PLAN_MODE_RESPOND',
     'FORK_SESSION',
     'GET_QUEUED_MESSAGES',
+    'GET_RUN_FILE_CHANGES',
     'GET_SDK_MESSAGES',
     'GET_SESSION_PATH',
     'MIGRATE_CHAT_TO_AGENT',

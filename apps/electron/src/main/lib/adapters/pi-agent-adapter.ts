@@ -77,13 +77,21 @@ import {
   convertPiMessage,
   convertResultMessage,
   displayToolName,
-  dropTrailingAbortedAssistant,
   hasToolResult,
   isAbortedAssistantMessage,
   isAssistantPiMessage,
   normalizePermissionInput,
   restorePiInput,
 } from './pi-message-adapter'
+import {
+  installPendingSystemPromptTranscript,
+  omitTrailingAbortedAssistantFromSession,
+} from './pi-session-transcript'
+import {
+  normalizePiToolResultDetails,
+  serializePiToolResultPayload,
+  type PiToolResultJson,
+} from './pi-tool-result-json'
 import { DEFAULT_CONTEXT_WINDOW, buildModel } from './pi-model-registry'
 import { PendingPromptSkillActivationTracker } from './pi-skill-activation-tracker'
 import { createPiRetryTerminalGate, mapPiNativeRetryEvent, PI_NATIVE_RETRY_POLICY } from './pi-retry-control'
@@ -835,27 +843,31 @@ export function wrapToolWithPermission<TParams extends TSchema, TDetails, TState
   }
 }
 
-function createJsonToolResult(payload: unknown): AgentToolResult<unknown> {
+function createJsonToolResult(payload: unknown): AgentToolResult<PiToolResultJson> {
+  /** 正文与 details 共用同一次归一化结果，避免重复遍历大型业务结果。 */
+  const serializedPayload = serializePiToolResultPayload(payload)
   return {
-    content: [{ type: 'text', text: JSON.stringify(payload) }],
-    details: payload,
-  } as AgentToolResult<unknown>
+    content: [{ type: 'text', text: serializedPayload.text }],
+    details: serializedPayload.details,
+  }
 }
 
-function createTextToolResult(text: string, details?: unknown): AgentToolResult<unknown> {
+function createTextToolResult(text: string, details?: unknown): AgentToolResult<PiToolResultJson | undefined> {
+  /** 文本结果没有结构化详情时保持字段缺省，避免把 undefined 伪造成业务值。 */
+  const normalizedDetails = details === undefined ? undefined : normalizePiToolResultDetails(details)
   return {
     content: [{ type: 'text', text }],
-    details,
-  } as AgentToolResult<unknown>
+    details: normalizedDetails,
+  }
 }
 
-function createTerminatingJsonToolResult(payload: unknown): AgentToolResult<unknown> {
+function createTerminatingJsonToolResult(payload: unknown): AgentToolResult<PiToolResultJson> {
   return {
     ...createJsonToolResult(payload),
     // Compaction must run only after the active Pi agent loop has settled. Continuing
     // this turn would otherwise race with session.compact(), which aborts that loop.
     terminate: true,
-  } as AgentToolResult<unknown>
+  }
 }
 
 export const PI_COMPACTION_CONTINUATION_PROMPT = `<proma_compaction_continuation>
@@ -1482,8 +1494,25 @@ export function wrapCustomToolDefinitions(
   toolMode: AgentToolMode = 'standard',
 ): ToolDefinition[] {
   const allowedNames = resolveAgentModeToolNames(toolMode)
-  return (tools ?? []).filter((tool) => !allowedNames || allowedNames.includes(tool.name)).map((tool) =>
-    wrapToolWithPermission(tool as unknown as ToolDefinition<TSchema, unknown, unknown>, { canUseTool }) as ToolDefinition)
+  return (tools ?? []).filter((tool) => !allowedNames || allowedNames.includes(tool.name)).map((tool) => {
+    /** 外部 custom tool 的宽类型结果在主进程边界再次做 JSON 收口；utility 侧仍保留独立校验。 */
+    const permissionWrapped = wrapToolWithPermission(
+      tool as unknown as ToolDefinition<TSchema, unknown, unknown>,
+      { canUseTool },
+    )
+    return {
+      ...permissionWrapped,
+      async execute(toolCallId, params, signal, onUpdate, ctx) {
+        /** 权限包装先完成执行，最终结果再转换；拒绝或异常不会伪造工具结果。 */
+        const result = await permissionWrapped.execute(toolCallId, params, signal, onUpdate, ctx)
+        /** undefined 是 AgentToolResult 的合法“无详情”状态，其余值必须满足 JSON 契约。 */
+        const details = result.details === undefined
+          ? undefined
+          : normalizePiToolResultDetails(result.details)
+        return { ...result, details }
+      },
+    } as ToolDefinition
+  })
 }
 
 export function installRuntimeGuardHooks(session: AgentSession, guard: AgentRuntimeGuard): void {
@@ -1501,7 +1530,11 @@ export function installRuntimeGuardHooks(session: AgentSession, guard: AgentRunt
       content: sanitizedContent,
     })
     /** 当前调用是否携带 Nano Banana 自己签发的失败诊断。 */
-    const nanoBananaFailure = isTrustedNanoBananaFailure(context.toolCall.name, context.toolCall.id, resultAfterPreviousHooks.details)
+    const nanoBananaFailure = isTrustedNanoBananaFailure(
+      context.toolCall.name,
+      context.toolCall.id,
+      guardedResult.details,
+    )
 
     if (
       !previousResult
@@ -1515,6 +1548,7 @@ export function installRuntimeGuardHooks(session: AgentSession, guard: AgentRunt
     return {
       ...previousResult,
       content: sanitizedContent,
+      details: guardedResult.details,
       terminate: guardedResult.terminate,
       ...(nanoBananaFailure ? { isError: true } : {}),
     }
@@ -1655,6 +1689,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         // tool_result；不能用外层重投原始 prompt 替代，否则会重复执行副作用工具。
         // 重试预算与退避基数的取值理由见 pi-retry-control.ts 的 PI_NATIVE_RETRY_POLICY。
         retry: { ...PI_NATIVE_RETRY_POLICY },
+        // Pi 0.87 默认会在长工具调用期间发送额外缓存预热请求；产品提供显式开关前保持关闭。
+        cacheWarming: 'off',
         ...buildPiRemoteConnectionSettings(input),
       })
       /** 构建后的真实模型协议决定是否注入 OpenAI Responses reasoning effort。 */
@@ -1737,17 +1773,11 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         await previousTransformContext?.(messages, signal) ?? messages,
       )
       if (projectInstructionScope) {
-        const previousPrepareNextTurnWithContext = session.agent.prepareNextTurnWithContext
-        session.agent.prepareNextTurnWithContext = async (context, signal) => {
-          const previousSnapshot = await previousPrepareNextTurnWithContext?.(context, signal)
-          const nextContext = previousSnapshot?.context ?? context.context
-          const systemPrompt = projectInstructionScope.appendPendingInstructions(nextContext.systemPrompt)
-          if (systemPrompt === nextContext.systemPrompt) return previousSnapshot
-          return {
-            ...previousSnapshot,
-            context: { ...nextContext, systemPrompt },
-          }
-        }
+        installPendingSystemPromptTranscript(
+          session.agent,
+          sessionManager,
+          (currentSystemPrompt) => projectInstructionScope.appendPendingInstructions(currentSystemPrompt),
+        )
       }
       if (piAi && input.codexFastMode && input.provider === 'openai-codex' && isCodexFastModeSupportedModel(input.model)) {
         // Pi 的通用 streamSimple 会丢弃 provider 专属 serviceTier；这里直接走
@@ -2187,7 +2217,9 @@ export class PiAgentAdapter implements AgentProviderAdapter {
               await finalizeCompletedTurn()
             } finally {
               if (active.interrupting) {
-                session.agent.state.messages = dropTrailingAbortedAssistant(session.agent.state.messages)
+                /** 写入 canonical context_edit 后同步公开 state，避免 UI 或后续本地逻辑仍读取已隐藏消息。 */
+                const contextChanged = omitTrailingAbortedAssistantFromSession(sessionManager)
+                if (contextChanged) session.refreshContext()
               }
               active.interrupting = false
             }

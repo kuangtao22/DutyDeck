@@ -137,6 +137,42 @@ describe('Agent 完成归属判断', () => {
       sessionId: 'session-1', resultSubtype: 'error_during_execution', resultErrors: ['模型失败'],
     }, warn)
     expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn).toHaveBeenCalledWith('任务执行出错：模型失败')
+    expect(warn).toHaveBeenCalledWith('任务执行出错：模型失败 详情见对应回复。')
+  })
+})
+
+describe('完成提醒的真实终态与有界文案', () => {
+  test.each([
+    ['completion_blocked', '交付检查尚未通过'],
+    ['completion_check_failed', '交付检查失败'],
+    ['completion_continuation_limit', '自动续行已达上限'],
+    ['completion_continuation_unavailable', '当前无法继续完成任务'],
+  ])('Given %s When 接收完成通知 Then 使用准确标题且不展开模型阻塞报告', (terminalReason, title) => {
+    /** 模拟实际 toast 分派。 */
+    const warn = mock((_message: string): void => undefined)
+    notifyAgentCompletionWarning('agent', {
+      sessionId: 'session-1', resultSubtype: 'error_during_execution', terminalReason,
+      resultErrors: ['已恢复并完成，Host 仍未通过。'.repeat(80)],
+    }, warn)
+    expect(warn).toHaveBeenCalledWith(`${title}。本轮已结束，详情见对应回复。`)
+  })
+
+  test('Given 后台工作尚未结束 When 收到轻量完成 Then 不提示最终错误', () => {
+    /** 等待态不能被用户误认为真正终止。 */
+    const warn = mock((_message: string): void => undefined)
+    notifyAgentCompletionWarning('agent', {
+      sessionId: 'session-1', resultSubtype: 'error_during_execution', backgroundTasksPending: true,
+    }, warn)
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  test('Given 普通异常含长错误正文 When 分派 toast Then 有界显示并引导查看回复', () => {
+    /** 捕获提示，完整错误仍由会话消息保留。 */
+    const messages: string[] = []
+    notifyAgentCompletionWarning('agent', {
+      sessionId: 'session-1', resultSubtype: 'error_during_execution', resultErrors: ['错误原因'.repeat(200)],
+    }, message => { messages.push(message) })
+    expect(messages[0]!.length).toBeLessThan(220)
+    expect(messages[0]).toContain('详情见对应回复')
   })
 })

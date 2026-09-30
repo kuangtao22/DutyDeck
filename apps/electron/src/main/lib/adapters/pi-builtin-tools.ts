@@ -22,6 +22,7 @@ import type {
 import type { ResolveImageGenerationRoute } from '../image-generation-runtime'
 import type { ImageRequestAudit } from '../chat-tools/image-request-context'
 import type { TrustedImageParameters } from '../agent-run-extensions'
+import { normalizePiToolResultDetails, serializePiToolResultPayload, type PiToolResultJson } from './pi-tool-result-json'
 import { realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
@@ -157,18 +158,19 @@ export interface PiBuiltinToolsContext {
   serverOpsConnectionDrafts?: ServerOpsConnectionDraftAgent
 }
 
-function jsonToolResult(payload: unknown): AgentToolResult<unknown> {
+function jsonToolResult(payload: unknown): AgentToolResult<PiToolResultJson> {
+  const serialized = serializePiToolResultPayload(payload)
   return {
-    content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
-    details: payload,
-  } as AgentToolResult<unknown>
+    content: [{ type: 'text', text: serialized.text }],
+    details: serialized.details,
+  }
 }
 
-function textToolResult(text: string, details?: unknown): AgentToolResult<unknown> {
+function textToolResult(text: string, details?: unknown): AgentToolResult<PiToolResultJson | undefined> {
   return {
     content: [{ type: 'text', text }],
-    details,
-  } as AgentToolResult<unknown>
+    details: details === undefined ? undefined : normalizePiToolResultDetails(details),
+  }
 }
 
 // ===== Web 工具 =====
@@ -1324,8 +1326,8 @@ function buildBrowserTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDefiniti
             { type: 'text', text: `已截取当前页面：${screenshot.url}` },
             { type: 'image', data: screenshot.base64, mimeType: screenshot.mimeType },
           ],
-          details: { url: screenshot.url, mimeType: screenshot.mimeType, bytes: Math.floor(screenshot.base64.length * 0.75) },
-        } as AgentToolResult<unknown>
+          details: normalizePiToolResultDetails({ url: screenshot.url, mimeType: screenshot.mimeType, bytes: Math.floor(screenshot.base64.length * 0.75) }),
+        }
       },
     }),
     sdk.defineTool({

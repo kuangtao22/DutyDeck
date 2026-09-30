@@ -206,3 +206,27 @@ describe('GLM-5.3-FlashX 预设候选迁移', () => {
     ])
   })
 })
+
+describe('Pi 0.87 Codex 候选迁移', () => {
+  test('Given 存量渠道已有手动关闭的 Sol When 重复加载 Then 不重启用且只补一次 Luna', () => {
+    writeChannelsSource(JSON.stringify({
+      version: 5,
+      channels: [{
+        id: 'codex-existing', name: 'Codex', provider: 'openai-codex', baseUrl: '', apiKey: '',
+        models: [{ id: 'gpt-6-sol', name: '我的 Sol', enabled: false }],
+        enabled: true, createdAt: 1, updatedAt: 1,
+      }],
+    }))
+    /** 连续加载验证迁移幂等，不能覆盖用户名称或 enabled。 */
+    channelManager.listChannels()
+    const models = channelManager.listChannels()[0]!.models
+    expect(models.filter((model) => model.id === 'gpt-6-sol')).toEqual([{ id: 'gpt-6-sol', name: '我的 Sol', enabled: false }])
+    expect(models.filter((model) => model.id === 'gpt-6-luna')).toHaveLength(1)
+  })
+
+  test('Given 无效 Codex 凭据 When 拉取目录 Then 返回明确登录错误', async () => {
+    const result = await channelManager.fetchModels({ provider: 'openai-codex', baseUrl: '', apiKey: 'invalid' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('登录凭据无效')
+  })
+})

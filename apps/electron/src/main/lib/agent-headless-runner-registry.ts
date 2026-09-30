@@ -19,6 +19,8 @@ export interface HeadlessAgentRunTerminalOptions {
   startedAt: number
   runGeneration?: number
   resultSubtype?: string
+  /** Pi result 的 Host 终止原因，例如 completion_blocked。 */
+  terminalReason?: string
   /** Pi result 的本轮错误详情，供业务调用方在没有 onError 时仍能识别真实失败。 */
   resultErrors?: string[]
 }

@@ -40,6 +40,7 @@ import {
   resolveDelegationPermissionMode,
 } from './agent-collaboration-utils'
 import { assertEnabledModelForChannel, listEnabledAgentModelsForChannel } from './agent-model-selection'
+import { serializePiToolResultPayload, type PiToolResultJson } from './adapters/pi-tool-result-json'
 
 interface CollaborationToolContext {
   sessionId: string
@@ -842,10 +843,11 @@ export function buildPiCollaborationTools(
     thinkingLevel: thinkingLevelType,
   })
 
-  function piJsonResult(payload: unknown): { content: Array<{ type: 'text'; text: string }>; details: unknown } {
+  function piJsonResult(payload: unknown): { content: Array<{ type: 'text'; text: string }>; details: PiToolResultJson } {
+    const serialized = serializePiToolResultPayload(payload)
     return {
-      content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
-      details: payload,
+      content: [{ type: 'text', text: serialized.text }],
+      details: serialized.details,
     }
   }
 
