@@ -26,6 +26,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { ChannelForm } from './ChannelForm'
+import { ChannelAuthorizationNotice } from './ChannelAuthorizationNotice'
 
 /** 组件视图模式 */
 type ViewMode = 'list' | 'create' | 'edit'
@@ -71,7 +72,13 @@ export function ChannelSettings(): React.ReactElement {
   const [, setAgentModelId] = useAtom(agentModelIdAtom)
   const setGlobalChannels = useSetAtom(channelsAtom)
   const [deleteTarget, setDeleteTarget] = React.useState<Channel | null>(null)
+  /** 仅记录刚授权的渠道身份，展示始终派生自最新渠道列表，避免删除后残留旧账号。 */
+  const [recentlyAuthorizedChannelId, setRecentlyAuthorizedChannelId] = React.useState<string | null>(null)
+  /** 与实时列表同源的授权反馈对象。 */
+  const recentlyAuthorizedChannel = channels.find((channel) => channel.id === recentlyAuthorizedChannelId)
   const agentChannelIdRef = React.useRef(agentChannelId)
+  /** 渠道列表的请求代次，避免授权/删除后的新列表被较早请求覆盖。 */
+  const loadGenerationRef = React.useRef(0)
   React.useEffect(() => {
     agentChannelIdRef.current = agentChannelId
   }, [agentChannelId])
@@ -92,23 +99,28 @@ export function ChannelSettings(): React.ReactElement {
 
   /** 加载渠道列表 */
   const loadChannels = React.useCallback(async (): Promise<void> => {
+    /** 本次读取的身份，在响应返回和结束加载时均需仍为最新。 */
+    const generation = ++loadGenerationRef.current
     try {
       const list = await window.electronAPI.listChannels()
+      if (generation !== loadGenerationRef.current) return
       setLoadState((state) => reduceChannelSettingsLoadState(state, { type: 'load-succeeded', channels: list }))
       setGlobalChannels(list) // 同步到全局缓存
     } catch (error) {
+      if (generation !== loadGenerationRef.current) return
       console.error('[渠道设置] 加载渠道列表失败:', error)
       setLoadState((state) => reduceChannelSettingsLoadState(state, {
         type: 'load-failed',
         message: formatChannelLoadError(error),
       }))
     } finally {
-      setLoading(false)
+      if (generation === loadGenerationRef.current) setLoading(false)
     }
   }, [])
 
   React.useEffect(() => {
     void loadChannels()
+    return () => { loadGenerationRef.current += 1 }
   }, [loadChannels])
 
   /** 重新加载渠道列表，并恢复明确的加载状态。 */
@@ -157,10 +169,11 @@ export function ChannelSettings(): React.ReactElement {
   }
 
   /** 表单保存回调 */
-  const handleFormSaved = async (): Promise<void> => {
+  const handleFormSaved = async (savedChannel?: Channel): Promise<void> => {
     setViewMode('list')
     setEditingChannel(null)
     await loadChannels()
+    if (savedChannel?.provider === 'github-copilot') setRecentlyAuthorizedChannelId(savedChannel.id)
   }
 
   /** 清理上游商业版遗留的、当前版本不支持的渠道。 */
@@ -206,6 +219,17 @@ export function ChannelSettings(): React.ReactElement {
           </Button>
         }
       >
+        {recentlyAuthorizedChannel && (
+          <ChannelAuthorizationNotice
+            enabledModelCount={recentlyAuthorizedChannel.models.filter((model) => model.enabled).length}
+            onViewModels={() => {
+              setEditingChannel(recentlyAuthorizedChannel)
+              setRecentlyAuthorizedChannelId(null)
+              setViewMode('edit')
+            }}
+            onDismiss={() => setRecentlyAuthorizedChannelId(null)}
+          />
+        )}
         {loadError && (
           <div
             role="alert"

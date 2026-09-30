@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import type { Api, Model } from '@earendil-works/pi-ai/compat'
-import { buildModel, filterSupportedCodexModels } from './pi-model-registry'
+import {
+  buildGithubCopilotModel,
+  buildModel,
+  filterSupportedCodexModels,
+  getGithubCopilotCatalogModels,
+  listGithubCopilotModels,
+  resolvePiApi,
+} from './pi-model-registry'
 
 /** 构造最小可用的 Codex 目录条目，字段值本身不影响过滤判定。 */
 function codexModel(id: string): Model<Api> {
@@ -144,5 +151,60 @@ describe('MiMo V2.6 离线模型注册', () => {
 
     expect(model.maxTokens).toBe(64_000)
     expect(model.contextWindow).toBe(200_000)
+  })
+})
+
+describe('GitHub Copilot 模型目录', () => {
+  /** 测试账号的最小内存凭据，不读取真实账号或 ~/.pi。 */
+  const credentials = {
+    access: 'access',
+    refresh: 'refresh',
+    expires: Date.now() + 3_600_000,
+    availableModelIds: ['gpt-5.3-codex'],
+  }
+
+  test('Given 当前账号目录为空 When 列出模型 Then 返回空列表而不误报模型缺失', async () => {
+    const sdk = {
+      ModelRuntime: {
+        create: async () => ({ getAvailable: async () => [] }),
+      },
+    } as unknown as Parameters<typeof buildGithubCopilotModel>[0]
+
+    await expect(listGithubCopilotModels(credentials, sdk)).resolves.toEqual([])
+  })
+
+  test('Given 用户指定账号未授权模型 When 构建 Agent 模型 Then 返回明确错误', async () => {
+    const sdk = {
+      ModelRuntime: {
+        create: async () => ({ getAvailable: async () => [] }),
+      },
+    } as unknown as Parameters<typeof buildGithubCopilotModel>[0]
+
+    await expect(buildGithubCopilotModel(sdk, {
+      model: 'gpt-5.3-codex',
+      githubCopilotOAuthCredentials: credentials,
+    })).rejects.toThrow('当前订阅不支持模型')
+  })
+
+  test('Given Pi 0.85.1 真实 runtime 与内存假凭据 When 限定目录 Then 单模型和空目录都离线生效', async () => {
+    /** 真实 runtime 应按凭据中的授权 ID 只返回一个模型。 */
+    const singleModel = await listGithubCopilotModels(credentials)
+    /** 空目录代表有效账号当前无授权模型，不应回退到静态全目录。 */
+    const emptyModels = await listGithubCopilotModels({ ...credentials, availableModelIds: [] })
+
+    expect(singleModel).toEqual([{ id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex' }])
+    expect(emptyModels).toEqual([])
+  })
+
+  test('Given Pi 0.85.1 Copilot 真实目录含多协议模型 When 解析 API Then 分别保留 GPT 与 Claude 协议', async () => {
+    /** 从真实 Pi 目录读取 GPT 与 Claude 的协议声明。 */
+    const catalog = await getGithubCopilotCatalogModels()
+    const gptModel = catalog.find((model) => model.id === 'gpt-5.3-codex')
+    const claudeModel = catalog.find((model) => model.id === 'claude-sonnet-5')
+
+    expect(gptModel?.api).toBe('openai-responses')
+    expect(claudeModel?.api).toBe('anthropic-messages')
+    expect(resolvePiApi('github-copilot', gptModel?.api)).toBe('openai-responses')
+    expect(resolvePiApi('github-copilot', claudeModel?.api)).toBe('anthropic-messages')
   })
 })

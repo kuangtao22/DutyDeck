@@ -13,6 +13,8 @@
 // ===== 模型图标导入 =====
 
 import DefaultLogo from '@/assets/models/default.png'
+// GitHub Copilot 渠道使用 GitHub 品牌标识，模型本身仍按其模型 ID 展示图标。
+import GithubLogo from '@/assets/models/github.svg'
 
 // Claude / Anthropic
 import ClaudeLogo from '@/assets/models/claude.png'
@@ -261,6 +263,7 @@ const PROVIDER_LOGO_MAP: Record<ProviderType, string> = {
   xiaomi: XiaomiLogo,
   'xiaomi-token-plan': XiaomiLogo,
   'openai-codex': OpenAILogo,
+  'github-copilot': GithubLogo,
   xai: GrokLogo,
   custom: DefaultLogo,
 }

@@ -42,6 +42,8 @@ import {
 } from '@proma/shared'
 import type { PromaPermissionMode, AskUserRequest, ExitPlanModeRequest, SDKSystemMessage } from '@proma/shared'
 import type { PiAgentQueryOptions } from './adapters/pi-agent-adapter'
+import type { GithubCopilotOAuthCredentials } from '@proma/shared'
+import { persistGithubCopilotOAuthCredentials, resolveGithubCopilotOAuthCredentials } from './channel-manager'
 import { getAgentWorkspaceBySlug } from './agent-workspace-manager'
 import { getMainRepoRoot } from './git-diff-service'
 import { getPiAssistantErrorDetails, hasPiAssistantTextContent, stripPiAssistantError } from './adapters/pi-message-adapter'
@@ -413,6 +415,9 @@ export class AgentOrchestrator {
       console.warn('[Agent 标题生成] 渠道不存在:', channelId)
       return fallbackTitle
     }
+
+    // Copilot 的模型额度留给 Agent 正文请求，标题采用稳定的本地摘要。
+    if (channel.provider === 'github-copilot') return fallbackTitle
 
     try {
       /** API Key 渠道的运行时密钥；OAuth 渠道保持为空。 */
@@ -1037,6 +1042,8 @@ export class AgentOrchestrator {
 
     let apiKey: string
     let codexOAuthCredentials: CodexOAuthCredentials | undefined
+    /** Copilot 的完整订阅凭据用于 Pi 运行时刷新与模型授权。 */
+    let githubCopilotOAuthCredentials: GithubCopilotOAuthCredentials | undefined
     let xaiOAuthCredentials: XaiOAuthCredentials | undefined
     try {
       // 订阅 OAuth 渠道必须保留完整凭据给 Pi runtime，才能在执行中按真实 expires
@@ -1044,6 +1051,9 @@ export class AgentOrchestrator {
       if (channel.provider === 'openai-codex') {
         codexOAuthCredentials = await resolveCodexOAuthCredentials(channelId)
         apiKey = codexOAuthCredentials.access
+      } else if (channel.provider === 'github-copilot') {
+        githubCopilotOAuthCredentials = await resolveGithubCopilotOAuthCredentials(channelId)
+        apiKey = githubCopilotOAuthCredentials.access
       } else if (channel.provider === 'xai') {
         xaiOAuthCredentials = await resolveXaiOAuthCredentials(channelId)
         apiKey = xaiOAuthCredentials.access
@@ -1052,14 +1062,18 @@ export class AgentOrchestrator {
       }
     } catch (err) {
       checkpoint()
-      if (channel.provider === 'openai-codex' || channel.provider === 'xai') {
+      if (channel.provider === 'openai-codex' || channel.provider === 'github-copilot' || channel.provider === 'xai') {
         const isXai = channel.provider === 'xai'
+        /** 标识 Copilot 以便给出准确的重新登录提示。 */
+        const isGithubCopilot = channel.provider === 'github-copilot'
         reportPreflightError({
           code: 'expired_oauth_token',
-          title: isXai ? 'xAI 登录已失效' : 'ChatGPT 登录已失效',
+          title: isXai ? 'xAI 登录已失效' : isGithubCopilot ? 'GitHub Copilot 登录已失效' : 'ChatGPT 登录已失效',
           message: isXai
             ? '无法刷新 xAI 登录凭据，登录可能已过期或被撤销。请在设置中重新登录 xAI。'
-            : '无法刷新 ChatGPT 登录凭据，登录可能已过期或被撤销。请在设置中重新登录 ChatGPT。',
+            : isGithubCopilot
+              ? '无法刷新 GitHub Copilot 登录凭据，登录可能已过期、被撤销或订阅已失效。请在设置中重新登录。'
+              : '无法刷新 ChatGPT 登录凭据，登录可能已过期或被撤销。请在设置中重新登录 ChatGPT。',
           actions: [
             { key: 's', label: '打开渠道设置', action: 'open_channel_settings' },
           ],
@@ -2087,6 +2101,8 @@ export class AgentOrchestrator {
       const piCustomTools = runToolMode === 'server-ops-read'
         ? piBuiltinTools
         : [...piBuiltinTools, ...piMcpTools, ...(extensions.piCustomTools ?? [])]
+      /** 运行期间已确认的凭据版本，刷新只能条件替换相同版本，不能覆盖用户换号。 */
+      let githubCopilotCredentialsSnapshot = githubCopilotOAuthCredentials
       const queryOptions: PiAgentQueryOptions = {
         sessionId,
         toolMode: runToolMode,
@@ -2143,10 +2159,21 @@ export class AgentOrchestrator {
             persistXaiOAuthCredentials(channelId, credentials)
           },
         }),
-        ...((channel.provider === 'openai-codex' || channel.provider === 'xai' || channel.provider === 'openai-responses' || channel.provider === 'openai' || channel.provider === 'custom')
+        ...(githubCopilotOAuthCredentials && {
+          githubCopilotOAuthCredentials,
+          onGithubCopilotOAuthCredentialsRefreshed: (credentials: GithubCopilotOAuthCredentials) => {
+            /** 本轮上一次确认的凭据快照作为条件写入的比较值。 */
+            const expectedCredentials = githubCopilotCredentialsSnapshot
+            if (expectedCredentials && persistGithubCopilotOAuthCredentials(channelId, credentials, expectedCredentials)) {
+              githubCopilotCredentialsSnapshot = credentials
+            }
+          },
+        }),
+        ...((channel.provider === 'openai-codex' || channel.provider === 'github-copilot' || channel.provider === 'xai' || channel.provider === 'openai-responses' || channel.provider === 'openai' || channel.provider === 'custom')
           && resolveReasoningProfile({
             modelId: selectedModelId,
-            transport: inferReasoningTransport(channel.provider),
+            // Copilot 的 GPT 使用 Responses；适配器会按实际 model.api 排除 Claude。
+            transport: channel.provider === 'github-copilot' ? 'openai-responses' : inferReasoningTransport(channel.provider),
           })?.id.startsWith('openai-reasoning-') && {
             openAIThinkingLevel: piThinkingLevel!,
           }),

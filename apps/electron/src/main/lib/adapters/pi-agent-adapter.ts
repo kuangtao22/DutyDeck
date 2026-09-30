@@ -16,6 +16,7 @@ import type {
   AgentToolMode,
   AgentProviderAdapter,
   CodexOAuthCredentials,
+  GithubCopilotOAuthCredentials,
   XaiOAuthCredentials,
   AgentQueryInput,
   JsonSchemaOutputFormat,
@@ -53,7 +54,7 @@ import type {
 import type { Transport as PiAgentTransport } from '@earendil-works/pi-ai'
 import type { AssistantMessageEvent } from '@earendil-works/pi-ai'
 import type { AgentToolResult, AgentToolUpdateCallback } from '@earendil-works/pi-agent-core'
-import type { AssistantMessage } from '@earendil-works/pi-ai/compat'
+import type { Api, AssistantMessage } from '@earendil-works/pi-ai/compat'
 import { Type, type TSchema } from 'typebox'
 import {
   appendOutputFormatInstruction,
@@ -107,6 +108,28 @@ type PowerShellToolOptions = {
 type SkillLoadResult = ReturnType<ResourceLoader['getSkills']>
 
 const MAX_AUTOMATIC_COMPACTION_CONTINUATIONS = 20
+
+/**
+ * 解析需要 Proma 请求扩展补写 effort 的 OpenAI Responses profile。
+ * Copilot 同一渠道包含多种协议，只能依据构建后模型的真实 API 判定。
+ */
+export function resolvePiOpenAIReasoningProfile(
+  provider: ProviderType,
+  modelId: string | undefined,
+  modelApi: Api | undefined,
+): ReturnType<typeof resolveReasoningProfile> {
+  /** Copilot 仅对真实 Responses 模型启用 OpenAI 请求体扩展。 */
+  const isGithubCopilotResponses = provider === 'github-copilot' && modelApi === 'openai-responses'
+  /** 既有原生 Responses 渠道继续沿用原来的扩展行为。 */
+  const isNativeResponsesProvider = provider === 'openai-codex'
+    || provider === 'xai'
+    || provider === 'openai-responses'
+  if (!isGithubCopilotResponses && !isNativeResponsesProvider) return undefined
+  return resolveReasoningProfile({
+    modelId,
+    transport: isGithubCopilotResponses ? 'openai-responses' : inferReasoningTransport(provider),
+  })
+}
 
 export function shouldMarkCompactionAfterCompletedTurn(
   terminalResult: SDKMessage | undefined,
@@ -253,6 +276,10 @@ export interface PiAgentQueryOptions extends AgentQueryInput {
   codexOAuthCredentials?: CodexOAuthCredentials
   /** Pi 运行中刷新 OAuth 后，将新凭据回写到 Proma 渠道存储。 */
   onCodexOAuthCredentialsRefreshed?: (credentials: CodexOAuthCredentials) => void | Promise<void>
+  /** GitHub Copilot OAuth store 使用完整凭据和模型策略，不读取 ~/.pi。 */
+  githubCopilotOAuthCredentials?: GithubCopilotOAuthCredentials
+  /** Pi 刷新 Copilot 凭据后，将结果交给主进程做条件回写。 */
+  onGithubCopilotOAuthCredentialsRefreshed?: (credentials: GithubCopilotOAuthCredentials) => void | Promise<void>
   /** xAI OAuth credential store 使用真实 expires 和 refresh，不读取 ~/.pi。 */
   xaiOAuthCredentials?: XaiOAuthCredentials
   /** Pi 运行中刷新 xAI OAuth 后，将新凭据回写到 Proma 渠道存储。 */
@@ -1630,12 +1657,12 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         retry: { ...PI_NATIVE_RETRY_POLICY },
         ...buildPiRemoteConnectionSettings(input),
       })
-      const openAIReasoningProfile = (input.provider === 'openai-codex' || input.provider === 'xai' || input.provider === 'openai-responses')
-        ? resolveReasoningProfile({
-          modelId: input.model,
-          transport: inferReasoningTransport(input.provider),
-        })
-        : undefined
+      /** 构建后的真实模型协议决定是否注入 OpenAI Responses reasoning effort。 */
+      const openAIReasoningProfile = resolvePiOpenAIReasoningProfile(
+        input.provider,
+        input.model ?? model.id,
+        model.api,
+      )
       const deepSeekReasoningProfile = input.provider === 'deepseek'
         ? resolveReasoningProfile({
           modelId: input.model,

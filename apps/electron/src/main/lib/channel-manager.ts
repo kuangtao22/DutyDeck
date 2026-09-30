@@ -21,6 +21,7 @@ import type {
   ChannelPlanQuotaResult,
   ChannelPlanQuotaWindow,
   CodexOAuthCredentials,
+  GithubCopilotOAuthCredentials,
   XaiOAuthCredentials,
   FetchModelsInput,
   FetchModelsResult,
@@ -33,16 +34,21 @@ import {
   parseCodexCredentials,
   serializeCodexCredentials,
   isCodexCredentialExpired,
+  parseGithubCopilotCredentials,
+  serializeGithubCopilotCredentials,
+  isGithubCopilotCredentialExpired,
   parseXaiCredentials,
   serializeXaiCredentials,
   isXaiCredentialExpired,
   VOLCENGINE_CODING_PLAN_MODELS,
 } from '@proma/shared'
 import { refreshCodexOAuth } from './codex-oauth-service'
+import { normalizeGithubCopilotOAuthError, refreshGithubCopilotOAuth } from './github-copilot-oauth-service'
 import { refreshXaiOAuth } from './xai-oauth-service'
 import { refreshXaiOAuthCredentialsSerial, rememberXaiOAuthCredentials } from './xai-oauth-credentials'
 import { parseCodexPlanQuotaResponse } from './codex-plan-quota'
-import { listCodexModels, listXaiModels } from './adapters/pi-model-registry'
+import { queryGithubCopilotPlanQuota } from './github-copilot-plan-quota'
+import { listCodexModels, listGithubCopilotModels, listXaiModels } from './adapters/pi-model-registry'
 import { getFetchFn } from './proxy-fetch'
 import { getEffectiveProxyUrl } from './proxy-settings-service'
 import {
@@ -589,16 +595,26 @@ export function updateChannel(id: string, input: ChannelUpdateInput): Channel {
   }
 
   const existing = config.channels[index]!
+  /** 额度缓存以渠道更新时间区分 Copilot 账号，换号时必须保证版本严格递增。 */
+  const nextProvider = input.provider ?? existing.provider
+  /** 只在明文凭据实际变化时启用单调时间戳，普通渠道编辑维持原有更新时间语义。 */
+  const hasChangedGithubCopilotCredentials = nextProvider === 'github-copilot'
+    && Boolean(input.apiKey)
+    && input.apiKey !== decryptKey(existing.apiKey)
+  /** 同毫秒内连续换号时也生成新的额度缓存键。 */
+  const nextUpdatedAt = hasChangedGithubCopilotCredentials
+    ? Math.max(Date.now(), existing.updatedAt + 1)
+    : Date.now()
 
   const updated: Channel = {
     ...existing,
     name: input.name ?? existing.name,
-    provider: input.provider ?? existing.provider,
+    provider: nextProvider,
     baseUrl: input.baseUrl ?? existing.baseUrl,
     apiKey: input.apiKey ? encryptApiKey(input.apiKey) : existing.apiKey,
     models: input.models ?? existing.models,
     enabled: input.enabled ?? existing.enabled,
-    updatedAt: Date.now(),
+    updatedAt: nextUpdatedAt,
   }
 
   config.channels[index] = updated
@@ -712,6 +728,82 @@ export async function resolveCodexAccessToken(channelId: string): Promise<string
   return (await resolveCodexOAuthCredentials(channelId)).access
 }
 
+/** 同一 Copilot 渠道、同一凭据代次只允许一个 token refresh 请求在途。 */
+const inflightGithubCopilotRefresh = new Map<
+  string,
+  Map<string, Promise<GithubCopilotOAuthCredentials>>
+>()
+
+/**
+ * 仅当渠道仍持有运行启动时的凭据，才回写 Pi 刷新结果。
+ * 这能阻止旧会话覆盖用户刚完成登录的新账号。
+ */
+export function persistGithubCopilotOAuthCredentials(
+  channelId: string,
+  credentials: GithubCopilotOAuthCredentials,
+  expectedCredentials: GithubCopilotOAuthCredentials,
+): boolean {
+  const channel = getChannelById(channelId)
+  if (!channel || channel.provider !== 'github-copilot') {
+    throw new Error(`GitHub Copilot 渠道不存在或类型不匹配: ${channelId}`)
+  }
+  const current = parseGithubCopilotCredentials(decryptKey(channel.apiKey))
+  if (!current || serializeGithubCopilotCredentials(current) !== serializeGithubCopilotCredentials(expectedCredentials)) {
+    console.info(`[GitHub Copilot OAuth] 已忽略过期凭据回写: ${channelId}`)
+    return false
+  }
+  updateChannel(channelId, { apiKey: serializeGithubCopilotCredentials(credentials) })
+  return true
+}
+
+/** 解析 Copilot 凭据，按需刷新并通过凭据快照条件回写。 */
+export async function resolveGithubCopilotOAuthCredentials(
+  channelId: string,
+  refreshCredentials: (
+    credentials: GithubCopilotOAuthCredentials,
+  ) => Promise<GithubCopilotOAuthCredentials> = refreshGithubCopilotOAuth,
+): Promise<GithubCopilotOAuthCredentials> {
+  const channel = getChannelById(channelId)
+  if (!channel || channel.provider !== 'github-copilot') {
+    throw new Error('GitHub Copilot 渠道不存在或类型不匹配')
+  }
+  const credentials = parseGithubCopilotCredentials(decryptKey(channel.apiKey))
+  if (!credentials) throw new Error('GitHub Copilot 登录凭据无效或缺失，请重新登录')
+  if (!isGithubCopilotCredentialExpired(credentials)) return credentials
+
+  /** 当前渠道凭据的稳定序列化快照，用于隔离换号前后的刷新请求。 */
+  const credentialSnapshot = serializeGithubCopilotCredentials(credentials)
+  /** 当前渠道各凭据代次的在途刷新集合。 */
+  const channelRefreshes = inflightGithubCopilotRefresh.get(channelId)
+  /** 仅复用与当前凭据完全一致的在途刷新。 */
+  const inflightRefresh = channelRefreshes?.get(credentialSnapshot)
+  if (inflightRefresh) return inflightRefresh
+  /** 当前凭据代次的刷新 Promise；旧代完成时不得清理本代记录。 */
+  let refreshPromise!: Promise<GithubCopilotOAuthCredentials>
+  refreshPromise = (async (): Promise<GithubCopilotOAuthCredentials> => {
+    try {
+      /** Pi 返回的续签凭据，只能在快照仍匹配时落盘。 */
+      const refreshed = await refreshCredentials(credentials)
+      const persisted = persistGithubCopilotOAuthCredentials(channelId, refreshed, credentials)
+      // 用户在刷新期间切换账号时，旧调用也必须返回当前账号凭据，不能继续使用旧 token。
+      return persisted
+        ? refreshed
+        : resolveGithubCopilotOAuthCredentials(channelId, refreshCredentials)
+    } finally {
+      const currentRefreshes = inflightGithubCopilotRefresh.get(channelId)
+      if (currentRefreshes?.get(credentialSnapshot) === refreshPromise) {
+        currentRefreshes.delete(credentialSnapshot)
+        if (currentRefreshes.size === 0) inflightGithubCopilotRefresh.delete(channelId)
+      }
+    }
+  })()
+  /** 复用既有代次表，允许同一渠道的多个账号切换请求并发完成且互不清理。 */
+  const nextChannelRefreshes = channelRefreshes ?? new Map<string, Promise<GithubCopilotOAuthCredentials>>()
+  nextChannelRefreshes.set(credentialSnapshot, refreshPromise)
+  inflightGithubCopilotRefresh.set(channelId, nextChannelRefreshes)
+  return refreshPromise
+}
+
 /** 保存 Pi 或 Proma 刷新后的完整 xAI OAuth 凭据。 */
 export function persistXaiOAuthCredentials(channelId: string, credentials: XaiOAuthCredentials): void {
   const channel = getChannelById(channelId)
@@ -761,6 +853,7 @@ export async function resolveChannelRuntimeApiKey(channelId: string): Promise<st
   }
 
   if (channel.provider === 'openai-codex') return resolveCodexAccessToken(channelId)
+  if (channel.provider === 'github-copilot') return (await resolveGithubCopilotOAuthCredentials(channelId)).access
   if (channel.provider === 'xai') return resolveXaiAccessToken(channelId)
   return decryptApiKey(channelId)
 }
@@ -783,6 +876,10 @@ export async function testChannel(channelId: string): Promise<ChannelTestResult>
   const provider = inferProviderFromBaseUrl(channel.provider, channel.baseUrl)
 
   try {
+    if (provider === 'github-copilot') {
+      const credentials = await resolveGithubCopilotOAuthCredentials(channelId)
+      return await testGithubCopilotCredentials(serializeGithubCopilotCredentials(credentials))
+    }
     switch (provider) {
       case 'anthropic':
       case 'anthropic-compatible':
@@ -862,6 +959,28 @@ export async function testChannel(channelId: string): Promise<ChannelTestResult>
     }
   } catch (error) {
     return normalizeRequestError(error)
+  }
+}
+
+/** 验证 Copilot 凭据并读取账号目录；空目录仍表示登录链路有效。 */
+export async function testGithubCopilotCredentials(
+  secret: string,
+  listModels: (credentials: GithubCopilotOAuthCredentials) => Promise<{ id: string; name: string }[]> = listGithubCopilotModels,
+): Promise<ChannelTestResult> {
+  const parsed = parseGithubCopilotCredentials(secret)
+  if (!parsed) {
+    return { success: false, message: 'GitHub Copilot 登录凭据无效，请重新登录', errorType: 'auth' }
+  }
+  try {
+    const credentials = isGithubCopilotCredentialExpired(parsed)
+      ? await refreshGithubCopilotOAuth(parsed)
+      : parsed
+    const models = await listModels(credentials)
+    return models.length > 0
+      ? { success: true, message: `连接成功，当前账号可用 ${models.length} 个模型` }
+      : { success: true, message: '连接成功，当前账号未返回可用模型' }
+  } catch (error) {
+    return normalizeGithubCopilotOAuthError(error)
   }
 }
 
@@ -1724,6 +1843,9 @@ export async function getChannelPlanQuota(channelId: string): Promise<ChannelPla
   }
 
   try {
+    if (provider === 'github-copilot') {
+      return await queryGithubCopilotPlanQuota(apiKey, proxyUrl)
+    }
     if (provider === 'openai-codex') {
       return await queryCodexPlanQuota(channelId, apiKey, proxyUrl)
     }
@@ -1759,6 +1881,9 @@ export async function testChannelDirect(input: ChannelDirectTestInput): Promise<
   const provider = inferProviderFromBaseUrl(input.provider, input.baseUrl)
 
   try {
+    if (provider === 'github-copilot') {
+      return await testGithubCopilotCredentials(input.apiKey)
+    }
     switch (provider) {
       case 'anthropic':
       case 'anthropic-compatible':
@@ -1869,6 +1994,7 @@ export async function fetchModels(input: FetchModelsInput): Promise<FetchModelsR
       case 'qwen-anthropic':
       case 'qwen-token-plan':
       case 'openai-codex':
+      case 'github-copilot':
       case 'xai':
         if (provider === 'openai-codex') {
           // ChatGPT (Codex) 走 Pi SDK 内置模型目录，不依赖 baseUrl/apiKey。
@@ -1877,6 +2003,21 @@ export async function fetchModels(input: FetchModelsInput): Promise<FetchModelsR
             success: true,
             message: `已加载 ${codexModels.length} 个 ChatGPT (Codex) 模型`,
             models: codexModels.map((m) => ({ id: m.id, name: m.name, enabled: true, source: 'fetched' as const })),
+          }
+        }
+        if (provider === 'github-copilot') {
+          const credentials = parseGithubCopilotCredentials(input.apiKey)
+          if (!credentials) throw new Error('GitHub Copilot 登录凭据无效，请重新登录')
+          const copilotModels = await listGithubCopilotModels(credentials)
+          return {
+            success: true,
+            message: `已加载 ${copilotModels.length} 个 GitHub Copilot 可用模型`,
+            models: copilotModels.map((model) => ({
+              id: model.id,
+              name: model.name,
+              enabled: true,
+              source: 'fetched' as const,
+            })),
           }
         }
         if (provider === 'xai') {

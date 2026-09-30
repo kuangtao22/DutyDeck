@@ -17,6 +17,7 @@ import {
   resolveReasoningCapability,
   resolveReasoningProfile,
   type CodexOAuthCredentials,
+  type GithubCopilotOAuthCredentials,
   type XaiOAuthCredentials,
   type ReasoningCapability,
   type ReasoningTransport,
@@ -182,13 +183,70 @@ export interface XaiModelInput {
   onXaiOAuthCredentialsRefreshed?: (credentials: XaiOAuthCredentials) => void | Promise<void>
 }
 
+/** Pi 内置 GitHub Copilot provider 所需的最小模型与 OAuth 输入。 */
+export interface GithubCopilotModelInput {
+  model?: string
+  githubCopilotOAuthCredentials?: GithubCopilotOAuthCredentials
+  onGithubCopilotOAuthCredentialsRefreshed?: (credentials: GithubCopilotOAuthCredentials) => void | Promise<void>
+}
+
 /** 构建任意 Proma 渠道 Pi 模型所需的最小输入。 */
-export interface PiModelBuildInput extends CodexModelInput, XaiModelInput {
+export interface PiModelBuildInput extends CodexModelInput, GithubCopilotModelInput, XaiModelInput {
   sessionId: string
   apiKey: string
   baseUrl?: string
   provider: ProviderType
   channelName?: string
+}
+
+/** Pi runtime 使用的 Copilot OAuth 凭据结构。 */
+type GithubCopilotRuntimeCredential = GithubCopilotOAuthCredentials & {
+  type: 'oauth'
+  [key: string]: unknown
+}
+
+/** 为 Copilot 构造隔离的内存凭据仓库，并把 Pi 的刷新结果回传主进程。 */
+function createGithubCopilotRuntimeCredentialStore(
+  initial: GithubCopilotOAuthCredentials,
+  onRefreshed?: PiAgentQueryOptions['onGithubCopilotOAuthCredentialsRefreshed'],
+) {
+  /** 当前 runtime 内存中的 Copilot 凭据。 */
+  let credential: GithubCopilotRuntimeCredential | undefined = { type: 'oauth', ...initial }
+
+  return {
+    async read(providerId: string): Promise<GithubCopilotRuntimeCredential | undefined> {
+      return providerId === 'github-copilot' ? credential : undefined
+    },
+    async list(): Promise<readonly { providerId: string; type: 'oauth' }[]> {
+      return credential ? [{ providerId: 'github-copilot', type: 'oauth' }] : []
+    },
+    async modify(
+      providerId: string,
+      modify: (current: GithubCopilotRuntimeCredential | undefined) => Promise<GithubCopilotRuntimeCredential | undefined>,
+    ): Promise<GithubCopilotRuntimeCredential | undefined> {
+      if (providerId !== 'github-copilot') return undefined
+      /** 修改前凭据，用于判断 Pi 是否真的完成了续签或策略更新。 */
+      const previous = credential
+      credential = await modify(credential)
+      if (credential && (
+        previous?.access !== credential.access
+        || previous?.refresh !== credential.refresh
+        || previous?.expires !== credential.expires
+        || previous?.enterpriseUrl !== credential.enterpriseUrl
+        || JSON.stringify(previous?.availableModelIds) !== JSON.stringify(credential.availableModelIds)
+      )) {
+        try {
+          await onRefreshed?.(credential)
+        } catch (error) {
+          console.warn('[Pi GitHub Copilot OAuth] 刷新后的凭据回写失败，将在下次执行前重试:', error)
+        }
+      }
+      return credential
+    },
+    async delete(providerId: string): Promise<void> {
+      if (providerId === 'github-copilot') credential = undefined
+    },
+  }
 }
 
 function createCodexRuntimeCredentialStore(
@@ -414,11 +472,11 @@ function normalizePiApi(provider: ProviderType): Api {
 }
 
 /**
- * OpenCode Go 在同一渠道提供多种协议，必须以模型目录声明为准。
- * 未命中目录时保留历史 OpenAI Chat Completions 默认值。
+ * OpenCode Go 与 GitHub Copilot 在同一渠道提供多种协议，必须以模型目录声明为准。
+ * 未命中目录时保留各自历史默认协议。
  */
 export function resolvePiApi(provider: ProviderType, catalogApi?: Api): Api {
-  if (provider === 'opencode-go-openai' && catalogApi) return catalogApi
+  if ((provider === 'opencode-go-openai' || provider === 'github-copilot') && catalogApi) return catalogApi
   return normalizePiApi(provider)
 }
 
@@ -517,6 +575,9 @@ async function findPiCatalogModel(provider: ProviderType, modelId: string): Prom
   }
   if (provider === 'xai') {
     return findCatalogModelById(await getXaiCatalogModels(), modelId)
+  }
+  if (provider === 'github-copilot') {
+    return findCatalogModelById(await getGithubCopilotCatalogModels(), modelId)
   }
 
   const preferredProviders = candidatePiProviders(provider)
@@ -890,12 +951,68 @@ export async function listXaiModels(): Promise<{ id: string; name: string }[]> {
   return (await getXaiCatalogModels()).map((m) => ({ id: m.id, name: m.name }))
 }
 
+/** 返回 Pi 0.85.1 内置的 Copilot 静态模型目录。 */
+export async function getGithubCopilotCatalogModels(): Promise<PiCatalogModel[]> {
+  /** Pi AI 兼容层暴露的静态模型目录读取器。 */
+  const { getModels } = await loadPiAiCompat()
+  return [...getModels('github-copilot')]
+}
+
+/** 按凭据里的套餐/组织策略目录构建 Agent 模型。 */
+export async function buildGithubCopilotModel(sdk: PiSdk, input: GithubCopilotModelInput) {
+  if (!input.githubCopilotOAuthCredentials) {
+    throw new Error('GitHub Copilot 登录凭据无效或缺失，请重新登录')
+  }
+  /** 使用当前账号完整凭据构造的隔离 runtime。 */
+  const modelRuntime = await sdk.ModelRuntime.create({
+    credentials: createGithubCopilotRuntimeCredentialStore(
+      input.githubCopilotOAuthCredentials,
+      input.onGithubCopilotOAuthCredentialsRefreshed,
+    ),
+    allowModelNetwork: false,
+  })
+  /** 去除旧版持久化的上下文后缀后得到真实模型 ID。 */
+  const resolvedModelId = stripLegacyAgentSdkContextSuffix(input.model)
+  /** 当前账号套餐和组织策略实际允许的模型。 */
+  const availableModels = await modelRuntime.getAvailable('github-copilot')
+  /** 用户指定模型，或账号目录中的首个默认模型。 */
+  const model = resolvedModelId
+    ? availableModels.find((candidate) => candidate.id === resolvedModelId)
+    : availableModels[0]
+  if (!model) {
+    if (resolvedModelId) throw new Error(`GitHub Copilot 当前订阅不支持模型: ${resolvedModelId}`)
+    throw new Error('未找到可用的 GitHub Copilot 模型，请确认订阅已授权且至少启用一个模型')
+  }
+  return { modelRuntime, model }
+}
+
+/**
+ * 列出账号实际允许的模型。空数组是合法业务状态，不能走 buildModel 的缺省模型错误。
+ * 可注入 sdk 仅用于验证 runtime 契约，生产调用保持延迟加载。
+ */
+export async function listGithubCopilotModels(
+  credentials: GithubCopilotOAuthCredentials,
+  sdkOverride?: PiSdk,
+): Promise<{ id: string; name: string }[]> {
+  /** 测试可注入 SDK；生产环境保持延迟加载。 */
+  const sdk = sdkOverride ?? await import('@earendil-works/pi-coding-agent')
+  /** 只读取当前账号授权目录的隔离 runtime。 */
+  const modelRuntime = await sdk.ModelRuntime.create({
+    credentials: createGithubCopilotRuntimeCredentialStore(credentials),
+    allowModelNetwork: false,
+  })
+  return (await modelRuntime.getAvailable('github-copilot')).map((model) => ({ id: model.id, name: model.name }))
+}
+
 export async function buildModel(sdk: PiSdk, input: PiModelBuildInput) {
   if (input.provider === 'openai-codex') {
     return buildCodexModel(sdk, input)
   }
   if (input.provider === 'xai') {
     return buildXaiModel(sdk, input)
+  }
+  if (input.provider === 'github-copilot') {
+    return buildGithubCopilotModel(sdk, input)
   }
   const providerName = `proma-${input.provider}-${input.sessionId}`
   const resolvedApiKey = resolvePiApiKey(input.provider, input.apiKey)
