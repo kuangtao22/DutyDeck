@@ -55,6 +55,44 @@ const sdk = {
   defineTool: (definition: ToolDefinition) => definition,
 } as typeof import('@earendil-works/pi-coding-agent')
 
+describe('Pi MCP 配置管理工具边界', () => {
+  test.each([
+    [undefined, true],
+    ['user', true],
+    ['automation', false],
+    ['delegation', false],
+    ['external', false],
+  ] as const)('Given triggeredBy=%s When 构建工具 Then MCP 配置管理能力为 %s', async (triggeredBy, expected) => {
+    const result = await buildPiBuiltinTools(sdk, {
+      sessionId: 'session-1',
+      channelId: 'channel-1',
+      workspaceSlug: 'project-a',
+      triggeredBy,
+      runWorkspaceSlugWrite: (_workspaceSlug, effect) => effect(),
+      productivityTools: { todosEnabled: false, calendarEnabled: false, obsidianEnabled: false },
+    })
+    const names = result.tools.map((tool) => tool.name)
+
+    expect(names.includes('proma_workspace_list_mcp_servers')).toBe(expected)
+    expect(names.includes('proma_workspace_configure_mcp_server')).toBe(expected)
+  })
+
+  test('Given MCP 配置工具 schema When 检查参数 Then 不接受 headers、env、token 或 clientSecret', async () => {
+    const result = await buildPiBuiltinTools(sdk, {
+      sessionId: 'session-1',
+      channelId: 'channel-1',
+      workspaceSlug: 'project-a',
+      runWorkspaceSlugWrite: (_workspaceSlug, effect) => effect(),
+      productivityTools: { todosEnabled: false, calendarEnabled: false, obsidianEnabled: false },
+    })
+    const configureTool = result.tools.find((tool) => tool.name === 'proma_workspace_configure_mcp_server')
+    const schema = JSON.stringify(configureTool?.parameters)
+
+    expect(schema).not.toMatch(/headers|env|accessToken|refreshToken|clientSecret[^R]/)
+    expect(schema).toContain('clientSecretRequired')
+  })
+})
+
 describe('Pi Server Ops 工具合同', () => {
   test('Given 草稿能力可用 When 按来源和模式构建 Then 仅普通用户标准模式注册', async () => {
     /** 注册检查不调用草稿写入，也不引入真实配置。 */

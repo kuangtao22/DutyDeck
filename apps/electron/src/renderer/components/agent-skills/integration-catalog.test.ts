@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { MCP_INTEGRATION_CATALOG, compareCatalogConnectionCards, type CatalogCredentialIntegration } from './integration-catalog'
+import { MCP_INTEGRATION_CATALOG, compareCatalogConnectionCards, isCatalogIntegrationVisible, type CatalogCredentialIntegration } from './integration-catalog'
 
 function credentialIntegration(id: string): CatalogCredentialIntegration {
   const integration = MCP_INTEGRATION_CATALOG.find((item) => item.id === id)
@@ -42,4 +42,19 @@ test('搜索服务目录顺序固定为飞书、钉钉、企业微信、Tavily�
     .map((integration) => integration.id)
 
   expect(actual.slice(0, expected.length)).toEqual(expected)
+})
+
+test('Given GitHub MCP When 展示 OAuth 目录 Then 只包含公开元数据且要求安全输入 Client Secret', () => {
+  const github = MCP_INTEGRATION_CATALOG.find((integration) => integration.id === 'github-mcp')
+
+  expect(github && isCatalogIntegrationVisible(github)).toBe(true)
+  expect(github?.kind).toBe('mcp')
+  if (!github || github.kind !== 'mcp') throw new Error('missing GitHub MCP integration')
+  expect(github.entry.oauth).toMatchObject({
+    provider: 'github',
+    authorizationEndpoint: 'https://github.com/login/oauth/authorize',
+    tokenEndpoint: 'https://github.com/login/oauth/access_token',
+    clientSecretRequired: true,
+  })
+  expect(JSON.stringify(github.entry.oauth)).not.toContain('clientSecret"')
 })

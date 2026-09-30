@@ -42,6 +42,7 @@ import {
 } from '@proma/shared'
 import type { PromaPermissionMode, AskUserRequest, ExitPlanModeRequest, SDKSystemMessage } from '@proma/shared'
 import type { PiAgentQueryOptions } from './adapters/pi-agent-adapter'
+import { getAgentWorkspaceBySlug } from './agent-workspace-manager'
 import { getMainRepoRoot } from './git-diff-service'
 import { getPiAssistantErrorDetails, hasPiAssistantTextContent, stripPiAssistantError } from './adapters/pi-message-adapter'
 import { friendlyErrorMessage, isPromptTooLongError, isThinkingSignatureError, mapAgentErrorToTypedError } from './agent-error-utils'
@@ -126,7 +127,7 @@ import {
 /** Agent 入口使用会话元数据解析权威工作区，并共享进程级迁移锁。 */
 const workspaceOperationGuard = createWorkspaceOperationGuard({
   getWorkspaceIdBySessionId: (sessionId) => getAgentSessionMeta(sessionId)?.workspaceId,
-  getWorkspaceIdBySlug: () => undefined,
+  getWorkspaceIdBySlug: (slug) => getAgentWorkspaceBySlug(slug)?.id,
   getWorkspaceOperationBlockReason,
 })
 
@@ -371,6 +372,7 @@ export class AgentOrchestrator {
           url: entry.url,
           ...(Object.keys(headers).length > 0 && { headers }),
           ...(proxyUrl && { proxyUrl }),
+          startup_timeout_sec: entry.timeout ?? 30,
           required: true,
         }
       } else {
@@ -1259,6 +1261,8 @@ export class AgentOrchestrator {
         runSignal: runIdentity.signal, assertRunActive: runIdentity.assertActive,
       })
       const builtinMcpResult = await buildPiBuiltinTools(piSdk, {
+        // MCP 配置只在权威工作区可写时执行；验证期间不长期持有迁移锁。
+        runWorkspaceSlugWrite: (slug, effect) => workspaceOperationGuard.runWorkspaceSlugWrite(slug, effect),
         toolMode: runToolMode,
         sessionId,
         channelId,

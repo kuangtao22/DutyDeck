@@ -25,6 +25,7 @@ import { agentPendingPromptAtom, agentSessionDraftHtmlAtom, agentSessionDraftsAt
 import { agentSkillsTabAtom } from '@/atoms/active-view'
 import { useProjectActions } from '@/hooks/useProjectActions'
 import { useCreateSession } from '@/hooks/useCreateSession'
+import { McpServerForm } from '@/components/settings/McpServerForm'
 import { LocalProjectBadge } from '@/components/agent/LocalProjectBadge'
 import { AgentActionHint } from '@/components/agent/AgentActionHint'
 import { queuedTextToParagraphHtml } from '@/lib/agent-message-queue'
@@ -39,6 +40,7 @@ import { WorkspaceMemoryTab } from './WorkspaceMemoryTab'
 import { groupSkills } from './skillGrouping'
 import { EMBEDDED_CATALOG_TWO_COLUMN_MIN_WIDTH, IntegrationCatalog } from './IntegrationCatalog'
 import { CredentialDialog } from './CredentialDialog'
+import { OAuthClientSecretDialog } from './OAuthClientSecretDialog'
 import { buildCatalogMcpGuidePrompt, MCP_INTEGRATION_CATALOG, getCatalogServerNames, isCatalogIntegrationVisible, matchesCatalogSearch, type CatalogCliIntegration, type CatalogCliProbeState, type CatalogCredentialIntegration, type CatalogGuidedIntegration, type CatalogMcpIntegration } from './integration-catalog'
 
 const embeddedMcpSectionContainerQuery = `
@@ -48,6 +50,12 @@ const embeddedMcpSectionContainerQuery = `
     }
   }
 `
+
+/** 生成与工作区、连接目标和 OAuth 客户端共同绑定的 secret 状态键。 */
+function getOAuthClientSecretBindingKey(workspaceSlug: string, name: string, entry: McpServerEntry): string | null {
+  if (!entry.url || !entry.oauth?.clientId || !entry.oauth.tokenEndpoint) return null
+  return [workspaceSlug, name, entry.url, entry.oauth.clientId, entry.oauth.tokenEndpoint].join('\u0000')
+}
 
 function buildSkillClassificationPrompt(input: {
   workspaceName: string
@@ -95,15 +103,6 @@ version: "1.0.0"
 - 使用了哪些 group，各自包含哪些 Skill
 - 哪些 Skill 的分类不确定，以及原因
 - 是否有需要用户确认或后续合并同类项的建议`
-}
-
-function buildManualMcpGuidePrompt(): string {
-  return `帮我为当前 DutyDeck 工作区添加一个 MCP 服务器。
-
-1. 先确认服务名和官方文档或 MCP 地址；信息不足时先问，不要猜测配置。
-2. 依据官方文档核验 transport、地址/命令、依赖、认证与权限；安全步骤可直接完成，登录、授权、付费或敏感凭据由我确认或操作。
-3. 写入前读取当前 mcp.json，只新增或更新目标服务，绝不覆盖其他配置；敏感凭据不写入 mcp.json、日志或普通文件。
-4. 完成真实连接验证后再启用；说明结果及下一步。新 MCP 需要在下一条消息或新会话中验证工具可用性。`
 }
 
 export function AgentSkillsView({
@@ -170,6 +169,7 @@ export function AgentSkillsView({
   const [search, setSearch] = React.useState('')
   const [selectedSkillSlug, setSelectedSkillSlug] = React.useState<string | null>(null)
   const [selectedSkillWorkspaceSlug, setSelectedSkillWorkspaceSlug] = React.useState<string | null>(null)
+  const [showCreateMcp, setShowCreateMcp] = React.useState(false)
   const [selectedMcpName, setSelectedMcpName] = React.useState<string | null>(null)
   const [showImport, setShowImport] = React.useState(false)
   const [wsPopoverOpen, setWsPopoverOpen] = React.useState(false)
@@ -178,9 +178,12 @@ export function AgentSkillsView({
   const [isDeletingSkill, setIsDeletingSkill] = React.useState(false)
   const [isDeletingMcp, setIsDeletingMcp] = React.useState(false)
   const [classifyingSkills, setClassifyingSkills] = React.useState(false)
-  const [guidingManualMcp, setGuidingManualMcp] = React.useState(false)
   const [installingCatalogMcpId, setInstallingCatalogMcpId] = React.useState<string | null>(null)
   const [pendingCredentialIntegration, setPendingCredentialIntegration] = React.useState<CatalogCredentialIntegration | null>(null)
+  /** 等待用户安全输入 Client Secret 的 OAuth MCP，并冻结发起操作时的工作区。 */
+  const [pendingOAuthClientSecret, setPendingOAuthClientSecret] = React.useState<{ workspaceSlug: string; name: string; entry: McpServerEntry } | null>(null)
+  /** 本次页面生命周期内已保存 secret 的服务名，不保存秘密值。 */
+  const savedOAuthClientSecretsRef = React.useRef(new Set<string>())
 
   const selectSkill = React.useCallback((slug: string): void => {
     setSelectedSkillSlug(slug)
@@ -190,6 +193,10 @@ export function AgentSkillsView({
     setSelectedSkillSlug(null)
     setSelectedSkillWorkspaceSlug(null)
   }, [])
+
+  React.useEffect(() => {
+    setPendingOAuthClientSecret(null)
+  }, [data.workspaceSlug])
 
   const q = search.trim().toLowerCase()
 
@@ -273,18 +280,6 @@ export function AgentSkillsView({
     if (data.skillsDir) window.electronAPI.openFile(`${data.skillsDir}/${slug}`, { workspaceSlug: data.workspaceSlug })
   }
 
-  const guideManualMcp = React.useCallback((): void => {
-    if (guidingManualMcp) return
-    setGuidingManualMcp(true)
-    try {
-      if (fillCurrentAgentPrompt(buildManualMcpGuidePrompt())) {
-        toast.success('已填入 MCP 配置提示词')
-      }
-    } finally {
-      setGuidingManualMcp(false)
-    }
-  }, [fillCurrentAgentPrompt, guidingManualMcp])
-
   const guideCatalogMcp = React.useCallback((integration: CatalogMcpIntegration): void => {
     if (fillCurrentAgentPrompt(buildCatalogMcpGuidePrompt(integration))) {
       toast.success(`已填入 ${integration.name} 配置提示词`)
@@ -305,11 +300,37 @@ export function AgentSkillsView({
           const installed = await data.installMcp(integration.serverName, integration.entry)
           if (!installed) return
         }
+        /** 以安装后的当前配置为准，避免目录模板覆盖用户后续修订。 */
+        const configuredEntry = data.mcpConfig.servers[integration.serverName]
+        const serverUrl = configuredEntry?.type === 'http' || configuredEntry?.type === 'sse'
+          ? configuredEntry.url
+          : integration.entry.url
+        if (!serverUrl) throw new Error('当前 MCP 缺少可授权的远程地址')
+        /** OAuth 元数据优先使用工作区当前值。 */
+        const oauth = configuredEntry?.oauth ?? integration.entry.oauth
+        if (oauth && !oauth.clientId && !oauth.registrationEndpoint) {
+          throw new Error('OAuth 配置缺少公开 clientId 或 registrationEndpoint；请让 Agent 根据官方文档补全后再授权')
+        }
+        if (oauth?.clientSecretRequired && (!oauth.clientId || !oauth.tokenEndpoint)) {
+          throw new Error('需要 Client Secret 的 OAuth 配置必须先补全公开 clientId 和 tokenEndpoint')
+        }
+        /** 目录连接同样按完整 OAuth 绑定判断本次页面是否已保存 secret。 */
+        const oauthEntry = configuredEntry ?? integration.entry
+        const secretBindingKey = getOAuthClientSecretBindingKey(data.workspaceSlug, integration.serverName, oauthEntry)
+        if (oauth?.clientSecretRequired && (!secretBindingKey || !savedOAuthClientSecretsRef.current.has(secretBindingKey))) {
+          setPendingOAuthClientSecret({
+            workspaceSlug: data.workspaceSlug,
+            name: integration.serverName,
+            entry: oauthEntry,
+          })
+          return
+        }
         await window.electronAPI.startMcpOAuth({
           workspaceSlug: data.workspaceSlug,
           serverName: integration.serverName,
-          provider: integration.oauthProvider,
-          serverUrl: integration.entry.url,
+          provider: oauth?.provider ?? integration.oauthProvider,
+          serverUrl,
+          ...(oauth ? { oauth } : {}),
         })
         const verification = await data.toggleMcp(integration.serverName, true)
         if (!verification.success) {
@@ -342,6 +363,48 @@ export function AgentSkillsView({
       setInstallingCatalogMcpId(null)
     }
   }, [data, guideCatalogMcp, installingCatalogMcpId])
+
+  /** 对任意含公开 OAuth 元数据的远程 MCP 发起用户显式授权。 */
+  const authorizeMcp = React.useCallback(async (name: string, entry: McpServerEntry): Promise<void> => {
+    if (installingCatalogMcpId) return
+    if ((entry.type !== 'http' && entry.type !== 'sse') || !entry.url || !entry.oauth) {
+      toast.error('当前 MCP 没有可用的 OAuth 配置')
+      return
+    }
+    if (!entry.oauth.clientId && !entry.oauth.registrationEndpoint) {
+      toast.error('OAuth 参数待补全', { description: '请让 Agent 根据官方文档写入公开 clientId 或 registrationEndpoint；token 和 client secret 不会写入配置。' })
+      return
+    }
+    if (entry.oauth.clientSecretRequired && (!entry.oauth.clientId || !entry.oauth.tokenEndpoint)) {
+      toast.error('OAuth 参数待补全', { description: '需要 Client Secret 的 OAuth 配置必须先补全公开 clientId 和 tokenEndpoint。' })
+      return
+    }
+    /** 页面内状态也必须绑定公开 OAuth 客户端，不能只按同名服务复用。 */
+    const secretBindingKey = getOAuthClientSecretBindingKey(data.workspaceSlug, name, entry)
+    if (entry.oauth.clientSecretRequired && (!secretBindingKey || !savedOAuthClientSecretsRef.current.has(secretBindingKey))) {
+      setPendingOAuthClientSecret({ workspaceSlug: data.workspaceSlug, name, entry })
+      return
+    }
+    setInstallingCatalogMcpId(`oauth:${name}`)
+    try {
+      await window.electronAPI.startMcpOAuth({
+        workspaceSlug: data.workspaceSlug,
+        serverName: name,
+        provider: entry.oauth.provider ?? name,
+        serverUrl: entry.url,
+        oauth: entry.oauth,
+      })
+      /** 授权成功后执行真实握手和工具发现，失败仍保持关闭。 */
+      const verification = await data.toggleMcp(name, true)
+      if (!verification.success) throw new Error(verification.message || 'OAuth 已完成，但 MCP 握手或工具发现失败')
+      toast.success(`${name} 已完成授权`, { description: 'OAuth token 已安全保存，并已通过真实连接验证。' })
+    } catch (error) {
+      console.error(`[Agent 技能] ${name} OAuth 失败:`, error)
+      toast.error(`${name} 授权失败`, { description: error instanceof Error ? error.message : '请检查 OAuth 配置后重试' })
+    } finally {
+      setInstallingCatalogMcpId(null)
+    }
+  }, [data, installingCatalogMcpId])
 
   const connectCredentialIntegration = React.useCallback(async (integration: CatalogCredentialIntegration, value: string): Promise<void> => {
     if (installingCatalogMcpId) return
@@ -494,6 +557,28 @@ export function AgentSkillsView({
           onOpenFolder={() => openSkillFolder(selectedSkill.slug)}
         />
         {skillDeleteDialog}
+      </div>
+    )
+  }
+
+  if (showCreateMcp) {
+    return (
+      <div className="flex h-full min-h-0 flex-col overflow-hidden">
+        <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
+          <div className="mx-auto w-full max-w-3xl p-5">
+            <McpServerForm
+              server={null}
+              workspaceSlug={data.workspaceSlug}
+              onSaved={() => {
+                setShowCreateMcp(false)
+                void data.refreshMcpConfig()
+                bumpCapabilities((version) => version + 1)
+              }}
+              onChanged={data.refreshMcpConfig}
+              onCancel={() => setShowCreateMcp(false)}
+            />
+          </div>
+        </div>
       </div>
     )
   }
@@ -675,12 +760,11 @@ export function AgentSkillsView({
         {tab === 'mcp' && (
           <button
             type="button"
-            onClick={() => void guideManualMcp()}
-            disabled={guidingManualMcp}
-            title="创建 Agent 会话协助配置 MCP"
+            onClick={() => setShowCreateMcp(true)}
+            title="在 MCP 管理界面添加服务器"
             className="flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-wait disabled:opacity-60"
           >
-            {guidingManualMcp ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+            <Plus size={14} />
             <span>添加服务器</span>
           </button>
         )}
@@ -725,6 +809,7 @@ export function AgentSkillsView({
               onOpen={(name) => setSelectedMcpName(name)}
               onToggle={data.toggleMcp}
               onRequestDelete={setPendingDeleteMcpName}
+              onAuthorize={authorizeMcp}
               onInstallCatalogMcp={(integration) => { void installCatalogMcp(integration) }}
               onGuideCatalogCli={guideCatalogCli}
               onDisconnectCatalogCli={(integration) => { void disconnectCatalogCli(integration) }}
@@ -761,6 +846,31 @@ export function AgentSkillsView({
         integration={pendingCredentialIntegration}
         onOpenChange={(open) => { if (!open) setPendingCredentialIntegration(null) }}
         onSave={connectCredentialIntegration}
+      />
+
+      <OAuthClientSecretDialog
+        serverName={pendingOAuthClientSecret?.name ?? null}
+        onOpenChange={(open) => { if (!open) setPendingOAuthClientSecret(null) }}
+        onSave={async (clientSecret) => {
+          /** 保存动作只使用打开弹窗时冻结的工作区、服务名与 URL。 */
+          const pending = pendingOAuthClientSecret
+          if (!pending || !pending.entry.url) return
+          if (pending.workspaceSlug !== data.workspaceSlug) {
+            throw new Error('工作区已切换，请在当前工作区重新发起 OAuth 授权')
+          }
+          await window.electronAPI.saveMcpOAuthClientSecret({
+            workspaceSlug: pending.workspaceSlug,
+            serverName: pending.name,
+            serverUrl: pending.entry.url,
+            clientId: pending.entry.oauth?.clientId ?? '',
+            tokenEndpoint: pending.entry.oauth?.tokenEndpoint ?? '',
+            clientSecret,
+          })
+          /** 只记录绑定身份，不保留秘密值。 */
+          const secretBindingKey = getOAuthClientSecretBindingKey(pending.workspaceSlug, pending.name, pending.entry)
+          if (secretBindingKey) savedOAuthClientSecretsRef.current.add(secretBindingKey)
+          queueMicrotask(() => { void authorizeMcp(pending.name, pending.entry) })
+        }}
       />
 
       <ImportSkillDialog
@@ -911,6 +1021,7 @@ interface McpTabProps {
   onOpen: (name: string, entry: McpServerEntry) => void
   onToggle: (name: string, enabled: boolean) => void
   onRequestDelete: (name: string) => void
+  onAuthorize: (name: string, entry: McpServerEntry) => void
   onInstallCatalogMcp: (integration: CatalogMcpIntegration) => void
   onGuideCatalogCli: (integration: CatalogCliIntegration) => void
   onDisconnectCatalogCli: (integration: CatalogCliIntegration) => void
@@ -918,7 +1029,7 @@ interface McpTabProps {
   onRequestCredential: (integration: CatalogCredentialIntegration) => void
 }
 
-function McpTab({ userEntries, catalogMcps, catalogClis, catalogGuided, catalogCredentials, embedded, installedMcpNames, enabledMcpNames, verifiedMcpNames, activeSkillSlugs, connectedCliIds, cliIntegrationProbeState, installingCatalogMcpId, onOpen, onToggle, onRequestDelete, onInstallCatalogMcp, onGuideCatalogCli, onDisconnectCatalogCli, onGuideCatalogIntegration, onRequestCredential }: McpTabProps): React.ReactElement {
+function McpTab({ userEntries, catalogMcps, catalogClis, catalogGuided, catalogCredentials, embedded, installedMcpNames, enabledMcpNames, verifiedMcpNames, activeSkillSlugs, connectedCliIds, cliIntegrationProbeState, installingCatalogMcpId, onOpen, onToggle, onRequestDelete, onAuthorize, onInstallCatalogMcp, onGuideCatalogCli, onDisconnectCatalogCli, onGuideCatalogIntegration, onRequestCredential }: McpTabProps): React.ReactElement {
   if (userEntries.length === 0 && catalogMcps.length === 0 && catalogClis.length === 0 && catalogGuided.length === 0 && catalogCredentials.length === 0) {
     return <EmptyState icon={<Search className="size-8 text-foreground/30" />} title="没有匹配的 MCP 服务器" hint="试试更换搜索关键词。" />
   }
@@ -935,8 +1046,9 @@ function McpTab({ userEntries, catalogMcps, catalogClis, catalogGuided, catalogC
               onOpen={() => onOpen(name, entry)}
               onToggle={(enabled) => onToggle(name, enabled)}
               onRequestDelete={() => onRequestDelete(name)}
-              statusLabel={entry.enabled ? '已启用' : '已关闭'}
-              statusTone={entry.enabled ? 'success' : 'muted'}
+              onAuthorize={entry.oauth ? () => { void onAuthorize(name, entry) } : undefined}
+              statusLabel={entry.enabled ? '已启用' : entry.lastTestResult?.success === false ? '待配置' : '待验证'}
+              statusTone={entry.enabled ? 'success' : entry.lastTestResult?.success === false ? 'warning' : 'muted'}
             />
           ))}
         </McpSection>

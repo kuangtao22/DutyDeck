@@ -610,7 +610,7 @@ import { createWorkspaceOperationGuard } from './lib/workspace-operation-guard'
 import { movePathSafely } from './lib/file-move-service'
 import { subscribeWorkspaceMemoryChanges } from './lib/workspace-memory-change-watcher'
 import { confirmWorkspaceMemoryWindowClose, markWorkspaceMemoryWindowReady } from './lib/workspace-memory-window'
-import { deleteMcpCredential, startMcpOAuth, saveMcpApiKey } from './lib/mcp-oauth-service'
+import { deleteMcpCredential, startMcpOAuth, saveMcpApiKey, saveMcpOAuthClientSecret } from './lib/mcp-oauth-service'
 
 /**
  * 每次保存或刷新都会推进工作区代数，使较早的异步 MCP 刷新不能回写较新的配置。
@@ -2293,6 +2293,14 @@ export function registerIpcHandlers(): void {
     const mainWindow = getMainWindow()
     if (!mainWindow || mainWindow.webContents.id !== senderId) {
       throw new Error('仅主窗口可以访问 Slack Bot 设置。')
+    }
+  }
+  /** 凭据操作只允许主窗口发起，拒绝浏览器内容或其他辅助窗口调用。 */
+  const assertMainCredentialRenderer = (senderId: number): void => {
+    /** 当前主窗口身份，必须与本次 IPC sender 完全相同。 */
+    const mainWindow = getMainWindow()
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.id !== senderId) {
+      throw new Error('仅主窗口可以管理登录凭据。')
     }
   }
   ipcMain.handle(TERMINAL_IPC_CHANNELS.CREATE, async (event, input) => {
@@ -6045,6 +6053,14 @@ export function registerIpcHandlers(): void {
     async (_, input: import('@proma/shared').StartMcpOAuthInput): Promise<import('@proma/shared').McpOAuthStartResult> => {
       return startMcpOAuth(input)
     }
+  )
+
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.SAVE_MCP_OAUTH_CLIENT_SECRET,
+    async (event, input: import('@proma/shared').SaveMcpOAuthClientSecretInput): Promise<void> => {
+      assertMainCredentialRenderer(event.sender.id)
+      await workspaceOperationGuard.runWorkspaceSlugWrite(input.workspaceSlug, () => saveMcpOAuthClientSecret(input))
+    },
   )
 
   ipcMain.handle(

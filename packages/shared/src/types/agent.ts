@@ -981,6 +981,24 @@ export type McpTransportTypeAlias = 'streamableHttp' | 'streamable-http' | 'stre
 /** MCP 传输类型输入；保存和运行前会规范化为 McpTransportType */
 export type McpTransportTypeInput = McpTransportType | McpTransportTypeAlias
 
+/** Agent 可配置的 MCP 非敏感 OAuth 客户端元数据。 */
+export interface McpOAuthConfiguration {
+  /** 展示与诊断使用的稳定标识。 */
+  provider?: string
+  /** OAuth 授权端点。 */
+  authorizationEndpoint?: string
+  /** OAuth token 端点。 */
+  tokenEndpoint?: string
+  /** Dynamic Client Registration 端点。 */
+  registrationEndpoint?: string
+  /** 公开注册的 OAuth client ID。 */
+  clientId?: string
+  /** 授权码交换是否要求安全存储的 client secret。 */
+  clientSecretRequired?: boolean
+  /** 授权请求使用的 scope。 */
+  scopes?: string[]
+}
+
 /** MCP 服务器条目 */
 export interface McpServerEntry {
   type: McpTransportType
@@ -998,6 +1016,8 @@ export interface McpServerEntry {
   timeout?: number
   /** 是否启用 */
   enabled: boolean
+  /** 非敏感 OAuth 元数据；token 与 client secret 不写入工作区配置。 */
+  oauth?: McpOAuthConfiguration
   /** 是否为内置 MCP（不可删除，仅可配置 env） */
   isBuiltin?: boolean
   /** 最后一次测试结果 */
@@ -1049,8 +1069,8 @@ export interface McpInstallMutationResult extends McpConnectionMutationResult {
   installed: boolean
 }
 
-/** OAuth-capable remote MCP provider currently supported by the built-in connector flow. */
-export type McpOAuthProvider = 'notion' | 'github'
+/** OAuth provider 展示与凭据命名空间。 */
+export type McpOAuthProvider = string
 
 /** Renderer-to-main request for a remote MCP authorization-code + PKCE flow. */
 export interface StartMcpOAuthInput {
@@ -1058,6 +1078,20 @@ export interface StartMcpOAuthInput {
   serverName: string
   provider: McpOAuthProvider
   serverUrl: string
+  /** Agent 或目录提供的非敏感 OAuth 客户端元数据。 */
+  oauth?: McpOAuthConfiguration
+}
+
+/** 将 OAuth client secret 交给系统加密保护后保存的请求。 */
+export interface SaveMcpOAuthClientSecretInput {
+  workspaceSlug: string
+  serverName: string
+  serverUrl: string
+  /** secret 保存时绑定的公开 client ID。 */
+  clientId: string
+  /** secret 保存时绑定的 HTTPS token endpoint。 */
+  tokenEndpoint: string
+  clientSecret: string
 }
 
 /** OAuth connection result that deliberately excludes all secret material. */
@@ -2031,6 +2065,8 @@ export const AGENT_IPC_CHANNELS = {
   INSTALL_MCP_AND_VALIDATE: 'agent:install-mcp-and-validate',
   /** 启动远程 MCP 的 OAuth PKCE 授权 */
   START_MCP_OAUTH: 'agent:start-mcp-oauth',
+  /** 将 OAuth client secret 经系统加密保护后保存。 */
+  SAVE_MCP_OAUTH_CLIENT_SECRET: 'agent:save-mcp-oauth-client-secret',
   /** 安全保存远程 MCP 的静态 API Key / Token */
   SAVE_MCP_API_KEY: 'agent:save-mcp-api-key',
   /** 删除工作区 MCP 对应的系统安全凭据，不返回任何凭据。 */
