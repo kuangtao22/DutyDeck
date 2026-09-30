@@ -11,6 +11,8 @@
 
 - 2026-10-01（Bone 0.19.53-bone.11 发布准备）：Pi 0.87.1、Canvas 交付校验与编排工厂历史菜单修复合入 `main` 后，按官方 `v0.19.53` 基线递增 Bone 构建号至 `11`。发布标签必须严格为 `v0.19.53-bone.11`，并与通过校验的提交一致；先推送版本提交，再按发布工作流生成多平台安装包和 GitHub Release。
 
+- 2026-10-01（Bone 0.19.53-bone.11 已发布）：版本提交 `35a20fe9` 已推送，完整 SHA 的 Windows 独立预检 `36748783089` 通过；正式 Release 工作流 `36750158010` 的校验、macOS arm64/x64、Windows x64、Linux x64 和 Release 汇总全部通过。公开 Release 为 `https://github.com/kuangtao22/Proma/releases/tag/v0.19.53-bone.11`，标题 `DutyDeck 0.19.53 · Bone 11`，15 个安装包/更新元数据资产已上传，发布时间 2026-09-30T17:30:33Z。macOS 未配置签名证书，用户仍需按系统提示解除隔离；本机完整 typecheck 仍有合并分支中既有的 2 个 Canvas 测试 fixture `JsonObject` 类型错误，CI 发布构建全部通过。
+
 - 2026-09-30（官方仓库同步分析）：已拉取 `upstream`（`proma-ai/Proma`）到 `f20943ed`。与当前 DutyDeck `main` 直接三方合并会产生 70 个冲突，涉及 167 个文件；冲突集中在 Pi runtime、Agent 编排、渠道、IPC、侧栏与预览等热点，不能整段合并。当前已具备 GPT-6 Astra、GLM-5.3-FlashX、运行时重试/进度隔离、更新缓存清理和跨工作区 Automation 等部分官方能力。后续只按能力拆分移植：优先评估 MiMo V2.6；Pi 0.87.1 与 GPT-6 Sol/Luna 需作为一次运行时升级单独验证；MCP OAuth 管理和 GitHub Copilot 登录/额度属于可选大功能。官方删除 OpenCode Go、火山方舟套餐渠道的提交暂不合并，因为本地仍保留这些渠道及标题、语音和模型兼容逻辑。
 
 - 2026-09-30（编排工厂标题栏对齐）：用户要求场景下拉选择器放到标题栏右侧，与刷新按钮相邻，模块标题保留在左侧。
