@@ -156,4 +156,15 @@ describe('Agent completion payload', () => {
     expect(payload.startedAt).toBe(456)
     expect(JSON.stringify(payload)).not.toContain('/Users/example')
   })
+
+  test('Given Host 交付验收阻断 When 构造 completion payload Then 保留 terminal_reason 供 Renderer 区分状态', () => {
+    /** 终止原因是完成通知的权威字段，不能依赖错误正文猜测。 */
+    const payload = completionPayload.buildAuthoritativeAgentStreamCompletePayload(
+      { sessionId: 'blocked-session', triggeredBy: 'user' },
+      () => undefined,
+      { messages: [], stoppedByUser: false, resultSubtype: 'error_during_execution', terminalReason: 'completion_blocked' },
+    )
+
+    expect(payload.terminalReason).toBe('completion_blocked')
+  })
 })

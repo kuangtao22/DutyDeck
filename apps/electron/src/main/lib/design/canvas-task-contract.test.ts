@@ -554,3 +554,27 @@ describe('Canvas 任务交付合同', () => {
     })
   })
 })
+
+test('Given 真实证据夹带说明文字 When 提交被拒后只移除 text Then 明确提示格式问题且原证据可直接完成', async () => {
+  /** 保存提交前状态，证明纠错不需恢复、重建或重新生产。 */
+  const task = createCanvasTaskContract({ required: true, verify: async () => true })
+  task.start('canvas', [existingRequirement])
+  /** Host 已登记的真实证据。 */
+  const proof = task.record(evidence)
+  /** 失败前的合同快照应完整保留。 */
+  const before = task.exportState()
+  await expect(task.complete([{ id: 'report', evidenceId: proof.evidenceId, text: '已验证' }], new AbortController().signal))
+    .rejects.toThrow('CANVAS_TASK_SUBMISSION_FORMAT_INVALID')
+  expect(task.exportState()).toEqual(before)
+  await task.complete([{ id: 'report', evidenceId: proof.evidenceId }], new AbortController().signal)
+  expect(await task.evaluate(new AbortController().signal)).toEqual({ action: 'complete' })
+})
+
+test('Given 文本响应混入 evidenceId When 完成 Then 明确报告格式冲突而非缺少正文', async () => {
+  /** response 合同只接受文本交付。 */
+  const task = createCanvasTaskContract({ required: true, verify: async () => true })
+  task.start('canvas', [{ id: 'answer', description: '答复', validation: 'response' }])
+  await expect(task.complete([{ id: 'answer', text: '答复', evidenceId: 'invented' }], new AbortController().signal))
+    .rejects.toThrow('CANVAS_TASK_SUBMISSION_FORMAT_INVALID')
+  expect(task.status().phase).toBe('working')
+})

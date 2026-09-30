@@ -1,6 +1,7 @@
 import type { AgentStreamCompletePayload, AgentStreamSessionMeta } from '@proma/shared'
 import type { TabItem } from '@/atoms/tab-atoms'
 import { isDelegationObservationVisible } from '@/lib/agent-session-list'
+import { getAgentCompletionTerminalTitle } from './agent-terminal-result'
 
 export interface AgentCompletionPresenceInput {
   tabs: TabItem[]
@@ -128,7 +129,13 @@ export function notifyAgentCompletionWarning(
   if (routeKind !== 'agent'
     || !completion.resultSubtype
     || completion.resultSubtype === 'success'
-    || completion.stoppedByUser) return
+    || completion.stoppedByUser
+    || completion.backgroundTasksPending) return
+  const terminalTitle = getAgentCompletionTerminalTitle(completion.terminalReason)
+  if (terminalTitle) {
+    warn(`${terminalTitle}。本轮已结束，详情见对应回复。`)
+    return
+  }
   /** 各 SDK 终态的稳定用户提示。 */
   const messages: Record<string, string> = {
     error_max_turns: '任务被中断：已达到轮次上限。继续对话可让 Agent 接着完成。',
@@ -137,9 +144,11 @@ export function notifyAgentCompletionWarning(
     empty_response: 'Agent 本轮结束了，但没有返回任何可展示内容。你的消息已保留，可以直接重试或切换模型。',
   }
   const detail = completion.resultErrors?.find((error) => error.trim().length > 0)?.trim()
-  warn(detail
-    ? `任务执行出错：${detail}`
-    : messages[completion.resultSubtype] ?? `任务异常结束（${completion.resultSubtype}）`)
+  /** Toast 只做短提醒，完整错误留在会话终态，避免模型长报告占满悬浮框。 */
+  const shortDetail = detail && detail.length > 120 ? `${detail.slice(0, 120)}…` : detail
+  warn(shortDetail
+    ? `任务执行出错：${shortDetail} 详情见对应回复。`
+    : `${messages[completion.resultSubtype] ?? `任务异常结束（${completion.resultSubtype}）`} 详情见对应回复。`)
 }
 
 /** 判断 Agent 完成时用户是否仍停留在该会话入口 */

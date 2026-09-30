@@ -153,7 +153,7 @@ export interface SessionCallbacks {
   /** 发送流式错误 */
   onError: (error: string, opts?: { runGeneration?: number }) => void
   /** 发送流式完成（携带已持久化的消息列表） */
-  onComplete: (messages?: AgentMessage[], opts?: { stoppedByUser?: boolean; startedAt?: number; runGeneration?: number; resultSubtype?: string; resultErrors?: string[]; backgroundTasksPending?: boolean }) => void
+  onComplete: (messages?: AgentMessage[], opts?: { stoppedByUser?: boolean; startedAt?: number; runGeneration?: number; resultSubtype?: string; terminalReason?: string; resultErrors?: string[]; backgroundTasksPending?: boolean }) => void
   /** 发送标题更新 */
   onTitleUpdated: (title: string) => void
   /** 用户消息已持久化，外部入口可据此通知前端切到实时会话 */
@@ -175,6 +175,8 @@ interface AgentRunCompleteOptions {
   startedAt?: number
   /** Adapter 终态 result subtype。 */
   resultSubtype?: string
+  /** Adapter 终态 terminal_reason，用于区分 Host 交付验收与运行故障。 */
+  terminalReason?: string
   /** Adapter 终态错误详情。 */
   resultErrors?: string[]
 }
@@ -2245,6 +2247,8 @@ export class AgentOrchestrator {
           let pendingNext: Promise<IteratorResult<SDKMessage>> | null = null
           // 捕获 result.subtype 以传递给前端（用于区分 success/error_max_turns/error_max_budget_usd）
           let capturedResultSubtype: string | undefined
+          // Host 终态可能携带 completion_blocked 等终止原因，不能只依赖 subtype 判断。
+          let capturedTerminalReason: string | undefined
           // 捕获 result.errors[] 错误详情：SDK 在 error_during_execution 等场景下会把真实错误原因
           // 放进 errors[]，透传到前端用于展示具体错误（而非泛泛的"任务执行过程中发生错误"）。
           let capturedResultErrors: string[] | undefined
@@ -2525,6 +2529,7 @@ export class AgentOrchestrator {
             // Turn 结束时：持久化累积消息
             if (msg.type === 'result') {
               capturedResultSubtype = (msg as { subtype?: string }).subtype
+              capturedTerminalReason = (msg as { terminal_reason?: string }).terminal_reason
               // Pi result 的 errors[] 携带真实错误原因，透传到前端展示具体错误。
               const rawResultErrors = (msg as { errors?: unknown }).errors
               capturedResultErrors = Array.isArray(rawResultErrors)
@@ -2637,7 +2642,7 @@ export class AgentOrchestrator {
 
           // 发送完成信号
           await runFileChanges?.finish()
-          completeRun(getAgentSessionMessages(sessionId), { stoppedByUser: wasStoppedByUser, startedAt: streamStartedAt, resultSubtype: capturedResultSubtype, resultErrors: capturedResultErrors })
+          completeRun(getAgentSessionMessages(sessionId), { stoppedByUser: wasStoppedByUser, startedAt: streamStartedAt, resultSubtype: capturedResultSubtype, terminalReason: capturedTerminalReason, resultErrors: capturedResultErrors })
 
           return
 

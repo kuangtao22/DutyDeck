@@ -544,6 +544,16 @@ export function createCanvasTaskContract(options: CanvasTaskContractOptions) {
     if (values.length !== state.requirements.length || new Set(values.map((value) => value.id)).size !== values.length) {
       throw new Error('CANVAS_TASK_DELIVERABLES_INCOMPLETE')
     }
+    /** 证据引用和文本响应是两种互斥交付协议，先给出可执行纠错而不是笼统的缺证据。 */
+    for (const value of values) {
+      const hasEvidence = typeof value.evidenceId === 'string' && value.evidenceId.length > 0
+      const hasText = typeof value.text === 'string' && value.text.trim().length > 0
+      if (hasEvidence === hasText) {
+        throw new Error(
+          'CANVAS_TASK_SUBMISSION_FORMAT_INVALID: 每项交付只能二选一；证据类只提交 id 与 evidenceId，文本响应只提交 id 与 text。',
+        )
+      }
+    }
     const evidenceIds = values.flatMap((value) => value.evidenceId ? [value.evidenceId] : [])
     if (new Set(evidenceIds).size !== evidenceIds.length) throw new Error('CANVAS_TASK_EVIDENCE_REUSED')
     const verifiedProofs: CanvasTaskEvidence[] = []
