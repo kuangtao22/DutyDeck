@@ -9,6 +9,7 @@
  */
 
 import type { AgentMessage, AgentToolResult } from '@earendil-works/pi-agent-core'
+import type { JsonValue } from '@earendil-works/pi-ai'
 import type { JsonSchemaOutputFormat, SDKResultMessage } from '@proma/shared'
 
 export type RuntimeGuardStopReason = 'max_turns' | 'max_budget_usd' | 'output_validation_failed'
@@ -22,7 +23,7 @@ export interface RuntimeGuardResultOverride {
 export interface AgentRuntimeGuard {
   recordMessage(message: AgentMessage): void
   shouldStopBeforeNextTurn(): boolean
-  applyToolResult<TDetails>(result: AgentToolResult<TDetails>): AgentToolResult<TDetails>
+  applyToolResult<TDetails extends JsonValue | undefined>(result: AgentToolResult<TDetails>): AgentToolResult<TDetails>
   getLimitResultOverride(): RuntimeGuardResultOverride | undefined
   getResultOverride(messages: AgentMessage[]): RuntimeGuardResultOverride | undefined
 }
@@ -198,7 +199,8 @@ function validateFinalOutput(messages: AgentMessage[], outputFormat: JsonSchemaO
 
 function extractLastAssistantText(messages: AgentMessage[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
+    // Pi 0.87 的 AgentMessage 支持扩展消息，运行时判别后再读取正文。
+    const message: unknown = messages[index]
     if (!isRecord(message) || message.role !== 'assistant' || !Array.isArray(message.content)) continue
     const text = message.content.map((block) => {
       if (!isRecord(block) || block.type !== 'text') return ''

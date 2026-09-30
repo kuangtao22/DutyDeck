@@ -1,10 +1,13 @@
 import { strict as assert } from 'node:assert'
 import { spawn } from 'node:child_process'
 import { copyFile, lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { syncBuiltinESMExports } from 'node:module'
+import type { AddressInfo } from 'node:net'
 import os, { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { TerminalOutputEvent, TerminalProfile, TerminalState } from '@proma/shared'
+import type { SDKAssistantMessage, SDKMessage, SDKResultMessage, TerminalOutputEvent, TerminalProfile, TerminalState } from '@proma/shared'
+import type { PiAgentQueryOptions } from '../src/main/lib/adapters/pi-agent-adapter'
 
 /** 标记当前进程是由 smoke 父入口启动的 Electron 子进程。 */
 const CHILD_FLAG = 'PROMA_UPSTREAM_RUNTIME_SMOKE_CHILD'
@@ -32,6 +35,42 @@ interface UtilityProcessTracker {
   nextRecordIndex: number
   /** 最近一次读取到的完整 utility 记录。 */
   records: string[]
+}
+
+/** 本地假模型服务收到的单次 OpenAI Chat Completions 请求。 */
+interface LocalModelRequest {
+  /** 请求方法。 */
+  method: string
+  /** 请求路径。 */
+  path: string
+  /** Authorization 请求头。 */
+  authorization?: string
+  /** 解析后的 JSON 请求体。 */
+  body: Record<string, unknown>
+}
+
+/** 本地假模型服务的可观察状态与关闭入口。 */
+interface LocalModelServer {
+  /** Pi runtime 使用的 OpenAI 兼容协议根地址。 */
+  baseUrl: string
+  /** 按到达顺序记录的真实 provider 请求。 */
+  requests: LocalModelRequest[]
+  /** 关闭监听与存量连接。 */
+  close: () => Promise<void>
+}
+
+/** 单次真实 Pi query 的消息、会话与落盘结果。 */
+interface AgentQueryProbe {
+  /** Utility runtime 返回的完整 SDK 消息流。 */
+  messages: SDKMessage[]
+  /** Pi 创建或恢复后的 SDK session ID。 */
+  sdkSessionId: string
+  /** Pi SessionManager 使用的 JSONL 文件。 */
+  sessionFile: string
+  /** 最终 SDK result。 */
+  result: SDKResultMessage
+  /** 最终 assistant 文本。 */
+  assistantText: string
 }
 
 /** 断言当前平台具备本 smoke 覆盖的真实 Electron utilityProcess 与 PTY 条件。 */
@@ -95,6 +134,138 @@ async function withTimeout<T>(
   } finally {
     if (timer) clearTimeout(timer)
   }
+}
+
+/** 读取本地假模型服务收到的完整请求体。 */
+async function readRequestBody(request: import('node:http').IncomingMessage): Promise<string> {
+  /** 按网络到达顺序保存的请求体片段。 */
+  const chunks: Buffer[] = []
+  for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+/** 启动只监听回环地址的 OpenAI Chat Completions SSE 假服务。 */
+async function startLocalModelServer(): Promise<LocalModelServer> {
+  /** 服务收到的全部真实 provider 请求。 */
+  const requests: LocalModelRequest[] = []
+  /** 只为本次 smoke 提供两轮固定回答的 HTTP 服务。 */
+  const server = createServer(async (request, response) => {
+    try {
+      /** 当前请求的原始正文。 */
+      const rawBody = await readRequestBody(request)
+      /** 当前请求解析后的 JSON 对象。 */
+      const body = JSON.parse(rawBody) as Record<string, unknown>
+      requests.push({
+        method: request.method ?? '',
+        path: request.url ?? '',
+        authorization: request.headers.authorization,
+        body,
+      })
+      /** 每轮唯一回复，用于验证恢复请求包含首轮 assistant 历史。 */
+      const reply = requests.length === 1 ? 'SMOKE_FIRST_RESPONSE' : 'SMOKE_RESUMED_RESPONSE'
+      /** 所有 chunk 共享的合成 completion ID。 */
+      const completionId = `chatcmpl-smoke-${requests.length}`
+      /** 固定时间戳，避免 smoke 产出不必要的时序差异。 */
+      const created = 1_700_000_000 + requests.length
+      /** 首个 SSE chunk 提供 assistant 文本。 */
+      const contentChunk = {
+        id: completionId,
+        object: 'chat.completion.chunk',
+        created,
+        model: 'smoke-model',
+        choices: [{ index: 0, delta: { role: 'assistant', content: reply }, finish_reason: null }],
+      }
+      /** 末尾 SSE chunk 同时提供完成原因与真实 usage。 */
+      const terminalChunk = {
+        id: completionId,
+        object: 'chat.completion.chunk',
+        created,
+        model: 'smoke-model',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 11 + requests.length, completion_tokens: 7, total_tokens: 18 + requests.length },
+      }
+      response.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        Connection: 'close',
+      })
+      response.end(`data: ${JSON.stringify(contentChunk)}\n\ndata: ${JSON.stringify(terminalChunk)}\n\ndata: [DONE]\n\n`)
+    } catch (error) {
+      response.writeHead(500, { 'Content-Type': 'application/json', Connection: 'close' })
+      response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }))
+    }
+  })
+  await withTimeout(new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject)
+      resolve()
+    })
+  }), '本地假模型服务启动')
+  /** Node 在 listen 成功后返回的 TCP 地址。 */
+  const address = server.address() as AddressInfo | null
+  assert.ok(address && address.port > 0, '本地假模型服务未取得端口')
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    requests,
+    close: async () => {
+      server.closeAllConnections()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve())
+      })
+    },
+  }
+}
+
+/** 从兼容 SDK assistant 消息中提取文本块。 */
+function getAssistantText(message: SDKMessage): string {
+  if (message.type !== 'assistant') return ''
+  /** 宽松 SDK 联合类型收窄后的 assistant 消息。 */
+  const assistant = message as SDKAssistantMessage
+  /** SDK assistant 内容块。 */
+  const content = assistant.message.content
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((block): block is { type: 'text'; text: string } => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('')
+}
+
+/** 通过真实 per-session utility runtime 执行一次 Pi query。 */
+async function runPiUtilityQuery(input: PiAgentQueryOptions, queryToken: string): Promise<AgentQueryProbe> {
+  const { PiUtilityAdapter } = await import('../src/main/lib/adapters/pi-utility-adapter')
+  /** 本轮独占的 utility adapter。 */
+  const adapter = new PiUtilityAdapter()
+  /** Utility runtime 返回的完整消息流。 */
+  const messages: SDKMessage[] = []
+  /** onSessionId 返回的真实 Pi session ID。 */
+  let sdkSessionId = ''
+  /** onSessionId 返回的真实 JSONL 路径。 */
+  let sessionFile = ''
+  /** 带会话回调的最终 query 输入。 */
+  const queryInput: PiAgentQueryOptions = {
+    ...input,
+    onSessionId: (nextSessionId, nextSessionFile) => {
+      sdkSessionId = nextSessionId
+      sessionFile = nextSessionFile ?? ''
+    },
+  }
+  try {
+    await withTimeout((async () => {
+      for await (const message of adapter.query(queryInput, queryToken)) messages.push(message)
+    })(), `Pi utility query ${queryToken}`)
+  } finally {
+    await adapter.forceCloseQuery(queryToken)
+    adapter.dispose()
+  }
+  /** 本轮最后一条 result 消息。 */
+  const result = messages.findLast((message): message is SDKResultMessage => message.type === 'result')
+  /** 本轮最后一条非空 assistant 文本。 */
+  const assistantText = messages.map(getAssistantText).filter(Boolean).at(-1) ?? ''
+  assert.ok(sdkSessionId, `Pi utility query ${queryToken} 未回传 session ID`)
+  assert.ok(sessionFile, `Pi utility query ${queryToken} 未回传 session file`)
+  assert.ok(result, `Pi utility query ${queryToken} 未返回 result`)
+  return { messages, sdkSessionId, sessionFile, result, assistantText }
 }
 
 /** 轮询真实 PTY 输出，直到出现目标标记。 */
@@ -201,7 +372,109 @@ async function verifyAgentRuntime(
     await waitForProcessExit(restarted.pid, 'Agent runtime')
     await waitForNewUtilityProcessExits(smokeRoot, utilityTracker, 'Agent restart 后的 utility process')
     assert.equal(client.currentState.status, 'stopped', 'Agent restart 后 stop 未回到 stopped')
-    return { startOutcome, restartedPid: restarted.pid, restartedBootId: restarted.bootId }
+
+    /** 只监听 127.0.0.1 的本地假模型服务，不读取真实渠道或账号。 */
+    const modelServer = await startLocalModelServer()
+    try {
+      /** Pi 的 Agent 配置与会话文件均落在 smoke 临时根。 */
+      const piAgentDir = join(smokeRoot, 'pi-agent')
+      /** Pi SessionManager 的隔离 JSONL 目录。 */
+      const piSessionDir = join(smokeRoot, 'pi-sessions')
+      await Promise.all([
+        mkdir(piAgentDir, { recursive: true }),
+        mkdir(piSessionDir, { recursive: true }),
+      ])
+      /** 两轮 query 共用的本地 provider 配置。 */
+      const baseQueryInput: PiAgentQueryOptions = {
+        sessionId: 'upstream-runtime-smoke-agent',
+        prompt: '',
+        model: 'smoke-model',
+        cwd: smokeRoot,
+        apiKey: 'smoke-local-key',
+        baseUrl: modelServer.baseUrl,
+        provider: 'custom',
+        channelName: 'Runtime Smoke Local Provider',
+        permissionMode: 'bypassPermissions',
+        systemPrompt: '仅返回本地 smoke 服务提供的固定文本。',
+        piAgentDir,
+        piSessionDir,
+        activeToolNames: [],
+        thinkingLevel: 'off',
+      }
+      /** 首轮真实 provider query。 */
+      const first = await runPiUtilityQuery({
+        ...baseQueryInput,
+        prompt: 'SMOKE_FIRST_PROMPT',
+      }, 'upstream-runtime-smoke-query-first')
+      assert.equal(first.assistantText, 'SMOKE_FIRST_RESPONSE', '首轮 assistant 文本与本地 provider 不一致')
+      assert.equal(first.result.subtype, 'success', '首轮 SDK result 不是 success')
+      assert.equal(first.result.usageStatus, 'known', '首轮 SDK result 未保留 provider usage')
+      assert.deepEqual(first.result.usage, {
+        input_tokens: 12,
+        output_tokens: 7,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      }, '首轮 SDK result usage 不正确')
+      await waitForNewUtilityProcessExits(smokeRoot, utilityTracker, 'Agent 首轮 query utility process')
+
+      /** 首轮写入的真实 Pi JSONL。 */
+      const firstTranscript = await readFile(first.sessionFile, 'utf8')
+      /** 逐行解析可证明文件是有效 JSONL，而非只存在同名文件。 */
+      const firstEntries = firstTranscript.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line) as unknown)
+      assert.ok(firstEntries.length >= 3, '首轮 Pi JSONL 缺少会话头或消息记录')
+      assert.ok(firstTranscript.includes('SMOKE_FIRST_PROMPT'), '首轮 Pi JSONL 未持久化 user prompt')
+      assert.ok(firstTranscript.includes('SMOKE_FIRST_RESPONSE'), '首轮 Pi JSONL 未持久化 assistant 回复')
+
+      /** 使用首轮 SDK session ID 重新打开 JSONL 的第二轮真实 query。 */
+      const resumed = await runPiUtilityQuery({
+        ...baseQueryInput,
+        prompt: 'SMOKE_RESUME_PROMPT',
+        resumeSessionId: first.sdkSessionId,
+      }, 'upstream-runtime-smoke-query-resume')
+      assert.equal(resumed.sdkSessionId, first.sdkSessionId, '恢复 query 未复用首轮 Pi session ID')
+      assert.equal(resumed.sessionFile, first.sessionFile, '恢复 query 未复用首轮 Pi JSONL')
+      assert.equal(resumed.assistantText, 'SMOKE_RESUMED_RESPONSE', '恢复轮 assistant 文本与本地 provider 不一致')
+      assert.equal(resumed.result.subtype, 'success', '恢复轮 SDK result 不是 success')
+      assert.equal(resumed.result.usageStatus, 'known', '恢复轮 SDK result 未保留 provider usage')
+      await waitForNewUtilityProcessExits(smokeRoot, utilityTracker, 'Agent 恢复 query utility process')
+
+      assert.equal(modelServer.requests.length, 2, 'Pi runtime 没有严格发出两次本地 provider 请求')
+      /** 首轮 provider 请求。 */
+      const firstRequest = modelServer.requests[0]!
+      /** 恢复轮 provider 请求。 */
+      const resumedRequest = modelServer.requests[1]!
+      assert.equal(firstRequest.method, 'POST', '首轮 provider 请求方法不是 POST')
+      assert.equal(firstRequest.path, '/v1/chat/completions', '首轮 provider 请求路径不正确')
+      assert.equal(firstRequest.authorization, 'Bearer smoke-local-key', '首轮 provider 未使用隔离 API key')
+      assert.equal(firstRequest.body.model, 'smoke-model', '首轮 provider 请求模型不正确')
+      assert.equal(firstRequest.body.stream, true, '首轮 provider 请求未启用 SSE')
+      assert.deepEqual(firstRequest.body.stream_options, { include_usage: true }, '首轮 provider 请求未要求 usage')
+      assert.ok(JSON.stringify(firstRequest.body.messages).includes('SMOKE_FIRST_PROMPT'), '首轮 provider 请求缺少 user prompt')
+      /** 恢复请求的消息上下文序列化结果。 */
+      const resumedMessages = JSON.stringify(resumedRequest.body.messages)
+      assert.ok(resumedMessages.includes('SMOKE_FIRST_PROMPT'), '恢复请求缺少首轮 user prompt')
+      assert.ok(resumedMessages.includes('SMOKE_FIRST_RESPONSE'), '恢复请求缺少首轮 assistant 回复')
+      assert.ok(resumedMessages.includes('SMOKE_RESUME_PROMPT'), '恢复请求缺少第二轮 user prompt')
+
+      /** 第二轮完成后的完整持久化 transcript。 */
+      const resumedTranscript = await readFile(resumed.sessionFile, 'utf8')
+      assert.ok(resumedTranscript.includes('SMOKE_RESUME_PROMPT'), '恢复轮 Pi JSONL 未持久化 user prompt')
+      assert.ok(resumedTranscript.includes('SMOKE_RESUMED_RESPONSE'), '恢复轮 Pi JSONL 未持久化 assistant 回复')
+      for (const line of resumedTranscript.trim().split('\n').filter(Boolean)) JSON.parse(line)
+
+      return {
+        startOutcome,
+        restartedPid: restarted.pid,
+        restartedBootId: restarted.bootId,
+        providerRequests: modelServer.requests.length,
+        sdkSessionId: first.sdkSessionId,
+        sessionFile: first.sessionFile,
+        firstUsage: first.result.usage,
+        resumedUsage: resumed.result.usage,
+      }
+    } finally {
+      await modelServer.close()
+    }
   } finally {
     await client.stop()
   }

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { normalizeContext } from '@earendil-works/pi-ai'
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
 import { retryAssistantCall, type Model } from '@earendil-works/pi-ai/compat'
 import type { SDKAssistantMessage, SDKResultMessage } from '@proma/shared'
@@ -39,9 +40,9 @@ async function runFixture(chunks: Record<string, unknown>[], signal?: AbortSigna
       status, headers: { 'content-type': status === 200 ? 'text/event-stream' : 'application/json' },
     })
   }) as typeof fetch
-  const message = await streamSimple(model, {
+  const message = await streamSimple(model, normalizeContext({
     messages: [{ role: 'user', content: '生成简短标题', timestamp: 1 }],
-  }, { apiKey: 'offline-key', maxTokens: 50, maxRetries: 0, fetch: fakeFetch, signal }).result()
+  }), { apiKey: 'offline-key', maxTokens: 50, maxRetries: 0, fetch: fakeFetch, signal }).result()
   expect(requests).toBeLessThanOrEqual(1)
   return {
     message,
@@ -72,9 +73,9 @@ describe('Pi 响应完整性（真实 SDK，完全离线）', () => {
   })
 
   test('Given 网关无需 finish_reason When 空流结束 Then 同样拒绝空成功', async () => {
-    const response = await streamSimple({ ...model, compat: { supportsFinishReason: false } }, {
+    const response = await streamSimple({ ...model, compat: { supportsFinishReason: false } }, normalizeContext({
       messages: [{ role: 'user', content: '测试', timestamp: 1 }],
-    }, { apiKey: 'offline-key', maxRetries: 0, fetch: (async () => new Response('data: [DONE]\n\n', {
+    }), { apiKey: 'offline-key', maxRetries: 0, fetch: (async () => new Response('data: [DONE]\n\n', {
       headers: { 'content-type': 'text/event-stream' },
     })) as unknown as typeof fetch }).result()
     expect(response.stopReason).toBe('error')

@@ -1,7 +1,8 @@
 diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
+index fc8e893..8bdf0e9 100644
 --- a/dist/api/openai-completions.js
 +++ b/dist/api/openai-completions.js
-@@ -175,6 +175,8 @@
+@@ -159,6 +159,8 @@ export const stream = (model, context, options) => {
              provider: model.provider,
              model: model.id,
              usage: {
@@ -10,7 +11,7 @@ diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
                  input: 0,
                  output: 0,
                  cacheRead: 0,
-@@ -375,17 +377,14 @@
+@@ -359,17 +361,14 @@ export const stream = (model, context, options) => {
                  if (typeof chunk.model === "string" && chunk.model.length > 0 && chunk.model !== model.id) {
                      output.responseModel ||= chunk.model;
                  }
@@ -33,11 +34,10 @@ diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
                  if (choice.finish_reason) {
                      output.rawStopReason = choice.finish_reason;
                      const finishReasonResult = mapStopReason(choice.finish_reason);
-@@ -499,6 +498,14 @@
-             }
+@@ -484,6 +483,14 @@ export const stream = (model, context, options) => {
              if ((compat.supportsFinishReason && !hasFinishReason) || output.stopReason === "pending") {
                  throw new Error("Stream ended without finish_reason");
-+            }
+             }
 +            // 仅拒绝成功终态的全空响应；保留工具、思考、长度截断和取消语义。
 +            if ((output.stopReason === "stop" || output.stopReason === "toolUse") &&
 +                !output.content.some((block) => block.type === "toolCall"
@@ -45,10 +45,11 @@ diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
 +                    : block.type === "text" ? Boolean(block.text?.trim())
 +                    : block.type === "thinking" && Boolean(block.thinking?.trim()))) {
 +                throw new Error("Empty assistant response: provider returned no text, thinking or tool calls");
-             }
++            }
              stream.push({ type: "done", reason: output.stopReason, message: output });
              stream.end();
-@@ -1175,10 +1182,22 @@
+         }
+@@ -1157,10 +1164,22 @@ function convertTools(tools, compat) {
          };
      });
  }
@@ -73,7 +74,7 @@ diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
      // Follow documented OpenAI/OpenRouter semantics: cached_tokens is cache-read
      // tokens (hits). Providers disagree on placement: OpenAI/OpenRouter use
      // prompt_tokens_details.cached_tokens, DeepSeek uses prompt_cache_hit_tokens,
-@@ -1192,13 +1211,14 @@
+@@ -1174,13 +1193,14 @@ function parseChunkUsage(rawUsage, model) {
      // https://github.com/antirez/ds4/pull/29
      const input = Math.max(0, promptTokens - cacheReadTokens - cacheWriteTokens);
      // OpenAI completion_tokens already includes reasoning_tokens.
@@ -91,9 +92,10 @@ diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
      };
 diff --git a/dist/types.d.ts b/dist/types.d.ts
+index 5915ca6..6e19d55 100644
 --- a/dist/types.d.ts
 +++ b/dist/types.d.ts
-@@ -263,6 +263,8 @@
+@@ -268,6 +268,8 @@ export interface ToolCall {
      namespace?: string;
  }
  export interface Usage {
@@ -103,9 +105,10 @@ diff --git a/dist/types.d.ts b/dist/types.d.ts
      output: number;
      cacheRead: number;
 diff --git a/dist/utils/retry.js b/dist/utils/retry.js
+index 6538c63..2d84891 100644
 --- a/dist/utils/retry.js
 +++ b/dist/utils/retry.js
-@@ -61,9 +61,19 @@
+@@ -63,9 +63,19 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
      // "stream ended without ..." and "Anthropic stream ended before message_stop"
      // (#4433); Bedrock/Smithy can throw an HTTP/2 no-response error (#3594).
      "ended without",

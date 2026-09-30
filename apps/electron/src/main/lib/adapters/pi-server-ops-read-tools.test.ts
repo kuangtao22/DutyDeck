@@ -56,7 +56,7 @@ describe('Pi Server Ops 多资源只读工具', () => {
     const execute = tool.execute as unknown as (...args: unknown[]) => Promise<{ content: unknown }>
     const result = await execute('call-1', { sourceId: 'source-1', database: 'app', table: 'users', offset: 0, limit: 50 })
     expect(received).toEqual({ sourceId: 'source-1', database: 'app', table: 'users', offset: 0, limit: 50 })
-    expect(result.content).toEqual([{ type: 'text', text: JSON.stringify({ rows: [] }, null, 2) }])
+    expect(result.content).toEqual([{ type: 'text', text: JSON.stringify({ rows: [] }) }])
     expect(JSON.stringify(tool.parameters)).toContain('maximum')
     expect(JSON.stringify(tool.parameters)).toContain('50')
   })

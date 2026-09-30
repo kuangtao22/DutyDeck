@@ -1340,3 +1340,10 @@
 - 2026-09-30：隔离工作树不能把整套 node_modules 软链回主仓库：workspace 包会因此解析到 main 的旧 shared 导出。应在工作树用 `bun install --frozen-lockfile --ignore-scripts` 建立独立 workspace 链接；UI 验收可复用主仓库已安装的 Electron 二进制，配临时 userData 和假 IPC，不触及真实账号。Bun 的模块 mock 测试需隔离运行，避免组合执行造成假失败。
 
 - 2026-09-30：用户要求“合并到主线程”后，已将 `codex/upstream-model-mcp-copilot` 的 MiMo V2.6、MCP 配置/OAuth、Copilot 登录/额度三个提交快进合入本地 `main`（`7cfb3f68 → 8b0515a5`），无冲突，业务代码与已验收分支一致。主工作区复验 29 个文件共 236 项测试通过、8 个工作区类型检查通过；Pi 保持 0.85.1。尚未推送、发布或重启客户端；保留 Codex 管理的开发工作树。
+
+
+- 2026-09-30（Pi 0.87.1 升级验证）：在隔离分支 `codex/pi-runtime-0871` 升级，目标采用官方 Proma 已集成的 0.87.1，不追 npm 0.99.1；普通 dev 与安装版共享业务目录，因此本轮只用临时数据和本地假 SSE，不启动正式业务会话。迁移必须同时保护 SessionManager 权威投影、显式项目规则、费用预算和本地响应完整性补丁。Bun 对旧 patch 的行号应用与 git apply 不完全相同：git apply --check 通过仍出现错位；应基于目标发布包重生成精确 patch，并对实际安装文件逐字节验证。Pi 根入口仅 ESM，Electron CJS helper 须缓存 dynamic import，类型检查不能替代真实 utility 请求冒烟。
+
+- 2026-09-30（Pi 升级边界与取舍）：中断清理必须写 context_edit 后 refreshContext；动态项目规则使用持久命名 section，保留 BASE 在前的顺序，并在 canonical 请求投影后补回 Pi 基础刷新删除的私有 section。恢复会话后只对同一路径/scope/kind 的最后规则版本去重，必须覆盖 V1→V2→V1，不能查全历史是否出现过。模型能力补丁不能覆盖官方 cost/tiers，否则零费用会绕过预算；保留 3 次有界重试，显式关闭 cache warming，避免隐式预热请求。工具 JSON 结果在跨进程两侧保留校验和快照，不能用可变对象 WeakSet 缓存绕过校验，也不能依赖跨 MessagePort 保留对象身份；数组与 Error 访问器不应在归一化时执行。
+
+- 2026-09-30（升级实测及发布边界）：完整业务回归 6176 通过、6 个 Windows 专属测试跳过，完整 Electron 构建与真实 Electron 43.2 本地双轮请求/known usage/JSONL/恢复/utility 与 PTY 退出冒烟通过；最后规则回退修复有额外定向回归。真实 0.85.1 SDK 生成的 JSONL 可由 0.87.1 读取、续写并重开；同为会话 v3 不代表可无损降级，旧版实测会重新显示新版 context_edit 隐藏的 aborted 消息，正式试用前须备份，不能只降依赖回滚。本地合成 5000 条历史投影 p50 约 0.315→0.423 ms，Pi external 依赖闭包约减 4.2 MiB；643KB/1 万行工具 JSON 两侧转换样本约 16 ms（旧文本序列化约 2 ms）。这些不是生产首字延迟、真实账单或完整安装包数据，尚未验证真实账号请求与 Windows 平台；构建原生 helper 与依赖它的测试必须串行，避免重建造成假失败。发布包证据位于 `/private/tmp/pi-pkg-eval/`，性能与验证日志为 `/private/tmp/pi-upgrade-*`；没有合并主分支或发布安装版。

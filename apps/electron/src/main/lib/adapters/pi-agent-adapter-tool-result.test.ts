@@ -2,12 +2,14 @@ import { beforeAll, describe, expect, mock, test } from 'bun:test'
 import { Agent } from '@earendil-works/pi-agent-core'
 import type { AgentMessage, AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core'
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai'
+import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import type { AgentRuntimeGuard } from '../agent-runtime-guards'
 import { convertPiMessage } from './pi-message-adapter'
 
 type PiAdapterModule = typeof import('./pi-agent-adapter')
 let installRuntimeGuardHooks: PiAdapterModule['installRuntimeGuardHooks']
+let wrapCustomToolDefinitions: PiAdapterModule['wrapCustomToolDefinitions']
 
 mock.module('electron', () => ({
   app: { isPackaged: false, getPath: () => '/tmp', getName: () => 'Proma Test' },
@@ -27,7 +29,7 @@ mock.module('electron', () => ({
 }))
 
 beforeAll(async () => {
-  ;({ installRuntimeGuardHooks } = await import('./pi-agent-adapter'))
+  ;({ installRuntimeGuardHooks, wrapCustomToolDefinitions } = await import('./pi-agent-adapter'))
 })
 
 const imageToolName = 'mcp__nano_banana__generate_image'
@@ -150,5 +152,41 @@ describe('Pi Nano Banana 失败结果传播', () => {
     })
 
     expect(message).toMatchObject({ role: 'toolResult', isError: false })
+  })
+})
+
+describe('Pi 外部 custom tool JSON 边界', () => {
+  test('Given 外部工具返回 bigint When 进入 Pi Then 只在 custom 入口转换为可持久化详情', async () => {
+    const provider = fauxProvider()
+    provider.setResponses([
+      fauxAssistantMessage(fauxToolCall('external_tool', {}, { id: 'external-1' }), { stopReason: 'toolUse' }),
+      fauxAssistantMessage('完成'),
+    ])
+    /** 模拟插件或业务模块仍返回宽类型运行时值。 */
+    const externalTool = {
+      name: 'external_tool',
+      label: '外部工具',
+      description: '验证 JSON 边界',
+      parameters: Type.Object({}),
+      execute: async () => ({
+        content: [{ type: 'text' as const, text: 'ok' }],
+        details: { id: 7n },
+      }),
+    }
+    /** 生产入口负责权限包装和最终 details 归一化。 */
+    const wrappedTool = wrapCustomToolDefinitions(
+      [externalTool as unknown as ToolDefinition],
+      undefined,
+    )[0] as unknown as AgentTool
+    const agent = new Agent({
+      initialState: { model: provider.models[0], tools: [wrappedTool] },
+      streamFn: provider.provider.streamSimple,
+    })
+
+    await agent.prompt('调用外部工具')
+
+    const toolResult = agent.state.messages.find((message) => message.role === 'toolResult')
+    expect(toolResult).toMatchObject({ details: { id: '7' } })
+    expect(() => JSON.stringify(toolResult)).not.toThrow()
   })
 })

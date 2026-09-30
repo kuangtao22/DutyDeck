@@ -192,6 +192,16 @@ const PRESET_MODEL_CANDIDATE_UPDATES: readonly {
     },
   },
   {
+    // 独立迁移标记只追加新候选，保留既有模型名称与启用选择。
+    id: 'openai-codex-gpt-6-sol-luna-v1',
+    candidates: {
+      'openai-codex': [
+        { id: 'gpt-6-sol', name: 'GPT-6 Sol', enabled: true },
+        { id: 'gpt-6-luna', name: 'GPT-6 Luna', enabled: true },
+      ],
+    },
+  },
+  {
     // 存量小米渠道追加 V2.6 候选，保留用户已有 V2.5 选择和启用状态。
     id: 'xiaomi-mimo-v2-6-v1',
     candidates: {
@@ -1997,8 +2007,10 @@ export async function fetchModels(input: FetchModelsInput): Promise<FetchModelsR
       case 'github-copilot':
       case 'xai':
         if (provider === 'openai-codex') {
-          // ChatGPT (Codex) 走 Pi SDK 内置模型目录，不依赖 baseUrl/apiKey。
-          const codexModels = await listCodexModels()
+          /** 模型目录沿用登录凭据内存上下文，不读取全局 Pi 认证。 */
+          const credentials = parseCodexCredentials(input.apiKey)
+          if (!credentials) throw new Error('ChatGPT 登录凭据无效或缺失，请重新登录')
+          const codexModels = await listCodexModels(credentials)
           return {
             success: true,
             message: `已加载 ${codexModels.length} 个 ChatGPT (Codex) 模型`,

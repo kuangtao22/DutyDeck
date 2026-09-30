@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { validateToolArguments } from '@earendil-works/pi-ai'
+import type { JsonValue } from '@earendil-works/pi-ai'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Value } from 'typebox/value'
 import {
@@ -51,22 +52,22 @@ describe('Canvas Agent mutation 工具 schema', () => {
   })
 
   test('Given 五种猜测式加边格式 When Pi 校验参数 Then 指向 operations[0] 且提示正确结构', () => {
-    const invalidOperations = [
-      { type: 'add-edge', edge: {} },
-      { type: 'addEdge', edge: {} },
-      { op: 'add-edge', edge: {} },
-      { type: 'upsert-edge', edge: {} },
-      { op: 'addEdge', edge: {} },
+    const invalidOperations: Array<{ operation: Record<string, JsonValue>; expected: RegExp }> = [
+      { operation: { type: 'add-edge', edge: {} }, expected: /operations\.0\.edges/ },
+      { operation: { type: 'addEdge', edge: {} }, expected: /operations\.0\.edges/ },
+      { operation: { op: 'add-edge', edge: {} }, expected: /operations\.0\.type/ },
+      { operation: { type: 'upsert-edge', edge: {} }, expected: /operations\.0\.edges/ },
+      { operation: { op: 'addEdge', edge: {} }, expected: /operations\.0\.type/ },
     ]
 
-    for (const operation of invalidOperations) {
+    for (const { operation, expected } of invalidOperations) {
       expect(Value.Check(mutationTool.parameters, {
         canvasId: 'canvas-1', baseRevision: 119, operations: [operation],
       })).toBeFalse()
       expect(() => validateToolArguments(mutationTool, {
         type: 'toolCall', id: 'invalid-edge', name: mutationTool.name,
         arguments: { canvasId: 'canvas-1', baseRevision: 119, operations: [operation] },
-      })).toThrow('type' in operation ? /operations\.0\.edges/ : /operations\.0\.type/)
+      })).toThrow(expected)
     }
     expect(mutationTool.description).toContain('"type":"upsert-edges"')
     expect(mutationTool.description).toContain('"edges"')

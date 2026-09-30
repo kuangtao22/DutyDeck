@@ -19,6 +19,7 @@ import type { TSchema } from 'typebox'
 import { Type } from 'typebox'
 import { createManagedProxyFetch, type ManagedProxyFetch } from '../proxy-fetch'
 import { sanitizeToolResultImageContent } from '../image-content-validation'
+import { normalizePiToolResultDetails, type PiToolResultJson } from './pi-tool-result-json'
 
 const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_MCP_STARTUP_TIMEOUT_MS = 30_000
@@ -221,7 +222,7 @@ function stringifyForTool(content: unknown): string {
   }
 }
 
-function convertMcpResult(result: McpCallToolResult): AgentToolResult<unknown> {
+function convertMcpResult(result: McpCallToolResult): AgentToolResult<PiToolResultJson> {
   const content: Array<TextContent | ImageContent> = []
 
   if ('content' in result && Array.isArray(result.content)) {
@@ -252,8 +253,8 @@ function convertMcpResult(result: McpCallToolResult): AgentToolResult<unknown> {
 
   return {
     content: sanitizeToolResultImageContent(content),
-    details: result,
-  } as AgentToolResult<unknown>
+    details: normalizePiToolResultDetails(result),
+  }
 }
 
 /**

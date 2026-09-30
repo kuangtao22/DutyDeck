@@ -23,8 +23,8 @@ function loadProductionFunctions(registry: AgentStreamRouteRegistry<Target>, sta
   const source = readFileSync(process.env.PROMA_SERVICE_REGRESSION_SOURCE ?? new URL('./agent-service.ts', import.meta.url), 'utf8')
   /** 用 TypeScript AST 取完整函数，避免手写字符串/花括号解析误取代码。 */
   const parsed = ts.createSourceFile('agent-service.ts', source, ts.ScriptTarget.Latest, true)
-  /** 仅隔离这三个服务入口，避免导入整个 Electron 应用产生业务副作用。 */
-  const names = new Set(['submitOrEnqueueAgentMessage', 'enqueueAgentQueuedMessage', 'stopAgent'])
+  /** 仅隔离三个服务入口及其会话存在性守卫，避免导入整个 Electron 应用产生业务副作用。 */
+  const names = new Set(['submitOrEnqueueAgentMessage', 'enqueueAgentQueuedMessage', 'stopAgent', 'assertAgentSessionAcceptsInput'])
   /** 实际生产函数正文，包含原有全部调用与条件。 */
   const functions = parsed.statements.filter((node) => ts.isFunctionDeclaration(node) && node.name && names.has(node.name.text))
   expect(functions).toHaveLength(names.size)
@@ -34,6 +34,9 @@ function loadProductionFunctions(registry: AgentStreamRouteRegistry<Target>, sta
   }).outputText
   /** 这些适配边界不会触碰真实媒体、队列或主进程。 */
   const dependencies = {
+    // 路由用例使用存在且未删除的会话；生产入口新增的守卫也使用原实现。
+    isAgentSessionDeleting: () => false,
+    getAgentSessionMeta: () => ({ id: 'session-1' }),
     prepareAgentMediaInput: (input: AgentSubmitOrEnqueueInput) => input,
     routeAgentSubmitOrEnqueue,
     orchestrator: { isActive: () => state.active ?? true, isInFlight: () => state.inFlight ?? false, stop: () => undefined },
