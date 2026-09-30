@@ -75,11 +75,10 @@ const KIMI_PRESET_MODELS: ChannelModel[] = [
   { id: 'kimi-k2.6', name: 'Kimi K2.6', enabled: true },
 ]
 const XIAOMI_PRESET_MODELS: ChannelModel[] = [
-  { id: 'mimo-v2.5-pro', name: 'MiMo V2.5 Pro', enabled: true },
-  { id: 'mimo-v2-pro', name: 'MiMo V2 Pro', enabled: true },
-  { id: 'mimo-v2.5', name: 'MiMo V2.5', enabled: true },
-  { id: 'mimo-v2-omni', name: 'MiMo V2 Omni', enabled: true },
-  { id: 'mimo-v2-flash', name: 'MiMo V2 Flash', enabled: true },
+  { id: 'mimo-v2.6-pro', name: 'MiMo V2.6 Pro', enabled: true },
+  { id: 'mimo-v2.6-flash', name: 'MiMo V2.6 Flash', enabled: true },
+  // UltraSpeed 是限流定制服务，默认关闭，避免新用户误选受限模型。
+  { id: 'mimo-v2.6-pro-ultraspeed', name: 'MiMo V2.6 Pro UltraSpeed', enabled: false },
 ]
 const QWEN_TOKEN_PLAN_PRESET_MODELS: ChannelModel[] = [
   { id: 'qwen3.8-max-preview', name: 'Qwen3.8 Max Preview', enabled: true },
@@ -184,6 +183,14 @@ const PRESET_MODEL_CANDIDATE_UPDATES: readonly {
       'openai-codex': [
         { id: 'gpt-6-astra', from: 'GPT-6-Astra', to: 'GPT-6 Astra' },
       ],
+    },
+  },
+  {
+    // 存量小米渠道追加 V2.6 候选，保留用户已有 V2.5 选择和启用状态。
+    id: 'xiaomi-mimo-v2-6-v1',
+    candidates: {
+      xiaomi: [...XIAOMI_PRESET_MODELS],
+      'xiaomi-token-plan': [...XIAOMI_PRESET_MODELS],
     },
   },
 ]

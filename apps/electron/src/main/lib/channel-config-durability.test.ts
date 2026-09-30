@@ -123,6 +123,34 @@ describe('渠道配置持久化失败保护', () => {
   })
 })
 
+describe('MiMo V2.6 预设候选迁移', () => {
+  test('Given 存量小米渠道含旧模型及手工关闭的 V2.6 When 重复加载 Then 保留选择且只补齐缺失候选', () => {
+    writeChannelsSource(JSON.stringify({
+      version: 5,
+      channels: [{
+        id: 'xiaomi-existing', name: '小米存量渠道', provider: 'xiaomi-token-plan',
+        baseUrl: 'https://token-plan-cn.xiaomimimo.com/anthropic', apiKey: 'encrypted-key',
+        models: [
+          { id: 'mimo-v2.5-pro', name: '旧主力模型', enabled: true },
+          { id: ' MIMO-V2.6-PRO ', name: '自定义名称', enabled: false },
+        ],
+        enabled: true, createdAt: 1, updatedAt: 1,
+      }],
+    }))
+    /** 首次迁移结果用于核对旧模型和手工选择没有被覆盖。 */
+    const first = channelManager.listChannels()[0]!
+    /** 重读验证迁移幂等，不重复追加新候选。 */
+    const second = channelManager.listChannels()[0]!
+    expect(first.models).toEqual([
+      { id: 'mimo-v2.5-pro', name: '旧主力模型', enabled: true },
+      { id: ' MIMO-V2.6-PRO ', name: '自定义名称', enabled: false },
+      { id: 'mimo-v2.6-flash', name: 'MiMo V2.6 Flash', enabled: true },
+      { id: 'mimo-v2.6-pro-ultraspeed', name: 'MiMo V2.6 Pro UltraSpeed', enabled: false },
+    ])
+    expect(second.models).toEqual(first.models)
+  })
+})
+
 describe('GLM-5.3-FlashX 预设候选迁移', () => {
   test('Given 已应用旧候选更新的存量 Coding 渠道 When 重复加载配置 Then 只追加一个默认关闭的 FlashX', () => {
     writeChannelsSource(JSON.stringify({

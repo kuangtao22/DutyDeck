@@ -12,6 +12,7 @@ import {
   extractZhipuCodingTeamApiToken,
   inferContextWindow,
   inferCodexAlignedGPT5ContextWindow,
+  isMimoV26Model,
   getGeminiModelCapability,
   resolveReasoningCapability,
   resolveReasoningProfile,
@@ -57,6 +58,8 @@ const DEFAULT_MAX_TOKENS = 64_000
 const VOLCENGINE_GLM_MAX_TOKENS = 128_000
 /** GLM-5.3 系列均支持 128K 最大输出。 */
 const GLM_53_FAMILY_MAX_TOKENS = 131_072
+/** MiMo V2.6 系列官方最大输出上限为 128K。 */
+const MIMO_V26_FAMILY_MAX_TOKENS = 128_000
 const CODEX_BASE_URL = 'https://chatgpt.com/backend-api'
 const CODEX_MAX_TOKENS = 128_000
 /**
@@ -658,6 +661,8 @@ async function resolvePiModelDefaults(input: Pick<PiModelBuildInput, 'provider' 
     && (glmModelId === 'glm-5.2' || glmModelId === 'glm-5.3')
   const isCatalogMissingGlm53Family = !catalogModel
     && (glmModelId === 'glm-5.3' || glmModelId === 'glm-5.3-flash' || glmModelId === 'glm-5.3-flashx')
+  // 新模型可能尚未进入 Pi catalog，使用共享层的精确 ID 判断避免误伤未来版本。
+  const isCatalogMissingMimoV26Family = !catalogModel && isMimoV26Model(glmModelId)
   const catalogContextWindow = catalogModel?.contextWindow ?? DEFAULT_CONTEXT_WINDOW
   const inferredContextWindow = inferContextWindow(input.model) ?? DEFAULT_CONTEXT_WINDOW
   const shouldForceAdaptiveThinking = shouldForcePiAdaptiveThinking(api, catalogModel, input.model)
@@ -676,7 +681,12 @@ async function resolvePiModelDefaults(input: Pick<PiModelBuildInput, 'provider' 
     // Pi catalog 缺少时，GLM-5.3 系列仍按官方 128K 输出上限注册。
     maxTokens: isVolcengineGlm5x
       ? VOLCENGINE_GLM_MAX_TOKENS
-      : (catalogModel?.maxTokens ?? (isCatalogMissingGlm53Family ? GLM_53_FAMILY_MAX_TOKENS : DEFAULT_MAX_TOKENS)),
+      : (catalogModel?.maxTokens
+        ?? (isCatalogMissingGlm53Family
+          ? GLM_53_FAMILY_MAX_TOKENS
+          : isCatalogMissingMimoV26Family
+            ? MIMO_V26_FAMILY_MAX_TOKENS
+            : DEFAULT_MAX_TOKENS)),
   }
 }
 

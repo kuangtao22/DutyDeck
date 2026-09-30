@@ -89,3 +89,60 @@ describe('GLM-5.3-FlashX 离线模型注册', () => {
     })
   })
 })
+
+describe('MiMo V2.6 离线模型注册', () => {
+  test('Given Pi catalog 没有 MiMo V2.6 When 构建模型 Then 使用官方 1M 上下文和 128K 输出上限', async () => {
+    let registeredModel: Model<Api> | undefined
+    const modelRuntime = {
+      registerProvider: (_providerName: string, provider: { models: Model<Api>[] }) => {
+        registeredModel = provider.models[0]
+      },
+      getModel: () => registeredModel,
+    }
+    const sdk = {
+      ModelRuntime: {
+        create: async () => modelRuntime,
+      },
+    } as unknown as Parameters<typeof buildModel>[0]
+
+    const { model } = await buildModel(sdk, {
+      sessionId: 'session-mimo-v26',
+      apiKey: 'test-key',
+      baseUrl: 'https://api.xiaomimimo.com/anthropic',
+      provider: 'xiaomi',
+      model: 'mimo-v2.6-pro',
+    })
+
+    expect(model).toMatchObject({
+      id: 'mimo-v2.6-pro',
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    })
+  })
+
+  test('Given 类似但未知的未来 MiMo ID When 构建模型 Then 不套用 V2.6 输出上限', async () => {
+    let registeredModel: Model<Api> | undefined
+    const modelRuntime = {
+      registerProvider: (_providerName: string, provider: { models: Model<Api>[] }) => {
+        registeredModel = provider.models[0]
+      },
+      getModel: () => registeredModel,
+    }
+    const sdk = {
+      ModelRuntime: {
+        create: async () => modelRuntime,
+      },
+    } as unknown as Parameters<typeof buildModel>[0]
+
+    const { model } = await buildModel(sdk, {
+      sessionId: 'session-mimo-future',
+      apiKey: 'test-key',
+      baseUrl: 'https://api.xiaomimimo.com/anthropic',
+      provider: 'xiaomi',
+      model: 'mimo-v2.60-preview',
+    })
+
+    expect(model.maxTokens).toBe(64_000)
+    expect(model.contextWindow).toBe(200_000)
+  })
+})

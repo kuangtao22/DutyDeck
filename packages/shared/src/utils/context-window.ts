@@ -57,8 +57,8 @@ const ONE_MILLION_CONTEXT_RULES = {
   deepseek: ['deepseek-v4', 'deepseek-flash'],
   // 智谱 GLM
   glm: ['glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx', 'glm-5.2'],
-  // 小米 MiMo
-  mimo: ['mimo-v2.5'],
+  // 小米 MiMo：V2.5 保留用于历史用量统计，V2.6 为当前官方模型。
+  mimo: ['mimo-v2.5', 'mimo-v2.5-pro', 'mimo-v2.6-pro', 'mimo-v2.6-flash', 'mimo-v2.6-pro-ultraspeed'],
   // MiniMax
   minimax: ['minimax-m3'],
   // Kimi
@@ -76,7 +76,29 @@ const ONE_MILLION_CONTEXT_RULES = {
 } as const
 
 const ONE_MILLION_CONTEXT_DISPLAY_RULES = Object.values(ONE_MILLION_CONTEXT_RULES).flat()
-const EXACT_CONTEXT_RULES = new Set(['k3', 'kimi-k3'])
+const EXACT_CONTEXT_RULES = new Set([
+  'k3',
+  'kimi-k3',
+  // MiMo 使用精确 ID，避免未来版本号或代理别名被子串误判。
+  'mimo-v2.5',
+  'mimo-v2.5-pro',
+  'mimo-v2.6-pro',
+  'mimo-v2.6-flash',
+  'mimo-v2.6-pro-ultraspeed',
+])
+
+/** MiMo V2.6 的官方模型 ID，供共享推断和 Pi runtime 复用。 */
+export const MIMO_V26_MODEL_IDS = [
+  'mimo-v2.6-pro',
+  'mimo-v2.6-flash',
+  'mimo-v2.6-pro-ultraspeed',
+] as const
+
+/** 精确判断 MiMo V2.6 模型，统一处理大小写和首尾空白。 */
+export function isMimoV26Model(modelId: string | undefined): boolean {
+  if (!modelId) return false
+  return (MIMO_V26_MODEL_IDS as readonly string[]).includes(modelId.trim().toLowerCase())
+}
 
 function matchesContextRule(model: string, pattern: string): boolean {
   if (EXACT_CONTEXT_RULES.has(pattern)) {
