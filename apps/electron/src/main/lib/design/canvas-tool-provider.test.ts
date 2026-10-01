@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Value } from 'typebox/value'
 import { validateToolArguments } from '@earendil-works/pi-ai'
+import type { JsonObject } from '@earendil-works/pi-ai'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AgentCanvasBinding, CanvasDocument, CanvasImageCandidateBatch, CanvasMutation, CanvasNodeReference, CanvasRunNodesBatchSummary, CanvasSessionMeta, DesignJobRecord } from '@proma/shared'
 import { applyCanvasMutations, createEmptyCanvasDocument } from '@proma/shared'
@@ -4258,13 +4259,17 @@ test('Given 画布交付工具参数 When 校验两种提交 Then 只接受 id+e
   const fixture = createFixture()
   /** 发送给模型的实际交付工具。 */
   const tool = createCanvasToolRun(fixture.dependencies, fixture.context).piCustomTools.find(item => item.name === 'canvas_task')!
-  for (const submission of [{ id: 'report', evidenceId: 'proof' }, { id: 'answer', text: '答复' }]) {
+  /** 显式声明 JSON 对象，避免联合字面量把不存在的可选字段推断为 undefined。 */
+  const validSubmissions: JsonObject[] = [{ id: 'report', evidenceId: 'proof' }, { id: 'answer', text: '答复' }]
+  for (const submission of validSubmissions) {
     /** 两种合法提交均应通过真实 Pi 校验。 */
     const args = { action: 'complete', submissions: [submission] }
     expect(Value.Check(tool.parameters, args)).toBeTrue()
     expect(() => validateToolArguments(tool, { type: 'toolCall', id: 'complete', name: tool.name, arguments: args })).not.toThrow()
   }
-  for (const submission of [{ id: 'report' }, { id: 'report', evidenceId: 'proof', text: '已验证' }]) {
+  /** 非法对象同样保持真实 JSON 形状，由运行时 schema 负责判定字段合同。 */
+  const invalidSubmissions: JsonObject[] = [{ id: 'report' }, { id: 'report', evidenceId: 'proof', text: '已验证' }]
+  for (const submission of invalidSubmissions) {
     /** 缺少内容和混合字段都必须在实际工具执行前拒绝。 */
     const args = { action: 'complete', submissions: [submission] }
     expect(Value.Check(tool.parameters, args)).toBeFalse()
