@@ -1,11 +1,16 @@
-import { beforeAll, expect, mock, test } from 'bun:test'
+import { afterEach, beforeAll, expect, mock, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { ExtensionToolContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { ServerOpsAgentFacade } from '../server-ops/server-ops-agent-facade'
 
 type PiAdapterModule = typeof import('./pi-agent-adapter')
 type PiBuiltinToolsModule = typeof import('./pi-builtin-tools')
 let wrapCustomToolDefinitions: PiAdapterModule['wrapCustomToolDefinitions']
+let getPersistedPiSessionFile: PiAdapterModule['getPersistedPiSessionFile']
 let buildServerOpsTools: PiBuiltinToolsModule['buildServerOpsTools']
+const temporaryDirectories: string[] = []
 
 mock.module('electron', () => ({
   app: { isPackaged: false, getPath: () => '/tmp', getName: () => 'Proma Test' },
@@ -25,13 +30,27 @@ mock.module('electron', () => ({
 }))
 
 beforeAll(async () => {
-  ;({ wrapCustomToolDefinitions } = await import('./pi-agent-adapter'))
+  ;({ wrapCustomToolDefinitions, getPersistedPiSessionFile } = await import('./pi-agent-adapter'))
   ;({ buildServerOpsTools } = await import('./pi-builtin-tools'))
+})
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true })
 })
 
 const sdk = {
   defineTool: (definition: ToolDefinition) => definition,
 } as typeof import('@earendil-works/pi-coding-agent')
+
+test('Given Pi 0.99.1 只返回尚未落盘的 session 路径 When 保存会话元数据 Then 只接受真实文件', () => {
+  /** 模拟 Pi 空会话先生成预期路径、首条消息后才落盘的两个阶段。 */
+  const directory = mkdtempSync(join(tmpdir(), 'proma-pi-session-file-'))
+  temporaryDirectories.push(directory)
+  const sessionFile = join(directory, 'session.jsonl')
+  expect(getPersistedPiSessionFile(sessionFile)).toBeUndefined()
+  writeFileSync(sessionFile, '{"type":"session"}\n', 'utf8')
+  expect(getPersistedPiSessionFile(sessionFile)).toBe(sessionFile)
+})
 
 test('Given 真实 Pi custom tool wrapper When updatedInput 篡改 hostId Then 权限参数被记录但 Facade 授权边界仍拒绝', async () => {
   const statusCalls: string[] = []

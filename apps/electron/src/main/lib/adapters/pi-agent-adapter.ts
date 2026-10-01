@@ -102,6 +102,16 @@ import {
   runWithPiRequestProxy,
 } from './pi-request-proxy'
 
+/**
+ * 只返回已经落盘的 Pi session artifact；0.99.1 空会话会先生成预期路径，
+ * 直到首条用户消息写入后文件才存在，不能把未落盘路径写进 Proma 元数据。
+ * @param sessionFile Pi SDK 当前返回的预期 JSONL 路径
+ * @returns 已存在的 session 文件路径；尚未落盘时返回 undefined
+ */
+export function getPersistedPiSessionFile(sessionFile: string | undefined): string | undefined {
+  return sessionFile && existsSync(sessionFile) ? sessionFile : undefined
+}
+
 type PiSdk = typeof import('@earendil-works/pi-coding-agent')
 type BashOperations = import('@earendil-works/pi-coding-agent').BashOperations
 type BashToolOptions = import('@earendil-works/pi-coding-agent').BashToolOptions
@@ -1825,7 +1835,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         throw createAbortError()
       }
 
-      input.onSessionId?.(session.sessionId, session.sessionFile)
+      // 0.99.1 空会话只保留预期路径，文件落盘前不能把悬空 artifact 写入元数据。
+      input.onSessionId?.(session.sessionId, getPersistedPiSessionFile(session.sessionFile))
       input.onModelResolved?.(session.model?.id ?? input.model ?? 'default')
       input.onContextWindow?.(model.contextWindow ?? DEFAULT_CONTEXT_WINDOW)
 
@@ -1881,6 +1892,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             case 'message_start': {
               const prompt = getPiUserMessageText(event.message)
               if (!prompt) break
+              // 首条用户消息开始持久化后补写真实 session 文件路径。
+              input.onSessionId?.(session.sessionId, getPersistedPiSessionFile(session.sessionFile))
               const pending = active.pendingSkillActivations.consume(prompt)
               if (pending) active.onSkillActivated?.(pending.activations, pending.userMessageUuid)
               break
@@ -1939,6 +1952,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
               break
             }
             case 'agent_end':
+              // 某些 runtime 在 message_start 之后才 flush 首条 JSONL，终态再补一次真实路径。
+              input.onSessionId?.(session.sessionId, getPersistedPiSessionFile(session.sessionFile))
               completedAgentTurnPendingCompaction = false
               if (active.abortRequested || (active.interrupting && active.pendingInterruptPrompts.length > 0)) {
                 // 用户停止或插入新 prompt 时，当前 loop 的错误与 result 都不得泄漏到下一轮。
