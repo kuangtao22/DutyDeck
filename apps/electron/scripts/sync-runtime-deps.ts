@@ -7,8 +7,9 @@
  * apps/electron/node_modules，保证 packaged app 中 Node 模块解析可用。
  */
 
+import { createHash } from 'node:crypto'
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, rmSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 
 interface PackageManifest {
   name?: string
@@ -142,6 +143,37 @@ function readPackageManifest(sourceDir: string): PackageManifest {
   return JSON.parse(readFileSync(join(sourceDir, 'package.json'), 'utf-8')) as PackageManifest
 }
 
+/**
+ * 比较两个同名依赖目录的实际内容，避免 Bun isolated linker 为同一版本生成
+ * 多个路径时被误判为版本冲突；内容不同仍必须 fail closed，不能静默选择一个版本。
+ */
+function packageSourcesEqual(leftDir: string, rightDir: string): boolean {
+  const hashDirectory = (rootDir: string): string => {
+    const hash = createHash('sha256')
+    const visit = (currentDir: string): void => {
+      const entries = readdirSync(currentDir).sort()
+      for (const entry of entries) {
+        const fullPath = join(currentDir, entry)
+        const relativePath = relative(rootDir, fullPath)
+        const stat = lstatSync(fullPath)
+        hash.update(`${relativePath}\0${stat.isDirectory() ? 'd' : stat.isSymbolicLink() ? 'l' : 'f'}\0`)
+        if (stat.isSymbolicLink()) {
+          hash.update(readlinkSync(fullPath))
+        } else if (stat.isDirectory()) {
+          visit(fullPath)
+        } else if (stat.isFile()) {
+          hash.update(readFileSync(fullPath))
+        }
+        hash.update('\0')
+      }
+    }
+    visit(rootDir)
+    return hash.digest('hex')
+  }
+
+  return hashDirectory(leftDir) === hashDirectory(rightDir)
+}
+
 function listRuntimeDependencies(manifest: PackageManifest): RuntimeDependency[] {
   const dependencies = Object.keys(manifest.dependencies ?? {}).map((name) => ({ name, optional: false }))
   const optionalDependencies = Object.keys(manifest.optionalDependencies ?? {}).map((name) => ({ name, optional: true }))
@@ -171,7 +203,7 @@ function copyPackage(
   const targetKey = resolve(targetDir)
   const existingSourceDir = ctx.copiedPackages.get(targetKey)
   if (existingSourceDir) {
-    if (existingSourceDir === sourceDir) return
+    if (existingSourceDir === sourceDir || packageSourcesEqual(existingSourceDir, sourceDir)) return
     throw new Error(`运行时依赖版本冲突: ${packageName} 已复制自 ${existingSourceDir}，又解析到 ${sourceDir}`)
   }
 

@@ -1,5 +1,5 @@
 import { beforeAll, expect, mock, test } from 'bun:test'
-import type { ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
+import type { ExtensionToolContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { ServerOpsAgentFacade } from '../server-ops/server-ops-agent-facade'
 
 type PiAdapterModule = typeof import('./pi-agent-adapter')
@@ -51,7 +51,7 @@ test('Given 真实 Pi custom tool wrapper When updatedInput 篡改 hostId Then �
 
   await expect(statusTool.execute(
     'tool-use-1', { hostId: 'host-1' }, new AbortController().signal,
-    undefined, {} as ExtensionContext,
+    undefined, {} as ExtensionToolContext,
   )).rejects.toThrow('SERVER_OPS_AGENT_ACCESS_REQUIRED')
   expect(permissionCalls).toEqual([{
     toolName: 'server_status', input: { hostId: 'host-1' }, toolUseID: 'tool-use-1',
@@ -100,7 +100,7 @@ async function captureFixture(denied = false, throws = false) {
     },
     onFileChangeCapture: async capture => { events.push(`${capture.phase}:${capture.path}`) },
   })
-  return { events, execute: () => wrapped.execute('capture-test', { path: '/requested.ts' }, new AbortController().signal, undefined, {} as ExtensionContext) }
+  return { events, execute: () => wrapped.execute('capture-test', { path: '/requested.ts' }, new AbortController().signal, undefined, {} as ExtensionToolContext) }
 }
 
 test('Given Write 经权限改写路径 When 执行 Then 只采集获准路径并严格按 before execute after 排序', async () => {
@@ -131,7 +131,7 @@ test('Given 采集超时 When 工具正常写入 Then 执行继续且最终请�
     phases.push(capture.phase)
     if (capture.phase === 'before') throw new Error('capture timeout')
   } })
-  await tool.execute('timeout', { path: '/a.ts' }, undefined, undefined, {} as ExtensionContext)
+  await tool.execute('timeout', { path: '/a.ts' }, undefined, undefined, {} as ExtensionToolContext)
   expect(executed).toBe(true)
   expect(phases).toEqual(['before', 'invalidate'])
 })

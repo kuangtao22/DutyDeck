@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EXTERNAL_RUNTIME_PACKAGES, syncRuntimeDeps } from './sync-runtime-deps'
@@ -117,5 +117,44 @@ describe('Sharp Windows runtime 依赖同步', () => {
       'lib',
       'sharp-win32-x64.node',
     ))).toBe(true)
+  })
+})
+
+describe('重复 runtime 依赖同步', () => {
+  test('Given Bun 生成同内容的重复包路径 When 同步依赖 Then 复用首个包而不误报冲突', () => {
+    /** 当前用例的隔离根目录。 */
+    const root = mkdtempSync(join(tmpdir(), 'proma-runtime-duplicate-equal-'))
+    temporaryDirectories.push(root)
+    const sourceNodeModules = join(root, 'source', 'node_modules')
+    const targetNodeModules = join(root, 'target', 'node_modules')
+    createPackage(sourceNodeModules, 'entry-a', { dependencies: { shared: '1.0.0' } })
+    createPackage(join(sourceNodeModules, 'entry-a', 'node_modules'), 'shared', {}, { 'index.js': 'same' })
+    createPackage(sourceNodeModules, 'shared', {}, { 'index.js': 'same' })
+
+    expect(() => syncRuntimeDeps({
+      sourceNodeModules,
+      fallbackNodeModules: [],
+      targetNodeModules,
+      externalRuntimePackages: ['entry-a', 'shared'],
+    })).not.toThrow()
+    expect(readFileSync(join(targetNodeModules, 'shared', 'index.js'), 'utf8')).toBe('same')
+  })
+
+  test('Given 同名依赖内容不同 When 同步依赖 Then 阻断打包并报告版本冲突', () => {
+    /** 当前用例的隔离根目录。 */
+    const root = mkdtempSync(join(tmpdir(), 'proma-runtime-duplicate-different-'))
+    temporaryDirectories.push(root)
+    const sourceNodeModules = join(root, 'source', 'node_modules')
+    const targetNodeModules = join(root, 'target', 'node_modules')
+    createPackage(sourceNodeModules, 'entry-a', { dependencies: { shared: '1.0.0' } })
+    createPackage(join(sourceNodeModules, 'entry-a', 'node_modules'), 'shared', {}, { 'index.js': 'first' })
+    createPackage(sourceNodeModules, 'shared', {}, { 'index.js': 'second' })
+
+    expect(() => syncRuntimeDeps({
+      sourceNodeModules,
+      fallbackNodeModules: [],
+      targetNodeModules,
+      externalRuntimePackages: ['entry-a', 'shared'],
+    })).toThrow('运行时依赖版本冲突: shared')
   })
 })
