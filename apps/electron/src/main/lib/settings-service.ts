@@ -5,8 +5,9 @@
  * 存储在 ~/.proma/settings.json
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { getSettingsPath } from './config-paths'
+import { writeJsonFileAtomic } from './safe-file'
 import { DEFAULT_THEME_MODE, normalizeProductivityToolsSettings } from '../../types'
 import type { AgentIslandSettings, AppSettings } from '../../types'
 import { getTerminalProfilesForPlatform, isTerminalProfile } from '@proma/shared'
@@ -37,6 +38,7 @@ export function getSettings(): AppSettings {
       onboardingCompleted: false,
       environmentCheckSkipped: false,
       notificationsEnabled: true,
+      preventSystemSleep: false,
       longTextPasteAsAttachmentEnabled: false,
       richTextRenderingEnabled: false,
       feishuSessionMirror: { mode: 'off' },
@@ -74,6 +76,7 @@ export function getSettings(): AppSettings {
       onboardingCompleted: data.onboardingCompleted ?? false,
       environmentCheckSkipped: data.environmentCheckSkipped ?? false,
       notificationsEnabled: data.notificationsEnabled ?? true,
+      preventSystemSleep: data.preventSystemSleep === true,
       longTextPasteAsAttachmentEnabled: data.longTextPasteAsAttachmentEnabled ?? false,
       richTextRenderingEnabled: data.richTextRenderingEnabled ?? false,
       feishuSessionMirror: data.feishuSessionMirror ?? { mode: 'off' },
@@ -96,6 +99,7 @@ export function getSettings(): AppSettings {
       onboardingCompleted: false,
       environmentCheckSkipped: false,
       notificationsEnabled: true,
+      preventSystemSleep: false,
       longTextPasteAsAttachmentEnabled: false,
       richTextRenderingEnabled: false,
       feishuSessionMirror: { mode: 'off' },
@@ -128,7 +132,7 @@ export function updateSettings(updates: Partial<AppSettings>): AppSettings {
   const filePath = getSettingsPath()
 
   try {
-    writeFileSync(filePath, JSON.stringify(updated, null, 2), 'utf-8')
+    writeJsonFileAtomic(filePath, updated)
     console.log('[设置] 已更新 keys:', Object.keys(updates).join(', '))
   } catch (error) {
     console.error('[设置] 写入失败:', error)

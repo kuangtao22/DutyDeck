@@ -1,6 +1,6 @@
 import { powerSaveBlocker } from 'electron'
 import type { AppSettings } from '../../types'
-import { FeishuSyncSleepBlocker } from './feishu/sleep-blocker'
+import { SystemSleepBlocker } from './feishu/sleep-blocker'
 import type { SleepBlockerAdapter, SleepBlockerType } from './feishu/sleep-blocker'
 
 const electronSleepBlocker: SleepBlockerAdapter = {
@@ -11,20 +11,28 @@ const electronSleepBlocker: SleepBlockerAdapter = {
   isStarted: (id: number): boolean => powerSaveBlocker.isStarted(id),
 }
 
-const blocker = new FeishuSyncSleepBlocker(electronSleepBlocker)
+/** 全局电源锁实例，同时承接通用设置和飞书实时同步。 */
+const blocker = new SystemSleepBlocker(electronSleepBlocker)
 
-export function syncFeishuSyncSleepBlocker(settings: Pick<AppSettings, 'feishuSessionMirror'>): void {
+/** 同步应用设置对应的系统防睡眠状态。
+ * @param settings 当前通用防睡眠与飞书实时同步配置。
+ * @returns 无返回值。
+ */
+export function syncSystemSleepBlocker(
+  settings: Pick<AppSettings, 'feishuSessionMirror' | 'preventSystemSleep'>,
+): void {
   try {
     blocker.sync(settings)
   } catch (error) {
-    console.error('[飞书防休眠] 同步状态失败:', error)
+    console.error('[电源管理] 同步防睡眠状态失败:', error)
   }
 }
 
-export function stopFeishuSyncSleepBlocker(): void {
+/** 应用退出时释放系统防睡眠电源锁。 */
+export function stopSystemSleepBlocker(): void {
   try {
     blocker.stop()
   } catch (error) {
-    console.error('[飞书防休眠] 关闭失败:', error)
+    console.error('[电源管理] 关闭防睡眠电源锁失败:', error)
   }
 }

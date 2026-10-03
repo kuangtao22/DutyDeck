@@ -76,6 +76,8 @@ export function GeneralSettings(): React.ReactElement {
   const [showEmojiPicker, setShowEmojiPicker] = React.useState(false)
   const [archiveAfterDays, setArchiveAfterDays] = React.useState<number>(7)
   const [agentIslandEnabled, setAgentIslandEnabled] = React.useState(true)
+  /** 当前是否开启应用级防睡眠电源锁。 */
+  const [preventSystemSleepEnabled, setPreventSystemSleepEnabled] = React.useState(false)
   const isMac = React.useMemo(() => detectIsMac(), [])
   const isWindows = React.useMemo(() => detectIsWindows(), [])
   const fileInputRef = React.useRef<HTMLInputElement>(null)
@@ -85,6 +87,7 @@ export function GeneralSettings(): React.ReactElement {
     window.electronAPI.getSettings().then((settings) => {
       setArchiveAfterDays(settings.archiveAfterDays ?? 7)
       setAgentIslandEnabled(settings.agentIsland?.enabled ?? true)
+      setPreventSystemSleepEnabled(settings.preventSystemSleep === true)
     }).catch(console.error)
   }, [])
 
@@ -108,6 +111,20 @@ export function GeneralSettings(): React.ReactElement {
     } catch (error) {
       console.error('[通用设置] 更新 Agent 灵动岛失败:', error)
       setAgentIslandEnabled(!checked)
+    }
+  }
+
+  /** 更新应用级防睡眠设置；持久化失败时回滚界面状态。
+   * @param checked 是否阻止系统自动睡眠。
+   * @returns 设置保存完成后返回。
+   */
+  const handlePreventSystemSleepChange = async (checked: boolean): Promise<void> => {
+    setPreventSystemSleepEnabled(checked)
+    try {
+      await window.electronAPI.updateSettings({ preventSystemSleep: checked })
+    } catch (error) {
+      console.error('[通用设置] 更新防睡眠设置失败:', error)
+      setPreventSystemSleepEnabled(!checked)
     }
   }
 
@@ -307,6 +324,12 @@ export function GeneralSettings(): React.ReactElement {
               setNotificationsEnabled(checked)
               updateNotificationsEnabled(checked)
             }}
+          />
+          <SettingsToggle
+            label="防止系统睡眠"
+            description="开启后阻止电脑自动睡眠，屏幕仍可息屏；后台任务可继续运行，但会增加耗电。飞书实时同步也会独立保持电脑唤醒"
+            checked={preventSystemSleepEnabled}
+            onCheckedChange={(checked) => { void handlePreventSystemSleepChange(checked) }}
           />
           <SettingsToggle
             label="通知提示音"

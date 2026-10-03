@@ -111,7 +111,7 @@ import { startPlanningReminderScheduler, stopPlanningReminderScheduler } from '.
 import { startPlanningNativeSyncCoordinator, stopPlanningNativeSyncCoordinator } from './lib/planning-native-sync-coordinator'
 import { feishuBridgeManager } from './lib/feishu-bridge-manager'
 import { getFeishuMultiBotConfig } from './lib/feishu-config'
-import { stopFeishuSyncSleepBlocker, syncFeishuSyncSleepBlocker } from './lib/feishu-sleep-blocker'
+import { stopSystemSleepBlocker, syncSystemSleepBlocker } from './lib/feishu-sleep-blocker'
 import {
   ensureWindowBoundsVisible,
   getPersistableMainWindowState,
@@ -1014,8 +1014,8 @@ async function bootstrap(): Promise<void> {
     safeRun('startAgentIslandSurface', startAgentIslandSurface)
   }
 
-  // 飞书实时同步开启时，默认阻止系统自动休眠，保证远程群内继续可用。
-  safeRun('syncFeishuSyncSleepBlocker', () => syncFeishuSyncSleepBlocker(getSettings()))
+  // 按通用设置与飞书同步策略同步系统防睡眠状态。
+  safeRun('syncSystemSleepBlocker', () => syncSystemSleepBlocker(getSettings()))
 
   // 注册全局快捷键
   safeRun('registerGlobalShortcut:quick-task', () =>
@@ -1135,7 +1135,7 @@ app.on('before-quit', () => {
     { name: '自动任务调度', run: stopScheduler },
     { name: '规划提醒调度', run: stopPlanningReminderScheduler },
     { name: '规划原生同步', run: stopPlanningNativeSyncCoordinator },
-    { name: '飞书同步防休眠', run: stopFeishuSyncSleepBlocker },
+    { name: '系统防睡眠', run: stopSystemSleepBlocker },
     { name: '全局快捷键', run: unregisterAllGlobalShortcuts },
     { name: '快速任务窗口', run: destroyQuickTaskWindow },
     { name: '规划窗口', run: destroyPlanningWindow },

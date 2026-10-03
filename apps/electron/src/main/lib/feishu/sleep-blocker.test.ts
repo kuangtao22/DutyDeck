@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  FeishuSyncSleepBlocker,
-  shouldPreventSleepForFeishuSync,
+  SystemSleepBlocker,
+  shouldPreventSystemSleep,
   type SleepBlockerAdapter,
   type SleepBlockerType,
 } from './sleep-blocker'
@@ -34,53 +34,63 @@ class FakeSleepBlocker implements SleepBlockerAdapter {
   }
 }
 
-describe('飞书同步防休眠', () => {
-  test('Given 飞书实时同步已开启 When 同步防休眠状态 Then 启用系统级防休眠（允许息屏锁屏）', () => {
+describe('系统防睡眠', () => {
+  test('Given 通用防睡眠已开启 When 同步电源策略 Then 启用系统级防休眠', () => {
     const adapter = new FakeSleepBlocker()
-    const blocker = new FeishuSyncSleepBlocker(adapter)
+    const blocker = new SystemSleepBlocker(adapter)
 
-    blocker.sync({ feishuSessionMirror: { mode: 'stream', botId: 'bot-1' } })
+    blocker.sync({ preventSystemSleep: true, feishuSessionMirror: { mode: 'off' } })
 
     expect(adapter.startedTypes).toEqual(['prevent-app-suspension'])
     expect(adapter.isStarted(1)).toBe(true)
   })
 
-  test('Given 防休眠已启用 When 重复同步开启状态 Then 不重复创建 blocker', () => {
+  test('Given 防睡眠已启用 When 重复同步开启状态 Then 不重复创建 blocker', () => {
     const adapter = new FakeSleepBlocker()
-    const blocker = new FeishuSyncSleepBlocker(adapter)
+    const blocker = new SystemSleepBlocker(adapter)
 
-    blocker.sync({ feishuSessionMirror: { mode: 'stream', botId: 'bot-1' } })
-    blocker.sync({ feishuSessionMirror: { mode: 'stream', botId: 'bot-1' } })
+    blocker.sync({ preventSystemSleep: true, feishuSessionMirror: { mode: 'off' } })
+    blocker.sync({ preventSystemSleep: true, feishuSessionMirror: { mode: 'off' } })
 
     expect(adapter.startedTypes).toHaveLength(1)
     expect(adapter.isStarted(1)).toBe(true)
   })
 
-  test('Given 飞书实时同步从开启切到关闭 When 同步防休眠状态 Then 释放系统防休眠', () => {
+  test('Given 通用开关和飞书同步都关闭 When 同步电源策略 Then 释放系统防休眠', () => {
     const adapter = new FakeSleepBlocker()
-    const blocker = new FeishuSyncSleepBlocker(adapter)
+    const blocker = new SystemSleepBlocker(adapter)
 
-    blocker.sync({ feishuSessionMirror: { mode: 'stream', botId: 'bot-1' } })
-    blocker.sync({ feishuSessionMirror: { mode: 'off' } })
+    blocker.sync({ preventSystemSleep: true, feishuSessionMirror: { mode: 'off' } })
+    blocker.sync({ preventSystemSleep: false, feishuSessionMirror: { mode: 'off' } })
 
     expect(adapter.stoppedIds).toEqual([1])
     expect(adapter.isStarted(1)).toBe(false)
   })
 
-  test('Given 系统中的 blocker 已失效 When 飞书同步仍开启 Then 重新启用防休眠', () => {
+  test('Given 系统 blocker 已失效 When 通用防睡眠仍开启 Then 重新启用防休眠', () => {
     const adapter = new FakeSleepBlocker()
-    const blocker = new FeishuSyncSleepBlocker(adapter)
+    const blocker = new SystemSleepBlocker(adapter)
 
-    blocker.sync({ feishuSessionMirror: { mode: 'stream', botId: 'bot-1' } })
+    blocker.sync({ preventSystemSleep: true, feishuSessionMirror: { mode: 'off' } })
     adapter.markStopped(1)
-    blocker.sync({ feishuSessionMirror: { mode: 'stream', botId: 'bot-1' } })
+    blocker.sync({ preventSystemSleep: true, feishuSessionMirror: { mode: 'off' } })
 
     expect(adapter.startedTypes).toEqual(['prevent-app-suspension', 'prevent-app-suspension'])
     expect(adapter.isStarted(2)).toBe(true)
   })
 
-  test('Given 未开启飞书实时同步 When 判断防休眠需求 Then 不阻止休眠', () => {
-    expect(shouldPreventSleepForFeishuSync({ feishuSessionMirror: { mode: 'off' } })).toBe(false)
-    expect(shouldPreventSleepForFeishuSync({ feishuSessionMirror: undefined })).toBe(false)
+  test('Given 通用开关关闭但飞书实时同步开启 When 同步策略 Then 保留飞书防休眠行为', () => {
+    const adapter = new FakeSleepBlocker()
+    const blocker = new SystemSleepBlocker(adapter)
+
+    blocker.sync({ preventSystemSleep: false, feishuSessionMirror: { mode: 'stream', botId: 'bot-1' } })
+
+    expect(adapter.startedTypes).toEqual(['prevent-app-suspension'])
+    expect(shouldPreventSystemSleep({ preventSystemSleep: false, feishuSessionMirror: { mode: 'stream', botId: 'bot-1' } })).toBe(true)
+  })
+
+  test('Given 两种防睡眠来源都关闭 When 判断策略 Then 不阻止系统休眠', () => {
+    expect(shouldPreventSystemSleep({ preventSystemSleep: false, feishuSessionMirror: { mode: 'off' } })).toBe(false)
+    expect(shouldPreventSystemSleep({ preventSystemSleep: undefined, feishuSessionMirror: undefined })).toBe(false)
   })
 })

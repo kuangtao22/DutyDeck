@@ -682,7 +682,7 @@ import {
   getDecryptedBotAppSecret,
 } from './lib/feishu-config'
 import { feishuBridgeManager } from './lib/feishu-bridge-manager'
-import { syncFeishuSyncSleepBlocker } from './lib/feishu-sleep-blocker'
+import { syncSystemSleepBlocker } from './lib/feishu-sleep-blocker'
 import { presenceService } from './lib/feishu-presence'
 import { getDingTalkConfig, saveDingTalkConfig, getDecryptedClientSecret, getDingTalkMultiBotConfig, saveDingTalkBotConfig, removeDingTalkBot, getDecryptedBotClientSecret } from './lib/dingtalk-config'
 import { dingtalkBridgeManager } from './lib/dingtalk-bridge-manager'
@@ -5031,8 +5031,8 @@ export function registerIpcHandlers(): void {
     async (event, updates: Partial<AppSettings>): Promise<AppSettings> => {
       const result = await updateSettings(updates)
 
-      if (updates.feishuSessionMirror !== undefined) {
-        syncFeishuSyncSleepBlocker(result)
+      if (updates.feishuSessionMirror !== undefined || updates.preventSystemSleep !== undefined) {
+        syncSystemSleepBlocker(result)
       }
       if (updates.agentIsland !== undefined) {
         refreshAgentIslandConfiguration()
@@ -5062,8 +5062,8 @@ export function registerIpcHandlers(): void {
     (event, updates: Partial<AppSettings>) => {
       try {
         const result = updateSettings(updates)
-        if (updates.feishuSessionMirror !== undefined) {
-          syncFeishuSyncSleepBlocker(result)
+        if (updates.feishuSessionMirror !== undefined || updates.preventSystemSleep !== undefined) {
+          syncSystemSleepBlocker(result)
         }
         if (updates.agentIsland !== undefined) {
           refreshAgentIslandConfiguration()

@@ -321,6 +321,8 @@ export interface AppSettings {
   lastEnvironmentCheck?: EnvironmentCheckResult
   /** 是否启用桌面通知 */
   notificationsEnabled?: boolean
+  /** 是否在应用运行时阻止系统自动睡眠；默认关闭，飞书实时同步另有独立防睡眠行为。 */
+  preventSystemSleep?: boolean
   /** 是否启用通知提示音（阻塞 Hook 触发时播放） */
   notificationSoundEnabled?: boolean
   /** 各场景通知音选择 */
