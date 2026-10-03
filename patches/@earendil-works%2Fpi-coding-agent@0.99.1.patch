@@ -102,8 +102,10 @@ diff --git a/dist/core/compaction/compaction.js b/dist/core/compaction/compactio
 diff --git a/dist/core/compaction/compaction.d.ts b/dist/core/compaction/compaction.d.ts
 --- a/dist/core/compaction/compaction.d.ts
 +++ b/dist/core/compaction/compaction.d.ts
-@@ -58,8 +58,7 @@
- */
+@@ -56,9 +56,8 @@
+ /**
+  * Check if compaction should trigger based on context usage.
+  */
  export declare function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean;
  /**
 - * Estimate token count for a message using chars/4 heuristic.

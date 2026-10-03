@@ -72,7 +72,7 @@ index eecd83c753e3b758b8e44628f560b862f8252839..9edb78cb3f4f4a048d216f327092a210
      // Follow documented OpenAI/OpenRouter semantics: cached_tokens is cache-read
      // tokens (hits). Providers disagree on placement: OpenAI/OpenRouter use
      // prompt_tokens_details.cached_tokens, DeepSeek uses prompt_cache_hit_tokens,
-@@ -1174,14 +1192,15 @@ function parseChunkUsage(rawUsage, model) {
+@@ -1174,13 +1192,14 @@ function parseChunkUsage(rawUsage, model) {
      // https://github.com/antirez/ds4/pull/29
      const input = Math.max(0, promptTokens - cacheReadTokens - cacheWriteTokens);
      // OpenAI completion_tokens already includes reasoning_tokens.
@@ -93,7 +93,7 @@ diff --git a/dist/types.d.ts b/dist/types.d.ts
 index 68aa0553de03aab4f7a47084995732f83ae4de00..36c73274b780e5ab1e6e339cd7c44866524433c5 100644
 --- a/dist/types.d.ts
 +++ b/dist/types.d.ts
-@@ -287,7 +287,9 @@ export interface ToolCall {
+@@ -287,6 +287,8 @@ export interface ToolCall {
      namespace?: string;
  }
  export interface Usage {
@@ -106,7 +106,7 @@ diff --git a/dist/utils/retry.js b/dist/utils/retry.js
 index 38781fbb440d41ad5f53bc216c27422c2be01074..709f59a2df06f668bb649d2b4680ee499f780e58 100644
 --- a/dist/utils/retry.js
 +++ b/dist/utils/retry.js
-@@ -66,10 +66,19 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
+@@ -66,9 +66,18 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
      // "stream ended without ..." and "Anthropic stream ended before message_stop"
      // (#4433); Bedrock/Smithy can throw an HTTP/2 no-response error (#3594).
      "ended without",
@@ -129,7 +129,7 @@ index 38781fbb440d41ad5f53bc216c27422c2be01074..709f59a2df06f668bb649d2b4680ee49
 diff --git a/dist/utils/estimate.js b/dist/utils/estimate.js
 --- a/dist/utils/estimate.js
 +++ b/dist/utils/estimate.js
-@@ -15,39 +15,48 @@
+@@ -15,38 +15,47 @@
 -function estimateTextAndImageContentChars(content) {
 -    if (typeof content === "string")
 -        return content.length;
