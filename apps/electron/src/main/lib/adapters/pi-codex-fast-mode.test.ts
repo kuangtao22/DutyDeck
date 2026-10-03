@@ -14,7 +14,7 @@ describe('Pi Codex request settings', () => {
     expect(resolveReasoningProfile({ modelId: 'gpt-5-chat-latest', transport: 'openai-responses' })).toBeUndefined()
   })
 
-  test.each(['gpt-5.4', 'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
+  test.each(['gpt-5.4', 'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6.1-sol'])(
     'Given supported %s When injecting Then requests priority tier',
     (model) => {
       expect(injectCodexFastMode({ model })).toEqual({ model, service_tier: 'priority' })

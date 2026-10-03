@@ -4,6 +4,8 @@ const GPT_6_ASTRA_FAMILY_PATTERN = /^gpt-6-astra(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?$/
 const GPT_6_SOL_MODEL_ID = 'gpt-6-sol'
 /** Luna 的官方请求 ID。 */
 const GPT_6_LUNA_MODEL_ID = 'gpt-6-luna'
+/** GPT-6.1 Sol 的官方请求 ID，推理能力仍由 Pi 模型目录提供。 */
+const GPT_6_1_SOL_MODEL_ID = 'gpt-6.1-sol'
 
 /** 归一化模型 ID，兼容历史上下文后缀；未传入时返回 undefined。 */
 function normalizeModelId(modelId: string | undefined): string | undefined {
@@ -25,4 +27,9 @@ export function isGpt6SolFamily(modelId: string | undefined): boolean {
 /** 判断模型是否为精确的 GPT-6 Luna。 */
 export function isGpt6LunaFamily(modelId: string | undefined): boolean {
   return normalizeModelId(modelId) === GPT_6_LUNA_MODEL_ID
+}
+
+/** 判断模型是否为精确的 GPT-6.1 Sol。 */
+export function isGpt61SolFamily(modelId: string | undefined): boolean {
+  return normalizeModelId(modelId) === GPT_6_1_SOL_MODEL_ID
 }

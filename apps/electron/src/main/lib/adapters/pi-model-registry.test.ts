@@ -10,6 +10,7 @@ import {
   filterSupportedCodexModels,
   getGithubCopilotCatalogModels,
   listGithubCopilotModels,
+  resolvePiReasoningCapability,
   resolvePiApi,
 } from './pi-model-registry'
 
@@ -232,6 +233,21 @@ describe('Pi 0.87 Codex 目录与运行时', () => {
     expect((await getCodexCatalogModels()).some((entry) => entry.id === modelId)).toBe(true)
   })
 
+  test('Given GPT-6.1 Sol When 构建 Codex 模型 Then 保留 272K 与 Pi 原生推理档位', async () => {
+    /** 使用已安装 Pi runtime 的真实模型目录离线构建。 */
+    const sdk = await import('@earendil-works/pi-coding-agent')
+    /** GPT-6.1 Sol 的模型字段应继续来自 Pi 自带目录。 */
+    const { model } = await buildCodexModel(sdk, { model: 'gpt-6.1-sol', codexOAuthCredentials: credentials })
+    /** 会话级能力解析应选择 Pi catalog，而非 GPT-6 Sol 专属 profile。 */
+    const reasoningCapability = await resolvePiReasoningCapability('openai-codex', 'gpt-6.1-sol')
+
+    expect(model.contextWindow).toBe(272_000)
+    expect(model.thinkingLevelMap?.off).toBeNull()
+    expect(model.thinkingLevelMap?.minimal).toBe('low')
+    expect(reasoningCapability?.source).toBe('pi-catalog')
+    expect(reasoningCapability?.levels).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+  })
+
   test('Given 空的可用目录 When 拉模型 Then 不回退到静态全集', async () => {
     const sdk = { ModelRuntime: { create: async () => ({ getAvailable: async () => [] }) } } as unknown as Parameters<typeof buildCodexModel>[0]
     expect(await listCodexModels(credentials, sdk)).toEqual([])
@@ -240,6 +256,7 @@ describe('Pi 0.87 Codex 目录与运行时', () => {
   test('Given 真实 runtime When 离线拉取 Then 新模型可见且退役家族不可见', async () => {
     const models = await listCodexModels(credentials)
     expect(models.some((model) => model.id === 'gpt-6-sol')).toBe(true)
+    expect(models.some((model) => model.id === 'gpt-6.1-sol')).toBe(true)
     expect(models.some((model) => /^gpt-5\.[45](?:-|$)/.test(model.id))).toBe(false)
   })
 

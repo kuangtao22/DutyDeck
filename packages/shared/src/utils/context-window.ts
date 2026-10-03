@@ -8,7 +8,7 @@
  */
 
 import { getGeminiModelCapability } from './gemini-model-capabilities'
-import { isGpt6AstraFamily, isGpt6LunaFamily, isGpt6SolFamily } from './model-family'
+import { isGpt6AstraFamily, isGpt6LunaFamily, isGpt6SolFamily, isGpt61SolFamily } from './model-family'
 
 /** 默认上下文窗口（无法识别模型时使用） */
 export const DEFAULT_CONTEXT_WINDOW = 200_000
@@ -22,6 +22,8 @@ export const CODEX_GPT_54_MINI_CONTEXT_WINDOW = 400_000
 export const CODEX_GPT_56_CONTEXT_WINDOW = 372_000
 /** ChatGPT Codex 订阅中的 GPT-6 Astra、Sol 与 Luna 上下文窗口。 */
 export const CODEX_GPT_6_CONTEXT_WINDOW = 372_000
+/** Pi 0.99.1 目录中 GPT-6.1 Sol 的上下文窗口。 */
+export const CODEX_GPT_61_SOL_CONTEXT_WINDOW = 272_000
 
 /**
  * 为 ChatGPT Codex 中的 GPT-5.x / GPT-6 模型返回统一上下文窗口。
@@ -154,6 +156,7 @@ export function supports1MContext(modelId: string): boolean {
  */
 export function inferContextWindow(model?: string): number | undefined {
   if (!model) return undefined
+  if (isGpt61SolFamily(model)) return CODEX_GPT_61_SOL_CONTEXT_WINDOW
   const codexAlignedWindow = inferCodexAlignedGPT5ContextWindow(model)
   if (codexAlignedWindow !== undefined) return codexAlignedWindow
   const geminiCapability = getGeminiModelCapability(model)
