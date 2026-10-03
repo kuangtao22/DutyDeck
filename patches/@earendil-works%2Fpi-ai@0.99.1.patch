@@ -125,3 +125,72 @@ index 38781fbb440d41ad5f53bc216c27422c2be01074..709f59a2df06f668bb649d2b4680ee49
      // Provider-requested retry delay cap failures should flow through the outer
      // retry policy so callers can surface/abort the backoff (#1123).
      "retry delay",
+
+diff --git a/dist/utils/estimate.js b/dist/utils/estimate.js
+--- a/dist/utils/estimate.js
++++ b/dist/utils/estimate.js
+@@ -15,38 +15,47 @@
+-function estimateTextAndImageContentChars(content) {
+-    if (typeof content === "string")
+-        return content.length;
+-    let chars = 0;
+-    for (const block of content)
+-        chars += block.type === "text" ? block.text.length : ESTIMATED_IMAGE_CHARS;
+-    return chars;
+-}
++function estimateTextAndImageContentTokensInternal(content) {
++    if (typeof content === "string")
++        return estimateTextTokens(content);
++    let tokens = 0;
++    for (const block of content)
++        tokens += block.type === "text" ? estimateTextTokens(block.text) : Math.ceil(ESTIMATED_IMAGE_CHARS / CHARS_PER_TOKEN);
++    return tokens;
++}
+ export function estimateTextTokens(text) {
+-    return Math.ceil(text.length / CHARS_PER_TOKEN);
++    // ASCII 文本按常见的 4 字符/token 估算，非 ASCII 按 UTF-16 字符保守计数，避免中文上下文被低估。
++    let asciiChars = 0;
++    let nonAsciiChars = 0;
++    for (let index = 0; index < text.length; index++) {
++        if (text.charCodeAt(index) <= 0x7f)
++            asciiChars++;
++        else
++            nonAsciiChars++;
++    }
++    return Math.ceil(asciiChars / CHARS_PER_TOKEN + nonAsciiChars);
+ }
+ export function estimateTextAndImageContentTokens(content) {
+-    return Math.ceil(estimateTextAndImageContentChars(content) / CHARS_PER_TOKEN);
++    return estimateTextAndImageContentTokensInternal(content);
+ }
+ export function estimateMessageTokens(message) {
+-    let chars = 0;
++    let tokens = 0;
+     if (message.role === "system") {
+         return (estimateTextTokens(getSystemMessageText(message)) +
+             estimateToolsTokens(message.toolsAdded) +
+             estimateToolsTokens(message.toolsRemoved));
+     }
+     if (message.role === "user")
+-        return estimateTextAndImageContentTokens(message.content);
++        return estimateTextAndImageContentTokensInternal(message.content);
+     if (message.role === "toolResult")
+-        return estimateTextAndImageContentTokens(message.content);
++        return estimateTextAndImageContentTokensInternal(message.content);
+     for (const block of message.content) {
+         if (block.type === "text") {
+-            chars += block.text.length;
++            tokens += estimateTextTokens(block.text);
+         }
+         else if (block.type === "thinking") {
+-            chars += block.thinking.length;
++            tokens += estimateTextTokens(block.thinking);
+         }
+         else {
+-            chars += block.name.length + safeJsonStringify(block.arguments).length;
++            tokens += estimateTextTokens(block.name) + estimateTextTokens(safeJsonStringify(block.arguments));
+         }
+     }
+-    return Math.ceil(chars / CHARS_PER_TOKEN);
++    return tokens;
+ }

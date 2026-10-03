@@ -1,0 +1,113 @@
+diff --git a/dist/core/compaction/compaction.js b/dist/core/compaction/compaction.js
+--- a/dist/core/compaction/compaction.js
++++ b/dist/core/compaction/compaction.js
+@@ -6,6 +6,8 @@
+ import { contentText, getCurrentSystemMessage, normalizeContext, retryAssistantCall, uuidv7, } from "@earendil-works/pi-ai";
+ import { completeSimple } from "@earendil-works/pi-ai/compat";
++// 复用 Pi AI 的保守文本估算，确保发送预算与自动压缩使用同一口径。
++import { estimateTextAndImageContentTokens, estimateTextTokens } from "@earendil-works/pi-ai/utils/estimate";
+ import { convertToLlm } from "../messages.js";
+ import { buildSessionProjection, sessionEntryToContextMessages, } from "../session-manager.js";
+ import { combineUsage } from "../usage-totals.js";
+ import { computeFileLists, createFileOps, extractFileOpsFromMessage, formatFileOperations, SUMMARIZATION_SYSTEM_PROMPT, serializeConversation, } from "./utils.js";
+@@ -178,74 +180,53 @@
+ // ============================================================================
+ // Cut point detection
+ // ============================================================================
+-const ESTIMATED_IMAGE_CHARS = 4800;
+-function estimateTextAndImageContentChars(content) {
+-    if (typeof content === "string") {
+-        return content.length;
+-    }
+-    let chars = 0;
+-    for (const block of content) {
+-        if (block.type === "text" && block.text) {
+-            chars += block.text.length;
+-        }
+-        else if (block.type === "image") {
+-            chars += ESTIMATED_IMAGE_CHARS;
+-        }
+-    }
+-    return chars;
+-}
+ /**
+- * Estimate token count for a message using chars/4 heuristic.
+- * This is conservative (overestimates tokens).
++ * 使用与 pi-ai 请求预算相同的保守估算，避免中文消息使压缩阈值失真。
+  */
+ export function estimateTokens(message) {
+-    let chars = 0;
++    let tokens = 0;
+     switch (message.role) {
+         case "system": {
+             const system = message;
+-            chars = estimateTextAndImageContentChars(system.content);
++            tokens = estimateTextAndImageContentTokens(system.content);
+             if (system.sections) {
+                 for (const section of Object.values(system.sections)) {
+                     if (section)
+-                        chars += section.length;
++                        tokens += estimateTextTokens(section);
+                 }
+             }
+             if (system.toolsAdded)
+-                chars += JSON.stringify(system.toolsAdded).length;
+-            return Math.ceil(chars / 4);
++                tokens += estimateTextTokens(JSON.stringify(system.toolsAdded));
++            return tokens;
+         }
+         case "user": {
+-            chars = estimateTextAndImageContentChars(message.content);
+-            return Math.ceil(chars / 4);
++            return estimateTextAndImageContentTokens(message.content);
+         }
+         case "assistant": {
+             const assistant = message;
+             for (const block of assistant.content) {
+                 if (block.type === "text") {
+-                    chars += block.text.length;
++                    tokens += estimateTextTokens(block.text);
+                 }
+                 else if (block.type === "thinking") {
+-                    chars += block.thinking.length;
++                    tokens += estimateTextTokens(block.thinking);
+                 }
+                 else if (block.type === "toolCall") {
+-                    chars += block.name.length + JSON.stringify(block.arguments).length;
++                    tokens += estimateTextTokens(block.name) + estimateTextTokens(JSON.stringify(block.arguments));
+                 }
+             }
+-            return Math.ceil(chars / 4);
++            return tokens;
+         }
+         case "custom":
+         case "toolResult": {
+-            chars = estimateTextAndImageContentChars(message.content);
+-            return Math.ceil(chars / 4);
++            return estimateTextAndImageContentTokens(message.content);
+         }
+         case "bashExecution": {
+-            chars = message.command.length + message.output.length;
+-            return Math.ceil(chars / 4);
++            return estimateTextTokens(message.command) + estimateTextTokens(message.output);
+         }
+         case "branchSummary":
+         case "compactionSummary": {
+-            chars = message.summary.length;
+-            return Math.ceil(chars / 4);
++            return estimateTextTokens(message.summary);
+         }
+     }
+     return 0;
+diff --git a/dist/core/compaction/compaction.d.ts b/dist/core/compaction/compaction.d.ts
+--- a/dist/core/compaction/compaction.d.ts
++++ b/dist/core/compaction/compaction.d.ts
+@@ -58,8 +58,7 @@
+ */
+ export declare function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean;
+ /**
+- * Estimate token count for a message using chars/4 heuristic.
+- * This is conservative (overestimates tokens).
++ * 使用与 pi-ai 请求预算一致的保守文本估算消息 token 数。
+  */
+ export declare function estimateTokens(message: AgentMessage): number;
