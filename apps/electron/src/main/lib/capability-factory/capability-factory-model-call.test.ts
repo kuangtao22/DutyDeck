@@ -24,6 +24,43 @@ function invoke(events: unknown[]) {
 }
 
 describe('工厂模型响应', () => {
+  test.each(['openai', 'google'] as const)('Given %s 场景声明零温度与输出上限 When 调用模型 Then HTTP 请求保留参数且返回正文', async (provider) => {
+    /** 走真实工厂端口、适配器与 SSE 解析，只替换外部网络。 */
+    const invocation = createCapabilityFactoryModelCall({
+      listChannels: () => [{ ...channel, provider }], resolveApiKey: async () => 'test-key',
+      resolveProxyUrl: async () => undefined, sessionModel: () => null,
+    })
+    /** 两种协议各自的成功事件，避免仅验证中间请求对象。 */
+    const event = provider === 'google'
+      ? { candidates: [{ content: { parts: [{ text: '结果' }] }, finishReason: 'STOP' }] }
+      : { choices: [{ delta: { content: '结果' }, finish_reason: 'stop' }] }
+    fetchSpy.mockResolvedValue(new Response(`data: ${JSON.stringify(event)}\n\n`))
+    const result = await invocation({ stepId: 'scan', model: 'test', channelId: channel.id, modelId: 'test',
+      temperature: 0, maxTokens: 321, prompt: '测试', signal: new AbortController().signal })
+    const request = JSON.parse(String((fetchSpy.mock.calls.at(-1)?.[1] as RequestInit).body)) as {
+      temperature?: number; max_tokens?: number; generationConfig?: { temperature?: number; maxOutputTokens?: number }
+    }
+    expect(result.text).toBe('结果')
+    expect(provider === 'google' ? request.generationConfig?.temperature : request.temperature).toBe(0)
+    expect(provider === 'google' ? request.generationConfig?.maxOutputTokens : request.max_tokens).toBe(321)
+  })
+
+  test('Given 场景声明采样参数 When 工厂调用模型 Then 透传到 Provider 请求', async () => {
+    const invocation = createCapabilityFactoryModelCall({
+      listChannels: () => [channel], resolveApiKey: async () => 'test-key',
+      resolveProxyUrl: async () => undefined, sessionModel: () => null,
+    })
+    fetchSpy.mockResolvedValue(new Response([
+      `data: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: '{"ok":true}' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn' } })}\n\n`,
+    ].join('')))
+    await invocation({ stepId: 'scan', model: 'glm-5.3', channelId: 'glm', modelId: 'glm-5.3',
+      temperature: 0.2, maxTokens: 321, prompt: '测试', signal: new AbortController().signal })
+    const request = JSON.parse(String(fetchSpy.mock.calls.at(-1)?.[1] && (fetchSpy.mock.calls.at(-1)?.[1] as RequestInit).body)) as { temperature?: number; max_tokens?: number }
+    expect(request.temperature).toBe(0.2)
+    expect(request.max_tokens).toBe(321)
+  })
+
   test('Given 有正文 When SSE 完成 Then 返回正文', async () => {
     const result = await invoke([
       { type: 'content_block_delta', delta: { type: 'text_delta', text: '{"ok":true}' } },

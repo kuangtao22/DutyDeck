@@ -1,7 +1,7 @@
 import type { PermissionResult } from './agent-permission-service'
 import type { AgentToolMode } from '@proma/shared'
 
-/** 受限运行只注册和分派这一固定只读工具集合，新增入口须同步宿主准入。 */
+/** 受限运行只注册和分派固定工具集合，新增入口须同步宿主准入。 */
 const SERVER_OPS_READ_TOOL_NAMES = [
   'ops_resources', 'ops_server_overview', 'ops_server_services',
   'ops_server_discover', 'ops_server_logs',
@@ -10,6 +10,9 @@ const SERVER_OPS_READ_TOOL_NAMES = [
   'ops_database_change_context',
 ] as const
 const SERVER_OPS_READ_TOOL_SET = new Set<string>(SERVER_OPS_READ_TOOL_NAMES)
+/** 读写模式在只读工具之外仅增加数据库写入入口，不开放 Shell、文件、MCP 或浏览器。 */
+const SERVER_OPS_WRITE_TOOL_NAMES = [...SERVER_OPS_READ_TOOL_NAMES, 'ops_database_write'] as const
+const SERVER_OPS_WRITE_TOOL_SET = new Set<string>(SERVER_OPS_WRITE_TOOL_NAMES)
 
 /** 判断工具是否属于具有独立 Facade 授权检查的只读集合，供宿主统一准入。 */
 export function isServerOpsReadToolName(toolName: string): boolean {
@@ -18,13 +21,17 @@ export function isServerOpsReadToolName(toolName: string): boolean {
 
 /** 返回模式限定的 Pi 工具集合；普通模式继续使用现有注册策略。 */
 export function resolveAgentModeToolNames(mode: AgentToolMode): string[] | undefined {
-  return mode === 'server-ops-read' ? [...SERVER_OPS_READ_TOOL_NAMES] : undefined
+  if (mode === 'server-ops-read') return [...SERVER_OPS_READ_TOOL_NAMES]
+  if (mode === 'server-ops-write') return [...SERVER_OPS_WRITE_TOOL_NAMES]
+  return undefined
 }
 
 /** 宿主分派边界再次拒绝非只读工具，即使模型伪造调用也不能执行。 */
 export function denyToolOutsideAgentMode(toolName: string, mode: AgentToolMode): PermissionResult | undefined {
-  if (mode === 'standard' || SERVER_OPS_READ_TOOL_SET.has(toolName)) return undefined
-  return { behavior: 'deny', message: `运维只读模式不允许使用工具: ${toolName}` }
+  if (mode === 'standard') return undefined
+  if (mode === 'server-ops-read' && SERVER_OPS_READ_TOOL_SET.has(toolName)) return undefined
+  if (mode === 'server-ops-write' && SERVER_OPS_WRITE_TOOL_SET.has(toolName)) return undefined
+  return { behavior: 'deny', message: `${mode === 'server-ops-write' ? '运维读写' : '运维只读'}模式不允许使用工具: ${toolName}` }
 }
 
 /** Proma 对外工具名到 Pi runtime 注册名的稳定映射。 */

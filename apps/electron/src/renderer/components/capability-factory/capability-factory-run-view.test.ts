@@ -87,6 +87,8 @@ describe('运行视图文案', () => {
     expect(describeReviewStatus(run({ review }))).toEqual({ label: '达标', tone: 'ok' })
     expect(describeReviewStatus(run({ review: { ...review, passed: false } }))).toEqual({ label: '未达标', tone: 'bad' })
     expect(describeReviewStatus(run({ review: { ...review, passed: null } }))).toEqual({ label: '待确认', tone: 'warn' })
+    expect(describeReviewStatus(run({ evidenceIssues: ['证据无法回溯'], review })))
+      .toEqual({ label: '证据待确认', tone: 'warn' })
     expect(describeReviewStatus(run({ review: { ...review, status: 'failed', passed: null } })))
       .toEqual({ label: '评测失败', tone: 'bad' })
     expect(describeReviewStatus(run())).toEqual({ label: '未评测', tone: 'idle' })
@@ -174,6 +176,8 @@ describe('运行视图文案', () => {
       .toContain('自动评测仍在进行')
     expect(describeRunVerdict(run({ ...withStep, review: { ...baseReview, status: 'failed', passed: null } })))
       .toContain('自动评测失败')
+    expect(describeRunVerdict(run({ ...withStep, evidenceIssues: ['evidence 错位'], review: baseReview })))
+      .toContain('证据引用无法逐字回溯')
   })
 })
 

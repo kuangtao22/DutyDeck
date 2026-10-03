@@ -5,14 +5,15 @@ import type { ServerOpsDataSource } from './server-ops-data'
 /**
  * 数据库手工写入合同。
  *
- * 这是运维面板第一条**用户发起**的写库通道：只读查询链的三层保证
+ * 这是运维面板与获批 Agent 共用的写库通道：只读查询链的三层保证
  * （解析只认单条 SELECT、引擎会话只读、Agent 合同禁止）在写链上一律不适用，
  * 因此写链自带独立的分句、拒绝规则、事务语义与审计。
  *
- * **Agent 永远没有这条通道**：`ops_database_query` 的只读合同不因本文件改变。
+ * Renderer IPC 仍只接受用户窗口；Agent 读写模式通过主进程 Facade 复用同一执行合同，
+ * 不直接获得该 IPC 通道。`ops_database_query` 的只读合同也不因本文件改变。
  */
 export const SERVER_OPS_DATA_WRITE_CHANNELS = {
-  /** 执行一次写脚本；必须由用户在面板里显式开启写模式后触发。 */
+  /** 执行一次写脚本；用户窗口或明确选择运维读写模式的 Agent 才能触发。 */
   EXECUTE: 'server-ops:data-write',
   /** 取消在途写入。 */
   CANCEL: 'server-ops:data-write-cancel',

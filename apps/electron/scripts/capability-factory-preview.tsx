@@ -144,15 +144,35 @@ Object.defineProperty(window, 'electronAPI', { value: {
           },
         }
         const reviewFailed = params.has('reviewFail')
+        /** 第二条输入用于复现同批好坏混合；查询参数仅影响隔离夹具。 */
+        const secondOptimizationTask = input.comparisonId !== undefined && String(run.input.text ?? '').startsWith('一位路人')
+        /** 候选失败、未知及保持不变分别验证整批采纳门槛，不调用真实评审。 */
+        const candidateFails = input.target === 'draft' && secondOptimizationTask && params.has('optimizeSecondFail')
+        const candidateUnknown = input.target === 'draft' && params.has('optimizeUnknown')
+        const baselineUnchanged = input.target !== 'draft' && (params.has('optimizeNoImprovement')
+          || secondOptimizationTask && params.has('optimizeSecondUnchanged'))
+        /** 夹具判据与顶层通过结论使用同一判断，避免以互相矛盾的数据测试 UI。 */
+        const roleCriterionPassed = candidateUnknown ? null : input.target === 'draft' ? !candidateFails : baselineUnchanged
+        if (input.comparisonId) {
+          /** 输出同样包含或排除路人，使人工查看证据时不会看到和评审相反的夹具。 */
+          const comparisonOutput = roleCriterionPassed === false
+            ? { characters: [...output.characters, { name: '路人', description: '经过门口', evidence: '一位路人经过门口' }] }
+            : output
+          run.outputs = comparisonOutput
+          run.steps[0]!.parsedOutput = comparisonOutput
+          run.steps[0]!.rawOutput = JSON.stringify(comparisonOutput, null, 2)
+          reviewing.outputs = comparisonOutput
+        }
         const reviewed: CapabilityRun = {
           ...reviewing,
           review: reviewFailed ? {
             ...reviewing.review!, status: 'failed', summary: '评测服务未完成', error: '模拟评测失败', finishedAt: Date.now(),
           } : {
-            ...reviewing.review!, status: 'succeeded', passed: input.target === 'draft', summary: input.target === 'draft' ? '模拟对比：候选已排除无名路人。' : '模拟对比：输出结构正确，但误报规则仍需收紧。',
+            ...reviewing.review!, status: 'succeeded', passed: roleCriterionPassed,
+            summary: roleCriterionPassed === null ? '模拟对比：角色身份缺少足够证据，无法判断。' : roleCriterionPassed ? '模拟对比：已排除无名路人。' : '模拟对比：输出结构正确，但误报规则仍需收紧。',
             criteria: [
               { criterion: '每个角色都有原文证据', passed: true, evidence: '两个角色均引用了原文。' },
-              { criterion: '不得把无姓名的路人当成主要角色', passed: input.target === 'draft', evidence: input.target === 'draft' ? '模拟证据：候选只保留具名人物。' : '模拟证据：基线误报了一名无姓名路人。' },
+              { criterion: '不得把无姓名的路人当成主要角色', passed: roleCriterionPassed, evidence: roleCriterionPassed === null ? '模拟证据：现有输入不足以确认人物身份。' : roleCriterionPassed ? '模拟证据：只保留具名人物。' : '模拟证据：仍误报了一名无姓名路人。' },
             ],
             metrics: [{ name: 'evidenceCoverage', value: 1, evidence: '2/2 角色包含证据。' }],
             suggestions: ['在提示词中要求区分“出现人物”与“主要角色”。'],
@@ -165,17 +185,23 @@ Object.defineProperty(window, 'electronAPI', { value: {
           return [step.stepId, { ...reviewed.review!, acceptance,
             summary: step.stepId === 'characters' ? reviewed.review!.summary : '人物信息整理符合输入证据。',
             passed: reviewFailed ? null : step.stepId === 'characters' ? reviewed.review!.passed : true,
-            criteria: acceptance.criteria.map((criterion, index) => ({ criterion, passed: reviewFailed ? null : step.stepId === 'characters' && index === 1 ? input.target === 'draft' : true, evidence: '隔离示例：按本步骤输入与输出核对。' })),
-            metrics: [],
+            criteria: acceptance.criteria.map((criterion, index) => ({ criterion, passed: reviewFailed ? null : step.stepId === 'characters' && index === 1 ? roleCriterionPassed : true, evidence: '隔离示例：按本步骤输入与输出核对。' })),
+            /** 每个声明指标都有结果；未知模式显式用 null，不用缺项制造假失败。 */
+            metrics: acceptance.metrics.map((metric) => ({ name: metric.name, value: reviewFailed || candidateUnknown ? null : 1, evidence: '隔离示例：2/2 角色含可追溯原文证据。' })),
+            modelBinding: run.modelBindings![0],
           }]
         }))
         const stepReviewList = Object.values(reviewed.stepReviews)
         reviewed.review = { ...reviewed.review!,
-          passed: stepReviewList.every((item) => item.passed === true),
+          passed: stepReviewList.some((item) => item.passed === false) ? false : stepReviewList.every((item) => item.passed === true) ? true : null,
           summary: `已评审 ${stepReviewList.length} 个流程步骤：${stepReviewList.filter((item) => item.passed === true).length} 个通过。`,
           acceptance: { criteria: stepReviewList.flatMap((item) => item.acceptance.criteria), judgePrompt: '', metrics: [] },
           criteria: stepReviewList.flatMap((item) => item.criteria), metrics: stepReviewList.flatMap((item) => item.metrics),
           suggestions: stepReviewList.flatMap((item) => item.suggestions),
+        }
+        /** 模型身份变化模拟不可比结果，必须由 UI 显示具体原因。 */
+        if (input.target === 'draft' && params.has('optimizeIncomparable')) {
+          reviewed.modelBindings = reviewed.modelBindings!.map((binding) => ({ ...binding, modelId: 'preview-other' }))
         }
         /** 依次发出步骤评审开始与完成，方便观察等待、执行、完成的切换。 */
         const reviewDelay = Math.max(0, Number(params.get('reviewDelay') ?? 900) || 0)

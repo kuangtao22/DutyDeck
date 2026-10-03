@@ -78,13 +78,13 @@ export type AgentEffort = 'low' | 'medium' | 'high' | 'max'
 export type AgentThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 /** Agent 工具运行模式与权限审批模式彼此独立。 */
-export type AgentToolMode = 'standard' | 'server-ops-read'
+export type AgentToolMode = 'standard' | 'server-ops-read' | 'server-ops-write'
 /** 历史会话缺少字段时保留完整普通工具能力。 */
 export const AGENT_DEFAULT_TOOL_MODE: AgentToolMode = 'standard'
 
 /** 严格校验外部或磁盘上的工具模式，不把非法值降级为普通模式。 */
 export function isAgentToolMode(value: unknown): value is AgentToolMode {
-  return value === 'standard' || value === 'server-ops-read'
+  return value === 'standard' || value === 'server-ops-read' || value === 'server-ops-write'
 }
 
 // Model-specific reasoning profiles and level normalization live in reasoning-profile.ts.

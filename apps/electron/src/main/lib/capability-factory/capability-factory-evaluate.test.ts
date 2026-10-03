@@ -31,6 +31,8 @@ function fixture(outcomes: (input: Record<string, unknown>) => {
   review?: CapabilityRunReview
   sceneVersion?: number
   placeholderCapabilities?: string[]
+  /** 证据质量独立于 JSON 格式轴，夹具允许注入确定性检查的问题。 */
+  evidenceIssues?: string[]
 }) {
   const rootDir = mkdtempSync(join(tmpdir(), 'cap-factory-eval-'))
   let tick = 0
@@ -63,6 +65,7 @@ function fixture(outcomes: (input: Record<string, unknown>) => {
         ...(outcome.placeholderCapabilities === undefined
           ? {}
           : { placeholderCapabilities: outcome.placeholderCapabilities }),
+        ...(outcome.evidenceIssues === undefined ? {} : { evidenceIssues: outcome.evidenceIssues }),
         startedAt: runs.length * 10, finishedAt: runs.length * 10 + 5,
       }
       runs.push(run)
@@ -253,6 +256,28 @@ describe('评测：对一组固定输入跑当前版本', () => {
     expect(evaluation.sceneVersion).toBe(2)
     expect(evaluation.caseResults).toHaveLength(1)
     expect(calls).toBe(2)
+  })
+
+  test('Given 证据无法回溯但模型评审判通过 When 批量评测 Then 排除质量通过并保留具体原因', async () => {
+    /** 故意模拟模型误判通过，质量闸门必须独立于评审结论。 */
+    const { service, evaluator, sceneId } = fixture(() => ({
+      status: 'succeeded', valid: true, evidenceIssues: ['scan.evidence.selectedText 不属于 c0-p1'],
+      review: {
+        status: 'succeeded', passed: true, summary: '模型误判通过', acceptance: definition.acceptance,
+        criteria: [{ criterion: '名称必须能在正文里找到', passed: true, evidence: '模型误判' }],
+        metrics: [], suggestions: [], startedAt: 1, finishedAt: 2,
+      },
+    }))
+    const dataset = service.createDataset('证据错误')
+    service.addCase(dataset.id, { corpusText: '真实原文' })
+
+    const evaluation = await evaluator.evaluate(sceneId, dataset.id)
+
+    expect(evaluation.validSamples).toBe(1)
+    expect(evaluation.passedReviewSamples).toBe(0)
+    expect(evaluation.judgeResults).toEqual([])
+    expect(evaluation.caseResults?.[0]?.reviewEligible).toBe(false)
+    expect(evaluation.caseResults?.[0]?.detail).toContain('selectedText 不属于 c0-p1')
   })
 
   test('用例集变了就递增数据集版本：分数不能跨用例集直接比', () => {

@@ -3,14 +3,26 @@ import { AGENT_DEFAULT_TOOL_MODE, isAgentToolMode } from '@proma/shared'
 import { denyToolOutsideAgentMode, resolveAgentModeToolNames } from './agent-run-tool-policy'
 import { createAgentRunIdentity } from './agent-run-identity'
 
-describe('运维只读运行模式', () => {
-  test('Given 外部传入模式 When 校验 Then 仅接受两种精确模式', () => {
+describe('运维受限运行模式', () => {
+  test('Given 外部传入模式 When 校验 Then 仅接受标准、只读和读写三种精确模式', () => {
     expect(AGENT_DEFAULT_TOOL_MODE).toBe('standard')
     expect(isAgentToolMode('standard')).toBe(true)
     expect(isAgentToolMode('server-ops-read')).toBe(true)
+    expect(isAgentToolMode('server-ops-write')).toBe(true)
     for (const value of ['SERVER-OPS-READ', 'server-ops-read ', 'plan', null, {}]) {
       expect(isAgentToolMode(value)).toBe(false)
     }
+  })
+
+  test('Given 运维读写模式 When 注册与分派 Then 只增加数据库写入且仍拒绝系统工具', () => {
+    const names = resolveAgentModeToolNames('server-ops-write')
+    expect(names).toContain('ops_database_write')
+    expect(names).toHaveLength(13)
+    for (const name of names!) expect(denyToolOutsideAgentMode(name, 'server-ops-write')).toBeUndefined()
+    for (const name of ['Bash', 'PowerShell', 'read', 'Write', 'Edit', 'BrowserNavigate', 'mcp__other__tool', 'server_exec', 'server_files_mutate', 'Task', 'ops_connection_prepare', 'ops_database_apply']) {
+      expect(denyToolOutsideAgentMode(name, 'server-ops-write')?.behavior).toBe('deny')
+    }
+    expect(denyToolOutsideAgentMode('ops_database_write', 'server-ops-read')?.behavior).toBe('deny')
   })
 
   test('Given 运维只读模式 When 注册与分派 Then 仅固定只读工具可执行', () => {

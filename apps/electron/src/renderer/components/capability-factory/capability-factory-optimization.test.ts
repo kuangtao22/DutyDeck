@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import { createEmptySceneDefinition, parseCapabilityFactoryCommand } from '@proma/shared'
 import type { CapabilityFactoryApi, CapabilityRun, CapabilityScene } from '@proma/shared'
-import { compareOptimizationPair, groupOptimizationRuns, canAdoptOptimization, runOptimizationBatch } from './capability-factory-optimization'
+import { compareOptimizationPair, groupOptimizationRuns, canAdoptOptimization, isAdoptableOptimizationBatch, isAdoptableOptimizationComparison, isPromptOnlyOptimization, runOptimizationBatch } from './capability-factory-optimization'
 
 /** 已采纳定义与候选只在提示词上不同，评审标准固定。 */
-const definition = { ...createEmptySceneDefinition('角色'), acceptance: { criteria: ['有证据'], judgePrompt: '逐字核对', metrics: [] } }
-const candidateDefinition = { ...definition, description: '改进证据提取' }
+const definition = { ...createEmptySceneDefinition('角色'), acceptance: { criteria: ['有证据'], judgePrompt: '逐字核对', metrics: [] },
+  steps: [{ type: 'llm' as const, id: 'scan', title: '扫描', modelSlot: 'main', prompt: '提取角色' }] }
+const candidateDefinition = { ...definition, steps: [{ ...definition.steps[0]!, prompt: '先复制证据，再提取角色' }] }
 const scene: CapabilityScene = { id: 'scene', definition, currentVersion: 2, createdAt: 1, updatedAt: 3,
   draft: { definition: candidateDefinition, source: 'agent', note: '修复证据', createdAt: 3 } }
 /** 完整运行夹具，模型与评审身份足够用于比较。 */
@@ -15,7 +16,7 @@ function run(candidate = false): CapabilityRun {
     definitionTarget: candidate ? 'draft' : 'current', definitionSnapshot: candidate ? candidateDefinition : definition,
     ...(candidate ? { draftCreatedAt: 3 } : {}), comparisonId: 'pair', comparisonRole: candidate ? 'candidate' : 'baseline',
     modelBindings: [{ slotId: 'main', declaredModel: 'test', channelId: 'channel', channelName: '模型', modelId: 'test', substituted: false }],
-    review: { status: 'succeeded', passed: candidate, summary: '已核对', acceptance: definition.acceptance,
+    review: { status: 'succeeded', passed: candidate, summary: '已核对', acceptance: structuredClone(definition.acceptance),
       criteria: [{ criterion: '有证据', passed: candidate, evidence: candidate ? '证据存在' : '缺少证据' }], metrics: [], suggestions: [], startedAt: 10, finishedAt: 15 },
   }
 }
@@ -33,6 +34,69 @@ describe('优化对比边界', () => {
   test('Given 同任务同标准 When 对比 Then 显示修复与退化而非虚构分数', () => {
     expect(compareOptimizationPair(run(), run(true))).toMatchObject({ comparable: true, fixed: ['有证据'], regressed: [] })
     expect(compareOptimizationPair(run(true), run())).toMatchObject({ comparable: true, fixed: [], regressed: ['有证据'] })
+  })
+  test('Given 候选没有明确改善或存在退化 When 判断采纳 Then 不允许采纳', () => {
+    const noImprovement = compareOptimizationPair(run(), { ...run(true), review: { ...run(true).review!, passed: null,
+      criteria: [{ criterion: '有证据', passed: null, evidence: '无法判断' }] } })
+    expect(isAdoptableOptimizationComparison(noImprovement)).toBe(false)
+
+    const regressed = compareOptimizationPair(run(), { ...run(true), review: { ...run(true).review!, passed: false,
+      criteria: [{ criterion: '有证据', passed: false, evidence: '仍缺少证据' }] } })
+    expect(isAdoptableOptimizationComparison(regressed)).toBe(false)
+  })
+  test('Given 同批另一条任务评审失败 When 判断批次采纳 Then 不能用单条改善结果掩盖失败', () => {
+    const improved = compareOptimizationPair(run(), run(true))
+    const failed = compareOptimizationPair(run(), { ...run(true), review: { ...run(true).review!, passed: false,
+      criteria: [{ criterion: '有证据', passed: false, evidence: '候选仍缺少证据' }] } })
+    expect(isAdoptableOptimizationBatch([improved, failed])).toBe(false)
+    expect(isAdoptableOptimizationBatch([improved])).toBe(true)
+  })
+  test('Given 错误基线与正确候选 When 对比 Then 允许证明证据修复，候选仍错则不能采纳', () => {
+    /** 两版模型评审均通过时，程序发现的证据修复仍是独立改善依据。 */
+    const baseline = { ...run(), review: run(true).review, evidenceIssues: ['关系 evidence 无法回溯'] }
+    const comparison = compareOptimizationPair(baseline, run(true))
+    expect(comparison.comparable).toBe(true)
+    expect(comparison.fixed).toContain('证据引用：已修复全部原文回溯问题')
+    expect(isAdoptableOptimizationComparison(comparison)).toBe(true)
+    const invalidCandidate = { ...run(true), evidenceIssues: ['关系 evidence 无法回溯'] }
+    expect(isAdoptableOptimizationComparison(compareOptimizationPair(baseline, invalidCandidate))).toBe(false)
+    expect(compareOptimizationPair(run(), invalidCandidate).regressed).toContain('证据引用：出现原文回溯问题')
+  })
+  test('Given 一条改善且其他任务保持通过 When 判断整批采纳 Then 允许，无改善或未知项则拒绝', () => {
+    const improved = compareOptimizationPair(run(), run(true))
+    const unchanged = compareOptimizationPair(run(true), run(true))
+    expect(isAdoptableOptimizationBatch([improved, unchanged])).toBe(true)
+    expect(isAdoptableOptimizationBatch([unchanged])).toBe(false)
+    expect(isAdoptableOptimizationBatch([])).toBe(false)
+    const unknown = compareOptimizationPair({ ...run(), review: { ...run().review!, criteria: [] } }, run(true))
+    expect(unknown.unknown).toEqual(['判据：有证据'])
+    expect(isAdoptableOptimizationBatch([improved, unknown])).toBe(false)
+  })
+  test('Given 指标有方向且两边都有数值 When 对比 Then 纳入改善和退化判断', () => {
+    const baseline = run()
+    baseline.review = { ...baseline.review!, metrics: [
+      { name: '覆盖率', value: 0.4, evidence: '4/10' },
+      { name: '编造率', value: 0.2, evidence: '2/10' },
+    ] }
+    const candidate = run(true)
+    candidate.review = { ...candidate.review!, metrics: [
+      { name: '覆盖率', value: 0.6, evidence: '6/10' },
+      { name: '编造率', value: 0.1, evidence: '1/10' },
+    ] }
+    baseline.review.acceptance.metrics = [
+      { name: '覆盖率', weight: 0.5, direction: 'positive' },
+      { name: '编造率', weight: 0.5, direction: 'negative' },
+    ]
+    candidate.review.acceptance = baseline.review.acceptance
+    expect(compareOptimizationPair(baseline, candidate).fixed).toEqual(expect.arrayContaining(['指标：覆盖率', '指标：编造率']))
+    candidate.review.metrics[0]!.value = null
+    expect(compareOptimizationPair(baseline, candidate).unknown).toEqual(['指标：覆盖率'])
+    expect(isAdoptableOptimizationComparison(compareOptimizationPair(baseline, candidate))).toBe(false)
+  })
+  test('Given 草案只改模型步骤提示词 When 检查优化范围 Then 允许；修改流程元数据则拒绝', () => {
+    expect(isPromptOnlyOptimization(definition, candidateDefinition)).toBe(true)
+    expect(isPromptOnlyOptimization(definition, { ...candidateDefinition, description: '改了流程说明' })).toBe(false)
+    expect(isPromptOnlyOptimization(definition, { ...candidateDefinition, modelSlots: [{ id: 'main', model: 'other' }] })).toBe(false)
   })
   test('Given 评审异常、标准、输入或模型变化 When 对比 Then 不宣称改善', () => {
     for (const candidate of [
@@ -99,5 +163,16 @@ test('Given 草案改变模型配置 When 开始对比 Then 调用基线前就�
     tasks: [{ id: 'task', sceneId: scene.id, input: {}, createdAt: 1, updatedAt: 1 }],
     onPair: () => {}, isActive: () => true,
   })).rejects.toThrow('模型')
+  expect(calls).toBe(0)
+})
+
+test('Given 草案改变流程元数据 When 开始对比 Then 调用基线前就拒绝', async () => {
+  let calls = 0
+  const api = { invoke: async () => { calls += 1; return run() } } as CapabilityFactoryApi
+  await expect(runOptimizationBatch({ api, sessionId: 'session',
+    scene: { ...scene, draft: { ...scene.draft!, definition: { ...candidateDefinition, description: '重构流程' } } },
+    tasks: [{ id: 'task', sceneId: scene.id, input: {}, createdAt: 1, updatedAt: 1 }],
+    onPair: () => {}, isActive: () => true,
+  })).rejects.toThrow('提示词')
   expect(calls).toBe(0)
 })

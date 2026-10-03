@@ -82,6 +82,30 @@ export interface CapabilitySceneDefinition {
   stepAcceptances?: Record<string, SceneAcceptance>
 }
 
+/** 输入任意 JSON 值，返回忽略对象键顺序、保留数组顺序与正文空白的比较键。 */
+export function stableCapabilityValueKey(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableCapabilityValueKey).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableCapabilityValueKey(item)}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'undefined'
+}
+
+/** 输入两版场景快照，返回是否仅修改模型步骤提示词；供 UI 与 Agent 宿主使用同一范围约束。 */
+export function isPromptOnlyOptimization(before: CapabilitySceneDefinition, after: CapabilitySceneDefinition): boolean {
+  /** 隐去允许改动的提示词，递归保留并行组与所有其它配置。 */
+  const normalizeStep = (step: Step): Step => {
+    if (step.type === 'llm' || step.type === 'extract') return { ...step, prompt: '__PROMPT_CHANGE__' }
+    if (step.type === 'map') return { ...step, body: step.body.map(normalizeStep) }
+    return step
+  }
+  /** 归一化只用于比较，不修改原快照。 */
+  const normalize = (definition: CapabilitySceneDefinition): CapabilitySceneDefinition => ({ ...definition, steps: definition.steps.map(normalizeStep) })
+  return stableCapabilityValueKey(normalize(before)) === stableCapabilityValueKey(normalize(after))
+    && stableCapabilityValueKey(before) !== stableCapabilityValueKey(after)
+}
+
 /** 待采纳草案的元信息。 */
 export interface CapabilitySceneDraft {
   definition: CapabilitySceneDefinition
@@ -176,6 +200,8 @@ export interface CapabilityRun {
   status: CapabilityRunStatus
   /** 约束轴：任一步骤判定不通过即为 false。 */
   valid: boolean
+  /** 证据轴：逐字引用无法回溯到原文时保留问题，不改写模型原文；摘要语义由评审器核对。 */
+  evidenceIssues?: string[]
   input: Record<string, unknown>
   outputs: Record<string, unknown> | null
   steps: StepTrace[]
@@ -577,8 +603,12 @@ export function describePackageReadiness(input: {
     }
   }
 
-  if (succeeded.some((run) => run.review?.status === 'succeeded' && run.review.passed === true)) {
+  if (succeeded.some((run) => !run.evidenceIssues?.length && run.review?.status === 'succeeded' && run.review.passed === true)) {
     return { verified: true, reason: null }
+  }
+
+  if (succeeded.some((run) => run.evidenceIssues?.length)) {
+    return { verified: false, reason: `v${input.sceneVersion} 已跑通格式与约束，但证据引用无法回溯，不能作为已验证交付` }
   }
 
   if (succeeded.some((run) => run.review?.status === 'running')) {

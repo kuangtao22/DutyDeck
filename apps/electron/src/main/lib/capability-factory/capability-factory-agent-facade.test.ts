@@ -123,8 +123,8 @@ describe('Agent 操控面（权限边界）', () => {
     for (const forbidden of ['adopt', 'rollback', 'export', 'delete', 'publish']) {
       expect(names).not.toContain(forbidden)
     }
-    /** 读 5 + 写 4 + 单步试跑 1 + 整链候选对比 1。 */
-    expect(CAPABILITY_FACTORY_AGENT_TOOL_NAMES).toHaveLength(12)
+    /** 读 6 + 写 4 + 单步试跑 1 + 整链候选对比 1。 */
+    expect(CAPABILITY_FACTORY_AGENT_TOOL_NAMES).toHaveLength(13)
   })
 
   test('试跑与运行记录：宿主注入口子后 Agent 能自己跑并读回结果', async () => {
@@ -152,6 +152,20 @@ describe('Agent 操控面（权限边界）', () => {
     /** 只读侧：跑完就能读回这次记录（kind 过滤按运行范围）。 */
     expect(facade.listRuns(scene.id, 'step')).toHaveLength(1)
     expect(facade.listRuns(scene.id, 'full')).toEqual([])
+  })
+
+  test('按 runId 精确读取运行记录，不受最近 20 条限制', () => {
+    const { service, facade } = fixture()
+    const scene = service.createScene('精确读取')
+    for (let index = 0; index < 21; index += 1) {
+      service.recordRun({
+        id: `run-${index}`, sceneId: scene.id, sceneVersion: 1, kind: 'full', status: 'succeeded', valid: true,
+        input: { text: `第 ${index} 条` }, outputs: {}, steps: [], startedAt: index, finishedAt: index + 1,
+      })
+    }
+    expect(facade.listRuns(scene.id, 'full')).toHaveLength(20)
+    expect(facade.getRun(scene.id, 'run-0')?.id).toBe('run-0')
+    expect(facade.getRun(scene.id, 'missing')).toBeNull()
   })
 
   test('宿主没给试跑口子、或场景不存在时，试跑明确拒绝而不是假装跑过', async () => {

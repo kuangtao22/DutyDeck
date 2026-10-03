@@ -15,7 +15,10 @@ import {
   analyzeServerOpsSqlQuery,
   parseServerOpsDataQueryInput,
   parseServerOpsDataQueryResult,
+  parseServerOpsDataWriteInput,
+  parseServerOpsDataWriteResult,
   parseServerOpsPostgresTable,
+  planServerOpsSqlWrite,
 } from '@proma/shared'
 import type {
   AgentSessionMeta,
@@ -35,6 +38,7 @@ import type {
   ServerOpsServiceListResult,
   ServerOpsDataQueryInput,
   ServerOpsDataQueryResult,
+  ServerOpsDataWriteResult,
   ServerOpsAgentReadChanged,
   ServerOpsAgentDiscoveryResult,
   ServerOpsAgentLogsInput,
@@ -53,7 +57,7 @@ import type { ServerOpsDockerService } from './server-ops-docker-service'
 import type { ServerOpsLogService } from './server-ops-log-service'
 import { discoverServerOpsServices } from './server-ops-agent-diagnostics'
 import type { ServerOpsAuditStore } from './server-ops-audit-store'
-import { runAuditedServerOpsQuery } from './server-ops-query-audit'
+import { runAuditedServerOpsDataWrite, runAuditedServerOpsQuery } from './server-ops-query-audit'
 
 /** Agent 工具最终 JSON 正文预算，按 Pi 实际双空格缩进后的 UTF-8 字节计算。 */
 const SERVER_OPS_AGENT_READ_RESULT_BYTES = 32_768
@@ -93,7 +97,7 @@ export interface ServerOpsAgentReadFacadeServices {
   docker?: Pick<ServerOpsDockerService, 'listContainers'>
   logs?: Pick<ServerOpsLogService, 'snapshot'>
   data?: Pick<ServerOpsDataService, 'listSources' | 'probeSource' | 'diagnoseSource' | 'listSchemaTables' | 'describeSchemaTable' | 'readSchemaRows'>
-    & Partial<Pick<ServerOpsDataService, 'querySource' | 'getReadCredentialVersion'>>
+    & Partial<Pick<ServerOpsDataService, 'querySource' | 'getReadCredentialVersion' | 'writeSource'>>
   audit: Pick<ServerOpsAuditStore, 'append'> & { prepareForWrites?: () => Promise<void> }
 }
 
@@ -116,6 +120,8 @@ export interface CreateServerOpsAgentReadFacadeInput {
   runSignal?: AbortSignal
   /** 主进程复核运行代次；模型与 Renderer 无法提交该闭包。 */
   assertRunActive?: () => void
+  /** 仅运维读写模式注册数据库写工具；只读模式不会暴露写方法。 */
+  allowDatabaseWrite?: boolean
 }
 
 /** Agent 可见的授权目录，不公开端点、用户、凭据状态或内部配置摘要。 */
@@ -163,6 +169,8 @@ export interface ServerOpsAgentReadFacade {
   databaseRows(input: { sourceId: string; database: string; table: string; offset: number; limit: number }, signal?: AbortSignal): Promise<ServerOpsAgentRowsResult>
   /** SQL 查询没有模型可控会话或查询 ID，取消来自本次真实工具调用。 */
   databaseQuery(input: Omit<ServerOpsDataQueryInput, 'queryId'>, signal?: AbortSignal): Promise<ServerOpsDataQueryResult>
+  /** 受控 SQL 写入；只在运维读写模式暴露，结果可能为 unknown/partial。 */
+  databaseWrite?: (input: { sourceId: string; database: string; sql: string; timeoutMs?: number }, signal?: AbortSignal) => Promise<ServerOpsDataWriteResult>
 }
 
 /** 一次读取开始时冻结的权限代次和精确资源。 */
@@ -677,6 +685,53 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
         lifetime.dispose()
       }
     },
+
+    ...(input.allowDatabaseWrite ? {
+      async databaseWrite(raw: { sourceId: string; database: string; sql: string; timeoutMs?: number }, signal?: AbortSignal): Promise<ServerOpsDataWriteResult> {
+        /** 写入入口只接受有限字段，来源快照与 writeId 由主进程生成。 */
+        const record = exactRecord(raw, ['sourceId', 'database', 'sql'], ['timeoutMs'])
+        const sourceId = readId(record.sourceId)
+        const database = readIdentifier(record.database, 64)
+        const sql = record.sql
+        if (typeof sql !== 'string' || sql.trim().length === 0 || sql.length > 16_384 || sql.includes('\u0000')) {
+          throw new Error('SERVER_OPS_AGENT_WRITE_INPUT_INVALID')
+        }
+        if (record.timeoutMs !== undefined
+          && (typeof record.timeoutMs !== 'number' || !Number.isSafeInteger(record.timeoutMs)
+            || record.timeoutMs < 1_000 || record.timeoutMs > 300_000)) {
+          throw new Error('SERVER_OPS_AGENT_WRITE_INPUT_INVALID')
+        }
+        const authorized = requireDatabaseAuthorized(sourceId)
+        const resource = authorized.resource as ServerOpsDatabaseResource
+        if (resource.kind !== 'mysql' && resource.kind !== 'sqlite') throw new Error('SERVER_OPS_DATA_WRITE_ENGINE_UNSUPPORTED')
+        let plan: ReturnType<typeof planServerOpsSqlWrite>
+        try { plan = planServerOpsSqlWrite(sql, resource.kind) } catch { throw new Error('SERVER_OPS_AGENT_WRITE_INPUT_INVALID') }
+        /** 写脚本规划器负责语句类型与会话控制；写通道以数据库级运维读写模式授权。 */
+        requireDatabaseScope(resource, database)
+        const { data, source } = requireDataSource(sourceId, resource.kind)
+        /** Agent 写入只走当前已保存的直连来源；SSH 隧道需要独立的写入生命周期与取消合同。 */
+        if (source.transport !== 'direct') throw new Error('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED')
+        if (!data.writeSource) throw new Error('SERVER_OPS_DATA_UNAVAILABLE')
+        const request = parseServerOpsDataWriteInput({
+          sourceId, source, database, writeId: randomUUID(), sql,
+          ...(record.timeoutMs === undefined ? {} : { timeoutMs: record.timeoutMs }),
+        })
+        const lifetime = readLifetime(resource.kind, sourceId, authorized.revision, signal)
+        try {
+          return await runAuditedServerOpsDataWrite({
+            summary: { sourceId, database },
+            actor: { actor: 'agent', sessionId: input.sessionId },
+            audit: dependencies.services.audit,
+            check: lifetime.check,
+            execute: async () => parseServerOpsDataWriteResult(await data.writeSource!(request, lifetime.signal, {
+              ownerSessionId: input.sessionId,
+              actor: 'agent',
+              check: lifetime.check,
+            })),
+          })
+        } finally { lifetime.dispose() }
+      },
+    } : {}),
 
     resources() {
       checkRun()

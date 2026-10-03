@@ -31,6 +31,8 @@ describe('单次自动内容评审', () => {
       expect(request.prompt).toContain('小林走进书店。')
       expect(request.prompt).toContain('阿明')
       expect(request.prompt).toContain(acceptance.judgePrompt)
+      expect(request.prompt).toContain('同一组 evidence')
+      expect(request.prompt).toContain('忠实概括')
       expect(request.channelId).toBe('c')
       return { text: JSON.stringify(verdict), model: 'test' }
     } })

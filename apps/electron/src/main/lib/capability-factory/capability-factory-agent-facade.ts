@@ -162,6 +162,11 @@ export function createCapabilityFactoryAgentFacade(options: CapabilityFactoryAge
       return service.listRuns(sceneId, 20, kind)
     },
 
+    /** 按运行 ID 精确读取一条记录，避免历史超过 20 条后 Agent 误读其它运行。 */
+    getRun(sceneId: string, runId: string): CapabilityRun | null {
+      return service.getRun(sceneId, runId)
+    },
+
     /** 读取用户已保存的整链任务，优化时直接复用原始输入。 */
     listTasks(sceneId: string): CapabilitySavedTask[] {
       return service.listTasks(sceneId)

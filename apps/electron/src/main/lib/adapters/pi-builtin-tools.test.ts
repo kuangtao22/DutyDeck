@@ -134,6 +134,17 @@ describe('Pi Server Ops 工具合同', () => {
       .rejects.toThrow('需要当前用户会话的有效授权')
   })
 
+  test('Given 会话选择运维读写模式 When 重建工具 Then 注册数据库写入且不注册普通工具', async () => {
+    const facade = { databaseWrite: async () => ({}) } as unknown as ServerOpsAgentReadFacade
+    const result = await buildPiBuiltinTools(sdk, {
+      sessionId: 'session-1', channelId: 'channel-1', toolMode: 'server-ops-write', serverOpsReadFacade: facade,
+      serverOpsFacade: {} as ServerOpsAgentFacade,
+    })
+    expect(result.tools.map((tool) => tool.name)).toContain('ops_database_write')
+    expect(result.tools.some((tool) => tool.name === 'bash' || tool.name === 'read' || tool.name === 'server_exec')).toBe(false)
+    expect(result.collaborationAvailable).toBe(false)
+  })
+
   test('Given 文件与 Docker 服务已接通 When 构建工具 Then 只公开受限字段且内部运行不注册新能力', async () => {
     /** 用已存在的窄 Facade 方法证明能力按真实服务注册。 */
     const facade = {

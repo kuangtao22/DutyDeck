@@ -114,6 +114,7 @@ import {
   browserStateMapAtom,
 } from '@/atoms/browser-atoms'
 import { BrowserPanel } from '@/components/browser/BrowserPanel'
+import { browserOverlayCountAtom } from '@/atoms/browser-modal-atoms'
 import {
   getPreviewFileId,
   previewContentRefreshVersionAtom,
@@ -1743,13 +1744,19 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
 
   const showBrowserActivity = Boolean(browserState?.activity && browserState.executionSource !== 'user')
   // WebContentsView 是原生子视图，会盖住 renderer 的 portal。加号菜单打开时，
-  // BrowserPanel 为它保留一个固定避让区，而非 setVisible(false)。
+  // 临时隐藏原生页面并保留会话，避免修改页面 bounds 造成网页整体下移。
   React.useEffect(() => {
     if (activeTab !== 'todos' && activeTab !== 'calendar' && activeTab !== 'vault') return
     if (!isWorkspaceComponentEnabled(activeTab)) onTabChange('files')
   }, [activeTab, isWorkspaceComponentEnabled, onTabChange])
 
   const [isAddTabMenuOpen, setIsAddTabMenuOpen] = React.useState(false)
+  const setBrowserOverlayCount = useSetAtom(browserOverlayCountAtom)
+  React.useEffect(() => {
+    if (!isAddTabMenuOpen) return
+    setBrowserOverlayCount((count) => count + 1)
+    return () => setBrowserOverlayCount((count) => Math.max(0, count - 1))
+  }, [isAddTabMenuOpen, setBrowserOverlayCount])
   const workspaceTabs = React.useMemo<WorkspacePanelTab[]>(() => [
     { id: 'files', label: '文件', icon: <FolderOpen className="size-3.5" /> },
     { id: 'changes', label: '改动', icon: <FileDiff className="size-3.5" /> },
@@ -2153,7 +2160,6 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
               sessionId={sessionId}
               tabId={paneBrowserTabId}
               state={browserState}
-              isAddTabMenuOpen={isAddTabMenuOpen}
             />
           </div>
         )

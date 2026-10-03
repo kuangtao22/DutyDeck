@@ -1671,8 +1671,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       let pendingTerminalResult: SDKMessage | undefined
       /** 当前压缩是否紧随一个成功完成的主 Agent turn。 */
       let completedAgentTurnPendingCompaction = false
-      const customTools = input.toolMode === 'server-ops-read'
-        ? wrapCustomToolDefinitions(input.customTools, input.canUseTool, 'server-ops-read')
+      const customTools = input.toolMode === 'server-ops-read' || input.toolMode === 'server-ops-write'
+        ? wrapCustomToolDefinitions(input.customTools, input.canUseTool, input.toolMode)
         : [
         buildCurrentSessionCompactionTool(
           sdk,
@@ -1770,8 +1770,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         model,
         thinkingLevel: input.thinkingLevel ?? 'off',
         noTools: 'builtin',
-        ...(input.toolMode === 'server-ops-read'
-          ? { tools: resolveAgentModeToolNames('server-ops-read') }
+        ...(input.toolMode === 'server-ops-read' || input.toolMode === 'server-ops-write'
+          ? { tools: resolveAgentModeToolNames(input.toolMode) }
           : input.activeToolNames ? { tools: input.activeToolNames } : {}),
         customTools,
       })

@@ -48,6 +48,16 @@ describe('OpenAIResponsesAdapter', () => {
     ])
   })
 
+  test('Given 采样参数 When buildStreamRequest Then 透传 temperature 与 max_output_tokens', () => {
+    const request = adapter.buildStreamRequest({
+      baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-test', modelId: 'gpt-5.1', history: [], userMessage: '你好',
+      temperature: 0.2, maxTokens: 321, readImageAttachments: () => [],
+    })
+    const body = JSON.parse(request.body) as { temperature?: number; max_output_tokens?: number }
+    expect(body.temperature).toBe(0.2)
+    expect(body.max_output_tokens).toBe(321)
+  })
+
   test('Given Responses 文本 delta When parseSSELine Then 输出 chunk', () => {
     expect(adapter.parseSSELine(JSON.stringify({ type: 'response.output_text.delta', delta: 'hi' }))).toEqual([
       { type: 'chunk', delta: 'hi' },

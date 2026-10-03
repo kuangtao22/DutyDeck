@@ -106,7 +106,7 @@ import { getConfiguredVaultFileSystem, getVaultConfig } from '../vault-service'
 import type { ProductivityToolsSettings } from '../../../types'
 import type { ServerOpsAgentFacade } from '../server-ops/server-ops-agent-facade'
 import type { ServerOpsAgentReadFacade } from '../server-ops/server-ops-agent-read-facade'
-import { buildServerOpsReadTools } from './pi-server-ops-read-tools'
+import { buildServerOpsReadTools, buildServerOpsReadWriteTools } from './pi-server-ops-read-tools'
 import { buildServerOpsConnectionTools } from './pi-server-ops-connection-tools'
 import type { ServerOpsConnectionDraftAgent } from '../server-ops/server-ops-connection-draft-agent'
 
@@ -1772,12 +1772,15 @@ export async function buildPiBuiltinTools(
   sdk: PiSdk,
   ctx: PiBuiltinToolsContext,
 ): Promise<PiBuiltinToolsResult> {
-  if (ctx.toolMode === 'server-ops-read') {
+  if (ctx.toolMode === 'server-ops-read' || ctx.toolMode === 'server-ops-write') {
     /** 无授权时不构建空壳受限运行；须重新授权并发起新一轮。 */
     if (!ctx.serverOpsReadFacade || (ctx.triggeredBy !== undefined && ctx.triggeredBy !== 'user')) {
       throw new Error('运维只读模式需要当前用户会话的有效授权')
     }
-    return { tools: buildServerOpsReadTools(sdk, ctx.serverOpsReadFacade), collaborationAvailable: false }
+    const tools = ctx.toolMode === 'server-ops-write'
+      ? buildServerOpsReadWriteTools(sdk, ctx.serverOpsReadFacade)
+      : buildServerOpsReadTools(sdk, ctx.serverOpsReadFacade)
+    return { tools, collaborationAvailable: false }
   }
   browserController.configureSession(ctx.sessionId, {
     profileKey: resolveBrowserProfileKey(ctx.workspaceId, ctx.sessionId),

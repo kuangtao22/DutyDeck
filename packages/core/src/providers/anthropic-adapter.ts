@@ -326,9 +326,10 @@ export class AnthropicAdapter implements ProviderAdapter {
 
     const body: Record<string, unknown> = {
       model: input.modelId,
-      max_tokens: maxTokens,
+      max_tokens: input.maxTokens ?? maxTokens,
       messages,
       stream: true,
+      ...(input.temperature === undefined ? {} : { temperature: input.temperature }),
     }
 
     // 根据模型能力选择思考协议

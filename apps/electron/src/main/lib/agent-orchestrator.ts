@@ -805,7 +805,7 @@ export class AgentOrchestrator {
     const runToolMode: AgentToolMode = persistedToolMode
     /** 受限运行不加载可携带额外指令或动态工具的工作区 Skills。 */
     const runWorkspaceSkillsEnabled = runSkillsEnabled && runToolMode === 'standard'
-    if (runToolMode === 'server-ops-read' && (
+    if ((runToolMode === 'server-ops-read' || runToolMode === 'server-ops-write') && (
       (input.triggeredBy !== undefined && input.triggeredBy !== 'user')
       || !sessionMeta || !isOrdinaryTopLevelAgentSession(sessionMeta)
     )) {
@@ -1255,7 +1255,7 @@ export class AgentOrchestrator {
       }
 
       // 10. 构建 MCP 服务器配置 + 记忆工具 + 生图工具 + 自定义工具
-      const mcpServers = runToolMode === 'server-ops-read' ? {} : await this.buildMcpServers(workspaceSlug, proxyUrl)
+      const mcpServers = runToolMode === 'server-ops-read' || runToolMode === 'server-ops-write' ? {} : await this.buildMcpServers(workspaceSlug, proxyUrl)
       let piBuiltinTools: unknown[] = []
       let piMcpTools: unknown[] = []
       const piSdk = await import('@earendil-works/pi-coding-agent')
@@ -1270,6 +1270,7 @@ export class AgentOrchestrator {
       const serverOpsReadFacade = createServerOpsAgentReadFacade({
         sessionId, triggeredBy: input.triggeredBy, getSession: getAgentSessionMeta,
         runSignal: runIdentity.signal, assertRunActive: runIdentity.assertActive,
+        allowDatabaseWrite: runToolMode === 'server-ops-write',
       })
       /** 连接建议独立于已有主机授权，只在当前普通用户运行中生成待审阅草稿。 */
       const serverOpsConnectionDrafts = createServerOpsConnectionDraftAgent({
@@ -2014,6 +2015,7 @@ export class AgentOrchestrator {
         permissionMode: initialPermissionMode,
         collaborationAvailable,
         serverOpsAvailable: Boolean(serverOpsReadFacade || serverOpsFacade || serverOpsConnectionDrafts),
+        serverOpsWriteAvailable: runToolMode === 'server-ops-write',
         /** 工厂是工作区级能力：能建 facade 就说明这个会话能用它，注入场景设计方法论。 */
         capabilityFactoryAvailable: capabilityFactoryFacade !== null,
         currentModelId: selectedModelId,
@@ -2100,7 +2102,7 @@ export class AgentOrchestrator {
           event: { type: 'context_window', contextWindow },
         })
       }
-      const piCustomTools = runToolMode === 'server-ops-read'
+      const piCustomTools = runToolMode === 'server-ops-read' || runToolMode === 'server-ops-write'
         ? piBuiltinTools
         : [...piBuiltinTools, ...piMcpTools, ...(extensions.piCustomTools ?? [])]
       /** 运行期间已确认的凭据版本，刷新只能条件替换相同版本，不能覆盖用户换号。 */
@@ -2136,7 +2138,7 @@ export class AgentOrchestrator {
         initialUserMessageUuid,
         piAgentDir: getSdkConfigDir(),
         piSessionDir: join(getSdkConfigDir(), 'sessions'),
-        activeToolNames: runToolMode === 'server-ops-read' ? resolveAgentModeToolNames(runToolMode) : resolvePiActiveToolNames(
+        activeToolNames: runToolMode === 'server-ops-read' || runToolMode === 'server-ops-write' ? resolveAgentModeToolNames(runToolMode) : resolvePiActiveToolNames(
           extensions.allowedToolNames,
           extensions.allowedToolNamesMode,
         ),

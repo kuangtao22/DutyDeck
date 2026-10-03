@@ -627,7 +627,7 @@ function isServerOpsAuditReadAction(value: unknown): value is ServerOpsAuditRead
 export function isServerOpsAuditActorOperation(actor: unknown, operation: unknown): actor is ServerOpsAuditActor {
   if (actor === 'agent') return operation === 'connect' || operation === 'exec' || operation === 'disconnect'
     || operation === 'docker-start' || operation === 'docker-stop' || operation === 'docker-restart'
-    || operation === 'agent-read' || operation === 'data-query'
+    || operation === 'agent-read' || operation === 'data-query' || operation === 'data-write'
     || typeof operation === 'string' && operation.startsWith('file-') && isServerOpsAuditOperation(operation)
   /**
    * 手工写库只能由用户在运维界面显式开启并触发，所以显式列出而不是并入任何前缀判定；
@@ -653,7 +653,7 @@ export function isServerOpsAuditRecord(value: unknown): value is ServerOpsAuditR
   const isAgentReadOperation = value.operation === 'agent-read'
   /** SQL 查询对窗口用户与普通 Agent 使用同一有界审计形状。 */
   const isDataQueryOperation = value.operation === 'data-query'
-  /** 用户点击运行的脚本：SQL 绑数据源、SSH 绑主机，两者互斥，且不允许 Agent 发起。 */
+  /** 数据库脚本：SQL 绑数据源、SSH 绑主机，两者互斥；Agent 只允许通过受控读写模式发起 SQL。 */
   const isDataWriteOperation = value.operation === 'data-write'
   if (isDataWriteOperation) {
     /** 是否绑定合法服务器主机。 */
@@ -755,7 +755,9 @@ export function isServerOpsAuditRecord(value: unknown): value is ServerOpsAuditR
   }
   /** 脚本运行只允许用户从运维界面发起，并且必须能关联同一次运行的开始与结果。 */
   if (isDataWriteOperation) {
-    if (value.operationId === undefined || value.actor !== 'user' || value.windowId === undefined) return false
+    if (value.operationId === undefined) return false
+    if (value.actor === 'user' && value.windowId === undefined) return false
+    if (value.actor === 'agent' && value.sessionId === undefined) return false
     /** SQL 脚本必须给出目标库；SSH 脚本不得携带库名。 */
     if (isServerOpsId(value.sourceId)) {
       if (typeof value.database !== 'string' || value.database.length < 1 || value.database.length > 64 || /\p{Cc}/u.test(value.database)) return false

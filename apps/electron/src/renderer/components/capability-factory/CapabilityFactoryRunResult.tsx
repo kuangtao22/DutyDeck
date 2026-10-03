@@ -306,11 +306,26 @@ function RunDetailWorkspace({ run, actions, initiallyOpenStepId, hideStepInput, 
           {status.label !== reviewStatus.label ? <Badge variant="outline" className={cn('text-[11px]', TONE_CLASS[reviewStatus.tone])}>{reviewStatus.label}</Badge> : null}
           <span className="font-mono text-[10px] text-muted-foreground">v{run.sceneVersion}</span>
           {run.definitionTarget === 'draft' ? <Badge variant="outline" className="text-[10px]">候选草案试跑</Badge> : null}
+          <span
+            className="max-w-full truncate text-[10px] text-muted-foreground"
+            title={`运行 ID：${run.id}`}
+            aria-label={`运行记录 ${run.id}`}
+          >
+            记录 {run.id.slice(0, 8)} · {new Date(run.startedAt).toLocaleString('zh-CN', { hour12: false })}
+          </span>
           <span className="text-[10px] text-muted-foreground">{formatDuration(run.startedAt, run.finishedAt)}</span>
         </div>
         {actions ? <div className="ml-auto shrink-0">{actions}</div> : null}
       </div>
       {run.error ? <p role="alert" className="shrink-0 text-xs text-destructive">{run.error}</p> : null}
+      {run.evidenceIssues?.length ? (
+        <Collapsible className="shrink-0 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
+          <CollapsibleTrigger className="text-left underline underline-offset-2">证据引用待确认（{run.evidenceIssues.length} 项）：查看无法回溯的字段</CollapsibleTrigger>
+          <CollapsibleContent className="max-h-36 overflow-y-auto pt-1 [overflow-wrap:anywhere]">
+            <ul className="list-disc pl-4">{run.evidenceIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul>
+          </CollapsibleContent>
+        </Collapsible>
+      ) : null}
       {run.placeholderCapabilities?.length ? (
         <p className="shrink-0 text-[11px] text-amber-600 dark:text-amber-400">{describeRunVerdict(run)} 占位桩：{run.placeholderCapabilities.join('、')}</p>
       ) : null}

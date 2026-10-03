@@ -13,7 +13,7 @@ test('Given capability-factory-scene-design 默认 Skill When 校验发布合同
 
   expect(skill).toMatch(/^name: capability-factory-scene-design$/m)
   expect(skill).toMatch(/^group: proma$/m)
-  expect(skill).toMatch(/^version: "1\.0\.4"$/m)
+  expect(skill).toMatch(/^version: "1\.0\.6"$/m)
   /** 触发词必须写进 description，否则 Agent 不会在有需要时加载它。 */
   for (const trigger of ['编排工厂', '提示词工厂', '能力包', '场景']) {
     expect(skill).toContain(trigger)
@@ -76,7 +76,11 @@ test('系统提示只指向 Skill，不把 Skill 的详细内容再抄一遍（�
 
 test('Given 用户要求优化 When 按 Skill 迭代 Then 在采纳前以相同任务验证草案并区分评审失败', () => {
   const skill = readSkill()
-  for (const term of ['factory_list_tasks', 'factory_run_scene', 'expectedVersion', 'expectedDraftCreatedAt', 'comparisonId', 'comparisonRole', '候选草案', '评审自身失败', '同一份输入', '退化']) expect(skill).toContain(term)
+  for (const term of ['factory_list_tasks', 'factory_get_run', 'factory_run_scene', 'expectedVersion', 'expectedDraftCreatedAt', 'comparisonId', 'comparisonRole', '候选草案', '评审自身失败', '同一份输入', 'evidenceIssues', '退化']) expect(skill).toContain(term)
   expect(skill).toContain('不能先采纳再验证')
   expect(skill).toContain('标准变更单独处理')
+  expect(skill).toContain('不要把错误近似原文、漏字版本或多余标点版本写进业务提示词作为反例')
+  expect(skill).toContain('计算公式、阈值或标注来源')
+  expect(skill).toContain('标准修正草案')
+  expect(skill).toContain('不混进提示词优化候选')
 })

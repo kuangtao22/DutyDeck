@@ -203,6 +203,9 @@ export class GoogleAdapter implements ProviderAdapter {
     // 构建 generationConfig
     const generationConfig: Record<string, unknown> = {}
 
+    if (input.temperature !== undefined) generationConfig.temperature = input.temperature
+    if (input.maxTokens !== undefined) generationConfig.maxOutputTokens = input.maxTokens
+
     // Gemini 3 使用 thinkingLevel 而非旧版 thinkingBudget。未知/旧模型保留预算模式，
     // 已知 Gemini 3 文本模型则按其官方合法档位归一化，避免 3.7/3.8 收到 minimal 后 400。
     if (input.thinkingEnabled) {

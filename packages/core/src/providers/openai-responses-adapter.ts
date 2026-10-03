@@ -246,6 +246,8 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
       model: input.modelId,
       input: toResponsesInput(input),
       stream: true,
+      ...(input.temperature === undefined ? {} : { temperature: input.temperature }),
+      ...(input.maxTokens === undefined ? {} : { max_output_tokens: input.maxTokens }),
     }
 
     if (input.tools && input.tools.length > 0) {

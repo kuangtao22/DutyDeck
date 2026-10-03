@@ -142,22 +142,22 @@ export function ServerOpsAgentReadAccess({ sessionId, projectId, projects, allCo
   /** 撤销只针对会话服务器授权，不能误删数据库禁用规则。 */
   const hasServerAccess = view.access?.resources.some((resource) => (resource.kind === 'ssh' || resource.kind === 'redis') && (!connectionId || serverOpsReadResourceKey(resource) === connectionId)) ?? false
   return <>
-    {!dialogOnly ? <Button ref={triggerRef} type="button" variant="outline" size="sm" className="h-8 gap-1.5 rounded-md bg-content-area px-2 text-xs text-foreground/80" aria-label="Agent 只读授权"
-      title={policyApi || targetSession ? '管理 Agent 只读授权与数据库禁用表' : unavailableReason ?? '请完整重启客户端以使用只读授权'}
+    {!dialogOnly ? <Button ref={triggerRef} type="button" variant="outline" size="sm" className="h-8 gap-1.5 rounded-md bg-content-area px-2 text-xs text-foreground/80" aria-label="Agent 数据库权限"
+      title={policyApi || targetSession ? '管理 Agent 数据库权限与数据库禁用表' : unavailableReason ?? '请完整重启客户端以使用 Agent 数据库权限'}
       disabled={(!targetSession && !policyApi) || view.loading} onClick={openEditor}>
       {view.loading ? <LoaderCircle className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}
-      <span className="shrink-0">Agent 只读授权</span>
+      <span className="shrink-0">Agent 数据库权限</span>
     </Button> : null}
     <Dialog open={view.open || (dialogOnly && !openedRef.current)} onOpenChange={(open) => { if (!open) closeEditor() }}>
       <DialogContent className="z-[260] flex max-h-[90vh] w-[calc(100%-2rem)] max-w-2xl flex-col gap-3 overflow-hidden" overlayClassName="z-[250]" hideClose={view.saving}
         onCloseAutoFocus={(event) => { event.preventDefault(); triggerRef.current?.focus() }}
         onEscapeKeyDown={(event) => { event.stopPropagation(); if (view.saving) event.preventDefault() }}>
-        <DialogHeader><DialogTitle>Agent 只读授权{targetConnection ? ` · ${targetConnection.label}` : ''}</DialogTitle><DialogDescription>{targetConnection?.kind === 'database' ? '未禁用的表默认可读；在这里多选禁用表，保存后生效。' : targetConnection ? '仅编辑当前连接；服务器与 Redis 共用当前会话的 30 分钟授权期限，修改后统一更新。' : '数据库默认可读，只需选择禁用表；服务器与 Redis 仍按当前会话授权，有效期 30 分钟。'}</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Agent 数据库权限{targetConnection ? ` · ${targetConnection.label}` : ''}</DialogTitle><DialogDescription>{targetConnection?.kind === 'database' ? '未禁用的表默认可读；在这里多选禁用表，保存后生效。选择「运维读写」模式后，Agent 可执行受控数据库写入。' : targetConnection ? '仅编辑当前连接；服务器与 Redis 共用当前会话的 30 分钟授权期限，修改后统一更新。' : '数据库默认可读，只需选择禁用表；服务器与 Redis 仍按当前会话授权，有效期 30 分钟。数据库写入还需在会话工具模式中选择「运维读写」。'}</DialogDescription></DialogHeader>
         {view.loading ? <p role="status" className="text-xs text-muted-foreground">正在读取授权…</p> : null}
         {targetSession ? <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="text-muted-foreground">当前会话工具模式</span>
           <AgentOpsAccessControl sessionId={targetSession} />
-          <span className="text-muted-foreground">选择「运维只读」后仅开放运维读取工具。</span>
+          <span className="text-muted-foreground">运维只读仅开放读取；选择「运维读写」后可使用受控数据库写入工具。</span>
         </div> : <p className="text-xs text-muted-foreground">{unavailableReason ?? '当前没有普通 Agent 会话'}，可编辑数据库禁用表；服务器授权需先选择会话。</p>}
         {hasServerAccess ? <p className="break-words text-xs text-muted-foreground">{summary.target} · {summary.capability} · {remainingMinutes > 0 ? `剩余约 ${remainingMinutes} 分钟` : '已到期'}</p> : null}
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
@@ -186,7 +186,7 @@ export function ServerOpsAgentReadAccess({ sessionId, projectId, projects, allCo
           {missingDatabases.map((entry) => <div key={JSON.stringify([entry.sourceId, entry.database])} className="flex items-center justify-between gap-2 text-xs"><span className="break-all">已移除连接的禁用表：{entry.sourceId} / {entry.database}</span><Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => controller.editDatabase(view.databaseExclusions.filter((item) => item.sourceId !== entry.sourceId || item.database !== entry.database))}>清除禁用</Button></div>)}
           {managed.length === 0 ? <p className="text-xs text-muted-foreground">当前项目暂无连接，可以管理其它项目已设置的范围。</p> : null}
         </div>
-        <p className="text-[11px] leading-5 text-muted-foreground">未禁用的业务表（含新增表）默认可查询，勾选的表保存后持久禁用；支持结构、数据预览和只读 SQL，修改仅生成脚本或程序。服务器日志需单独授权。{view.databasePolicy?.revision === 0 ? '旧版临时禁用未持久保存，需重新勾选保存。' : ''}</p>
+        <p className="text-[11px] leading-5 text-muted-foreground">未禁用的业务表（含新增表）默认可查询，勾选的表保存后持久禁用；默认只读，只有会话选择「运维读写」时才会向 Agent 暴露受控数据库写入。服务器日志需单独授权。{view.databasePolicy?.revision === 0 ? '旧版临时禁用未持久保存，需重新勾选保存。' : ''}</p>
         {view.databaseError ? <p role="alert" className="break-words text-xs text-destructive">{view.databaseError}</p> : null}
         {view.error && view.error !== view.databaseError ? <p role="alert" className="break-words text-xs text-destructive">{view.error}</p> : null}
         <div className="flex flex-wrap justify-end gap-2">

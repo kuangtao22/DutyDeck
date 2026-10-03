@@ -51,13 +51,14 @@ export function AgentOpsAccessControl({ sessionId }: { sessionId: string }): Rea
       <DropdownMenuTrigger asChild>
         <Button type="button" variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-xs" disabled={!session || switching} aria-label="选择 Agent 工具模式">
           {switching ? <LoaderCircle className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}
-          {mode === 'server-ops-read' ? '运维只读' : '标准'}
+          {mode === 'server-ops-read' ? '运维只读' : mode === 'server-ops-write' ? '运维读写' : '标准'}
         </Button>
       </DropdownMenuTrigger>
       {/* 菜单通过 Portal 渲染，需要高于运维授权弹窗的 260 层。 */}
       <DropdownMenuContent align="start" className="z-[270]">
         <DropdownMenuItem onSelect={() => { void changeMode('standard') }}>标准模式</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => { void changeMode('server-ops-read') }}>运维只读</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => { void changeMode('server-ops-write') }}>运维读写（可改数据库）</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   </div>

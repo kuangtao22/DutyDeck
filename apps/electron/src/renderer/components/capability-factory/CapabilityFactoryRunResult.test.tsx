@@ -74,6 +74,12 @@ describe('运行结果视图', () => {
     expect(html.indexOf('开始运行')).toBeGreaterThan(html.indexOf('v2'))
   })
 
+  test('Given 历史运行记录 When 查看结果 Then 显示运行短 ID 与开始时间，避免混淆不同记录', () => {
+    const html = render(run())
+    expect(html).toContain('记录 run-1')
+    expect(html).toContain('1970/1/1')
+  })
+
   test('Given 评审标准归场景定义 When 查看运行 Then 不再显示独立标准导航且保留评审结果', () => {
     const html = render(run())
     expect(html).not.toContain('>评审标准</button>')

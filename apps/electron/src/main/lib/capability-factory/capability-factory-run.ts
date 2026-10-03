@@ -20,6 +20,7 @@ import {
   type SceneAcceptance,
   getStepAcceptance,
   getReviewSteps,
+  isPromptOnlyOptimization,
 } from '@proma/shared'
 import type { CapabilityBinding, CapabilityStepProgress, RunResult } from '@proma/capability-runner'
 import { createCapabilityRunner } from '@proma/capability-runner'
@@ -30,6 +31,7 @@ import {
 import type { CapabilityFactoryModelCall } from './capability-factory-model-call'
 import type { CapabilityFactoryModelResolution } from './capability-factory-model-call'
 import { reviewCapabilityRun } from './capability-factory-review'
+import { validateCapabilityEvidence } from './capability-factory-evidence'
 
 /** 运行适配器依赖：全部注入，离线可测。 */
 export interface CapabilityFactoryRunDeps {
@@ -357,6 +359,13 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
             finishedAt: now(),
           })
         }
+        if (options.comparisonId !== undefined && !isPromptOnlyOptimization(scene.definition, draft.definition)) {
+          return record({
+            status: 'failed', valid: false, input, outputs: null, steps: [],
+            error: '候选草案含提示词以外的执行结构或契约改动，不能当作提示词优化直接比较。',
+            finishedAt: now(),
+          })
+        }
       }
 
       /** 步骤回调只发观察快照，不提前写入历史；最终记录仍由 finish 统一落盘。 */
@@ -407,6 +416,16 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
       const failureText = inputErrors.length > 0
         ? `输入不满足输入契约：${inputErrors.join('；')}`
         : result.error
+      /** map 内子步骤也在扁平轨迹里；仅用户输入与成功工具返回可作为原文来源。 */
+      const evidenceSource = { input, tools: result.steps
+        .filter((step) => step.type === 'tool' && step.status === 'succeeded')
+        .map((step) => step.parsedOutput) }
+      /** 检查所有模型步骤，避免最终输出映射隐藏中间引用错误；不把模型输出并入来源。 */
+      const evidenceIssues = validateCapabilityEvidence(evidenceSource, {
+        outputs: result.outputs,
+        modelSteps: result.steps.flatMap((step, index) => step.type === 'llm' || step.type === 'extract'
+          ? [{ [step.stepId]: { traceIndex: index, output: step.parsedOutput ?? step.rawOutput } }] : []),
+      })
       return finish({
         id: runId, sceneId, sceneVersion: scene.currentVersion, kind: 'full',
         taskSaved, startedAt, ...identity,
@@ -417,6 +436,7 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
         steps: result.steps,
         modelBindings: bindings,
         ...(placeholders.length === 0 ? {} : { placeholderCapabilities: placeholders }),
+        ...(evidenceIssues.length === 0 ? {} : { evidenceIssues }),
         ...(failureText === undefined ? {} : { error: failureText }),
         finishedAt: result.finishedAt,
       }, definition!)
@@ -497,6 +517,8 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
         })
       }
 
+      /** 单步输出同样可能带段落证据，按调用方传入的材料做局部回溯。 */
+      const evidenceIssues = validateCapabilityEvidence(input, outcome.step.parsedOutput)
       return finish({
         id: runId, sceneId, sceneVersion: scene.currentVersion, kind: 'step', stepId, startedAt,
         status: outcome.valid ? 'succeeded' : 'failed',
@@ -506,6 +528,7 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
         steps: [outcome.step],
         ...(stepPrompt === undefined ? {} : { stepPrompt }),
         modelBindings: bindings,
+        ...(evidenceIssues.length === 0 ? {} : { evidenceIssues }),
         // 单步输入完全来自调用方，没有执行其他步骤的占位桩，不能继承整链占位标签。
         finishedAt: outcome.step.finishedAt,
       }, definition!)

@@ -88,6 +88,7 @@ export function describeReviewStatus(run: CapabilityRun): { label: string; tone:
   if (!run.review || run.review.status === 'skipped') return { label: '未评测', tone: 'idle' }
   if (run.review.status === 'running') return { label: '评测中', tone: 'idle' }
   if (run.review.status === 'failed') return { label: '评测失败', tone: 'bad' }
+  if (run.evidenceIssues?.length) return { label: '证据待确认', tone: 'warn' }
   if (run.review.passed === true && (
     run.status !== 'succeeded'
     || !run.valid
@@ -119,6 +120,9 @@ export function describeRunVerdict(run: CapabilityRun): string {
   }
   if (!run.valid) {
     return '这次用的是真实桩，但输出没通过约束：展开标红的步骤看约束原因，改那一句提示词后重跑，用提交历史对比两次。'
+  }
+  if (run.evidenceIssues?.length) {
+    return '输出结构通过，但证据引用无法逐字回溯；先修正证据字段与原文段落的对应关系，再用同一份输入重跑。'
   }
   if (!run.review) return '这是旧运行记录：输出通过了约束，但没有自动评测记录，不能推断内容质量。'
   switch (run.review.status) {

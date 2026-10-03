@@ -75,10 +75,10 @@ export async function runAuditedServerOpsQuery<T extends QueryResult>(options: Q
 
 /** 写执行的审计摘要：只带目标身份与库，不含 SQL 正文、表名或语句内容。 */
 interface WriteAuditSummary { sourceId: string; database: string }
-/** 写执行的审计选项；actor 只允许用户，写链没有 Agent 入口。 */
+/** 写执行的审计选项；用户窗口与运维读写模式的 Agent 共用同一审计链。 */
 interface WriteAuditOptions<T extends ServerOpsDataWriteResult> {
   summary: WriteAuditSummary
-  actor: { actor: 'user'; windowId: number }
+  actor: { actor: 'user'; windowId: number } | { actor: 'agent'; sessionId: string }
   audit: { append(input: ServerOpsAuditAppendInput): ServerOpsAuditRecord; prepareForWrites?: () => Promise<void> }
   check: () => void
   execute: () => Promise<T>

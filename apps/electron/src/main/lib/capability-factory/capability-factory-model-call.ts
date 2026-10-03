@@ -162,6 +162,8 @@ export function createCapabilityFactoryModelCall(
       history: [],
       userMessage,
       thinkingEnabled: false,
+      ...(invocation.temperature === undefined ? {} : { temperature: invocation.temperature }),
+      ...(invocation.maxTokens === undefined ? {} : { maxTokens: invocation.maxTokens }),
       /** 工厂这一层不处理附件：图片输入属于运行输入契约的事，等有场景真的需要再接。 */
       readImageAttachments: () => [],
     })

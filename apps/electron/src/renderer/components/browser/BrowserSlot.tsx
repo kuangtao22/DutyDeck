@@ -1,12 +1,13 @@
 import * as React from 'react'
 import { useStore } from 'jotai'
-import { browserModalActiveAtom } from '@/atoms/browser-modal-atoms'
+import { browserNativeViewHiddenAtom } from '@/atoms/browser-modal-atoms'
 import { nextBrowserLayoutRevision } from './browser-layout-revision'
 
 // 每次 publish（包括卸载隐藏）分配全局单调 revision。旧 slot 的 IPC 即使晚到，
 // 主进程也不会覆盖随后已挂载 tab 的可见性和边界。
 // WebContentsView 是原生子视图，天然盖在 renderer DOM 之上；CSS z-index 无法反转。
-// 只有模态弹窗临时隐藏原生网页，且保留会话；普通菜单、Popover、Toast 不触发避让。
+// 模态弹窗或 renderer 浮层临时隐藏原生网页，且保留会话；普通不遮挡网页的
+// Popover、Toast 不触发避让。
 
 export function BrowserSlot({ sessionId, tabId }: { sessionId: string; tabId: string }): React.ReactElement {
   const ref = React.useRef<HTMLDivElement>(null)
@@ -45,12 +46,12 @@ export function BrowserSlot({ sessionId, tabId }: { sessionId: string; tabId: st
       })
     }
     const publishCurrentVisibility = (immediate = false) => {
-      /** 初次挂载、resize 和模态切换读取同一状态，避免迟到布局重新盖住弹窗。 */
-      const modalActive = store.get(browserModalActiveAtom)
-      publish(!modalActive, modalActive, immediate)
+      /** 初次挂载、resize 和隐藏状态切换读取同一状态，避免迟到布局重新盖住浮层。 */
+      const nativeViewHidden = store.get(browserNativeViewHiddenAtom)
+      publish(!nativeViewHidden, nativeViewHidden, immediate)
     }
-    /** 模态节点挂载立即避让；最后一个节点完成退出动画后才恢复。 */
-    const unsubscribeModal = store.sub(browserModalActiveAtom, () => publishCurrentVisibility(true))
+    /** 模态或浮层挂载立即避让；最后一个节点完成退出动画后才恢复。 */
+    const unsubscribeNativeViewHidden = store.sub(browserNativeViewHiddenAtom, () => publishCurrentVisibility(true))
     const observer = new ResizeObserver(() => publishCurrentVisibility())
     const publishBounded = () => publishCurrentVisibility()
     observer.observe(element)
@@ -59,7 +60,7 @@ export function BrowserSlot({ sessionId, tabId }: { sessionId: string; tabId: st
     // 否则快速左右切换时原生视图会停留在隐藏状态，表现为页面内容消失。
     publishCurrentVisibility(true)
     return () => {
-      unsubscribeModal()
+      unsubscribeNativeViewHidden()
       observer.disconnect()
       window.removeEventListener('resize', publishBounded)
       if (frame) cancelAnimationFrame(frame)

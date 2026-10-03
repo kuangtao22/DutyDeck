@@ -1,12 +1,27 @@
 import { describe, expect, test } from 'bun:test'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { ServerOpsAgentReadFacade } from '../server-ops/server-ops-agent-read-facade'
-import { buildServerOpsReadTools } from './pi-server-ops-read-tools'
+import { buildServerOpsReadTools, buildServerOpsReadWriteTools } from './pi-server-ops-read-tools'
 
 /** 测试 SDK 直接保留工具定义，验证真实 execute 到 Facade 的适配链。 */
 const sdk = { defineTool: (definition: ToolDefinition) => definition } as typeof import('@earendil-works/pi-coding-agent')
 
 describe('Pi Server Ops 多资源只读工具', () => {
+  test('Given 运维读写 Facade When 构建工具 Then 只在受限读取集合上增加数据库写入', () => {
+    const facade = { databaseWrite: async () => ({}) } as unknown as ServerOpsAgentReadFacade
+    const tools = buildServerOpsReadWriteTools(sdk, facade)
+    expect(tools.map((tool) => tool.name)).toContain('ops_database_write')
+    expect(tools.filter((tool) => tool.name === 'ops_database_write')).toHaveLength(1)
+    const writeTool = tools.find((tool) => tool.name === 'ops_database_write')!
+    expect(JSON.stringify(writeTool.parameters)).toContain('sql')
+    expect(JSON.stringify(writeTool.parameters)).not.toMatch(/sessionId|password|hostId/)
+  })
+
+  test('Given 只读 Facade When 构建工具 Then 不注册数据库写入', () => {
+    const tools = buildServerOpsReadTools(sdk, {} as ServerOpsAgentReadFacade)
+    expect(tools.some((tool) => tool.name === 'ops_database_write')).toBe(false)
+  })
+
   test('Given 发现与日志工具 When 调用 Then 原参数与取消信号进入有授权的Facade', async () => {
     /** 专用入口不提供任何任意命令或直接日志流接口。 */
     const seen: Array<{ input: unknown; signal?: AbortSignal }> = []

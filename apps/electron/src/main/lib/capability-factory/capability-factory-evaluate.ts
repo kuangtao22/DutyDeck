@@ -140,6 +140,7 @@ export function createCapabilityFactoryEvaluator(deps: CapabilityFactoryEvaluate
         if (run.sceneVersion !== sceneVersion) return null
         const passed = run.status === 'succeeded' && run.valid
         const reviewEligible = passed && (run.placeholderCapabilities?.length ?? 0) === 0
+          && (run.evidenceIssues?.length ?? 0) === 0
         return {
           caseId: item.id,
           caseName: item.name,
@@ -150,7 +151,8 @@ export function createCapabilityFactoryEvaluator(deps: CapabilityFactoryEvaluate
           reviewEligible,
           startedAt: run.startedAt,
           finishedAt: run.finishedAt,
-          ...(passed ? {} : { detail: describeCaseFailure(run) }),
+          ...(!passed ? { detail: describeCaseFailure(run) }
+            : run.evidenceIssues?.length ? { detail: `证据检查未通过：${run.evidenceIssues.join('；')}` } : {}),
         }
       }
     },

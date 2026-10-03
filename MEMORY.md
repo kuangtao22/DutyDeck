@@ -1370,3 +1370,23 @@
 - 2026-10-01（Pi 0.99.1 P2 会话 artifact 边界）：0.99.1 空会话会先返回预期 `sessionFile`，首条用户消息落盘后文件才真实存在；`PiAgentAdapter` 的 `onSessionId` 现在只接受 `existsSync` 确认过的路径，并在 `message_start`、`agent_end` 补写一次，避免异常中止或空会话在 Proma 元数据留下悬空 artifact。新增空路径/真实文件边界测试，Pi 权限测试 7 项及 session transcript/tool result/reasoning 12 项通过。正确 worktree 依赖恢复后全仓 typecheck 只剩既有 Canvas fixture 两个 `JsonObject` 错误；主线未合并、未发布。
 - 2026-10-01（Pi 0.99.1 P3-P5 验证）：P3/P4 定向回归 165 项通过，覆盖权限/审批/取消、utility 生命周期、工具结果 JSON 边界、MCP 配置与 OAuth、模型目录、provider、usage/cost 和重试；合并运行时的 1 项 builtin tools 失败是 Bun mock 污染，`bun test --isolate` 单独重跑 18 项全通过。真实 Electron 43.2 upstream runtime smoke 通过，两轮请求、JSONL 恢复、usage、utility 重启和 PTY 边界均有证据。完整 `bun run electron:build` 通过（renderer、CLI、native helpers、资源、主进程、agent runtime）；首次失败仅因 GitHub OfficeCLI 下载 ECONNRESET，复用已校验的本地 v1.0.145 cache 后恢复。全仓 typecheck 仍只剩既有 Canvas fixture 两个 `JsonObject` 错误。P6 Codemode、Tool Search、分类/虚拟模型、内置 MCP 继续关闭。
 - 2026-10-01（Pi 0.99.1 类型错误收口）：升级后全仓仅剩 Canvas 交付测试的两个 `JsonObject` 推断错误，根因是联合字面量把互斥字段推断为 `undefined`，不代表生产 schema 放宽或运行时失败。测试 fixture 改为显式 `JsonObject[]`，Canvas provider 160 项测试与全仓 `bun run typecheck` 均通过。
+
+- 2026-10-01（编排工厂优化策略复盘，仅分析）：小说角色提取场景 v14 的 35 条运行记录显示，v12→v14 持续加长提示词仍反复出现“关系 summary 使用了不对应事实的 evidence”（事实在 `c0-p36`，关系 evidence 只有 `c0-p14/c0-p17`）。根因是优化闭环只验证 JSON/流程与模型评审，没有机器校验 `selectedText` 是否属于 `paragraphRef`、summary 是否由同一 evidence 支撑；对比/采纳还未要求 `review.passed=true`、无退化、全选任务完成或指标改善。后续优先做确定性证据闸门、prompt-only 草案、严格采纳门槛、精确 runId 读取、统一 Agent/UI 对比并透传 temperature/maxTokens，再扩大批量指标；不要继续只堆提示词。
+
+- 2026-10-01（编排工厂优化门槛修复）：本轮将优化采纳改为整批验证：同一页面完成的全部选中任务须同口径可比、候选明确通过、无退化及未知项，并至少一项判据、指标或证据问题改善；修改选择即清除旧背书，历史与 Agent 运行仅供阅读，刷新后需重新比较。提示词实验仅允许改模型步骤 prompt，避免通过改流程、契约、标准或模型制造提升。证据确定性检查只证明显式引用来自用户输入或成功工具原文，模型输出不能自证；summary 允许忠实概括，同组 evidence 能否支持事实仍由内容评审判断，不能用子串匹配代替语义判断。批量质量结论和交付也受证据问题约束。已增加精确 runId 读取及模型参数透传；默认 Skill 升至 1.0.5。400 项相关回归、5 组隔离真实页面交互及主进程/Agent/renderer 构建通过；没有真实模型准确率、参数兼容性或泛化提升的验收证据。Agent/UI 尚未共用持久后端对比批次，普通人工采纳入口仍保留，不应宣称已完成全局强制门禁。
+
+- 2026-10-01（本地 Pi 依赖陈旧排查）：源码和锁文件已升 0.99.1 时，apps/electron/node_modules 仍可能保留此前打包同步的 0.87.1，表现为 ExtensionToolContext 等导出缺失。应按锁文件安装并运行 sync:runtime-deps:dev 恢复本地运行时副本，不要改测试或放宽类型绕过；本轮恢复后全仓 typecheck 通过。
+
+- 2026-10-01（浏览器加号菜单遮挡修复）：原生 WebContentsView 位于 renderer portal 之上，之前在加号菜单打开时给 BrowserPanel 增加 256px padding-top 让位，导致网页内容整体下移。现改为独立的 renderer 浮层计数；菜单打开时临时隐藏原生视图并设置 preserveSessionOnHide，关闭后按原 bounds 恢复。模态弹窗和加号菜单共用原生视图隐藏条件，普通不遮挡页面的 Popover/Toast 不受影响。定向 6 项浏览器/菜单回归、Electron typecheck 和 renderer build 通过；未改变浏览器会话、导航历史或页面尺寸。
+
+- 2026-10-02（Agent 数据库读写权限）：Agent 工具模式新增 `server-ops-write`，只在会话明确选择「运维读写」时注册 `ops_database_write`；仍禁用 Shell、文件、MCP、浏览器和服务器动作。写入复用主进程 `writeSource`、SQL 规划器、串行调度、取消信号、结果未知/部分生效处理与审计，审计 actor 使用 Agent sessionId；仅直连 MySQL 与本地 SQLite，PostgreSQL、SSH 隧道、系统库和非法 SQL 在 Facade 入口拒绝。UI 将运维授权入口改成「Agent 数据库权限」，明确只读/读写差异。定向 106 项通过、全仓 `bun run typecheck` 通过；旧 data-write 审计测试已更新为允许获批 Agent，但仍要求 sessionId、operationId、source/database 互斥。
+
+- 2026-10-02（安装版菜单修复交付）：当前源码完整构建生成 `apps/electron/out/mac-arm64/DutyDeck.app`，其 app.asar 已确认含 `ops_database_write` 且不含旧 `ADD_TAB_MENU_CLEARANCE`；已备份旧 `/Applications/开发工具/DutyDeck.app` 到同目录 `DutyDeck.app.previous`，替换并执行 ad-hoc codesign，`codesign --verify --deep --strict` 通过。macOS 锁屏导致无法做真实点击 smoke；源码状态测试、主进程浏览器保留测试和 renderer build 已通过。
+
+- 2026-10-02（本轮回归补充）：Bun 裸运行会因 workspace 链接和 Electron 原生模块未就绪产生大量假失败；使用 `bun install --frozen-lockfile`（临时目录指向 `/private/tmp`）恢复链接后，浏览器浮层、Agent 运维读写、Facade、写入 runtime、preload 和 UI 控制器共 201 项定向测试通过，`bun run typecheck` 全绿。完整 `bun test` 仍包含与本轮无关的环境/平台失败，不作为本轮功能回归依据。
+
+- 2026-10-02（编排工厂证据提示词复盘）：模型证据错引的直接诱因是提示词中包含可复制的错误近似原文，例如把「将何去何从」写成「将何去从」、把句尾引号写成双引号；v14 候选与 v15 基线分别复用了这些反例。后续提示词只能保留正确原文的正例，错误示例改为抽象说明或占位符；证据校验继续保持严格，至少用多条真实任务验证候选，单样本通过不能证明泛化。
+
+- 2026-10-02（编排工厂评审指标阻断）：小说角色提取当前步骤声明了多个指标名称但没有公式、阈值或可计算标注，评审模型会返回 `value=null`；`parseReport` 因此把步骤 `passed` 置为 `null`，即使 9/9 判据通过、证据无误，候选也不能进入采纳门槛。没有确定计算器或标注数据时应移除这些指标，不能把 null 当通过。
+
+- 2026-10-02（编排工厂场景 v17 修复）：通过 `CapabilityFactoryService` 先保存草案再采纳，将「小说角色提取」从 v16 推进到 v17；删除会被模型复用的错误近似引文与双引号示例，并清空没有公式、阈值或来源的顶层/步骤指标，使评审只依据可核对判据给出结论。默认 Skill 同步升至 1.0.6，运行详情日期测试改为匹配 `zh-CN` 的实际短日期格式。

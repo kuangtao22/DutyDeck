@@ -68,6 +68,18 @@ describe('AnthropicAdapter headers', () => {
 })
 
 describe('AnthropicAdapter 显式关闭思考', () => {
+  test('Given 采样参数 When buildStreamRequest Then 透传 temperature 与 max_tokens', () => {
+    const adapter = new AnthropicAdapter('zhipu-coding')
+    const request = adapter.buildStreamRequest({
+      baseUrl: 'https://open.bigmodel.cn/api/anthropic', apiKey: 'test-key',
+      modelId: 'glm-5.3', history: [], userMessage: '只返回 JSON',
+      temperature: 0.1, maxTokens: 321, thinkingEnabled: false, readImageAttachments: () => [],
+    })
+    const body = JSON.parse(request.body) as { temperature?: number; max_tokens?: number }
+    expect(body.temperature).toBe(0.1)
+    expect(body.max_tokens).toBe(321)
+  })
+
   test('Given GLM 默认开启思考 When 调用方关闭 Then 请求显式发送 disabled', () => {
     const adapter = new AnthropicAdapter('zhipu-coding')
     const request = adapter.buildStreamRequest({

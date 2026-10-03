@@ -88,6 +88,8 @@ const SERVER_OPS_DATA_READ_TIMEOUT_MS = 15_000
 /** Agent 会话和 UI 读取共享调度器，调用者提供授权复核回调。 */
 export interface ServerOpsReadContext {
   ownerSessionId?: string
+  /** 仅受控 Agent 读写模式可携带 agent 身份；普通窗口调用不设置。 */
+  actor?: 'agent'
   check?: () => void
 }
 
@@ -754,8 +756,8 @@ export class ServerOpsDataService {
    * 执行一次手工写库脚本。
    *
    * 与只读查询的关键差异：
-   * ①**只允许用户发起**——带会话上下文的调用（Agent、自动化、委派）一律拒绝，
-   *   写能力不能顺着只读工具链漏给模型；
+   * ①窗口调用与 Agent 读写模式共用这一条受控写链；没有明确 actor 的会话上下文仍一律拒绝，
+   *   普通只读模式不能顺着读取工具链漏出写能力；
    * ②主进程与 utility 使用同一语句规划器校验，跨进程入口再次拒绝会话控制；
    * ③只支持直连的 MySQL 与本地 SQLite，其余组合在发起前明确拒绝。
    *
@@ -767,8 +769,8 @@ export class ServerOpsDataService {
   async writeSource(input: ServerOpsDataWriteInput, signal?: AbortSignal, context?: ServerOpsReadContext): Promise<ServerOpsDataWriteResult> {
     this.assertUsable()
     this.checkReadCaller(signal, context)
-    /** 写链没有 Agent 入口；出现会话身份说明调用方越界。 */
-    if (context?.ownerSessionId !== undefined) throw new Error('SERVER_OPS_DATA_WRITE_AGENT_FORBIDDEN')
+    /** 只有显式标记为 Agent 读写模式的会话才能进入，避免普通读取上下文越界。 */
+    if (context?.ownerSessionId !== undefined && context.actor !== 'agent') throw new Error('SERVER_OPS_DATA_WRITE_AGENT_FORBIDDEN')
     const parsedInput = parseServerOpsDataWriteInput(input)
     /** 发出请求后失败只能按未知收口；校验和排队中拒绝则确定没有开始。 */
     let dispatched = false

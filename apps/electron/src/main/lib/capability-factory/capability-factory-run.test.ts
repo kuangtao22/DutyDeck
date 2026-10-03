@@ -216,6 +216,23 @@ describe('运行：桩与轨迹', () => {
     expect(calls).toHaveLength(0)
   })
 
+  test('Given 候选草案改了输出映射 When 用于对比 Then 在模型调用前拒绝非提示词改动', async () => {
+    const { service, runner, calls } = fixture()
+    service.setStub('corpus.build', { corpus: '正文' })
+    /** 换输出会隐藏原来的错误，不能归因于提示词改善。 */
+    const candidate = definition({ outputs: [{ name: 'characters', from: { stepId: 'build' }, shape: 'structured' }] })
+    const drafted = service.saveDraft('scene-1', candidate, 'agent', '改输出')
+
+    const run = await runner.run('scene-1', { chapterText: '正文' }, {
+      target: 'draft', expectedVersion: 2, expectedDraftCreatedAt: drafted.draft?.createdAt,
+      expectedDraftDefinition: candidate, comparisonId: 'compare-1', comparisonRole: 'candidate',
+    })
+
+    expect(run.status).toBe('failed')
+    expect(run.error).toContain('提示词')
+    expect(calls).toHaveLength(0)
+  })
+
   test('Given 草案运行没有对比标识 When 执行 Then 仍不能污染用户保存任务', async () => {
     const { service, runner } = fixture()
     service.setStub('corpus.build', { corpus: '正文' })
@@ -293,6 +310,64 @@ describe('运行：桩与轨迹', () => {
     /** 抽取步骤的格式说明要真的拼进提示词，否则模型不知道要输出什么形状。 */
     expect(calls[0]?.formatInstruction).toBeTruthy()
     expect(calls[0]?.prompt).toContain('阿明抬头看着天')
+  })
+
+  test('Given 输出证据无法回溯 When 运行 Then 保留原始输出并记录 evidenceIssues', async () => {
+    const { service, runner } = fixture({ modelText: '{"characters":[{"name":"阿明","evidence":[{"paragraphRef":"c0-p1","selectedText":"不存在的原文"}]}]}' })
+    service.setStub('corpus.build', { corpus: '{"paragraphRef":"c0-p1","text":"阿明抬头看着天。"}' })
+
+    const run = await runner.run('scene-1', { chapterText: '第一章……' })
+
+    expect(run.status).toBe('succeeded')
+    expect(run.valid).toBe(true)
+    expect(run.outputs).toEqual({ characters: { characters: [{ name: '阿明', evidence: [{ paragraphRef: 'c0-p1', selectedText: '不存在的原文' }] }] } })
+    expect(run.evidenceIssues?.[0]).toContain('selectedText')
+  })
+
+  test.each(['c0-p1', 'invented'])('Given 模型伪造原文段落 %s When 校验 Then 不能替自己证明引用真实性', async (paragraphRef) => {
+    /** 模型同次输出的 text 不是原文来源，无论覆盖已有 ref 还是发明新 ref 都不可信。 */
+    const modelText = JSON.stringify({ characters: [{ paragraphRef, text: '编造原文', evidence: [{ paragraphRef, selectedText: '编造原文' }] }] })
+    const { service, runner } = fixture({ modelText })
+    service.setStub('corpus.build', { corpus: [{ paragraphRef: 'c0-p1', text: '真实原文' }] })
+
+    const run = await runner.run('scene-1', { chapterText: '第一章……' })
+
+    expect(run.evidenceIssues?.length ?? 0).toBeGreaterThan(0)
+    expect(run.steps[1]?.rawOutput).toBe(modelText)
+  })
+
+  test('Given 中间模型步骤证据错误但最终输出没有该字段 When 运行 Then 仍保留中间错误', async () => {
+    /** 最终输出只暴露工具原文，不能掩盖 scan 已产生的错误引用。 */
+    const { service, runner } = fixture({
+      definition: definition({ outputs: [{ name: 'corpus', from: { stepId: 'build' }, shape: 'structured' }] }),
+      modelText: '{"characters":[{"evidence":[{"paragraphRef":"c0-p1","selectedText":"编造原文"}]}]}',
+    })
+    service.setStub('corpus.build', { corpus: [{ paragraphRef: 'c0-p1', text: '真实原文' }] })
+
+    const run = await runner.run('scene-1', { chapterText: '第一章……' })
+
+    expect(run.evidenceIssues?.some((issue) => issue.includes('scan') && issue.includes('selectedText'))).toBe(true)
+    expect(run.outputs).toEqual({ corpus: { corpus: [{ paragraphRef: 'c0-p1', text: '真实原文' }] } })
+  })
+
+  test('Given map 内工具提供原文且模型返回 JSON 文本 When 运行 Then 信任工具来源并检查模型引用', async () => {
+    /** map 子步骤的轨迹同样必须按 tool/model 区分来源。 */
+    const mapped = definition({
+      inputs: [{ name: 'chapterText', type: 'string' }, { name: 'chapters', type: 'array' }],
+      outputs: [{ name: 'characters', from: { stepId: 'batch' }, shape: 'structured' }],
+      steps: [{ id: 'batch', title: '逐章处理', type: 'map', over: { from: 'workflow-input', field: 'chapters' }, body: [
+        definition().steps[0]!,
+        { id: 'scan', title: '扫描人物', type: 'llm', modelSlot: 'main', prompt: '{{corpus}}', inputs: { corpus: { from: 'step-output', stepId: 'build' } } },
+      ] }],
+    })
+    const { service, runner } = fixture({ definition: mapped, modelText: '{"evidence":[{"paragraphRef":"c0-p1","selectedText":"真实原文"}]}' })
+    service.setStub('corpus.build', { corpus: [{ paragraphRef: 'c0-p1', text: '真实原文' }] })
+
+    const run = await runner.run('scene-1', { chapterText: '第一章', chapters: ['第一章'] })
+
+    expect(run.status).toBe('succeeded')
+    expect(run.steps.some((step) => step.type === 'tool' && step.status === 'succeeded')).toBe(true)
+    expect(run.evidenceIssues).toBeUndefined()
   })
 
   test('Given 没绑桩 When 运行 Then 那一步明确失败并指名能力，整次运行判不合法', async () => {

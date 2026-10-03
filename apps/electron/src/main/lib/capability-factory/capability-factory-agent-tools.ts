@@ -24,6 +24,7 @@ export const CAPABILITY_FACTORY_AGENT_TOOL_NAMES = [
   'factory_prepare_stub',
   'factory_apply_stub',
   'factory_list_runs',
+  'factory_get_run',
   'factory_list_tasks',
   'factory_run_scene',
   'factory_run_step',
@@ -181,6 +182,13 @@ export function buildCapabilityFactoryAgentTools(
       async execute(_id, input) { return result(facade.listRuns(input.sceneId, input.kind)) },
     }),
     sdk.defineTool({
+      name: 'factory_get_run',
+      label: '精确读取运行',
+      description: 'Read exactly one run by runId, including the original input, output, traces, frozen review criteria, evidence, suggestions and actual model bindings. Read-only. Call directly when the runId is already known, even for runs older than the recent list. Inspect evidenceIssues independently of review.passed; never substitute another run when the requested ID is missing.',
+      parameters: Type.Object({ sceneId, runId: Type.String({ minLength: 1, maxLength: 128 }) }, { additionalProperties: false }),
+      async execute(_id, input) { return result(facade.getRun(input.sceneId, input.runId)) },
+    }),
+    sdk.defineTool({
       name: 'factory_list_tasks',
       label: '读取已保存任务',
       description: 'Read the reusable whole-scene task inputs previously submitted by the human, newest first. Read-only. Reuse these exact inputs for baseline/candidate comparisons instead of paraphrasing or reconstructing them from run output.',
@@ -190,7 +198,7 @@ export function buildCapabilityFactoryAgentTools(
     sdk.defineTool({
       name: 'factory_run_scene',
       label: '运行整链对比',
-      description: 'Run a whole scene without changing or adopting its definition. For an optimization comparison, run the current baseline and pending draft candidate with the SAME input, expectedVersion and comparisonId; use role=baseline with target=current, then role=candidate with target=draft and pass BOTH the exact expectedDraftCreatedAt and expectedDraftDefinition returned by factory_get_scene. Comparison runs do not add duplicate saved tasks. The host rejects a changed version/draft and rejects a candidate whose review standards or model slots differ from the baseline, so prompt improvement cannot be manufactured by relaxing evaluation criteria or changing models.',
+      description: 'Run a whole scene without changing or adopting its definition. For an optimization comparison, run the current baseline and pending draft candidate with the SAME input, expectedVersion and comparisonId; use role=baseline with target=current, then role=candidate with target=draft and pass BOTH the exact expectedDraftCreatedAt and expectedDraftDefinition returned by factory_get_scene. Comparison runs do not add duplicate saved tasks. The host rejects a changed version/draft and rejects a candidate with changes outside llm/extract prompts (including review standards, model slots, workflow or contracts), so prompt improvement cannot be manufactured by relaxing evaluation criteria or changing models.',
       parameters: Type.Object({
         sceneId,
         input: Type.Record(Type.String(), Type.Unknown()),

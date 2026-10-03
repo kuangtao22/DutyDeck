@@ -26,6 +26,14 @@ describe('交付前的验证状态', () => {
     expect(describePackageReadiness({ sceneVersion: 2, runs: [run()] })).toEqual({ verified: true, reason: null })
   })
 
+  test('Given 模型评审通过但引用无法回溯 When 判断交付 Then 不能作为已验证证据', () => {
+    /** 证据问题独立于模型评审，必须阻止孤立 passed=true 为交付背书。 */
+    const invalidEvidence = run({ evidenceIssues: ['selectedText 不属于 paragraphRef'] })
+    expect(describePackageReadiness({ sceneVersion: 2, runs: [invalidEvidence] }).verified).toBe(false)
+    expect(describePackageReadiness({ sceneVersion: 2, runs: [invalidEvidence] }).reason).toContain('证据引用无法回溯')
+    expect(describePackageReadiness({ sceneVersion: 2, runs: [invalidEvidence, run({ id: 'good' })] }).verified).toBe(true)
+  })
+
   test('一次都没跑过 / 只跑过旧版本：各自给出可读原因', () => {
     expect(describePackageReadiness({ sceneVersion: 2, runs: [] }))
       .toEqual({ verified: false, reason: '这个场景还没有跑过一次整链运行' })

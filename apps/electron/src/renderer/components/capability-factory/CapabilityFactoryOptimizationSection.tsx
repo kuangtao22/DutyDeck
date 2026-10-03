@@ -7,7 +7,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { CapabilityFactoryRunResult } from './CapabilityFactoryRunResult'
 import { describeReviewStatus, formatDuration } from './capability-factory-run-view'
-import { canAdoptOptimization, compareOptimizationPair, groupOptimizationRuns, optimizationKey, runOptimizationBatch, sceneStandardsKey, type OptimizationPair } from './capability-factory-optimization'
+import { canAdoptOptimization, compareOptimizationPair, groupOptimizationRuns, isAdoptableOptimizationBatch, isPromptOnlyOptimization, optimizationKey, runOptimizationBatch, sceneStandardsKey, type OptimizationPair } from './capability-factory-optimization'
 
 /** 任务摘要只用于选择，运行始终使用保存的原始内容。 */
 function taskLabel(task: Pick<CapabilitySavedTask, 'input'>): string {
@@ -34,14 +34,15 @@ function PairResult({ pair, onInspect }: { pair: OptimizationPair; onInspect: (r
           </div>
         ))}
       </div>
-      {comparison?.comparable ? (
+      {comparison ? (
         <Collapsible>
           <CollapsibleTrigger asChild><Button type="button" variant="ghost" size="sm" className="h-7 px-0 text-[11px]">查看详细对比</Button></CollapsibleTrigger>
           <CollapsibleContent className="space-y-2 pt-1 text-[11px] leading-5">
             {comparison.reasons.map((reason) => <p key={reason} className="text-amber-600 dark:text-amber-400">{reason}</p>)}
             {comparison.fixed.map((criterion) => <p key={`fixed:${criterion}`} className="text-emerald-600 dark:text-emerald-400">已修复：{criterion}</p>)}
             {comparison.regressed.map((criterion) => <p key={`regressed:${criterion}`} className="text-destructive">新增问题：{criterion}</p>)}
-            {!comparison.fixed.length && !comparison.regressed.length ? <p className="text-muted-foreground">明确判据没有变化，不能据此宣称提升。</p> : null}
+            {comparison.unknown.map((criterion) => <p key={`unknown:${criterion}`} className="text-amber-600 dark:text-amber-400">无法判断：{criterion}</p>)}
+            {comparison.comparable && !comparison.fixed.length && !comparison.regressed.length && !comparison.unknown.length ? <p className="text-muted-foreground">明确判据没有变化，不能据此宣称提升。</p> : null}
             <div className="border-t border-border/50 pt-2">
               {baseline.review?.criteria.map((criterion) => {
                 /** 按同一判据匹配候选证据，不凭列表下标错配。 */
@@ -65,6 +66,8 @@ export function CapabilityFactoryOptimizationSection({ sessionId, scene, onScene
   const [selected, setSelected] = React.useState<string[]>([])
   /** 显式配对记录可由历史恢复，不猜测两个任意运行的关联。 */
   const [pairs, setPairs] = React.useState<OptimizationPair[]>([])
+  /** 只有当前页面完成的整批对比才可采纳，历史结果用于阅读而不自动背书。 */
+  const [completedBatchIds, setCompletedBatchIds] = React.useState<string[] | null>(null)
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [retry, setRetry] = React.useState(0)
@@ -81,7 +84,7 @@ export function CapabilityFactoryOptimizationSection({ sessionId, scene, onScene
       window.electronAPI.capabilityFactory.invoke('listRuns', { sessionId, sceneId: scene.id, kind: 'full', limit: 20 }),
     ]).then(([saved, history]) => {
       if (cancelled || !active.current) return
-      setTasks(saved); setSelected(saved[0] ? [saved[0].id] : []); setPairs(groupOptimizationRuns(history)); setError(null)
+      setTasks(saved); setSelected(saved[0] ? [saved[0].id] : []); setPairs(groupOptimizationRuns(history)); setCompletedBatchIds(null); setError(null)
     }).catch((cause: unknown) => { if (!cancelled && active.current) { setTasks([]); setError(cause instanceof Error ? cause.message : String(cause)) } })
     return () => { cancelled = true; active.current = false }
   }, [sessionId, scene.id, retry])
@@ -92,19 +95,35 @@ export function CapabilityFactoryOptimizationSection({ sessionId, scene, onScene
   const standardsChanged = Boolean(draft && sceneStandardsKey(scene) !== optimizationKey(draft.definition.stepAcceptances ?? draft.definition.acceptance))
   /** 模型或参数变化单独实验，不先花费一次基线调用再拒绝候选。 */
   const modelsChanged = Boolean(draft && optimizationKey(scene.definition.modelSlots) !== optimizationKey(draft.definition.modelSlots))
-  /** 最新一份仍匹配当前草案的已完成比较，才提供就地采纳。 */
-  const adoptable = pairs.find((pair) => pair.candidate && canAdoptOptimization(pair.candidate, scene)
-    && compareOptimizationPair(pair.baseline, pair.candidate).comparable)?.candidate
+  /** 结构变化需要走流程设计验证，不能混进提示词对比。 */
+  const promptOnly = Boolean(draft && isPromptOnlyOptimization(scene.definition, draft.definition))
+  /** 只有当前页面刚完成的整批任务都通过，才提供就地采纳；一条好结果不能掩盖同批失败。 */
+  const completedPairs = completedBatchIds
+    ? pairs.filter((pair) => completedBatchIds.includes(pair.id))
+    : []
+  const batchComparisons = completedPairs.flatMap((pair) => pair.candidate
+    ? [compareOptimizationPair(pair.baseline, pair.candidate)] : [])
+  const batchCandidatesMatch = completedPairs.length > 0
+    && completedPairs.length === completedBatchIds?.length
+    && completedPairs.every((pair) => pair.candidate && canAdoptOptimization(pair.candidate, scene))
+  const adoptable = batchCandidatesMatch && isAdoptableOptimizationBatch(batchComparisons)
+    ? completedPairs.find((pair) => pair.candidate)?.candidate
+    : undefined
 
   /** 冻结点击时的版本及任务，按两版顺序试跑；不自动修改或采纳。 */
   const start = async (): Promise<void> => {
     if (operationLock.current) return
-    operationLock.current = true; setBusy(true); setError(null)
+    operationLock.current = true; setBusy(true); setError(null); setCompletedBatchIds(null)
+    const comparisonIds = new Set<string>()
     try {
       await runOptimizationBatch({ api: window.electronAPI.capabilityFactory, sessionId, scene,
         tasks: (tasks ?? []).filter((task) => selected.includes(task.id)), isActive: () => active.current,
-        onPair: (pair) => setPairs((previous) => [pair, ...previous.filter((item) => item.id !== pair.id)]),
+        onPair: (pair) => {
+          comparisonIds.add(pair.id)
+          setPairs((previous) => [pair, ...previous.filter((item) => item.id !== pair.id)])
+        },
       })
+      if (active.current) setCompletedBatchIds([...comparisonIds])
     } catch (cause) { if (active.current) setError(cause instanceof Error ? cause.message : String(cause)) }
     finally { operationLock.current = false; if (active.current) setBusy(false) }
   }
@@ -135,6 +154,7 @@ export function CapabilityFactoryOptimizationSection({ sessionId, scene, onScene
           </Collapsible>
           {standardsChanged ? <p role="alert" className="text-xs leading-6 text-amber-600 dark:text-amber-400">草案修改了评审标准，暂不作为提示词优化比较。请先单独确认标准，再重新验证两版。</p> : null}
           {modelsChanged ? <p role="alert" className="text-xs leading-6 text-amber-600 dark:text-amber-400">草案修改了模型配置，请保持两版模型配置一致后再比较提示词效果。</p> : null}
+          {draft && !promptOnly && !standardsChanged && !modelsChanged ? <p role="alert" className="text-xs leading-6 text-amber-600 dark:text-amber-400">草案修改了流程或输入输出契约，不能作为提示词优化比较；请先完成流程设计验证。</p> : null}
         </section>
       ) : <section className="rounded-md border border-dashed border-border/70 px-3 py-4" aria-label="暂无候选草案"><p className="text-xs font-medium">还没有候选草案</p><p className="mt-1 text-[11px] leading-5 text-muted-foreground">在当前会话让 Agent 根据这轮结果提出提示词草案，保存后会出现在这里。</p></section>}
       {error ? <div role="alert" className="space-y-2 text-xs text-destructive"><p>{error}</p><Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setRetry((value) => value + 1)}>重新读取</Button></div> : null}
@@ -144,11 +164,14 @@ export function CapabilityFactoryOptimizationSection({ sessionId, scene, onScene
           <p className="text-[11px] leading-5 text-muted-foreground">选择要重复验证的已保存任务；每条任务会分别运行当前版和候选版。</p>
           <div className="max-h-36 space-y-1 overflow-y-auto">
             {tasks.map((task) => <label key={task.id} className="flex items-start gap-2 rounded-sm px-1 py-1.5 text-[11px] leading-5 hover:bg-muted/40">
-              <input type="checkbox" className="mt-1 accent-primary" checked={selected.includes(task.id)} disabled={busy || (!selected.includes(task.id) && selected.length >= 10)} onChange={(event) => setSelected((previous) => event.target.checked ? [...previous, task.id] : previous.filter((id) => id !== task.id))} />
+              <input type="checkbox" className="mt-1 accent-primary" checked={selected.includes(task.id)} disabled={busy || (!selected.includes(task.id) && selected.length >= 10)} onChange={(event) => {
+                setCompletedBatchIds(null)
+                setSelected((previous) => event.target.checked ? [...previous, task.id] : previous.filter((id) => id !== task.id))
+              }} />
               <span className="min-w-0 break-words">{taskLabel(task)}</span>
             </label>)}
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2"><span className="text-[10px] leading-4 text-muted-foreground">最多 10 条，会调用模型并自动评审。</span><Button type="button" size="sm" disabled={busy || !draft || standardsChanged || modelsChanged || !selected.length} onClick={() => { void start() }}>{busy ? '对比中…' : '开始对比'}</Button></div>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2"><span className="text-[10px] leading-4 text-muted-foreground">最多 10 条，会调用模型并自动评审。</span><Button type="button" size="sm" disabled={busy || !draft || standardsChanged || modelsChanged || !promptOnly || !selected.length} onClick={() => { void start() }}>{busy ? '对比中…' : '开始对比'}</Button></div>
         </section>
       )}
       <section className="space-y-2" aria-label="对比结果">

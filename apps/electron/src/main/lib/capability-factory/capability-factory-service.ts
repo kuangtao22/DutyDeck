@@ -13,6 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import {
   buildCapabilityPackage,
+  stableCapabilityValueKey,
   createEmptySceneDefinition,
   describePackageReadiness,
   type CapabilityCase,
@@ -33,20 +34,8 @@ import {
 } from '@proma/shared'
 import { CapabilityFactoryStore } from './capability-factory-store'
 
-/**
- * 生成 JSON 内容的稳定比较键：对象键顺序不影响相等性，数组顺序与字符串空白保持原义。
- * 用于任务去重和草案快照复核，不修改或压缩用户内容。
- */
-export function stableCapabilityValueKey(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map((item) => stableCapabilityValueKey(item)).join(',')}]`
-  if (value !== null && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableCapabilityValueKey(item)}`)
-    return `{${entries.join(',')}}`
-  }
-  return JSON.stringify(value) ?? 'undefined'
-}
+/** 保留既有服务导出，所有调用方共享同一比较规则。 */
+export { stableCapabilityValueKey } from '@proma/shared'
 
 /** 草案来源：Agent 只能产出草案，人既可以产出草案也可以直接采纳。 */
 export type CapabilitySceneChangeSource = 'agent' | 'human'
@@ -320,6 +309,11 @@ export class CapabilityFactoryService {
     /** 老记录没有 kind 字段：按整链运行处理。 */
     const filtered = kind === undefined ? all : all.filter((run) => (run.kind ?? 'full') === kind)
     return filtered.slice(-safeLimit).reverse()
+  }
+
+  /** 按稳定运行 ID 精确读取记录，供优化 Agent 核对旧记录，不受最近记录分页影响。 */
+  getRun(sceneId: string, runId: string): CapabilityRun | null {
+    return this.store.listRuns(sceneId).find((run) => run.id === runId) ?? null
   }
 
   /**

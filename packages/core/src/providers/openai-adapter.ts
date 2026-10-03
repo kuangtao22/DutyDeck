@@ -200,6 +200,8 @@ export class OpenAIAdapter implements ProviderAdapter {
       model: input.modelId,
       messages,
       stream: true,
+      ...(input.temperature === undefined ? {} : { temperature: input.temperature }),
+      ...(input.maxTokens === undefined ? {} : { max_tokens: input.maxTokens }),
     }
 
     // 工具定义

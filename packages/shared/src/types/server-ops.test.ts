@@ -489,7 +489,7 @@ describe('服务器运维共享合同', () => {
     expect(isServerOpsAuditRecord({ ...agentStart, phase: 'result', outcome: 'pending' })).toBe(false)
   })
 
-  test('Given 用户点击运行脚本 When 校验审计 Then 绑定单一目标且 Agent 不得发起', () => {
+  test('Given 用户或获批 Agent 执行数据库写入 When 校验审计 Then 绑定单一目标且来源互斥', () => {
     /** SQL 脚本运行：绑定数据源与目标库。 */
     const sqlRun = {
       id: 'audit-1', operationId: 'operation-1', timestamp: 1, windowId: 3, sourceId: 'source-1',
@@ -504,7 +504,10 @@ describe('服务器运维共享合同', () => {
 
     expect(isServerOpsAuditRecord(sqlRun)).toBe(true)
     expect(isServerOpsAuditRecord(sshRun)).toBe(true)
-    expect(isServerOpsAuditRecord({ ...sqlRun, actor: 'agent', sessionId: 'session-1', windowId: undefined })).toBe(false)
+    /** 读写模式的 Agent 使用 sessionId，不得伪造窗口来源。 */
+    expect(isServerOpsAuditRecord({ ...sqlRun, actor: 'agent', sessionId: 'session-1', windowId: undefined })).toBe(true)
+    expect(isServerOpsAuditRecord({ ...sqlRun, actor: 'agent', sessionId: 'session-1', windowId: 3 })).toBe(false)
+    expect(isServerOpsAuditRecord({ ...sqlRun, actor: 'agent', sessionId: undefined, windowId: undefined })).toBe(false)
     expect(isServerOpsAuditRecord({ ...sqlRun, hostId: 'host-1' })).toBe(false)
     expect(isServerOpsAuditRecord({ ...sqlRun, sourceId: undefined })).toBe(false)
     expect(isServerOpsAuditRecord({ ...sqlRun, operationId: undefined })).toBe(false)

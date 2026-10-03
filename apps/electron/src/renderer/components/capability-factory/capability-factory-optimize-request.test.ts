@@ -11,7 +11,7 @@ const run: CapabilityRun = { id: 'run-7', sceneId: 'scene-2', sceneVersion: 3, k
 test('Given 一次真实评审 When 请求优化 Then 固定记录身份、同标准测试与人工采纳，不重复粘贴大正文', () => {
   expect(canRequestOptimization(run)).toBe(true)
   const prompt = buildOptimizationRequest('角色提取', run)
-  for (const text of ['角色提取', 'scene-2', 'run-7', 'v3', 'factory_list_runs', '评审标准', '候选草案', '不要采纳', '找不到']) expect(prompt).toContain(text)
+  for (const text of ['角色提取', 'scene-2', 'run-7', 'v3', 'factory_list_runs', 'factory_get_run', '评审标准', '候选草案', '不要采纳', '找不到', '错误近似原文', '计算公式、阈值或标注来源']) expect(prompt).toContain(text)
   expect(prompt).not.toContain('整篇私有正文')
 })
 

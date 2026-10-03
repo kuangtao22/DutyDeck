@@ -857,4 +857,51 @@ describe('Server Ops Agent 多资源只读 Facade', () => {
     gate.resolve()
     await expect(result).rejects.toThrow('SERVER_OPS_AGENT_ACCESS_CHANGED')
   })
+
+  test('Given 会话选择运维读写 When Agent 执行数据库写入 Then 复用写入服务、真实取消信号与 Agent 审计身份', async () => {
+    const deps = dependencies()
+    const records: ServerOpsAuditRecord[] = []
+    const seen: { sql: string; signal?: AbortSignal; actor?: string; sessionId?: string }[] = []
+    deps.services.audit.append = (input) => {
+      const record = { id: `write-audit-${records.length}`, timestamp: 1, ...input }
+      expect(isServerOpsAuditRecord(record)).toBe(true)
+      records.push(record)
+      return record
+    }
+    deps.services.data!.writeSource = async (input, signal, context) => {
+      seen.push({ sql: input.sql, signal, actor: context?.actor, sessionId: context?.ownerSessionId })
+      return {
+        writeId: input.writeId, database: input.database, statementCount: 1, affectedRows: 1,
+        committed: true, outcome: 'committed', durationMs: 1,
+        statements: [{ head: 'UPDATE', affectedRows: 1 }], warnings: [],
+      }
+    }
+    const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps, allowDatabaseWrite: true })!
+    const controller = new AbortController()
+    const result = await facade.databaseWrite!({ sourceId: 'source-1', database: 'app', sql: 'UPDATE users SET name = \'ok\'' }, controller.signal)
+    expect(result).toMatchObject({ committed: true, outcome: 'committed', database: 'app' })
+    expect(seen).toEqual([{ sql: 'UPDATE users SET name = \'ok\'', signal: expect.any(AbortSignal), actor: 'agent', sessionId: 'session-1' }])
+    expect(records.map((record) => [record.actor, record.operation, record.phase, record.outcome])).toEqual([
+      ['agent', 'data-write', 'start', 'pending'], ['agent', 'data-write', 'result', 'success'],
+    ])
+  })
+
+  test('Given 只读模式或非直连/非支持引擎 When Agent 请求写入 Then 在执行前拒绝', async () => {
+    const readonlyDeps = dependencies()
+    readonlyDeps.services.data!.writeSource = async () => { throw new Error('must-not-run') }
+    const readonly = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: readonlyDeps })!
+    expect(readonly.databaseWrite).toBeUndefined()
+
+    const postgresDeps = dependencies()
+    postgresDeps.services.data!.listSources = () => ({ sources: [source({ engine: 'postgresql', port: 5432, database: 'app' })] })
+    postgresDeps.services.data!.writeSource = async () => { throw new Error('must-not-run') }
+    const postgres = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: postgresDeps, allowDatabaseWrite: true })!
+    await expect(postgres.databaseWrite!({ sourceId: 'source-1', database: 'app', sql: 'UPDATE users SET name = \'blocked\'' })).rejects.toThrow('SERVER_OPS_DATA_WRITE_ENGINE_UNSUPPORTED')
+
+    const sshDeps = dependencies()
+    sshDeps.services.data!.listSources = () => ({ sources: [source({ transport: 'ssh', hostId: 'host-1' })] })
+    sshDeps.services.data!.writeSource = async () => { throw new Error('must-not-run') }
+    const ssh = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: sshDeps, allowDatabaseWrite: true })!
+    await expect(ssh.databaseWrite!({ sourceId: 'source-1', database: 'app', sql: 'UPDATE users SET name = \'blocked\'' })).rejects.toThrow('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED')
+  })
 })
