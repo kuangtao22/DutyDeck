@@ -125,8 +125,8 @@ index 38781fbb440d41ad5f53bc216c27422c2be01074..709f59a2df06f668bb649d2b4680ee49
      // Provider-requested retry delay cap failures should flow through the outer
      // retry policy so callers can surface/abort the backoff (#1123).
      "retry delay",
-
 diff --git a/dist/utils/estimate.js b/dist/utils/estimate.js
+index d04ff22cbe8d7357404b938e228b8e3a2dbdcb1..ca078c0e272b8846302cf58a5ae28a84586dd8c1 100644
 --- a/dist/utils/estimate.js
 +++ b/dist/utils/estimate.js
 @@ -15,38 +15,47 @@
