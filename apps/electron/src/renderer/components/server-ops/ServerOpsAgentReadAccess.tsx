@@ -52,7 +52,7 @@ export function ServerOpsAgentReadAccess({ sessionId, projectId, projects, allCo
   const [projection, setProjection] = useAtom(projectionAtom)
   /** 目录只在用户展开多选时读取，不参与授权保存。 */
   const catalogApi = React.useMemo(() => api?.listServerOpsDataSchemaTables ? { listServerOpsDataSchemaTables: api.listServerOpsDataSchemaTables } : undefined, [api])
-  /** 到期时间仅本地按分钟更新，不触发后台轮询。 */
+  /** 仅兼容旧版 IPC 的限时快照；新授权不会定时刷新界面。 */
   const nowAtom = React.useMemo(() => atom(Date.now()), [])
   const [now, setNow] = useAtom(nowAtom)
   /** 两种保存仍走各自受控接口，控制器负责合并交互和失败状态。 */
@@ -88,7 +88,7 @@ export function ServerOpsAgentReadAccess({ sessionId, projectId, projects, allCo
     else if (openedRef.current) onClosed?.()
   }, [view.open, onClosed])
   React.useEffect(() => {
-    if (!view.access) return
+    if (!view.access?.expiresAt) return
     setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), 60_000)
     return () => clearInterval(timer)
@@ -135,31 +135,29 @@ export function ServerOpsAgentReadAccess({ sessionId, projectId, projects, allCo
   const missingDatabases = view.databaseExclusions.filter((entry) => !connectionId && !dataSources.some((source) => source.id === entry.sourceId))
   /** 保存期间锁定整份草稿，加载策略时不允许以空名单提交。 */
   const busy = view.loading || view.saving || view.databaseLoading || (dialogOnly && !view.open) || (targetConnection?.kind === 'database' && !policyApi)
-  /** 显示原会话租约的期限，不把持久数据库规则计入到期数量。 */
-  const remainingMinutes = view.access ? Math.max(0, Math.ceil((view.access.expiresAt - now) / 60_000)) : 0
   /** 使用已有连接目录生成摘要，不增加读取。 */
   const summary = summarizeServerOpsReadAccess(view.access && connectionId ? { ...view.access, resources: view.access.resources.filter((resource) => serverOpsReadResourceKey(resource) === connectionId) } : view.access, now, new Map(allConnections.map((connection) => [connection.id, connection.label])))
   /** 撤销只针对会话服务器授权，不能误删数据库禁用规则。 */
   const hasServerAccess = view.access?.resources.some((resource) => (resource.kind === 'ssh' || resource.kind === 'redis') && (!connectionId || serverOpsReadResourceKey(resource) === connectionId)) ?? false
   return <>
-    {!dialogOnly ? <Button ref={triggerRef} type="button" variant="outline" size="sm" className="h-8 gap-1.5 rounded-md bg-content-area px-2 text-xs text-foreground/80" aria-label="Agent 数据库权限"
-      title={policyApi || targetSession ? '管理 Agent 数据库权限与数据库禁用表' : unavailableReason ?? '请完整重启客户端以使用 Agent 数据库权限'}
+    {!dialogOnly ? <Button ref={triggerRef} type="button" variant="outline" size="sm" className="h-8 gap-1.5 rounded-md bg-content-area px-2 text-xs text-foreground/80" aria-label="Agent 运维权限"
+      title={policyApi || targetSession ? '管理 Agent 运维权限与数据库禁用表' : unavailableReason ?? '请完整重启客户端以使用 Agent 运维权限'}
       disabled={(!targetSession && !policyApi) || view.loading} onClick={openEditor}>
       {view.loading ? <LoaderCircle className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}
-      <span className="shrink-0">Agent 数据库权限</span>
+      <span className="shrink-0">Agent 运维权限</span>
     </Button> : null}
     <Dialog open={view.open || (dialogOnly && !openedRef.current)} onOpenChange={(open) => { if (!open) closeEditor() }}>
       <DialogContent className="z-[260] flex max-h-[90vh] w-[calc(100%-2rem)] max-w-2xl flex-col gap-3 overflow-hidden" overlayClassName="z-[250]" hideClose={view.saving}
         onCloseAutoFocus={(event) => { event.preventDefault(); triggerRef.current?.focus() }}
         onEscapeKeyDown={(event) => { event.stopPropagation(); if (view.saving) event.preventDefault() }}>
-        <DialogHeader><DialogTitle>Agent 数据库权限{targetConnection ? ` · ${targetConnection.label}` : ''}</DialogTitle><DialogDescription>{targetConnection?.kind === 'database' ? '未禁用的表默认可读；在这里多选禁用表，保存后生效。选择「运维读写」模式后，Agent 可执行受控数据库写入。' : targetConnection ? '仅编辑当前连接；服务器与 Redis 共用当前会话的 30 分钟授权期限，修改后统一更新。' : '数据库默认可读，只需选择禁用表；服务器与 Redis 仍按当前会话授权，有效期 30 分钟。数据库写入还需在会话工具模式中选择「运维读写」。'}</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Agent 运维权限{targetConnection ? ` · ${targetConnection.label}` : ''}</DialogTitle><DialogDescription>{targetConnection?.kind === 'database' ? '数据库查询授权不会按时间到期；当前会话保持「运维只读」或「运维读写」模式时可持续查询，切回「标准模式」会停用数据库工具。未禁用的表默认可读；在这里多选禁用表，保存后生效。' : targetConnection ? '仅编辑当前连接；SSH 与 Redis 授权不会按时间到期，点击「撤销此连接授权」可随时收回。连接或凭据身份变化时也会自动撤权。' : '数据库查询在会话保持「运维只读」或「运维读写」模式时持续可用，切回「标准模式」会停用数据库工具；未禁用的表默认可读。SSH 与 Redis 授权同样不会按时间到期，可在对应连接中撤销。数据库写入还需选择「运维读写」。'}</DialogDescription></DialogHeader>
         {view.loading ? <p role="status" className="text-xs text-muted-foreground">正在读取授权…</p> : null}
         {targetSession ? <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="text-muted-foreground">当前会话工具模式</span>
           <AgentOpsAccessControl sessionId={targetSession} />
           <span className="text-muted-foreground">运维只读仅开放读取；选择「运维读写」后可使用受控数据库写入工具。</span>
         </div> : <p className="text-xs text-muted-foreground">{unavailableReason ?? '当前没有普通 Agent 会话'}，可编辑数据库禁用表；服务器授权需先选择会话。</p>}
-        {hasServerAccess ? <p className="break-words text-xs text-muted-foreground">{summary.target} · {summary.capability} · {remainingMinutes > 0 ? `剩余约 ${remainingMinutes} 分钟` : '已到期'}</p> : null}
+        {hasServerAccess ? <p className="break-words text-xs text-muted-foreground">{summary.target} · {summary.capability} · {summary.remaining}</p> : null}
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
           {managed.map((connection) => {
             /** 稳定连接 ID 关联服务器草稿，改名不改变授权目标。 */

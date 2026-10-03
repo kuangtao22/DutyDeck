@@ -1189,9 +1189,9 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
   installHandler(SERVER_OPS_IPC_CHANNELS.DISCONNECT, (event, input) => {
     assertAuthorizedSender(event, options)
     if (!isServerOpsId(input)) throw new Error('SERVER_OPS_HOST_ID_INVALID')
-    /** 仅在连接正常断开后撤销该服务器可能持有的 Agent 授权。 */
+    /** 断开连接只撤销旧操作授权；用户单独保存的读取授权保持有效。 */
     const state = options.connections.disconnect(input)
-    revokeHostAccess(input)
+    revokeLegacyHostAccess(input)
     return state
   })
   installHandler(SERVER_OPS_IPC_CHANNELS.WRITE_TERMINAL, (event, input) => {
@@ -1211,8 +1211,27 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
     return options.connections.getTerminalSnapshot(parseTerminalIdentity(input))
   })
 
+  /** 仅清理明确归档或不再符合授权条件的会话；暂时无法读取会话元数据时保留授权。 */
+  const pruneUnavailableReadSessions = (): void => {
+    for (const access of options.access.listReadAccesses()) {
+      let session: ReturnType<ServerOpsIpcOptions['requireUserVisibleSession']>
+      try {
+        session = options.requireUserVisibleSession(access.sessionId)
+      } catch {
+        continue
+      }
+      try {
+        requireOrdinaryTopLevelAgentSession(session)
+        if (session.archived) throw new Error('SERVER_OPS_AGENT_SESSION_NOT_ALLOWED')
+      } catch {
+        options.access.revokeSession(access.sessionId)
+      }
+    }
+  }
+
   /** 主进程生成当前授权影响快照，用 token 阻止陈旧窗口静默替换新权限。 */
   const accessImpact = (): ServerOpsAgentAccessImpact => {
+    pruneUnavailableReadSessions()
     const reads = options.access.listReadAccesses().sort((left, right) => left.sessionId.localeCompare(right.sessionId))
     const legacy = options.access.getCurrent() ?? null
     const token = JSON.stringify({ legacy, reads: reads.map(({ sessionId, revision }) => ({ sessionId, revision })) })
@@ -1446,6 +1465,12 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
       current: null,
     } satisfies ServerOpsAgentAccessChanged)
   }
+  /** 连接断开只结束旧操作授权，不应清除用户保存的持久读取授权。 */
+  const revokeLegacyHostAccess = (hostId: string): void => {
+    const previous = options.access.getCurrent() ?? null
+    if (!previous || previous.hostId !== hostId || !options.access.revoke(previous.sessionId, hostId)) return
+    broadcast(SERVER_OPS_IPC_CHANNELS.AGENT_ACCESS_CHANGED, { previous, current: null } satisfies ServerOpsAgentAccessChanged)
+  }
   /** 撤销指定普通 Agent 会话授权，并广播严格公开的旧新状态。 */
   const revokeSession = (sessionId: string): void => {
     /** 撤销前快照用于 Renderer 精确同步。 */
@@ -1462,13 +1487,13 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
   /** 广播只包含会话和草稿 ID，具体字段仍经有权限检查的定向读取入口获取。 */
   installSubscription(() => serverOpsConnectionDraftStore.subscribe((event) => broadcast(SERVER_OPS_CONNECTION_DRAFT_CHANNELS.CHANGED, event)))
   installSubscription(() => options.connections.onState((state) => {
-    if (state.phase === 'disconnected' || state.phase === 'blocked' || state.phase === 'error') revokeHostAccess(state.hostId)
+    if (state.phase === 'disconnected' || state.phase === 'blocked' || state.phase === 'error') revokeLegacyHostAccess(state.hostId)
     broadcast(SERVER_OPS_IPC_CHANNELS.CONNECTION_STATE, state)
   }))
   installSubscription(() => options.connections.onOutput((output) => broadcast(SERVER_OPS_IPC_CHANNELS.TERMINAL_OUTPUT, output)))
   installSubscription(() => options.connections.onExit((exit) => {
-      /** 非预期远端断线和 runtime 退出都必须收口该主机的 Agent 授权。 */
-      revokeHostAccess(exit.hostId)
+      /** 非预期断线结束旧操作授权；持久读取授权等连接恢复或显式撤销。 */
+      revokeLegacyHostAccess(exit.hostId)
       broadcast(SERVER_OPS_IPC_CHANNELS.TERMINAL_EXIT, exit)
     }))
   if (options.logs) {

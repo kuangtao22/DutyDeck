@@ -30,7 +30,7 @@ describe('Server Ops 共享服务上下文', () => {
     expect(getServerOpsServiceContext()).toBe(context)
   })
 
-  test('Given 共享只读授权 Store When 旧代释放 Then 不撤销新代；最终清理同步失效授权', async () => {
+  test('Given 共享只读授权 Store When 旧代释放 Then 不撤销新代；最终清理保留持久读取授权', async () => {
     const access = new ServerOpsAgentAccessStore()
     access.grantRead({ sessionId: 'session-1', resources: [{ kind: 'ssh', hostId: 'host-1' }] }, [{ key: 'ssh:host-1', fingerprint: 'host', hostId: 'host-1' }])
     const first = registerServerOpsServiceContext({ ...createContext(), access })
@@ -38,7 +38,7 @@ describe('Server Ops 共享服务上下文', () => {
     await first.dispose()
     expect(access.getReadAccess('session-1')).toBeDefined()
     const closing = second.dispose()
-    expect(access.getReadAccess('session-1')).toBeUndefined()
+    expect(access.getReadAccess('session-1')).toBeDefined()
     await closing
   })
 

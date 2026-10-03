@@ -45,11 +45,12 @@ export interface ServerOpsAgentReadGrant {
   resources: ServerOpsAgentReadResource[]
 }
 
-/** 主进程分配不可重用代次；不包含端点签名、凭据或内部句柄。 */
+/** 主进程分配不可重用代次；不包含端点签名、凭据或内部句柄。新授权不设置到期时间。 */
 export interface ServerOpsAgentReadAccess extends ServerOpsAgentReadGrant {
   revision: number
   grantedAt: number
-  expiresAt: number
+  /** 仅兼容旧版 IPC 快照；永久授权省略此字段。 */
+  expiresAt?: number
 }
 
 /** 跨窗口同步的公开授权快照。 */
@@ -155,13 +156,16 @@ export function parseServerOpsAgentReadSession(value: unknown): string {
 /** 解析公开快照，null 为无授权。 */
 export function parseServerOpsAgentReadAccess(value: unknown): ServerOpsAgentReadAccess | null {
   if (value === null) return null
-  const input = record(value, ['sessionId', 'resources', 'revision', 'grantedAt', 'expiresAt'])
+  const optional = typeof value === 'object' && value !== null && 'expiresAt' in value ? ['expiresAt'] : []
+  const input = record(value, ['sessionId', 'resources', 'revision', 'grantedAt', ...optional])
   if (typeof input.revision !== 'number' || !Number.isSafeInteger(input.revision) || input.revision < 1
     || typeof input.grantedAt !== 'number' || !Number.isSafeInteger(input.grantedAt) || input.grantedAt < 0
-    || typeof input.expiresAt !== 'number' || !Number.isSafeInteger(input.expiresAt) || input.expiresAt <= input.grantedAt) throw new Error('SERVER_OPS_READ_ACCESS_INVALID')
+    || (input.expiresAt !== undefined && (typeof input.expiresAt !== 'number' || !Number.isSafeInteger(input.expiresAt) || input.expiresAt <= input.grantedAt))) {
+    throw new Error('SERVER_OPS_READ_ACCESS_INVALID')
+  }
   const grant = parseServerOpsAgentReadGrant({ sessionId: input.sessionId, resources: input.resources })
   if (grant.resources.length === 0) throw new Error('SERVER_OPS_READ_ACCESS_INVALID')
-  return { ...grant, revision: input.revision, grantedAt: input.grantedAt, expiresAt: input.expiresAt }
+  return { ...grant, revision: input.revision, grantedAt: input.grantedAt, ...(typeof input.expiresAt === 'number' ? { expiresAt: input.expiresAt } : {}) }
 }
 
 /** 解析广播，阻止污染或携带内部信息的事件进入渲染层。 */

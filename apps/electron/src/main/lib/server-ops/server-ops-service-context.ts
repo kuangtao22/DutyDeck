@@ -104,9 +104,9 @@ async function disposeContext(context: ServerOpsServiceContext | null, nextConte
   if (!context) return
   /** 保留首个异常，但不能让它阻断后续连接释放。 */
   let firstError: unknown
-  /** 先同步撤销授权，避免异步传输/连接清理期间模型继续发起读取；共享实例归继任者。 */
+  /** 服务上下文失效即阻断在途读取；只清除旧操作授权，保留用户保存的 SSH/Redis 只读授权。 */
   if (!ownedByNewerContext(context, nextContext, 'access')) {
-    try { context.access?.clear() } catch (error) { firstError = error }
+    try { context.access?.clearTransientAccess() } catch (error) { firstError = error }
   }
   if (!ownedByNewerContext(context, nextContext, 'trustManagement')) {
     try { context.trustManagement?.dispose() } catch (error) { firstError = error }

@@ -86,47 +86,38 @@ describe('服务器运维 Agent 授权 Store', () => {
     store.clear()
   })
 
-  test('Given 八个活跃会话 When 新会话申请 Then 拒绝但续期现有会话允许', () => {
+  test('Given 三十二个持久授权会话 When 新会话申请 Then 拒绝但更新现有会话允许', () => {
     const store = new ServerOpsAgentAccessStore()
-    for (let index = 0; index < 8; index += 1) store.grantRead({ sessionId: `session-${index}`, resources: [{ kind: 'ssh', hostId: 'host-1' }] }, [{ key: 'ssh:host-1', fingerprint: 'host' }])
-    expect(() => store.grantRead({ sessionId: 'session-8', resources: [{ kind: 'ssh', hostId: 'host-1' }] }, [{ key: 'ssh:host-1', fingerprint: 'host' }])).toThrow('SERVER_OPS_READ_SESSION_LIMIT')
-    expect(store.listReadAccesses()).toHaveLength(8)
+    for (let index = 0; index < 32; index += 1) store.grantRead({ sessionId: `session-${index}`, resources: [{ kind: 'ssh', hostId: 'host-1' }] }, [{ key: 'ssh:host-1', fingerprint: 'host' }])
+    expect(() => store.grantRead({ sessionId: 'session-32', resources: [{ kind: 'ssh', hostId: 'host-1' }] }, [{ key: 'ssh:host-1', fingerprint: 'host' }])).toThrow('SERVER_OPS_READ_SESSION_LIMIT')
+    expect(store.listReadAccesses()).toHaveLength(32)
     expect(store.grantRead({ sessionId: 'session-0', resources: [{ kind: 'ssh', hostId: 'host-1' }] }, [{ key: 'ssh:host-1', fingerprint: 'host' }])).toBeDefined()
     store.clear()
   })
 
-  test('Given 固定租期 When 墙钟回拨、缩权和定时器触发 Then 不延长权限', () => {
+  test('Given 持久授权 When 墙钟或单调时钟推进 Then 直到显式撤销都保持有效', () => {
     let wall = 1_000_000
     let monotonic = 0
-    const timers = new Map<number, () => void>()
-    let nextTimer = 0
     const clock = {
       now: () => wall,
       monotonicNow: () => monotonic,
-      setTimeout: (callback: () => void, _delay: number) => { const id = ++nextTimer; timers.set(id, () => { timers.delete(id); callback() }); return id },
-      clearTimeout: (id: unknown) => { timers.delete(id as number) },
+      setTimeout: (_callback: () => void, _delay: number) => undefined,
+      clearTimeout: (_handle: unknown) => undefined,
     }
     const store = new ServerOpsAgentAccessStore(clock)
     store.grantRead({ sessionId: 'session-1', resources: [{ kind: 'ssh', hostId: 'host-1' }, { kind: 'redis', sourceId: 'redis-1' }] }, [
       { key: 'ssh:host-1', fingerprint: 'ssh', hostId: 'host-1' }, { key: 'data:redis-1', fingerprint: 'redis' },
     ])
     const initial = store.getReadAccess('session-1')!
-    expect(initial.expiresAt).toBe(wall + 30 * 60_000)
-    wall -= 100_000
-    monotonic += 10_000
+    expect(initial.expiresAt).toBeUndefined()
+    wall += 365 * 24 * 60 * 60_000
+    monotonic += 365 * 24 * 60 * 60_000
     expect(store.getReadAccess('session-1')).toBeDefined()
     expect(store.revokeSource('redis-1')).toBe(true)
-    expect(store.getReadAccess('session-1')?.expiresAt).toBe(initial.expiresAt)
     expect(store.getReadAccess('session-1')?.grantedAt).toBe(initial.grantedAt)
-    monotonic = 30 * 60_000
-    expect(store.getReadAccess('session-1')).toBeUndefined()
-    expect(store.getReadBinding('session-1', 'ssh:host-1')).toBeUndefined()
-    store.grantRead({ sessionId: 'session-1', resources: [{ kind: 'ssh', hostId: 'host-1' }] }, [{ key: 'ssh:host-1', fingerprint: 'ssh' }])
-    wall += 30 * 60_000
-    for (const callback of [...timers.values()]) callback()
-    expect(store.listReadAccesses()).toHaveLength(0)
+    expect(store.getReadBinding('session-1', 'ssh:host-1')).toBeDefined()
     store.clear()
-    expect(timers.size).toBe(0)
+    expect(store.getReadAccess('session-1')).toBeUndefined()
   })
 
   test('Given 旧操作权限和多个只读会话 When 权限切换 Then 全局互斥但会话撤销精确', () => {

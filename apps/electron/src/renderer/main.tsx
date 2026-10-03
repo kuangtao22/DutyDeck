@@ -9,6 +9,13 @@ const rendererWindowType = new URLSearchParams(window.location.search).get('wind
 
 /** 路径管理窗口必须保持最小依赖，避免加载普通业务模块。 */
 const isDataRootManagementWindow = rendererWindowType === 'data-root-migration'
+/** 加号菜单浮层只加载主题、菜单样式与图标，不初始化主应用业务模块。 */
+const isWorkspaceMenuWindow = rendererWindowType === 'workspace-menu'
+if (isWorkspaceMenuWindow) {
+  /** 子窗口透明底层让应用菜单之外的区域继续显示主窗口与网页。 */
+  document.documentElement.style.background = 'transparent'
+  document.body.style.background = 'transparent'
+}
 
 /** 仅主窗口需要初始化完整的 Bot 状态与生产力工具偏好。 */
 const isMainApplicationWindow = !rendererWindowType
@@ -69,6 +76,14 @@ if (isDataRootManagementWindow) {
     ReactDOM.createRoot(document.getElementById('root')!).render(
       <React.StrictMode>
         <DataRootMigrationApp />
+      </React.StrictMode>,
+    )
+  })
+} else if (isWorkspaceMenuWindow) {
+  import('./components/diff/WorkspaceAddTabMenuApp').then(({ WorkspaceAddTabMenuApp }) => {
+    ReactDOM.createRoot(document.getElementById('root')!).render(
+      <React.StrictMode>
+        <WorkspaceAddTabMenuApp />
       </React.StrictMode>,
     )
   })

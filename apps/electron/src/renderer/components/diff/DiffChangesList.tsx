@@ -5,7 +5,7 @@
  */
 
 import * as React from 'react'
-import { Box, ChevronRight, FolderSearch, Search, SquareTerminal, Undo2, X } from 'lucide-react'
+import { Box, ChevronDown, ChevronRight, FolderSearch, Search, SquareTerminal, Undo2, X } from 'lucide-react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -580,21 +580,39 @@ function NonGitChangesList({
   const title = hasEarlierChanges
     ? `本会话文件变更 · ${changes.length}`
     : `本会话文件变更 · 本轮 · ${current.length}`
+  /** 控制本会话文件变更总览的展开状态，默认保留当前可见内容。 */
+  const [isExpanded, setIsExpanded] = React.useState(true)
+  /** 为折叠内容生成稳定的无障碍关联 ID。 */
+  const contentId = React.useId()
 
   return (
     <div className="shrink-0 py-1">
-      <div className="flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium text-muted-foreground tabular-nums">
-        <Box className="size-3.5 shrink-0" />
-        <span>{title}</span>
+      <button
+        type="button"
+        aria-expanded={isExpanded}
+        aria-controls={contentId}
+        className="group flex min-h-9 w-full items-center gap-1.5 px-3 py-2 text-left text-[13px] font-medium text-muted-foreground tabular-nums transition-colors hover:bg-accent/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        onClick={() => setIsExpanded((expanded) => !expanded)}
+      >
+        {isExpanded ? (
+          <ChevronDown className="size-3.5 shrink-0 transition-transform duration-150" aria-hidden="true" />
+        ) : (
+          <ChevronRight className="size-3.5 shrink-0 transition-transform duration-150" aria-hidden="true" />
+        )}
+        <Box className="size-3.5 shrink-0" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate">{title}</span>
+        <span className="sr-only">{isExpanded ? '，点击折叠' : '，点击展开'}</span>
+      </button>
+      <div id={contentId} hidden={!isExpanded}>
+        {hasEarlierChanges ? (
+          <>
+            {current.length > 0 && <NonGitRunGroup title="本轮" changes={current} sessionId={sessionId} onFileClick={onFileClick} />}
+            <NonGitRunGroup title="更早" changes={earlier} sessionId={sessionId} onFileClick={onFileClick} collapsible defaultCollapsed />
+          </>
+        ) : (
+          <NonGitFileList changes={current} sessionId={sessionId} onFileClick={onFileClick} />
+        )}
       </div>
-      {hasEarlierChanges ? (
-        <>
-          {current.length > 0 && <NonGitRunGroup title="本轮" changes={current} sessionId={sessionId} onFileClick={onFileClick} />}
-          <NonGitRunGroup title="更早" changes={earlier} sessionId={sessionId} onFileClick={onFileClick} />
-        </>
-      ) : (
-        <NonGitFileList changes={current} sessionId={sessionId} onFileClick={onFileClick} />
-      )}
     </div>
   )
 }
@@ -604,16 +622,51 @@ function NonGitRunGroup({
   changes,
   sessionId,
   onFileClick,
+  collapsible = false,
+  defaultCollapsed = false,
 }: {
   title: string
   changes: SessionFileChange[]
   sessionId: string
   onFileClick?: (filePath: string) => void
+  collapsible?: boolean
+  defaultCollapsed?: boolean
 }): React.ReactElement {
+  /** 只对“更早”分组启用默认收起，当前轮次保持直接可读。 */
+  const [isExpanded, setIsExpanded] = React.useState(!defaultCollapsed)
+  /** 为分组内容生成稳定的无障碍关联 ID。 */
+  const contentId = React.useId()
+  const headerClassName = 'flex w-full items-center gap-1.5 px-3 py-1 text-left text-[11px] font-medium text-muted-foreground tabular-nums'
+  const headerContent = (
+    <>
+      {collapsible && (isExpanded ? (
+        <ChevronDown className="size-3 shrink-0 transition-transform duration-150" aria-hidden="true" />
+      ) : (
+        <ChevronRight className="size-3 shrink-0 transition-transform duration-150" aria-hidden="true" />
+      ))}
+      <span>{title} · {changes.length}</span>
+      {collapsible && <span className="sr-only">{isExpanded ? '，点击折叠' : '，点击展开'}</span>}
+    </>
+  )
+
   return (
     <section className="pb-2">
-      <div className="px-3 py-1 text-[11px] font-medium text-muted-foreground tabular-nums">{title} · {changes.length}</div>
-      <NonGitFileList changes={changes} sessionId={sessionId} onFileClick={onFileClick} />
+      {collapsible ? (
+        <button
+          type="button"
+          aria-expanded={isExpanded}
+          aria-controls={contentId}
+          className={cn(headerClassName, 'hover:bg-accent/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring')}
+          onClick={() => setIsExpanded((expanded) => !expanded)}
+        >
+          {headerContent}
+        </button>
+      ) : (
+        <div className={headerClassName}>{headerContent}</div>
+      )}
+      <div id={contentId} hidden={collapsible && !isExpanded}>
+        <NonGitFileList changes={changes} sessionId={sessionId} onFileClick={onFileClick} />
+      </div>
     </section>
   )
 }

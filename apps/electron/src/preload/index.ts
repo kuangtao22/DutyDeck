@@ -11,7 +11,7 @@ import type { AgentToolMode } from '@proma/shared'
  */
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, SLACK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, PLANNING_IPC_CHANNELS, VAULT_IPC_CHANNELS, AGENT_ISLAND_IPC_CHANNELS, TERMINAL_IPC_CHANNELS, PATH_MANAGEMENT_IPC_CHANNELS, SERVER_OPS_IPC_CHANNELS } from '@proma/shared'
+import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, SLACK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, PLANNING_IPC_CHANNELS, VAULT_IPC_CHANNELS, AGENT_ISLAND_IPC_CHANNELS, TERMINAL_IPC_CHANNELS, PATH_MANAGEMENT_IPC_CHANNELS, SERVER_OPS_IPC_CHANNELS, WORKSPACE_MENU_IPC_CHANNELS } from '@proma/shared'
 import { createLanBridgePreloadApi } from './lan-bridge-preload'
 import type { LanBridgePreloadApi } from './lan-bridge-preload'
 import { createDesignPreloadApi } from './design-preload'
@@ -395,6 +395,16 @@ export interface ElectronAPI extends LanBridgePreloadApi, NormalPathManagementPr
   goForwardAgentBrowser: (sessionId: string) => Promise<import('@proma/shared').BrowserViewState>
   reloadAgentBrowser: (sessionId: string) => Promise<import('@proma/shared').BrowserViewState>
   closeAgentBrowser: (sessionId: string) => Promise<void>
+  /** 以应用样式的独立浮层窗口展示工作区操作，网页内容保持可见。 */
+  showWorkspaceMenu: (input: import('@proma/shared').ShowWorkspaceMenuInput) => Promise<import('@proma/shared').WorkspaceMenuActionId | null>
+  /** 将浮层菜单中选择的白名单操作回传主进程。 */
+  selectWorkspaceMenuAction: (action: import('@proma/shared').WorkspaceMenuActionId) => Promise<boolean>
+  /** 关闭当前工作区菜单，但保留已预热的浮层窗口。 */
+  dismissWorkspaceMenu: () => Promise<boolean>
+  /** 接收主进程推送的当前菜单项；null 表示关闭菜单。 */
+  onWorkspaceMenuEntriesChanged: (callback: (entries: import('@proma/shared').WorkspaceMenuEntryInput[] | null) => void) => () => void
+  /** 通知主进程轻量菜单 renderer 已完成初始化，可以开始预热。 */
+  notifyWorkspaceMenuReady: () => void
   onAgentBrowserStateChanged: (callback: (state: import('@proma/shared').BrowserStateChange) => void) => () => void
   onAgentBrowserTabFocused: (callback: (change: import('@proma/shared').BrowserTabFocusChange) => void) => () => void
 
@@ -1746,6 +1756,15 @@ const electronAPI: ElectronAPI = {
   goForwardAgentBrowser: (sessionId: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.GO_FORWARD_BROWSER, sessionId),
   reloadAgentBrowser: (sessionId: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.RELOAD_BROWSER, sessionId),
   closeAgentBrowser: (sessionId: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.CLOSE_BROWSER, sessionId),
+  showWorkspaceMenu: (input: import('@proma/shared').ShowWorkspaceMenuInput) => ipcRenderer.invoke(WORKSPACE_MENU_IPC_CHANNELS.SHOW, input),
+  selectWorkspaceMenuAction: (action: import('@proma/shared').WorkspaceMenuActionId) => ipcRenderer.invoke(WORKSPACE_MENU_IPC_CHANNELS.SELECT, action),
+  dismissWorkspaceMenu: () => ipcRenderer.invoke(WORKSPACE_MENU_IPC_CHANNELS.DISMISS),
+  onWorkspaceMenuEntriesChanged: (callback: (entries: import('@proma/shared').WorkspaceMenuEntryInput[] | null) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, entries: import('@proma/shared').WorkspaceMenuEntryInput[] | null) => callback(entries)
+    ipcRenderer.on(WORKSPACE_MENU_IPC_CHANNELS.UPDATE, listener)
+    return () => ipcRenderer.removeListener(WORKSPACE_MENU_IPC_CHANNELS.UPDATE, listener)
+  },
+  notifyWorkspaceMenuReady: () => ipcRenderer.send(WORKSPACE_MENU_IPC_CHANNELS.READY),
   onAgentBrowserStateChanged: (callback: (state: import('@proma/shared').BrowserStateChange) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: import('@proma/shared').BrowserStateChange) => callback(state)
     ipcRenderer.on(AGENT_IPC_CHANNELS.BROWSER_STATE_CHANGED, listener)

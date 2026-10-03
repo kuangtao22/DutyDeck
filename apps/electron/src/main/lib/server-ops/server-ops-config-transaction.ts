@@ -15,6 +15,7 @@ export type ServerOpsConfigFileName =
   | 'schema-cache.json'
   | 'projects.json'
   | 'database-agent-policy.json'
+  | 'agent-read-access.json'
   | 'scripts.json'
   | 'script-runs.json'
 
@@ -118,6 +119,8 @@ const CONFIG_FILES: ReadonlySet<string> = new Set<ServerOpsConfigFileName>([
   'projects.json',
   // Agent 数据库禁用表必须与连接配置共享跨进程短事务。
   'database-agent-policy.json',
+  // Agent SSH/Redis 持久授权与连接身份变更共享跨进程短事务。
+  'agent-read-access.json',
   // 脚本库与运行记录属于运维项目资产，必须与项目归属检查共用同一把跨进程写锁。
   'scripts.json',
   'script-runs.json',

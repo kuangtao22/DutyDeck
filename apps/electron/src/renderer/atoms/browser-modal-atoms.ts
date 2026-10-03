@@ -7,7 +7,7 @@ export const browserModalCountAtom = atom(0)
 export const browserModalActiveAtom = atom((get) => get(browserModalCountAtom) > 0)
 
 /**
- * 暂时盖住原生网页的 renderer 浮层数量，例如右侧工作区的加号菜单。
+ * 暂时盖住原生网页且无法使用原生弹层呈现的 renderer 浮层数量。
  * 菜单不能被 WebContentsView 盖住，也不应通过改变网页 bounds 把页面整体下推。
  */
 export const browserOverlayCountAtom = atom(0)

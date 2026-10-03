@@ -7,9 +7,11 @@ export interface ServerOpsReadSummary {
   remaining: string
 }
 
-/** 从主进程授权快照计算目标、结构/行/SQL 能力和剩余期限。 */
+/** 从主进程授权快照计算目标、读取能力与剩余期限或长期有效状态。 */
 export function summarizeServerOpsReadAccess(access: ServerOpsAgentReadAccess | null, now: number, names?: ReadonlyMap<string, string>): ServerOpsReadSummary {
-  if (!access || access.expiresAt <= now) return { target: '未授权', capability: '结构/行/SQL 未启用', remaining: access ? '已到期' : '无租约' }
+  if (!access || (access.expiresAt !== undefined && access.expiresAt <= now)) {
+    return { target: '未授权', capability: '结构/行/SQL 未启用', remaining: access ? '已到期' : '无授权' }
+  }
   /** 依据已保存事实展示库表范围，兼容尚未重新保存的旧白名单。 */
   const databaseTargets = access.resources.flatMap((resource) => {
     if (resource.kind !== 'mysql' && resource.kind !== 'postgresql' && resource.kind !== 'sqlite') return []
@@ -44,6 +46,6 @@ export function summarizeServerOpsReadAccess(access: ServerOpsAgentReadAccess | 
   return {
     target: targets.join(' · ') || '未授权',
     capability: [capability, sshCount || redisCount || instanceCount ? '概览' : ''].filter(Boolean).join(' · ') || '结构/行/SQL 未启用',
-    remaining: `剩余 ${Math.ceil((access.expiresAt - now) / 60_000)} 分钟`,
+    remaining: access.expiresAt === undefined ? '长期有效' : `剩余 ${Math.ceil((access.expiresAt - now) / 60_000)} 分钟`,
   }
 }

@@ -198,6 +198,7 @@ import type {
 import type { UserProfile, AppSettings } from '../types'
 import { getRuntimeStatus, getGitRepoStatus, reinitializeRuntime } from './lib/runtime-init'
 import { browserController } from './lib/browser-controller'
+import { registerWorkspaceMenuIpcHandlers } from './lib/workspace-menu-ipc'
 import { acknowledgeTerminalOutput, closeTerminalsForSession, createTerminal, getTerminalSnapshot, killTerminal, resizeTerminal, writeTerminal } from './lib/terminal-service'
 import { getMainWindow } from './lib/main-window-store'
 import { resolveBrowserProfileKey } from './lib/browser-profile-policy'
@@ -492,6 +493,7 @@ import { createMediaToolRun } from './lib/media/media-tool-provider'
 import { createMediaImageCatalog } from './lib/media/media-image-catalog'
 import { createMediaDesignImageExecution } from './lib/media/media-design-execution'
 import { ServerOpsAgentAccessStore } from './lib/server-ops/server-ops-agent-access-store'
+import { ServerOpsAgentReadAccessPersistenceStore } from './lib/server-ops/server-ops-agent-read-access-persistence'
 import { ServerOpsDatabaseAgentPolicyStore } from './lib/server-ops/server-ops-database-agent-policy-store'
 import { ServerOpsAuditStore } from './lib/server-ops/server-ops-audit-store'
 import { disposeServerOpsLifecycle, registerServerOpsBeforeQuitBarrier, registerServerOpsServiceContext } from './lib/server-ops/server-ops-service-context'
@@ -2332,6 +2334,8 @@ export function registerIpcHandlers(): void {
 
   console.log('[IPC] 正在注册 IPC 处理器...')
 
+  registerWorkspaceMenuIpcHandlers()
+
   /** normal 模式共享的实例 lease，用于迁移前排除 dev/prod 其他进程。 */
   const dataRootInstanceLease = getDefaultDataRootInstanceLeaseRegistry()
   /** 写 IPC 统一按会话、slug 或 ID 解析工作区并检查迁移独占锁。 */
@@ -2533,8 +2537,9 @@ export function registerIpcHandlers(): void {
     acquireMutationGuard: acquireServerOpsMutationGuard,
     ...createServerOpsConnectionSystemDependencies(),
   })
-  /** Agent 服务器授权仅存在主进程内存，并复用同一运维服务实例。 */
-  const serverOpsAgentAccessStore = new ServerOpsAgentAccessStore()
+  /** SSH/Redis Agent 读取授权使用共享配置持久化，并复用同一运维服务实例。 */
+  const serverOpsAgentReadAccessPersistence = new ServerOpsAgentReadAccessPersistenceStore(getConfigDir(), { transaction: serverOpsConfigTransaction })
+  const serverOpsAgentAccessStore = new ServerOpsAgentAccessStore(undefined, serverOpsAgentReadAccessPersistence)
   /** 持久禁用项跨普通会话共享；复用配置事务防止多窗口覆盖。 */
   const serverOpsDatabaseAgentPolicyStore = new ServerOpsDatabaseAgentPolicyStore(getConfigDir(), { transaction: serverOpsConfigTransaction })
   /** Agent 远程动作审计与 Facade、IPC 共享唯一持久化实例。 */

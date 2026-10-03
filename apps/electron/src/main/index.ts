@@ -91,6 +91,7 @@ import { agentEventBus, hasActiveAgentSessions, stopAllAgents } from './lib/agen
 import { stopAllTerminals } from './lib/terminal-service'
 import { disposePiMcpConnections } from './lib/adapters/pi-mcp-tools'
 import { browserController } from './lib/browser-controller'
+import { prepareWorkspaceMenu } from './lib/workspace-menu-ipc'
 import { markRunningDelegationsAsInterrupted } from './lib/agent-session-manager'
 import { stopAllGenerations } from './lib/chat-service'
 import { configureUpdater, initAutoUpdater, cleanupUpdater } from './lib/updater/auto-updater'
@@ -540,6 +541,8 @@ function createWindow(): void {
     ...titleBarOptions,
   })
   setStoredMainWindow(mainWindow)
+  /** 预热绑定到当前主窗口的工作区菜单，避免首次点击时才加载 renderer。 */
+  const workspaceMenuOwner = mainWindow
   installWindowsZoomInFallback(mainWindow)
   browserController.setOwnerWindow(mainWindow)
 
@@ -589,6 +592,9 @@ function createWindow(): void {
   mainWindow.webContents.on('did-finish-load', () => {
     // 主 Renderer 成功恢复后重新开始计数；只有连续失败才应进入错误页。
     if (!hasShownRendererFailure) rendererRecoveryAttempts = []
+    if (!hasShownRendererFailure && !workspaceMenuOwner.isDestroyed()) {
+      prepareWorkspaceMenu(workspaceMenuOwner)
+    }
   })
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     // clean-exit 和应用退出不属于 Renderer 故障；避免退出过程中重新加载主窗口。
