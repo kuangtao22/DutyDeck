@@ -1,5 +1,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { EventEmitter } from 'node:events'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { handlePromaFileRequest } from './local-file-protocol'
 
 /** 测试使用的最小 CDP 客户端，只记录连接状态。 */
 class MockDebugger {
@@ -26,6 +30,7 @@ class MockDebugger {
 class MockWebContents extends EventEmitter {
   readonly debugger = new MockDebugger()
   private destroyed = false
+  private currentUrl = 'about:blank'
 
   setWindowOpenHandler(): void {}
 
@@ -40,7 +45,7 @@ class MockWebContents extends EventEmitter {
   stop(): void {}
 
   getURL(): string {
-    return 'about:blank'
+    return this.currentUrl
   }
 
   getTitle(): string {
@@ -59,7 +64,9 @@ class MockWebContents extends EventEmitter {
     return false
   }
 
-  async loadURL(): Promise<void> {}
+  async loadURL(url: string): Promise<void> {
+    this.currentUrl = url
+  }
 }
 
 /** 测试使用的最小原生视图。 */
@@ -204,5 +211,23 @@ describe('浏览器模态遮挡期间的会话保留', () => {
 
     controller.minimize('background-8')
     expect(controller.getState('target')).toBeNull()
+  })
+
+  test('Given 本地预览标签已打开 When 标签关闭后刷新原 URL Then 关闭前可读且关闭后返回 404', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'proma-browser-preview-lifecycle-'))
+    try {
+      writeFileSync(join(root, 'index.html'), '<!doctype html><title>preview</title>', 'utf8')
+      const controller = createController()
+      const state = await controller.previewOpen('preview-lifecycle', root, undefined, [root])
+
+      expect(state.url).toMatch(/^proma-file:\/\//)
+      expect((await handlePromaFileRequest(new Request(state.url))).status).toBe(200)
+
+      await controller.close('preview-lifecycle')
+
+      expect((await handlePromaFileRequest(new Request(state.url))).status).toBe(404)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

@@ -5,7 +5,7 @@ import type { BrowserExecutionSource, BrowserOperationStatus, BrowserSessionClos
 import { AGENT_IPC_CHANNELS } from '@proma/shared'
 import { assertSafeBrowserDestination, assertSafeBrowserDestinationWithFallback, assertSafeBrowserDownloadUrl, assertSafeBrowserUrl, isSupportedBrowserPopupUrl, isTransientBrowserPopupUrl, USER_NEW_TAB_URL } from './browser-policy'
 import { createAuthorizedPreviewUrl, isAuthorizedPreviewProtocol } from './browser-preview-service'
-import { handlePromaFileRequest } from './local-file-protocol'
+import { handlePromaFileRequest, retainPromaPathUrl, revokePromaPathUrl } from './local-file-protocol'
 import { BrowserCdpTimeoutError, BrowserOperationAbortedError, BROWSER_OBSERVE_TIMEOUT_MS, resolveBrowserObserveAxDepth, throwIfBrowserOperationAborted, withBrowserCdpTimeout } from './browser-cdp'
 import { parseBrowserPressAction } from './browser-key-policy'
 import { browserObservationNameLimit, prioritizeBrowserObservationCandidates, resolveBrowserObserveMaxElements } from './browser-observation-policy'
@@ -61,6 +61,8 @@ type BrowserTabRecord = {
   /** 防止 UI 与 Agent 在同一 Tab 上交错下发命令。 */
   commandTail: Promise<void>
   isLocalPreview: boolean
+  /** 当前标签持有的本地预览目录授权；标签离开预览或销毁时必须释放。 */
+  localPreviewUrl: string | null
   /** 仅表示来源：由 Agent 创建的标签始终保留标识，不随当前工作标签切换而丢失。 */
   openedByAgent: boolean
   /** 此标签是页面 window.open / target=_blank 创建的真实 child window。 */
@@ -555,6 +557,47 @@ export class BrowserController {
     return this.sessions.get(browserSession.sessionId) === browserSession && browserSession.tabs.get(tab.tabId) === tab
   }
 
+  /**
+   * 释放标签持有的本地预览授权，避免 retain token 随进程永久累积。
+   * @param tab 需要解除本地预览授权的浏览器标签。
+   * @returns 无返回值。
+   */
+  private releaseLocalPreview(tab: BrowserTabRecord): void {
+    const previewUrl = tab.localPreviewUrl
+    tab.localPreviewUrl = null
+    tab.isLocalPreview = false
+    if (previewUrl) revokePromaPathUrl(previewUrl)
+  }
+
+  /**
+   * 为标签绑定可跨刷新复用的本地预览授权，并先保留新 token 再释放旧 token。
+   * @param tab 需要绑定预览授权的浏览器标签。
+   * @param previewUrl 主进程刚签发的目录预览 URL。
+   * @returns 无返回值；授权失效时抛出错误。
+   */
+  private retainLocalPreview(tab: BrowserTabRecord, previewUrl: string): void {
+    if (!retainPromaPathUrl(previewUrl)) throw new Error('本地预览授权已失效，请重新打开预览。')
+    const previousUrl = tab.localPreviewUrl
+    if (previousUrl && previousUrl !== previewUrl) revokePromaPathUrl(previousUrl)
+    tab.localPreviewUrl = previewUrl
+    tab.isLocalPreview = true
+  }
+
+  /**
+   * 只允许当前标签持有的目录 token 继续导航，刷新和目录内资源路径均保持可用。
+   * @param tab 待校验的浏览器标签。
+   * @param url 即将导航到的 URL。
+   * @returns 是否属于当前标签已持有的本地预览目录。
+   */
+  private isCurrentLocalPreviewNavigation(tab: BrowserTabRecord, url: string): boolean {
+    if (!tab.isLocalPreview || !tab.localPreviewUrl || !isAuthorizedPreviewProtocol(url)) return false
+    try {
+      return new URL(tab.localPreviewUrl).hostname === new URL(url).hostname
+    } catch {
+      return false
+    }
+  }
+
   private installPreviewProtocol(browserSession: Session): void {
     if (this.previewProtocolSessions.has(browserSession)) return
     browserSession.protocol.handle('proma-file', handlePromaFileRequest)
@@ -612,6 +655,7 @@ export class BrowserController {
       generation: 0,
       commandTail: Promise.resolve(),
       isLocalPreview,
+      localPreviewUrl: null,
       openedByAgent: claimAsAgent,
       openedByPopup: popupOptions?.openedByPopup ?? false,
       openerTabId: popupOptions?.openerTabId ?? null,
@@ -662,7 +706,7 @@ export class BrowserController {
           tab.popupInitialNavigationPending = false
           return
         }
-        if (isAuthorizedPreviewProtocol(url) && tab.isLocalPreview) return
+        if (this.isCurrentLocalPreviewNavigation(tab, url)) return
         assertSafeBrowserUrl(url)
       } catch {
         event.preventDefault()
@@ -695,16 +739,18 @@ export class BrowserController {
     })
     view.webContents.on('did-stop-loading', () => this.updateNavigationState(browserSession, tab))
     view.webContents.on('page-title-updated', () => this.updateNavigationState(browserSession, tab))
-    view.webContents.on('did-navigate', () => {
+    view.webContents.on('did-navigate', (_event, url) => {
       // 只在主框架真正完成跨文档导航时清理旧站点图标；新页面随后会通过 page-favicon-updated 重新发布。
       tab.favicon = null
       tab.popupInitialNavigationPending = false
+      if (!this.isCurrentLocalPreviewNavigation(tab, url)) this.releaseLocalPreview(tab)
       this.invalidateTabDocument(tab)
       this.updateNavigationState(browserSession, tab)
     })
     view.webContents.on('did-navigate-in-page', () => { tab.popupInitialNavigationPending = false; this.invalidateTabDocument(tab); this.updateNavigationState(browserSession, tab) })
     view.webContents.on('destroyed', () => {
       if (!browserSession.tabs.has(tab.tabId)) return
+      this.releaseLocalPreview(tab)
       browserSession.tabs.delete(tab.tabId)
       browserSession.lastLayoutRevisionByTab.delete(tab.tabId)
       this.removePresentation(browserSession.sessionId, tab.tabId)
@@ -1053,6 +1099,7 @@ export class BrowserController {
     browserSession.lastLayoutRevisionByTab.delete(tab.tabId)
     this.removePresentation(browserSession.sessionId, tab.tabId)
     this.clearAgentTargetHighlight(tab)
+    this.releaseLocalPreview(tab)
     try { if (tab.view.webContents.debugger.isAttached()) tab.view.webContents.debugger.detach() } catch { /* 已销毁 */ }
     this.detachTabView(tab)
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close()
@@ -1158,13 +1205,14 @@ export class BrowserController {
       const reclaimed = this.reclaimExcessAgentTabs(browserSession)
       if (reclaimed > 0) this.trace(browserSession, tab, 'tab', `已回收 ${reclaimed} 个最久未使用的 Agent 标签以保持最多 ${MAX_BROWSER_TABS} 个标签`)
       return this.runTabOperation(browserSession, tab, signal ?? browserSession.agentAbortController.signal, async (operationSignal) => {
-        tab.isLocalPreview = true
+        this.retainLocalPreview(tab, preview.url)
         try {
           await this.loadUrl(tab, preview.url, operationSignal)
           this.trace(browserSession, tab, 'navigate', `预览本地文件 ${preview.filePath.split(/[\\/]/).pop() ?? preview.filePath}`, 'verified')
           this.updateNavigationState(browserSession, tab)
           return structuredClone(this.buildState(browserSession))
         } catch (error) {
+          this.releaseLocalPreview(tab)
           this.trace(browserSession, tab, 'navigate', error instanceof BrowserOperationAbortedError ? '本地预览已停止，结果未知' : '本地预览加载失败', error instanceof BrowserOperationAbortedError ? 'unknown' : 'failed')
           throw error
         }
@@ -1234,7 +1282,7 @@ export class BrowserController {
       const destination = await assertSafeBrowserDestinationWithFallback(url)
       const host = new URL(destination.url).host
       return this.runTabOperation(browserSession, tab, signal ?? browserSession.agentAbortController.signal, async (operationSignal) => {
-        tab.isLocalPreview = false
+        this.releaseLocalPreview(tab)
         this.trace(browserSession, tab, 'navigate', `正在打开 ${host}`, 'dispatched')
         try {
           const result = await this.loadUrlWithFallback(tab, destination.url, destination.fallbackUrl, operationSignal)
@@ -1262,7 +1310,7 @@ export class BrowserController {
     const destination = await assertSafeBrowserDestinationWithFallback(url)
     const host = new URL(destination.url).host
     return this.runTabOperation(browserSession, tab, undefined, async () => {
-      tab.isLocalPreview = false
+      this.releaseLocalPreview(tab)
       this.trace(browserSession, tab, 'navigate', `正在打开 ${host}`, 'dispatched')
       try {
         const result = await this.loadUrlWithFallback(tab, destination.url, destination.fallbackUrl)
@@ -1794,6 +1842,7 @@ export class BrowserController {
     if (this.foregroundPresentationSessionId === sessionId) this.foregroundPresentationSessionId = null
     for (const tab of browserSession.tabs.values()) {
       this.clearAgentTargetHighlight(tab)
+      this.releaseLocalPreview(tab)
       try { if (tab.view.webContents.debugger.isAttached()) tab.view.webContents.debugger.detach() } catch { /* 已销毁 */ }
       this.detachTabView(tab)
       if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close()
