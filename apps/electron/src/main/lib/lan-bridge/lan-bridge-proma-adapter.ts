@@ -4,6 +4,7 @@ import {
   getConversationMessages,
   listConversations,
   searchConversationMessages,
+  updateConversationMeta,
 } from '../conversation-manager'
 import {
   createAgentSession,
@@ -13,6 +14,8 @@ import {
   searchAgentSessionMessages,
   updateAgentSessionMeta,
 } from '../agent-session-manager'
+import { listAutomations, updateAutomation } from '../automation-manager'
+import { runAutomationNow } from '../automation-scheduler'
 import { listAgentWorkspaces } from '../agent-workspace-manager'
 import { isAgentSessionActive, runAgentHeadless, stopAgent } from '../agent-service'
 import { getSettings } from '../settings-service'
@@ -33,6 +36,12 @@ import {
 /** 默认依赖只在组合根绑定官方模块，handlers 不再承受上游签名变化。 */
 const defaultDependencies: LanBridgePromaDependencies = {
   listConversations: () => listConversations(),
+  updateConversationPinned: (conversationId) => {
+    /** Chat 置顶沿用官方会话元数据原子更新路径。 */
+    const current = listConversations().find((conversation) => conversation.id === conversationId)
+    if (!current) throw new Error('对话不存在')
+    return updateConversationMeta(conversationId, { pinned: !current.pinned })
+  },
   getConversationMessages: (conversationId) => getConversationMessages(conversationId),
   searchConversationMessages: (query) => searchConversationMessages(query),
   listAgentSessions: () => listVisibleAgentSessions(),
@@ -48,7 +57,16 @@ const defaultDependencies: LanBridgePromaDependencies = {
     if (!current) throw new Error('会话不存在')
     return updateAgentSessionMeta(sessionId, { starred: !current.starred })
   },
+  updateAgentSessionPinned: (sessionId) => {
+    /** 置顶沿用官方会话元数据原子更新路径。 */
+    const current = getAgentSessionMeta(sessionId)
+    if (!current) throw new Error('会话不存在')
+    return updateAgentSessionMeta(sessionId, { pinned: !current.pinned })
+  },
   markAgentSessionViewed: (sessionId) => markAgentIslandSessionViewed(sessionId),
+  listAutomations: () => listAutomations(),
+  updateAutomationActive: (id, active) => updateAutomation({ id, active }),
+  runAutomationNow: (id) => runAutomationNow(id),
   runAgentHeadless: (input, callbacks) => runAgentHeadless(input, callbacks),
   stopAgent: (sessionId) => stopAgent(sessionId),
   getSettings: () => getSettings(),

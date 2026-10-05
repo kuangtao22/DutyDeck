@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
-import { Bot, LoaderCircle, MessageSquareText, RefreshCw } from 'lucide-react'
+import { LoaderCircle, MessageSquareText, RefreshCw } from 'lucide-react'
 import {
   activeConvAtom, messagesAtom, tokenAtom,
-  streamingAtom, streamContentAtom,
-  type Message,
+  streamingAtom, streamSegmentsAtom,
+  type Message, type MobileStreamSegments,
 } from '../../atoms'
 import { wsReq, onPush } from '../../lib/ws-client'
+import { appendMobileStreamDelta } from '../../lib/stream-segments'
 import {
   createGenerationTracker,
   shouldClearMessagesBeforeLoad,
@@ -14,7 +15,7 @@ import {
 } from '../../lib/recovery-guards'
 import { InputBar } from './InputBar'
 import { MessageList } from './MessageBubble'
-import { renderMd } from '../../utils/markdown'
+import { StreamingAssistantMessage } from './StreamingAssistantMessage'
 
 interface MessagesResponse { messages: Message[] }
 interface StreamChunk { sessionId?: string; conversationId?: string; text?: string }
@@ -92,9 +93,17 @@ export function ChatView() {
   const [messages, setMessages] = useAtom(messagesAtom)
   const token = useAtomValue(tokenAtom)
   const [streaming, setStreaming] = useAtom(streamingAtom)
-  const [streamContent, setStreamContent] = useAtom(streamContentAtom)
+  /** 回答与思考在同一快照中保留，避免实时内容混排。 */
+  const [streamSegments, setStreamSegments] = useAtom(streamSegmentsAtom)
   const listRef = useRef<HTMLDivElement>(null)
   const streamTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** 下一帧提交前暂存的增量，合并高频推送以限制移动端重渲染。 */
+  const pendingStreamSegmentsRef = useRef<MobileStreamSegments>({ answer: '', reasoning: '' })
+  /** 同时最多保留一个流式文本提交帧。 */
+  const streamFrameRef = useRef<number | null>(null)
+  /** 同步锁定首个流事件，避免 React 提交状态前重复清空缓冲。 */
+  const streamingRef = useRef(streaming)
+  streamingRef.current = streaming
   /** 历史加载与订阅各自使用 generation，避免互相误伤。 */
   const historyGenerations = useRef(createGenerationTracker())
   const subscriptionGenerations = useRef(createGenerationTracker())
@@ -107,6 +116,48 @@ export function ChatView() {
     conversationKey: activeKey,
     status: 'loading',
   }))
+
+  /** 将一帧内积累的回答与思考增量一次性提交到 Jotai。 */
+  const flushStreamSegments = useCallback((): void => {
+    /** 当前帧待提交的完整增量快照。 */
+    const pending = pendingStreamSegmentsRef.current
+    pendingStreamSegmentsRef.current = { answer: '', reasoning: '' }
+    streamFrameRef.current = null
+    if (!pending.answer && !pending.reasoning) return
+    setStreamSegments((current) => ({
+      answer: current.answer + pending.answer,
+      reasoning: current.reasoning + pending.reasoning,
+    }))
+  }, [setStreamSegments])
+
+  /**
+   * 把 LAN Bridge 的单条 delta 合并到下一动画帧。
+   * @param eventType 当前回答或思考事件类型
+   * @param delta 本次新增文本
+   * @returns 无返回值；只调度至多一个动画帧
+   */
+  const queueStreamDelta = useCallback((
+    eventType: 'stream.chunk' | 'stream.reasoning',
+    delta: string,
+  ): void => {
+    if (!delta) return
+    pendingStreamSegmentsRef.current = appendMobileStreamDelta(
+      pendingStreamSegmentsRef.current,
+      eventType,
+      delta,
+    )
+    if (streamFrameRef.current === null) {
+      streamFrameRef.current = requestAnimationFrame(flushStreamSegments)
+    }
+  }, [flushStreamSegments])
+
+  /** 丢弃已被历史消息替代或已结束的临时流式文本。 */
+  const clearPendingStream = useCallback((): void => {
+    if (streamFrameRef.current !== null) cancelAnimationFrame(streamFrameRef.current)
+    streamFrameRef.current = null
+    pendingStreamSegmentsRef.current = { answer: '', reasoning: '' }
+    setStreamSegments({ answer: '', reasoning: '' })
+  }, [setStreamSegments])
 
   /** 按触发原因加载当前历史，后台刷新不提前清空现有消息。 */
   const loadMessages = useCallback((reason: MessageLoadReason) => {
@@ -176,35 +227,51 @@ export function ChatView() {
   // 流式推送
   useEffect(() => {
     const unsub = onPush((msg) => {
-      if (!active) return
+      if (!activeId) return
       const d = msg.data as StreamChunk | StreamEnd
       const id = d.sessionId ?? d.conversationId
-      if (id && id !== active.id) return
+      if (id && id !== activeId) return
+
+      if (msg.type === 'stream.chunk' || msg.type === 'stream.reasoning') {
+        if (streamTimeoutRef.current) { clearTimeout(streamTimeoutRef.current); streamTimeoutRef.current = null }
+        if (!streamingRef.current) {
+          streamingRef.current = true
+          setStreaming(true)
+          clearPendingStream()
+        }
+        queueStreamDelta(msg.type, (d as StreamChunk).text ?? '')
+        return
+      }
 
       switch (msg.type) {
-        case 'stream.chunk':
-        case 'stream.reasoning':
-          if (streamTimeoutRef.current) { clearTimeout(streamTimeoutRef.current); streamTimeoutRef.current = null }
-          if (!streaming) { setStreaming(true); setStreamContent('') }
-          setStreamContent(prev => prev + ((d as StreamChunk).text ?? ''))
-          break
         case 'stream.complete':
           if (streamTimeoutRef.current) { clearTimeout(streamTimeoutRef.current); streamTimeoutRef.current = null }
+          /** 完成事件可能紧跟最后一个 delta，先提交当前帧避免丢掉尾部文字。 */
+          if (streamFrameRef.current !== null) {
+            cancelAnimationFrame(streamFrameRef.current)
+            flushStreamSegments()
+          }
+          streamingRef.current = false
           setStreaming(false)
           loadMessages('stream-complete')
           break
         case 'stream.error':
           if (streamTimeoutRef.current) { clearTimeout(streamTimeoutRef.current); streamTimeoutRef.current = null }
+          streamingRef.current = false
           setStreaming(false)
+          clearPendingStream()
           break
       }
     })
-    return unsub
-  }, [active, loadMessages, setStreamContent, setStreaming, streaming])
+    return () => {
+      unsub()
+      clearPendingStream()
+    }
+  }, [activeId, clearPendingStream, flushStreamSegments, loadMessages, queueStreamDelta, setStreaming])
 
   useEffect(() => {
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight
-  }, [messages, streamContent])
+  }, [messages, streamSegments])
 
   if (!active) return null
 
@@ -226,20 +293,8 @@ export function ChatView() {
           />
         )}
         <MessageList messages={visibleMessages} />
-        {streaming && streamContent && (
-          <article data-message-role="assistant" className="flex min-w-0 gap-2.5">
-            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-card text-card-foreground">
-              <Bot aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="mb-1 text-[11px] font-medium text-foreground/70">Proma</p>
-              <div
-                className="prose prose-sm max-w-none break-words text-sm leading-6 text-foreground [overflow-wrap:anywhere]"
-                dangerouslySetInnerHTML={{ __html: renderMd(streamContent) }}
-              />
-              <span className="ml-0.5 inline-block h-3.5 w-1 animate-pulse bg-foreground/35 align-middle" />
-            </div>
-          </article>
+        {streaming && (streamSegments.reasoning || streamSegments.answer) && (
+          <StreamingAssistantMessage segments={streamSegments} />
         )}
       </div>
 

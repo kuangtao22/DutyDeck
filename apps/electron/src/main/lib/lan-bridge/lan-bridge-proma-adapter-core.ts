@@ -2,7 +2,9 @@ import type { WebContents } from 'electron'
 import type {
   AgentSendInput,
   ChatSendInput,
+  Automation,
   LanBridgeAgentSessionDto,
+  LanBridgeAutomationDto,
   LanBridgeAgentSessionRuntimeStatus,
   LanBridgeConversationDto,
 } from '@proma/shared'
@@ -115,6 +117,12 @@ interface UpstreamAgentSession extends UpstreamConversation {
   starred?: boolean
   sourceDesignProjectId?: string
   sourceDesignJobId?: string
+  sourceAutomationId?: string
+  parentSessionId?: string
+  sourceDelegationId?: string
+  delegationRole?: 'explore' | 'research' | 'implement' | 'review' | 'custom'
+  delegationStatus?: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+  delegationGoal?: string
 }
 
 /** 官方工作区对象的最小可读形状。 */
@@ -178,6 +186,7 @@ type UpstreamChatStreamEvent =
 /** 可注入的官方依赖集合，使字段映射可以脱离真实文件和 Electron 窗口测试。 */
 export interface LanBridgePromaDependencies {
   listConversations: () => UpstreamConversation[]
+  updateConversationPinned?: (conversationId: string) => UpstreamConversation
   getConversationMessages: (conversationId: string) => ChatSendInput['messageHistory']
   searchConversationMessages: (query: string) => Promise<UpstreamConversationSearchResult[]>
   listAgentSessions: () => UpstreamAgentSession[]
@@ -188,7 +197,11 @@ export interface LanBridgePromaDependencies {
   isAgentSessionActive: (sessionId: string) => boolean
   getAgentSessionRuntimeStatus: (sessionId: string) => LanBridgeAgentSessionRuntimeStatus
   updateAgentSessionStarred: (sessionId: string) => UpstreamAgentSession
+  updateAgentSessionPinned?: (sessionId: string) => UpstreamAgentSession
   markAgentSessionViewed: (sessionId: string) => boolean
+  listAutomations?: () => Automation[]
+  updateAutomationActive?: (id: string, active: boolean) => Automation | undefined
+  runAutomationNow?: (id: string) => Promise<void>
   runAgentHeadless: (input: AgentSendInput, callbacks: UpstreamAgentCallbacks) => Promise<void>
   stopAgent: (sessionId: string) => void
   getSettings: () => UpstreamSettings
@@ -206,6 +219,7 @@ export interface LanBridgePromaDependencies {
 /** LAN Bridge handlers 使用的 Proma 稳定能力集合。 */
 export interface LanBridgePromaAdapter {
   listConversations: () => LanBridgeConversationDto[]
+  toggleConversationPin: (conversationId: string) => LanBridgeConversationDto
   hasConversation: (conversationId: string) => boolean
   getConversationMessages: (conversationId: string) => ChatSendInput['messageHistory']
   searchConversations: (query: string, matchedAt?: number) => Promise<LanBridgeSearchResultDto[]>
@@ -218,10 +232,14 @@ export interface LanBridgePromaAdapter {
   isAgentSessionActive: (sessionId: string) => boolean
   getAgentSessionRuntimeStatus: (sessionId: string) => LanBridgeAgentSessionRuntimeStatus
   toggleAgentSessionStar: (sessionId: string) => LanBridgeAgentSessionDto
+  toggleAgentSessionPin: (sessionId: string) => LanBridgeAgentSessionDto
   markAgentSessionViewed: (sessionId: string) => {
     changed: boolean
     runtimeStatus: LanBridgeAgentSessionRuntimeStatus
   }
+  listAutomations: () => LanBridgeAutomationDto[]
+  toggleAutomation: (id: string, active: boolean) => LanBridgeAutomationDto
+  runAutomationNow: (id: string) => Promise<void>
   sendAgent: (command: LanBridgeAgentSendCommand, callbacks: LanBridgeStreamCallbacks) => Promise<void>
   stopAgent: (sessionId: string) => void
   sendConversation: (command: LanBridgeConversationSendCommand, callbacks: LanBridgeStreamCallbacks) => Promise<void>
@@ -291,9 +309,48 @@ function mapAgentSession(
     ...(session.archived === undefined ? {} : { archived: session.archived }),
     ...(session.manualWorking === undefined ? {} : { manualWorking: session.manualWorking }),
     ...(session.starred === undefined ? {} : { starred: session.starred }),
+    ...(session.sourceAutomationId === undefined ? {} : { sourceAutomationId: session.sourceAutomationId }),
+    ...(session.parentSessionId === undefined ? {} : { parentSessionId: session.parentSessionId }),
+    ...(session.sourceDelegationId === undefined ? {} : { sourceDelegationId: session.sourceDelegationId }),
+    ...(session.delegationRole === undefined ? {} : { delegationRole: session.delegationRole }),
+    ...(session.delegationStatus === undefined ? {} : { delegationStatus: session.delegationStatus }),
+    ...(session.delegationGoal === undefined ? {} : { delegationGoal: session.delegationGoal }),
     runtimeStatus,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
+  }
+}
+
+/** 将自动计划映射为移动端可安全消费的轻量摘要，并限制历史长度。 */
+function mapAutomation(automation: Automation): LanBridgeAutomationDto {
+  return {
+    id: automation.id,
+    name: automation.name,
+    active: automation.active,
+    scheduleType: automation.scheduleType,
+    intervalMinutes: automation.intervalMinutes,
+    ...(automation.activeWindowStart === undefined ? {} : { activeWindowStart: automation.activeWindowStart }),
+    ...(automation.activeWindowEnd === undefined ? {} : { activeWindowEnd: automation.activeWindowEnd }),
+    ...(automation.activeWeekdays === undefined ? {} : { activeWeekdays: [...automation.activeWeekdays] }),
+    ...(automation.timeOfDay === undefined ? {} : { timeOfDay: automation.timeOfDay }),
+    ...(automation.dayOfWeek === undefined ? {} : { dayOfWeek: automation.dayOfWeek }),
+    ...(automation.dayOfMonth === undefined ? {} : { dayOfMonth: automation.dayOfMonth }),
+    ...(automation.scheduledAt === undefined ? {} : { scheduledAt: automation.scheduledAt }),
+    ...(automation.maxRuns === undefined ? {} : { maxRuns: automation.maxRuns }),
+    nextRunAt: automation.nextRunAt,
+    ...(automation.lastRunAt === undefined ? {} : { lastRunAt: automation.lastRunAt }),
+    ...(automation.lastSessionId === undefined ? {} : { lastSessionId: automation.lastSessionId }),
+    ...(automation.runCount === undefined ? {} : { runCount: automation.runCount }),
+    ...(automation.completedAt === undefined ? {} : { completedAt: automation.completedAt }),
+    ...(automation.consecutiveFailures === undefined ? {} : { consecutiveFailures: automation.consecutiveFailures }),
+    runHistory: automation.runHistory.slice(-5).map((run) => ({
+      runAt: run.runAt,
+      sessionId: run.sessionId,
+      status: run.status,
+      ...(run.durationMs === undefined ? {} : { durationMs: run.durationMs }),
+      ...(run.error === undefined ? {} : { error: run.error }),
+      ...(run.skipReason === undefined ? {} : { skipReason: run.skipReason }),
+    })),
   }
 }
 
@@ -303,6 +360,11 @@ export function createLanBridgePromaAdapter(
 ): LanBridgePromaAdapter {
   return {
     listConversations: () => dependencies.listConversations().map(mapConversation),
+    toggleConversationPin: (conversationId) => {
+      assertExistingConversation(dependencies, conversationId)
+      if (!dependencies.updateConversationPinned) throw new Error('当前 Bridge 不支持置顶')
+      return mapConversation(dependencies.updateConversationPinned(conversationId))
+    },
     hasConversation: (conversationId) => isValidLanBridgeSessionId(conversationId)
       && dependencies.listConversations().some(conversation => conversation.id === conversationId),
     getConversationMessages: (conversationId) => {
@@ -374,6 +436,14 @@ export function createLanBridgePromaAdapter(
       const session = dependencies.updateAgentSessionStarred(sessionId)
       return mapAgentSession(session, dependencies.getAgentSessionRuntimeStatus(sessionId))
     },
+    toggleAgentSessionPin: (sessionId) => {
+      assertExistingAgentSession(dependencies, sessionId)
+      const current = dependencies.listAgentSessions().find((session) => session.id === sessionId)
+      if (!current) throw new Error('会话不存在')
+      if (!dependencies.updateAgentSessionPinned) throw new Error('当前 Bridge 不支持置顶')
+      const session = dependencies.updateAgentSessionPinned(sessionId)
+      return mapAgentSession(session, dependencies.getAgentSessionRuntimeStatus(sessionId))
+    },
     markAgentSessionViewed: (sessionId) => {
       assertExistingAgentSession(dependencies, sessionId)
       const changed = dependencies.markAgentSessionViewed(sessionId)
@@ -381,6 +451,19 @@ export function createLanBridgePromaAdapter(
         changed,
         runtimeStatus: dependencies.getAgentSessionRuntimeStatus(sessionId),
       }
+    },
+    listAutomations: () => (dependencies.listAutomations?.() ?? []).map(mapAutomation),
+    toggleAutomation: (id, active) => {
+      const updated = dependencies.updateAutomationActive?.(id, active)
+      if (!updated) throw new Error('自动计划不存在')
+      return mapAutomation(updated)
+    },
+    runAutomationNow: async (id) => {
+      if (!(dependencies.listAutomations?.() ?? []).some((automation) => automation.id === id)) {
+        throw new Error('自动计划不存在')
+      }
+      if (!dependencies.runAutomationNow) throw new Error('当前 Bridge 不支持自动计划运行')
+      await dependencies.runAutomationNow(id)
     },
     sendAgent: async (command, callbacks) => {
       assertExistingAgentSession(dependencies, command.sessionId)

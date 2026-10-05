@@ -71,4 +71,30 @@ describe('移动端会话下拉框', () => {
     expect(markup).toContain('aria-label="当前会话"')
     expect(markup).not.toContain('data-agent-session-row="four-column"')
   })
+
+  test('Given 父会话和委派子 Agent When 渲染 Then 子会话缩进并只出现一次', async () => {
+    const { activeConvAtom, channelsAtom, conversationsAtom, tokenAtom } = await import('../../atoms')
+    const { ConvDropdown } = await import('./ConvDropdown')
+    /** 父子快照用于锁定快速切换器与抽屉相同的树形展示。 */
+    const store = createStore()
+    const parent = {
+      id: 'agent-parent', title: '主会话', type: 'agent' as const, workspaceId: 'ws-1', updatedAt: 3,
+    }
+    const child = {
+      id: 'agent-child', title: '研究子 Agent', type: 'agent' as const, workspaceId: 'ws-1', updatedAt: 2,
+      parentSessionId: parent.id, sourceDelegationId: 'delegation-1', delegationRole: 'research' as const,
+    }
+    store.set(tokenAtom, 'token')
+    store.set(activeConvAtom, parent)
+    store.set(conversationsAtom, [parent, child])
+    store.set(channelsAtom, [])
+
+    const markup = renderToStaticMarkup(
+      <Provider store={store}><ConvDropdown onClose={() => undefined} /></Provider>,
+    )
+
+    expect(markup.match(/data-agent-session-row="four-column"/g)).toHaveLength(2)
+    expect(markup).toContain('aria-label="子 Agent"')
+    expect(markup).toContain('pl-9')
+  })
 })

@@ -284,6 +284,12 @@ import type {
   TrayCreateSessionData,
   TrayOpenAgentSessionData,
   NotificationSoundType,
+  StorageCleanupPreviewOptions,
+  StorageCleanupPreview,
+  StorageCleanupExecuteRequest,
+  StorageCleanupResult,
+  StorageCleanupLegacyOptions,
+  StorageCleanupLegacyResult,
 } from '../types'
 import { QUICK_TASK_IPC_CHANNELS, TRAY_IPC_CHANNELS, VOICE_DICTATION_IPC_CHANNELS, WINDOWS_AGENT_ISLAND_IPC_CHANNELS } from '../types'
 
@@ -1439,11 +1445,21 @@ export interface ElectronAPI extends LanBridgePreloadApi, NormalPathManagementPr
   // ===== 存储管理 =====
 
   /** 获取各目录存储统计 */
-  getStorageStats: () => Promise<unknown>
-  /** 按选项清理存储 */
-  cleanupStorage: (options: unknown) => Promise<unknown>
+  getStorageStats: () => Promise<import('../types').StorageStats>
+  /** 同一轮读取占用与两类清理预览 */
+  scanStorageOverview: () => Promise<import('../types').StorageOverview>
+  /** 兼容旧设置页的按选项清理入口 */
+  cleanupStorage: (options: StorageCleanupLegacyOptions) => Promise<StorageCleanupLegacyResult>
   /** 清理临时文件（快速） */
-  cleanupTempStorage: () => Promise<unknown>
+  cleanupTempStorage: () => Promise<StorageCleanupLegacyResult>
+  /** 预览归档或孤儿数据的可回收候选 */
+  previewStorageCleanup: (options: StorageCleanupPreviewOptions) => Promise<StorageCleanupPreview>
+  /** 执行此前预览中的候选 */
+  executeStorageCleanup: (request: StorageCleanupExecuteRequest) => Promise<StorageCleanupResult>
+  /** 在系统文件管理器中打开指定会话的受管工作目录。 */
+  openStorageSessionWorkspace: (sessionId: string) => Promise<void>
+  /** 获取经过主进程校验的会话目录及所属项目。 */
+  getStorageSessionWorkspaceTarget: (sessionId: string) => Promise<import('../types').StorageSessionWorkspaceTarget>
 
   // ===== 定时任务（Automation）=====
   /** 获取全部定时任务 */
@@ -3323,12 +3339,34 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke(STORAGE_IPC_CHANNELS.GET_STATS)
   },
 
-  cleanupStorage: (options: unknown) => {
+  scanStorageOverview: () => {
+    return ipcRenderer.invoke(STORAGE_IPC_CHANNELS.SCAN_OVERVIEW)
+  },
+
+  cleanupStorage: (options: StorageCleanupLegacyOptions) => {
     return ipcRenderer.invoke(STORAGE_IPC_CHANNELS.CLEANUP, options)
   },
 
   cleanupTempStorage: () => {
     return ipcRenderer.invoke(STORAGE_IPC_CHANNELS.CLEANUP_TEMP)
+  },
+
+  previewStorageCleanup: (options: StorageCleanupPreviewOptions) => {
+    return ipcRenderer.invoke(STORAGE_IPC_CHANNELS.PREVIEW_CLEANUP, options)
+  },
+
+  executeStorageCleanup: (request: StorageCleanupExecuteRequest) => {
+    return ipcRenderer.invoke(STORAGE_IPC_CHANNELS.EXECUTE_CLEANUP, request)
+  },
+
+  /** 仅传会话 ID，由主进程重新定位并校验工作目录。 */
+  openStorageSessionWorkspace: (sessionId: string) => {
+    return ipcRenderer.invoke(STORAGE_IPC_CHANNELS.OPEN_SESSION_WORKSPACE, sessionId)
+  },
+
+  /** Agent 分析入口仅查询目录，不会打开文件管理器或触发清理。 */
+  getStorageSessionWorkspaceTarget: (sessionId: string) => {
+    return ipcRenderer.invoke(STORAGE_IPC_CHANNELS.GET_SESSION_WORKSPACE_TARGET, sessionId)
   },
 
   // ===== 定时任务（Automation）=====

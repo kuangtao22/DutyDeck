@@ -22,6 +22,8 @@ export const LAN_BRIDGE_CAPABILITIES = [
   'trusted-device-credentials',
   'streaming',
   'connection-recovery',
+  'agent-session-metadata',
+  'automations',
 ] as const
 
 /** LAN Bridge 可协商能力。 */
@@ -34,6 +36,8 @@ export const LAN_BRIDGE_WS_CAPABILITIES = [
   'trusted-device-credentials',
   'streaming',
   'connection-recovery',
+  'agent-session-metadata',
+  'automations',
 ] as const satisfies readonly LanBridgeCapability[]
 
 /** WebSocket 连接建立后的协议协商信息。 */
@@ -202,10 +206,59 @@ export interface LanBridgeAgentSessionDto {
   manualWorking?: boolean
   /** 是否已星标。 */
   starred?: boolean
+  /** 来源定时任务 ID；存在时表示该会话由自动计划创建。 */
+  sourceAutomationId?: string
+  /** 委派父会话 ID；存在时表示该会话是子 Agent。 */
+  parentSessionId?: string
+  /** 来源委派任务 ID，用于区分真正的协作子 Agent。 */
+  sourceDelegationId?: string
+  /** 子 Agent 的角色。 */
+  delegationRole?: 'explore' | 'research' | 'implement' | 'review' | 'custom'
+  /** 子 Agent 的当前委派状态。 */
+  delegationStatus?: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+  /** 子 Agent 的目标摘要。 */
+  delegationGoal?: string
   /** 主进程内存中的实时运行状态。 */
   runtimeStatus?: LanBridgeAgentSessionRuntimeStatus
   createdAt: number
   updatedAt: number
+}
+
+/** LAN Bridge 对外暴露的自动计划运行记录。 */
+export interface LanBridgeAutomationRunDto {
+  runAt: number
+  sessionId: string
+  status: 'success' | 'error' | 'skipped'
+  durationMs?: number
+  error?: string
+  skipReason?: string
+}
+
+/** LAN Bridge 对外暴露的自动计划摘要，不包含渠道凭据或完整提示词。 */
+export interface LanBridgeAutomationDto {
+  id: string
+  name: string
+  active: boolean
+  scheduleType: 'interval' | 'daily' | 'weekly' | 'monthly' | 'once'
+  intervalMinutes: number
+  /** interval 调度的每日开始时间。 */
+  activeWindowStart?: string
+  /** interval 调度的每日结束时间。 */
+  activeWindowEnd?: string
+  /** interval 调度允许运行的星期，0 表示周日。 */
+  activeWeekdays?: number[]
+  timeOfDay?: string
+  dayOfWeek?: number
+  dayOfMonth?: number
+  scheduledAt?: number
+  maxRuns?: number
+  nextRunAt: number
+  lastRunAt?: number
+  lastSessionId?: string
+  runCount?: number
+  completedAt?: number
+  consecutiveFailures?: number
+  runHistory: LanBridgeAutomationRunDto[]
 }
 
 /** 对话列表查询结果 */
@@ -249,6 +302,11 @@ export interface LanBridgeSearchResult {
 export interface LanBridgeAgentSessionsResult {
   sessions: LanBridgeAgentSessionDto[]
   workspaces: Array<{ id: string; name: string; slug: string }>
+}
+
+/** 自动计划列表查询结果。 */
+export interface LanBridgeAutomationsResult {
+  automations: LanBridgeAutomationDto[]
 }
 
 /** Agent 会话消息查询 */

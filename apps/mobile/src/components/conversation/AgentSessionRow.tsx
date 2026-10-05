@@ -1,5 +1,5 @@
 import type { MouseEvent } from 'react'
-import { Star } from 'lucide-react'
+import { Clock3, GitBranch, Pin, PinOff, Star } from 'lucide-react'
 import type { ConvItem } from '../../atoms'
 import { normalizeAgentRuntimeStatus } from '../../lib/session-runtime-state'
 import { formatRelativeTime } from '../../utils/format'
@@ -9,6 +9,8 @@ interface AgentSessionRowProps {
   active: boolean
   onOpen: () => void
   onToggleStar: () => void
+  onTogglePin?: () => void
+  nested?: boolean
 }
 
 /** Agent 四态对应的可访问名称与色块样式。 */
@@ -33,6 +35,8 @@ export function AgentSessionRow({
   active,
   onOpen,
   onToggleStar,
+  onTogglePin,
+  nested = false,
 }: AgentSessionRowProps) {
   /** 未知服务端状态回落为空闲，保证旧客户端稳定渲染。 */
   const runtimeStatus = normalizeAgentRuntimeStatus(session.runtimeStatus)
@@ -43,11 +47,23 @@ export function AgentSessionRow({
     event.stopPropagation()
     onToggleStar()
   }
+  /** 置顶按钮独立拦截冒泡，避免同时打开会话。 */
+  const handleTogglePin = (event: MouseEvent<HTMLButtonElement>): void => {
+    event.stopPropagation()
+    onTogglePin?.()
+  }
+
+  /** 子 Agent 使用分支图标，自动计划使用时钟图标。 */
+  const sourceIcon = session.sourceDelegationId
+    ? <GitBranch aria-label="子 Agent" className="h-3 w-3 shrink-0 text-blue-400" />
+    : session.sourceAutomationId
+      ? <Clock3 aria-label="自动计划会话" className="h-3 w-3 shrink-0 text-amber-400" />
+      : null
 
   return (
     <div
       data-agent-session-row="four-column"
-      className={`relative grid min-h-11 w-full grid-cols-[8px_minmax(0,1fr)_44px_44px] items-center gap-x-2 px-3.5 text-left transition-colors ${active ? 'bg-sidebar-control text-foreground' : 'text-foreground hover:bg-sidebar-control/70'}`}
+      className={`relative grid min-h-11 w-full grid-cols-[8px_minmax(0,1fr)_44px_44px] items-center gap-x-2 text-left transition-colors ${nested ? 'pl-9 pr-3' : 'px-3.5'} ${active ? 'bg-sidebar-control text-foreground' : 'text-foreground hover:bg-sidebar-control/70'}`}
     >
       <button
         type="button"
@@ -61,22 +77,36 @@ export function AgentSessionRow({
         role="status"
         className={`pointer-events-none relative z-10 h-2 w-2 rounded-[2px] ${presentation.className}`}
       />
-      <span className="pointer-events-none relative z-10 min-w-0 truncate text-sm">
-        {session.title || '新对话'}
+      <span className="pointer-events-none relative z-10 flex min-w-0 items-center gap-1.5 truncate text-sm">
+        {sourceIcon}
+        <span className="min-w-0 truncate">{session.title || '新对话'}</span>
       </span>
-      <button
-        type="button"
-        aria-label={session.starred ? '取消星标' : '添加星标'}
-        aria-pressed={Boolean(session.starred)}
-        onClick={handleToggleStar}
-        className={`relative z-10 flex h-11 w-11 items-center justify-center text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${session.starred ? 'text-amber-500' : ''}`}
-      >
-        <Star
-          aria-hidden="true"
-          className="h-3.5 w-3.5"
-          fill={session.starred ? 'currentColor' : 'none'}
-        />
-      </button>
+      <div className="relative z-10 flex h-11 items-center justify-end gap-0.5">
+        <button
+          type="button"
+          aria-label={session.pinned ? '取消置顶' : '置顶会话'}
+          aria-pressed={Boolean(session.pinned)}
+          onClick={handleTogglePin}
+          className={`flex h-9 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${session.pinned ? 'text-foreground' : 'opacity-45'}`}
+        >
+          {session.pinned
+            ? <Pin aria-hidden="true" className="h-3 w-3" fill="currentColor" />
+            : <PinOff aria-hidden="true" className="h-3 w-3" />}
+        </button>
+        <button
+          type="button"
+          aria-label={session.starred ? '取消星标' : '添加星标'}
+          aria-pressed={Boolean(session.starred)}
+          onClick={handleToggleStar}
+          className={`flex h-9 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${session.starred ? 'text-amber-500' : ''}`}
+        >
+          <Star
+            aria-hidden="true"
+            className="h-3.5 w-3.5"
+            fill={session.starred ? 'currentColor' : 'none'}
+          />
+        </button>
+      </div>
       <span
         data-session-time
         className="pointer-events-none relative z-10 whitespace-nowrap text-right text-[10px] text-muted-foreground"

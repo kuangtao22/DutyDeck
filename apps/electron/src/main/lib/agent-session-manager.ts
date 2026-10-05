@@ -9,7 +9,7 @@ import { removeAgentRunFileChanges } from './agent-run-file-change-store'
  * 照搬 conversation-manager.ts 的模式。
  */
 
-import { readFileSync, appendFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, createReadStream, createWriteStream, statSync, type WriteStream } from 'node:fs'
+import { readFileSync, appendFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, createReadStream, createWriteStream, statSync, lstatSync, type WriteStream } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { writeJsonFileAtomic, writeTextFileAtomic, readJsonFileSafe, readJsonFileStrict } from './safe-file'
 import { randomUUID } from 'node:crypto'
@@ -22,6 +22,7 @@ import {
   getAgentSessionWorkspacePath,
   getAgentWorkspacePath,
   getSdkConfigDir,
+  getPiSessionsDir,
 } from './config-paths'
 import {
   getAgentWorkspace,
@@ -78,6 +79,15 @@ const INDEX_VERSION = 2
 
 /** 本进程已进入删除边界的会话；ID 不复用，阻止异步预检和迟到输出重新写入。 */
 const deletingAgentSessionIds = new Set<string>()
+
+/** 存储清理删除归档会话时保留的用户工作台资料。 */
+const PRESERVED_SESSION_WORKBENCH_ENTRIES = new Set([
+  '.context',
+  'plan',
+  'todo.md',
+  'note.md',
+  'handoff.md',
+])
 
 /** 将指定会话标记为删除中；调用方必须在等待 runtime 停止前同步调用。 */
 export function markAgentSessionDeleting(id: string): void {
@@ -972,7 +982,7 @@ export function updateAgentSessionMeta(
 /**
  * 删除会话
  */
-export function deleteAgentSession(id: string): void {
+export function deleteAgentSession(id: string, options: { preserveSessionArtifacts?: boolean } = {}): void {
   const index = readIndex()
   const idx = index.sessions.findIndex((s) => s.id === id)
 
@@ -1006,7 +1016,11 @@ export function deleteAgentSession(id: string): void {
       try {
         const sessionDir = getAgentSessionWorkspacePath(ws.slug, id)
         if (existsSync(sessionDir)) {
-          rmSyncWithRetry(sessionDir, { recursive: true, force: true })
+          if (options.preserveSessionArtifacts) {
+            removeSessionWorkspaceContents(sessionDir)
+          } else {
+            rmSyncWithRetry(sessionDir, { recursive: true, force: true })
+          }
           console.log(`[Agent 会话] 已清理 session 工作目录: ${sessionDir}`)
         }
       } catch (error) {
@@ -1015,11 +1029,54 @@ export function deleteAgentSession(id: string): void {
     }
   }
 
+  // Pi artifact 与会话同生命周期；只有确认没有其它索引引用且路径仍在受管目录内时才删除。
+  if (removed.piSessionFile && isUnreferencedPiSessionArtifact(removed.piSessionFile, index.sessions)) {
+    try {
+      unlinkSync(removed.piSessionFile)
+      console.log(`[Agent 会话] 已清理未引用 Pi artifact: ${removed.piSessionFile}`)
+    } catch (error) {
+      console.warn(`[Agent 会话] 清理 Pi artifact 失败 (${id}):`, error)
+    }
+  }
+
   console.log(`[Agent 会话] 已删除会话: ${removed.title} (${removed.id})`)
 
   // 清理 Nano Banana 生图历史
   clearNanoBananaAgentHistory(id)
 
+}
+
+/** 删除会话工作目录中的运行产物，保留可供用户恢复和查看的私有资料。 */
+function removeSessionWorkspaceContents(sessionDir: string): void {
+  for (const entry of readdirSync(sessionDir)) {
+    if (PRESERVED_SESSION_WORKBENCH_ENTRIES.has(entry)) continue
+    const entryPath = join(sessionDir, entry)
+    try {
+      rmSyncWithRetry(entryPath, { recursive: true, force: true })
+    } catch (error) {
+      console.warn(`[Agent 会话] 清理会话工作台条目失败 (${entryPath}):`, error)
+    }
+  }
+  try {
+    if (readdirSync(sessionDir).length === 0) rmSyncWithRetry(sessionDir, { recursive: true, force: true })
+  } catch {
+    // 目录在并发清理中消失时视为已完成。
+  }
+}
+
+/** 校验 Pi artifact 是受管普通文件，并且不再被其它索引会话引用。 */
+function isUnreferencedPiSessionArtifact(path: string, sessions: readonly AgentSessionMeta[]): boolean {
+  const root = resolve(getPiSessionsDir())
+  const candidate = resolve(path)
+  const relativePath = relative(root, candidate)
+  if (!relativePath || relativePath.startsWith('..') || relativePath.includes('/') || relativePath.includes('\\') || !candidate.endsWith('.jsonl')) return false
+  if (sessions.some((session) => session.piSessionFile && resolve(session.piSessionFile) === candidate)) return false
+  try {
+    const stat = lstatSync(candidate)
+    return stat.isFile() && !stat.isSymbolicLink()
+  } catch {
+    return false
+  }
 }
 
 /**

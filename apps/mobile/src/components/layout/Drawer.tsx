@@ -1,5 +1,5 @@
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { LogOut, Plus, RefreshCw, X } from 'lucide-react'
+import { Bot, CalendarClock, LogOut, MessageSquare, Pin, PinOff, Plus, RefreshCw, X } from 'lucide-react'
 import {
   viewAtom, tokenAtom, connectedAtom, activeConvAtom,
   conversationsAtom, agentSessionGroupsAtom, chatConvsAtom,
@@ -12,10 +12,17 @@ import { createAgentConversation, saveActiveConv } from '../../utils/session'
 import { STORAGE_KEYS, removeStorage } from '../../utils/storage'
 import {
   readAgentStarUpdate,
+  readAgentPinUpdate,
+  readConversationPinUpdate,
   updateActiveAgentStarred,
+  updateActiveAgentPinned,
+  updateAgentPinned,
   updateAgentStarred,
+  updateActiveConversationPinned,
+  updateConversationPinned,
 } from '../../lib/session-runtime-state'
 import { AgentSessionRow } from '../conversation/AgentSessionRow'
+import { AutomationPanel } from '../planning/AutomationPanel'
 
 interface Props { onClose: () => void }
 
@@ -25,6 +32,7 @@ export function Drawer({ onClose }: Props) {
   const setConnected = useSetAtom(connectedAtom)
   const [active, setActive] = useAtom(activeConvAtom)
   const setConvs = useSetAtom(conversationsAtom)
+  const allConvs = useAtomValue(conversationsAtom)
   const [tab, setTab] = useAtom(activeTabAtom)
 
   const { groups: agentGroups, workspaces } = useAtomValue(agentSessionGroupsAtom)
@@ -65,6 +73,45 @@ export function Drawer({ onClose }: Props) {
     } catch { /* TODO: toast */ }
   }
 
+  /** 请求服务端切换置顶，并同步列表与当前会话的权威状态。 */
+  const handleTogglePin = async (session: ConvItem): Promise<void> => {
+    if (!token || session.type !== 'agent') return
+    try {
+      const update = readAgentPinUpdate(await wsReq('agent.sessions.toggle_pin', {
+        token,
+        sessionId: session.id,
+      }))
+      if (!update) return
+      setConvs(current => updateAgentPinned(current, update.sessionId, update.pinned))
+      setActive(current => updateActiveAgentPinned(current, update.sessionId, update.pinned))
+    } catch { /* TODO: toast */ }
+  }
+
+  /** 请求服务端切换 Chat 置顶，并同步列表与当前会话。 */
+  const handleToggleChatPin = async (conversation: ConvItem): Promise<void> => {
+    if (!token || conversation.type !== 'chat') return
+    try {
+      const update = readConversationPinUpdate(await wsReq('conversations.toggle_pin', {
+        token,
+        conversationId: conversation.id,
+      }))
+      if (!update) return
+      setConvs(current => updateConversationPinned(current, update.conversationId, update.pinned))
+      setActive(current => updateActiveConversationPinned(current, update.conversationId, update.pinned))
+    } catch { /* TODO: toast */ }
+  }
+
+  /** 返回当前会话的直接子 Agent，保持与桌面端委派树一致。 */
+  const getChildren = (session: ConvItem): ConvItem[] => allConvs
+    .filter(child => child.type === 'agent' && child.parentSessionId === session.id && !!child.sourceDelegationId && !child.archived)
+    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+
+  /** 从自动计划历史跳转到对应的真实子会话。 */
+  const handleOpenSessionById = (sessionId: string): void => {
+    const session = allConvs.find((item) => item.type === 'agent' && item.id === sessionId)
+    if (session) handleOpen(session)
+  }
+
   const handleDisconnect = () => {
     /** 先通知 App 失效所有恢复 generation，再执行幂等本地清理。 */
     window.dispatchEvent(new CustomEvent('proma:auth-invalidated'))
@@ -96,13 +143,15 @@ export function Drawer({ onClose }: Props) {
       {/* Tab 切换 */}
       <div className="flex-shrink-0 border-b border-border px-3 py-2.5">
         <div className="flex rounded-md bg-sidebar-control p-1">
-          {(['agent', 'chat'] as TabType[]).map(t => (
+          {(['agent', 'chat', 'automation'] as TabType[]).map(t => (
             <button
               key={t}
               aria-pressed={tab === t}
               onClick={() => setTab(t)}
               className={`min-h-8 flex-1 rounded-[4px] px-2 text-xs font-medium transition-colors ${tab === t ? 'bg-content text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
-            >{t === 'agent' ? 'Agent' : 'Chat'}</button>
+            >
+              {t === 'agent' ? <><Bot aria-hidden="true" className="mr-1 inline h-3.5 w-3.5" />Agent</> : t === 'chat' ? <><MessageSquare aria-hidden="true" className="mr-1 inline h-3.5 w-3.5" />Chat</> : <><CalendarClock aria-hidden="true" className="mr-1 inline h-3.5 w-3.5" />计划</>}
+            </button>
           ))}
         </div>
       </div>
@@ -148,13 +197,26 @@ export function Drawer({ onClose }: Props) {
                   {g.label}
                 </div>
                 {g.convs.map(c => (
-                  <AgentSessionRow
-                    key={c.id}
-                    session={c}
-                    active={active?.type === 'agent' && active.id === c.id}
-                    onOpen={() => handleOpen(c)}
-                    onToggleStar={() => { void handleToggleStar(c) }}
-                  />
+                  <div key={c.id}>
+                    <AgentSessionRow
+                      session={c}
+                      active={active?.type === 'agent' && active.id === c.id}
+                      onOpen={() => handleOpen(c)}
+                      onToggleStar={() => { void handleToggleStar(c) }}
+                      onTogglePin={() => { void handleTogglePin(c) }}
+                    />
+                    {getChildren(c).map(child => (
+                      <AgentSessionRow
+                        key={child.id}
+                        session={child}
+                        nested
+                        active={active?.type === 'agent' && active.id === child.id}
+                        onOpen={() => handleOpen(child)}
+                        onToggleStar={() => { void handleToggleStar(child) }}
+                        onTogglePin={() => { void handleTogglePin(child) }}
+                      />
+                    ))}
+                  </div>
                 ))}
               </div>
             ))}
@@ -163,25 +225,34 @@ export function Drawer({ onClose }: Props) {
               <p className="px-4 py-8 text-center text-xs text-muted-foreground">暂无 Agent 对话</p>
             )}
           </div>
-        ) : (
+        ) : tab === 'chat' ? (
           <div className="py-1.5">
             {chatConvs.map(c => (
-              <button
+              <div
                 key={c.id}
-                onClick={() => handleOpen(c)}
-                className={`flex min-h-10 w-full items-center gap-2 px-3.5 py-2 text-left text-sm transition-colors ${active?.id === c.id ? 'bg-sidebar-control text-foreground' : 'text-foreground hover:bg-sidebar-control/70'}`}
+                className={`relative flex min-h-10 w-full items-center gap-2 px-3.5 py-2 text-left text-sm transition-colors ${active?.id === c.id ? 'bg-sidebar-control text-foreground' : 'text-foreground hover:bg-sidebar-control/70'}`}
               >
+                <button type="button" aria-label={`打开会话：${c.title || '新对话'}`} onClick={() => handleOpen(c)} className="absolute inset-0 z-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" />
                 <span className="min-w-0 flex-1 truncate">{c.title || '新对话'}</span>
                 {c.updatedAt ? (
                   <span className="flex-shrink-0 text-[10px] text-muted-foreground">{formatRelativeTime(c.updatedAt)}</span>
                 ) : null}
-              </button>
+                <button
+                  type="button"
+                  aria-label={c.pinned ? '取消置顶' : '置顶会话'}
+                  aria-pressed={Boolean(c.pinned)}
+                  onClick={(event) => { event.stopPropagation(); void handleToggleChatPin(c) }}
+                  className={`relative z-10 flex h-8 w-8 items-center justify-center text-muted-foreground hover:text-foreground ${c.pinned ? 'text-foreground' : 'opacity-45'}`}
+                >
+                  {c.pinned ? <Pin aria-hidden="true" className="h-3 w-3" fill="currentColor" /> : <PinOff aria-hidden="true" className="h-3 w-3" />}
+                </button>
+              </div>
             ))}
             {chatConvs.length === 0 && (
               <p className="px-4 py-8 text-center text-xs text-muted-foreground">暂无 Chat 对话</p>
             )}
           </div>
-        )}
+        ) : <AutomationPanel onOpenSession={handleOpenSessionById} />}
       </div>
 
       {/* 底部操作 */}

@@ -15,7 +15,7 @@ import {
   Zap,
 } from 'lucide-react'
 import {
-  activeConvAtom, tokenAtom, streamingAtom, streamContentAtom, messagesAtom,
+  activeConvAtom, tokenAtom, streamingAtom, streamSegmentsAtom, messagesAtom,
   settingsModelIdAtom, settingsChannelBaseUrlAtom, settingsChannelIdAtom, channelsAtom,
   permissionModeAtom, PERMISSION_MODE_ORDER, PERMISSION_MODE_CONFIG,
   type ChannelInfo, type PermissionMode,
@@ -29,7 +29,8 @@ export function InputBar({ disabled }: { disabled?: boolean }) {
   const active = useAtomValue(activeConvAtom)
   const token = useAtomValue(tokenAtom)
   const [streaming, setStreaming] = useAtom(streamingAtom)
-  const setStreamContent = useSetAtom(streamContentAtom)
+  /** 新请求开始时清空上一轮的回答与思考缓冲。 */
+  const setStreamSegments = useSetAtom(streamSegmentsAtom)
   const setMessages = useSetAtom(messagesAtom)
   const [modelId, setModelId] = useAtom(settingsModelIdAtom)
   const [, setChannelBaseUrl] = useAtom(settingsChannelBaseUrlAtom)
@@ -49,7 +50,7 @@ export function InputBar({ disabled }: { disabled?: boolean }) {
     setMessages(prev => [...prev, { id: 'local-' + Date.now(), role: 'user', content: msg, createdAt: Date.now() }])
 
     setStreaming(true)
-    setStreamContent('')
+    setStreamSegments({ answer: '', reasoning: '' })
     try {
       if (active.type === 'agent') {
         await wsReq('agent.send', {
@@ -70,6 +71,7 @@ export function InputBar({ disabled }: { disabled?: boolean }) {
       }
     } catch {
       setStreaming(false)
+      setStreamSegments({ answer: '', reasoning: '' })
     }
   }, [text, active, token, modelId, channelId, permMode])
 
@@ -83,6 +85,7 @@ export function InputBar({ disabled }: { disabled?: boolean }) {
       }
     } catch {}
     setStreaming(false)
+    setStreamSegments({ answer: '', reasoning: '' })
   }, [active, token])
 
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {

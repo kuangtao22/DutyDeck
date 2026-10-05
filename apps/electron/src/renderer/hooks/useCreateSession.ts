@@ -21,6 +21,8 @@ import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { useOpenSession } from './useOpenSession'
 
 interface CreateSessionOptions {
+  /** 新 Agent 会话初始标题；省略时沿用默认标题与自动命名。 */
+  title?: string
   /** 标记为草稿会话（不在侧边栏显示，发送首条消息后自动取消） */
   draft?: boolean
   /** 是否创建后立即打开会话标签页，默认 true */
@@ -29,6 +31,8 @@ interface CreateSessionOptions {
   channelId?: string
   /** 覆盖默认模型 ID（仅 Agent 会话） */
   modelId?: string
+  /** 指定新 Agent 会话所属项目，避免从设置页误用当前选中的项目。 */
+  workspaceId?: string
 }
 
 interface CreateSessionActions {
@@ -54,6 +58,8 @@ export function useCreateSession(): CreateSessionActions {
   const agentChannelId = useAtomValue(agentChannelIdAtom)
   const agentModelId = useAtomValue(agentModelIdAtom)
   const currentWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
+  /** 创建指定项目会话后同步当前项目，保证首次打开的 Agent 视图上下文正确。 */
+  const setCurrentWorkspaceId = useSetAtom(currentAgentWorkspaceIdAtom)
 
   const createChat = async (options?: CreateSessionOptions): Promise<string | undefined> => {
     try {
@@ -81,13 +87,17 @@ export function useCreateSession(): CreateSessionActions {
   const createAgent = async (options?: CreateSessionOptions): Promise<string | undefined> => {
     try {
       const meta = await window.electronAPI.createAgentSession(
-        undefined,
+        options?.title,
         options?.channelId ?? agentChannelId ?? undefined,
-        currentWorkspaceId || undefined,
+        options?.workspaceId ?? currentWorkspaceId ?? undefined,
         options?.modelId ?? agentModelId ?? undefined,
         options?.draft,
       )
       setAgentSessions((prev) => [meta, ...prev])
+      if (options?.open !== false && meta.workspaceId && meta.workspaceId !== currentWorkspaceId) {
+        setCurrentWorkspaceId(meta.workspaceId)
+        void window.electronAPI.updateSettings({ agentWorkspaceId: meta.workspaceId }).catch(console.error)
+      }
       if (options?.open !== false) openSession('agent', meta.id, meta.title)
       if (options?.open !== false) setActiveView('conversations')
       if (options?.draft) {

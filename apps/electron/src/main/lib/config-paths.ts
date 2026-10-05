@@ -824,6 +824,11 @@ export function getSdkConfigDir(): string {
   return dir
 }
 
+/** 返回 Pi session artifact 目录；只解析路径，不创建目录，供只读清理扫描使用。 */
+export function getPiSessionsDir(): string {
+  return join(getConfigDir(), 'sdk-config', 'sessions')
+}
+
 interface ScratchPadMigrationState {
   version: 1
   legacyContentSha256: string

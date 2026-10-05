@@ -379,6 +379,137 @@ export interface AppSettings {
   planningWindowState?: MainWindowState
 }
 
+/** 存储清理候选的文件类别。 */
+export type StorageCleanupKind = 'agent-session' | 'workspace-session' | 'pi-artifact'
+
+/** 存储清理模式；孤儿模式只能由用户在磁盘管理界面显式触发。 */
+export type StorageCleanupMode = 'archived' | 'orphaned'
+
+/** 清理预览的请求参数。 */
+export interface StorageCleanupPreviewOptions {
+  mode: StorageCleanupMode
+  beforeDays: number
+  gracePeriodMs?: number
+  maxCandidates?: number
+}
+
+/** 单个可回收文件或目录的稳定预览项。 */
+export interface StorageCleanupCandidate {
+  kind: StorageCleanupKind
+  id: string
+  path: string
+  bytes: number
+  updatedAt: number
+  reason: 'archived-expired' | 'unreferenced-expired' | 'missing-index'
+  workspaceSlug?: string
+  /** 会话标题，孤儿文件没有该字段。 */
+  sessionTitle?: string
+  /** 受管项目名称，未关联项目时没有该字段。 */
+  workspaceName?: string
+  sessionId?: string
+}
+
+/** 清理预览结果；operationId 仅用于主进程内存中的短期确认。 */
+export interface StorageCleanupPreview {
+  operationId: string
+  generatedAt: number
+  mode: StorageCleanupMode
+  gracePeriodMs: number
+  candidates: StorageCleanupCandidate[]
+  reclaimableBytes: number
+  truncated: boolean
+  /** 有会话目录触及扫描上限或无法读取，大小仅代表已扫描部分。 */
+  sizeEstimateIncomplete?: boolean
+  errors: string[]
+}
+
+/** 清理执行请求；renderer 不能传入任意文件路径。 */
+export interface StorageCleanupExecuteRequest {
+  operationId: string
+  candidateIds: string[]
+}
+
+/** 清理执行结果。 */
+export interface StorageCleanupResult {
+  operationId: string
+  freedBytes: number
+  deletedCount: number
+  skippedCount: number
+  errors: string[]
+}
+
+/** 单个会话的磁盘占用明细；大小只统计 Proma 管理的会话数据。 */
+export interface StorageSessionUsage {
+  sessionId: string
+  title?: string
+  bytes: number
+  transcriptBytes: number
+  workspaceBytes: number
+  updatedAt: number
+  archived: boolean
+  /** 标星会话不可通过磁盘管理清理。 */
+  starred: boolean
+  /** 置顶会话不可通过磁盘管理清理。 */
+  pinned: boolean
+}
+
+/** 按受管项目汇总的会话磁盘占用。 */
+export interface StorageProjectUsage {
+  projectId: string
+  projectName: string
+  workspaceSlug?: string
+  totalBytes: number
+  sessionCount: number
+  lastActivityAt: number
+  sessions: StorageSessionUsage[]
+}
+
+/** 磁盘管理统计的共享类型；细节字段供设置页展示和兼容旧接口使用。 */
+export interface StorageStats {
+  categories: Array<{
+    label: string
+    key: string
+    bytes: number
+    count: number
+    hasOrphans?: boolean
+    orphanBytes?: number
+    orphanCount?: number
+  }>
+  totalBytes: number
+  calculatedAt: number
+  /** 按项目汇总的会话占用，旧版本返回值缺失时 renderer 应按空数组兼容。 */
+  sessionProjects?: StorageProjectUsage[]
+  /** 有会话目录触及扫描上限或无法读取，项目占用仅代表已扫描部分。 */
+  sizeEstimateIncomplete?: boolean
+}
+
+/** 设置页单轮磁盘扫描结果，两类预览各自持有确认令牌。 */
+export interface StorageOverview {
+  stats: StorageStats
+  archivedPreview: StorageCleanupPreview
+  orphanPreview: StorageCleanupPreview
+}
+
+/** 供 Agent 清理评估使用的受管会话目录和所属项目身份。 */
+export interface StorageSessionWorkspaceTarget {
+  path: string
+  workspaceId: string
+}
+
+/** 兼容旧存储清理 IPC 的请求参数。 */
+export interface StorageCleanupLegacyOptions {
+  categories: string[]
+  orphansOnly: boolean
+  archivedBeforeDays: number
+}
+
+/** 兼容旧存储清理 IPC 的结果。 */
+export interface StorageCleanupLegacyResult {
+  freedBytes: number
+  deletedCount: number
+  errors: string[]
+}
+
 /** 当前发布的 Onboarding 内容版本。提升该值可让所有用户重新完成新版引导。 */
 export const CURRENT_ONBOARDING_VERSION = 2
 
@@ -576,10 +707,20 @@ export const WINDOWS_AGENT_ISLAND_IPC_CHANNELS = {
 
 /** 存储管理 IPC 通道 */
 export const STORAGE_IPC_CHANNELS = {
+  /** 一轮读取占用和两类清理预览，复用会话目录计量。 */
+  SCAN_OVERVIEW: 'storage:scan-overview',
   /** 计算各目录存储统计 */
   GET_STATS: 'storage:get-stats',
   /** 按选项清理存储 */
   CLEANUP: 'storage:cleanup',
   /** 仅清理临时文件（启动时/快速清理） */
   CLEANUP_TEMP: 'storage:cleanup-temp',
+  /** 预览可回收的归档或孤儿数据，不执行删除。 */
+  PREVIEW_CLEANUP: 'storage:preview-cleanup',
+  /** 执行此前生成的清理预览。 */
+  EXECUTE_CLEANUP: 'storage:execute-cleanup',
+  /** 打开索引中指定会话的受管工作目录。 */
+  OPEN_SESSION_WORKSPACE: 'storage:open-session-workspace',
+  /** 获取会话目录和所属项目，供新 Agent 对话只读评估。 */
+  GET_SESSION_WORKSPACE_TARGET: 'storage:get-session-workspace-target',
 } as const

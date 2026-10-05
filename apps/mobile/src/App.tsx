@@ -1,9 +1,11 @@
 import { useEffect, useCallback, useLayoutEffect, useRef, useState } from 'react'
+import type { LanBridgeAutomationDto } from '@proma/shared'
 import { useAtom, useSetAtom } from 'jotai'
 import {
   viewAtom, tokenAtom, connectedAtom, bridgeHostAtom, bridgePortAtom,
   conversationsAtom, workspacesAtom, activeConvAtom,
   currentWorkspaceIdAtom, type ConvItem,
+  automationsAtom,
   settingsModelIdAtom, settingsChannelBaseUrlAtom, settingsChannelIdAtom,
 } from './atoms'
 import { connect, onPush, onOpen, wsReq, close } from './lib/ws-client'
@@ -42,6 +44,8 @@ import {
 
 interface ConvListResponse { conversations: ConvItem[] }
 interface SessionListResponse { sessions: ConvItem[] }
+/** 自动计划变更推送触发刷新时使用的最小响应形状。 */
+interface AutomationListResponse { automations?: LanBridgeAutomationDto[] }
 interface WorkspaceListResponse { workspaces: Array<{ id: string; name: string; slug: string }> }
 interface SettingsResponse { agentModelId?: string; channelBaseUrl?: string; agentChannelId?: string; agentWorkspaceId?: string }
 interface RestoredSettings {
@@ -84,6 +88,7 @@ export function App() {
   const setWorkspaces = useSetAtom(workspacesAtom)
   const setActive = useSetAtom(activeConvAtom)
   const setCurrentWsId = useSetAtom(currentWorkspaceIdAtom)
+  const setAutomations = useSetAtom(automationsAtom)
   const setModelId = useSetAtom(settingsModelIdAtom)
   const setChannelBaseUrl = useSetAtom(settingsChannelBaseUrlAtom)
   const setChannelId = useSetAtom(settingsChannelIdAtom)
@@ -356,11 +361,18 @@ export function App() {
           ))
           break
         }
+        case 'automations.updated':
+          if (token) {
+            void wsReq('automations.list', { token }).then((data) => {
+              setAutomations((data as AutomationListResponse).automations ?? [])
+            }).catch(() => {})
+          }
+          break
         default: break
       }
     })
     return unsub
-  }, [token, setActive, setConvs, setCurrentWsId, setWorkspaces])
+  }, [token, setActive, setAutomations, setConvs, setCurrentWsId, setWorkspaces])
 
   // 持久化 view 状态
   useEffect(() => {

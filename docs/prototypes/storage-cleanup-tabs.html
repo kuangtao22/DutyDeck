@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>磁盘管理 · Proma 设置原型</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --background: #17181a;
+      --sidebar: #121315;
+      --card: #1d1f22;
+      --card-raised: #23262a;
+      --muted: #282b2f;
+      --muted-hover: #30343a;
+      --border: #36393e;
+      --border-soft: rgba(255, 255, 255, .10);
+      --foreground: #f4f4f5;
+      --muted-foreground: #a1a1aa;
+      --subtle: #71717a;
+      --primary: #f4f4f5;
+      --primary-foreground: #18181b;
+      --success: #6ee7b7;
+      --warning: #fbbf24;
+      --danger: #fca5a5;
+      --radius: 12px;
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      min-width: 1020px;
+      background: var(--background);
+      color: var(--foreground);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    body.modal-open { overflow: hidden; }
+    button, input, select { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--foreground); outline-offset: 2px; }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 22px; font-weight: 650; letter-spacing: -.01em; }
+    h2 { font-size: 16px; font-weight: 600; }
+    h3 { font-size: 14px; font-weight: 600; }
+    .muted { color: var(--muted-foreground); }
+    .subtle { color: var(--subtle); }
+
+    .app-frame { display: grid; min-height: 100vh; grid-template-columns: 277px minmax(0, 1fr); grid-template-rows: 35px minmax(0, 1fr); }
+    .titlebar { grid-column: 1 / -1; background: var(--sidebar); }
+    .settings-nav { display: flex; min-height: 0; flex-direction: column; border-right: 1px solid var(--border-soft); background: var(--sidebar); }
+    .nav-brand { padding: 20px 20px 14px; color: var(--muted-foreground); font-size: 12px; font-weight: 600; letter-spacing: .02em; }
+    .nav-list { display: flex; flex: 1; flex-direction: column; gap: 2px; overflow: auto; padding: 0 10px; }
+    .nav-item { display: flex; align-items: center; gap: 9px; min-height: 38px; padding: 0 11px; border: 0; border-radius: 6px; background: transparent; color: var(--muted-foreground); cursor: pointer; text-align: left; }
+    .nav-item:hover { background: rgba(255, 255, 255, .05); color: var(--foreground); }
+    .nav-item.active { background: var(--muted); color: var(--foreground); font-weight: 600; }
+    .nav-icon { display: inline-flex; width: 17px; justify-content: center; color: currentColor; font-size: 15px; }
+    .nav-back { margin: 12px 10px; }
+
+    .content { min-width: 0; overflow: auto; background: var(--background); }
+    .content-inner { width: min(100%, 1080px); margin: 0 auto; padding: 32px 40px 56px; }
+    .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 34px; }
+    .page-description { margin-top: 6px; color: var(--muted-foreground); font-size: 14px; }
+    .page-actions { display: flex; flex-shrink: 0; gap: 8px; }
+
+    .button { display: inline-flex; min-height: 32px; align-items: center; justify-content: center; gap: 7px; padding: 0 11px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--foreground); cursor: pointer; font-size: 13px; transition: background .15s ease, border-color .15s ease, opacity .15s ease; }
+    .button:hover { border-color: #5a5f68; background: var(--muted-hover); }
+    .button.primary { border-color: var(--primary); background: var(--primary); color: var(--primary-foreground); font-weight: 600; }
+    .button.primary:hover { border-color: #fff; background: #fff; }
+    .button.ghost { border-color: transparent; color: var(--muted-foreground); }
+    .button.ghost:hover { border-color: var(--border); color: var(--foreground); }
+    .button[disabled] { cursor: not-allowed; opacity: .45; }
+    .button.small { min-height: 28px; padding: 0 9px; font-size: 12px; }
+
+    .section { margin-top: 30px; }
+    .section:first-of-type { margin-top: 0; }
+    .section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 12px; }
+    .section-description { margin-top: 4px; color: var(--muted-foreground); font-size: 13px; }
+    .section-action { display: flex; flex-shrink: 0; align-items: center; gap: 7px; }
+    .settings-card { overflow: hidden; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--card); }
+    .settings-row { display: flex; min-height: 56px; align-items: center; justify-content: space-between; gap: 18px; padding: 12px 16px; }
+    .settings-row + .settings-row { border-top: 1px solid var(--border-soft); }
+    .settings-row-copy { min-width: 0; }
+    .settings-label { font-size: 14px; font-weight: 500; }
+    .settings-help { margin-top: 2px; color: var(--muted-foreground); font-size: 12px; }
+
+    .usage-summary { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 13px; }
+    .usage-total { font-size: 26px; font-weight: 650; letter-spacing: -.02em; }
+    .usage-meta { margin-top: 3px; color: var(--muted-foreground); font-size: 12px; }
+    .usage-bar { display: flex; height: 10px; overflow: hidden; border-radius: 999px; background: var(--muted); }
+    .usage-segment { min-width: 2px; transition: width .2s ease; }
+    .usage-segment.sessions { background: #7dd3fc; }
+    .usage-segment.sdk { background: #c4b5fd; }
+    .usage-segment.workspace { background: #fcd34d; }
+    .usage-segment.temp { background: #6ee7b7; }
+    .usage-legend { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+    .legend-item { min-width: 0; color: var(--muted-foreground); font-size: 12px; }
+    .legend-name { display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .legend-dot { width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; }
+    .legend-value { margin-top: 3px; padding-left: 14px; color: var(--foreground); font-variant-numeric: tabular-nums; }
+    .dot-sessions { background: #7dd3fc; }
+    .dot-sdk { background: #c4b5fd; }
+    .dot-workspace { background: #fcd34d; }
+    .dot-temp { background: #6ee7b7; }
+
+    .cleanup-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); }
+    .cleanup-tab { position: relative; min-height: 38px; padding: 0 13px; border: 0; background: transparent; color: var(--muted-foreground); cursor: pointer; font-size: 13px; }
+    .cleanup-tab:hover { color: var(--foreground); }
+    .cleanup-tab[aria-selected="true"] { color: var(--foreground); font-weight: 600; }
+    .cleanup-tab[aria-selected="true"]::after { position: absolute; right: 9px; bottom: -1px; left: 9px; height: 2px; background: var(--primary); content: ""; }
+    .tab-count { display: inline-flex; min-width: 18px; height: 18px; align-items: center; justify-content: center; margin-left: 4px; padding: 0 5px; border-radius: 999px; background: var(--muted); color: var(--muted-foreground); font-size: 11px; font-weight: 500; }
+    .cleanup-tab[aria-selected="true"] .tab-count { color: var(--foreground); }
+    .tab-panel { padding-top: 14px; }
+    .tab-panel[hidden] { display: none; }
+
+    .scan-result { border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--card); }
+    .scan-summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 16px; }
+    .scan-summary strong { font-weight: 600; }
+    .scan-summary p { margin-top: 3px; color: var(--muted-foreground); font-size: 12px; }
+    .candidate-list { max-height: 240px; overflow: auto; border-top: 1px solid var(--border-soft); }
+    .candidate-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 48px; padding: 9px 16px; }
+    .candidate-row + .candidate-row { border-top: 1px solid var(--border-soft); }
+    .candidate-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .candidate-meta { margin-top: 2px; color: var(--muted-foreground); font-size: 11px; }
+    .candidate-size { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+    .result-note { display: flex; align-items: flex-start; gap: 8px; padding: 11px 16px; border-top: 1px solid var(--border-soft); color: var(--muted-foreground); font-size: 12px; }
+    .result-note strong { color: var(--warning); font-weight: 500; }
+
+    .project-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+    .toolbar-left { display: flex; align-items: center; gap: 9px; }
+    .input, .select { height: 32px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--foreground); font-size: 13px; }
+    .input { width: 240px; padding: 0 10px; }
+    .select { padding: 0 27px 0 9px; }
+    .checkbox-label { display: inline-flex; align-items: center; gap: 7px; color: var(--muted-foreground); font-size: 12px; }
+    .checkbox-label input, .session-head input, .session-row input { accent-color: var(--primary); }
+    .project-table { overflow: hidden; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--card); }
+    .project-table-head, .project-row { display: grid; grid-template-columns: minmax(230px, 1.7fr) 110px 140px 160px 110px; gap: 14px; align-items: center; padding: 0 16px; }
+    .project-table-head { min-height: 36px; border-bottom: 1px solid var(--border-soft); color: var(--muted-foreground); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+    .table-sort { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; font-size: inherit; font-weight: inherit; text-align: left; }
+    .table-sort:hover, .table-sort.active { color: var(--foreground); }
+    .sort-indicator { color: var(--subtle); font-size: 12px; }
+    .table-sort.active .sort-indicator { color: var(--foreground); }
+    .project-row { min-height: 68px; border-bottom: 1px solid var(--border-soft); cursor: pointer; }
+    .project-row:last-child { border-bottom: 0; }
+    .project-row:hover { background: rgba(255, 255, 255, .035); }
+    .project-name { min-width: 0; }
+    .project-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+    .project-path { overflow: hidden; margin-top: 2px; color: var(--muted-foreground); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .number, .size, .date { font-variant-numeric: tabular-nums; }
+    .size { color: var(--foreground); font-weight: 500; }
+    .date { color: var(--muted-foreground); font-size: 12px; }
+    .details-link { justify-self: start; padding: 0; border: 0; background: transparent; color: var(--muted-foreground); cursor: pointer; font-size: 12px; }
+    .details-link:hover { color: var(--foreground); text-decoration: underline; }
+
+    .schedule-card { overflow: hidden; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--card); }
+    .schedule-row { display: flex; min-height: 62px; align-items: center; justify-content: space-between; gap: 18px; padding: 12px 16px; }
+    .schedule-row + .schedule-row { border-top: 1px solid var(--border-soft); }
+    .schedule-description { margin-top: 3px; color: var(--muted-foreground); font-size: 12px; }
+    .switch { position: relative; width: 36px; height: 20px; flex-shrink: 0; border: 0; border-radius: 999px; background: #45474d; cursor: pointer; }
+    .switch::after { position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #d4d4d8; content: ""; transition: transform .15s ease; }
+    .switch.on { background: #a1a1aa; }
+    .switch.on::after { transform: translateX(16px); background: #18181b; }
+    .next-run { color: var(--muted-foreground); font-size: 12px; }
+    .protection-note { margin-top: 10px; color: var(--muted-foreground); font-size: 12px; }
+    .protection-note strong { color: var(--foreground); font-weight: 500; }
+
+    .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: none; align-items: center; justify-content: center; padding: 24px; background: rgba(0, 0, 0, .68); }
+    .modal-backdrop.open { display: flex; }
+    .modal { display: flex; width: min(672px, 100%); max-height: min(720px, calc(100vh - 48px)); flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--card-raised); box-shadow: 0 24px 70px rgba(0, 0, 0, .45); }
+    .modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px 15px; border-bottom: 1px solid var(--border-soft); }
+    .modal-title { font-size: 16px; font-weight: 600; }
+    .modal-subtitle { margin-top: 4px; color: var(--muted-foreground); font-size: 12px; }
+    .close { width: 28px; height: 28px; border: 0; border-radius: 5px; background: transparent; color: var(--muted-foreground); cursor: pointer; font-size: 20px; line-height: 1; }
+    .close:hover { background: var(--muted); color: var(--foreground); }
+    .modal-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px; border-bottom: 1px solid var(--border-soft); }
+    .segmented { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); }
+    .segment { min-height: 27px; padding: 0 9px; border: 0; border-radius: 4px; background: transparent; color: var(--muted-foreground); cursor: pointer; font-size: 12px; }
+    .segment.active { background: var(--muted); color: var(--foreground); font-weight: 500; }
+    .protection { display: flex; flex-wrap: wrap; gap: 7px; color: var(--muted-foreground); font-size: 11px; }
+    .session-list { min-height: 220px; overflow: auto; padding: 0 20px; }
+    .session-head, .session-row { display: grid; grid-template-columns: 28px minmax(220px, 1fr) 150px 90px; gap: 11px; align-items: center; }
+    .session-head { min-height: 34px; border-bottom: 1px solid var(--border-soft); color: var(--muted-foreground); font-size: 11px; }
+    .session-row { min-height: 60px; border-bottom: 1px solid var(--border-soft); cursor: pointer; }
+    .session-row:last-child { border-bottom: 0; }
+    .session-row.protected { cursor: default; opacity: .52; }
+    .session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
+    .session-meta { overflow: hidden; margin-top: 2px; color: var(--muted-foreground); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .session-status { margin-top: 3px; color: var(--warning); font-size: 11px; }
+    .modal-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 20px; border-top: 1px solid var(--border-soft); }
+    .selection { color: var(--muted-foreground); font-size: 12px; }
+    .selection strong { color: var(--foreground); font-weight: 500; }
+
+    @media (max-width: 1080px) {
+      body { min-width: 0; }
+      .app-frame { display: block; }
+      .titlebar, .settings-nav { display: none; }
+      .content-inner { padding: 24px 20px 40px; }
+    }
+    @media (max-width: 760px) {
+      .page-header, .section-head, .usage-summary { align-items: flex-start; flex-direction: column; }
+      .page-actions, .section-action { width: 100%; }
+      .page-actions .button, .section-action .button { flex: 1; }
+      .usage-legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .project-toolbar { align-items: stretch; flex-direction: column; }
+      .toolbar-left { flex-wrap: wrap; }
+      .input { width: 100%; }
+      .project-table { overflow-x: auto; }
+      .project-table-head, .project-row { min-width: 820px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-frame">
+    <div class="titlebar" aria-hidden="true"></div>
+    <aside class="settings-nav" aria-label="设置导航">
+      <div class="nav-brand">Proma 设置</div>
+      <nav class="nav-list">
+        <button class="nav-item" type="button"><span class="nav-icon">◌</span><span>通用设置</span></button>
+        <button class="nav-item" type="button"><span class="nav-icon">◈</span><span>模型配置</span></button>
+        <button class="nav-item" type="button"><span class="nav-icon">◉</span><span>媒体生成</span></button>
+        <button class="nav-item" type="button"><span class="nav-icon">⌘</span><span>提示词管理</span></button>
+        <button class="nav-item" type="button"><span class="nav-icon">⌁</span><span>代理设置</span></button>
+        <button class="nav-item" type="button"><span class="nav-icon">⇄</span><span>路径与迁移</span></button>
+        <button class="nav-item active" type="button" aria-current="page"><span class="nav-icon">▣</span><span>磁盘管理</span></button>
+        <button class="nav-item" type="button"><span class="nav-icon">◐</span><span>外观设置</span></button>
+      </nav>
+      <button class="nav-item nav-back" type="button"><span class="nav-icon">‹</span><span>返回</span></button>
+    </aside>
+
+    <main class="content">
+      <div class="content-inner">
+        <header class="page-header">
+          <div><h1>磁盘管理</h1><p class="page-description">查看 Proma 数据占用，清理可以安全回收的本地文件。</p></div>
+          <div class="page-actions"><button class="button ghost" type="button" id="refresh">↻ 刷新</button></div>
+        </header>
+
+        <section class="section" aria-labelledby="usage-title">
+          <div class="section-head"><div><h2 id="usage-title">存储用量</h2><p class="section-description">总计 2.84 GB · 最近扫描 2026/10/04 21:18</p></div></div>
+          <div class="settings-card">
+            <div style="padding: 16px">
+              <div class="usage-summary"><div><div class="usage-total">2.84 GB</div><div class="usage-meta">Proma 数据目录 · ~/.proma</div></div><span class="muted" style="font-size:12px">占用统计已完成</span></div>
+              <div class="usage-bar" aria-label="磁盘用量分布"><span class="usage-segment sessions" style="width:36%"></span><span class="usage-segment sdk" style="width:26%"></span><span class="usage-segment workspace" style="width:29%"></span><span class="usage-segment temp" style="width:9%"></span></div>
+              <div class="usage-legend"><div class="legend-item"><div class="legend-name"><span class="legend-dot dot-sessions"></span><span>会话数据</span></div><div class="legend-value">1.02 GB</div></div><div class="legend-item"><div class="legend-name"><span class="legend-dot dot-sdk"></span><span>SDK / Pi 数据</span></div><div class="legend-value">742.3 MB</div></div><div class="legend-item"><div class="legend-name"><span class="legend-dot dot-workspace"></span><span>工作目录</span></div><div class="legend-value">816.6 MB</div></div><div class="legend-item"><div class="legend-name"><span class="legend-dot dot-temp"></span><span>临时文件</span></div><div class="legend-value">264.1 MB</div></div></div>
+            </div>
+            <div class="settings-row"><div class="settings-row-copy"><div class="settings-label">临时文件</div><div class="settings-help">预览缓存和安装缓存，不包含会话内容</div></div><div style="display:flex;align-items:center;gap:12px"><span class="muted" style="font-size:13px">264.1 MB</span><button class="button small" type="button" id="clean-temp">清理</button></div></div>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="cleanup-title">
+          <div class="section-head"><div><h2 id="cleanup-title">会话数据清理</h2><p class="section-description">进入页面自动扫描，结果确认后才会删除文件。</p></div><div class="section-action"><button class="button small" type="button" data-scan="all">↻ 重新扫描</button></div></div>
+          <nav class="cleanup-tabs" role="tablist" aria-label="会话清理类型"><button class="cleanup-tab" role="tab" aria-selected="false" data-tab="orphans">孤儿会话 <span class="tab-count">12</span></button><button class="cleanup-tab" role="tab" aria-selected="true" data-tab="projects">项目会话 <span class="tab-count">8</span></button><button class="cleanup-tab" role="tab" aria-selected="false" data-tab="schedule">自动计划</button></nav>
+
+          <section class="tab-panel" id="projects" role="tabpanel">
+            <div class="project-toolbar"><div class="toolbar-left"><input class="input" type="search" placeholder="搜索项目名称或路径" aria-label="搜索项目"><label class="checkbox-label"><input type="checkbox"> 只看有可清理会话</label></div><span class="subtle" style="font-size:12px">8 个项目 · 62 个归档会话</span></div>
+            <div class="project-table" aria-label="项目会话汇总">
+              <div class="project-table-head"><span>项目</span><button class="table-sort" type="button" data-project-sort="session-count">会话数 <span class="sort-indicator">↕</span></button><button class="table-sort active" type="button" data-project-sort="cleanable-bytes" data-direction="desc">可清理大小 <span class="sort-indicator">↓</span></button><button class="table-sort" type="button" data-project-sort="last-activity">最近活动 <span class="sort-indicator">↕</span></button><span>操作</span></div>
+              <div class="project-row" data-project-row data-project="漫剧全流程制作" data-project-path="~/CodeSource/BoneProject/Manju" data-session-count="32" data-cleanable-bytes="640155238" data-cleanable-size="612.4 MB" data-last-activity="2026-09-04T20:54:00" tabindex="0" aria-label="打开项目 漫剧全流程制作 的会话详情"><div class="project-name"><div class="project-title">漫剧全流程制作</div><div class="project-path">~/CodeSource/BoneProject/Manju</div></div><div class="number">32</div><div class="size">612.4 MB</div><div class="date">2026/09/04 20:54</div><button class="details-link" type="button">查看详情 →</button></div>
+              <div class="project-row" data-project-row data-project="Shorthand" data-project-path="~/CodeSource/BoneProject/Shorthand" data-session-count="27" data-cleanable-bytes="197761434" data-cleanable-size="188.6 MB" data-last-activity="2026-09-04T20:37:00" tabindex="0" aria-label="打开项目 Shorthand 的会话详情"><div class="project-name"><div class="project-title">Shorthand</div><div class="project-path">~/CodeSource/BoneProject/Shorthand</div></div><div class="number">27</div><div class="size">188.6 MB</div><div class="date">2026/09/04 20:37</div><button class="details-link" type="button">查看详情 →</button></div>
+              <div class="project-row" data-project-row data-project="ParsingBook" data-project-path="~/CodeSource/BoneProject/ParsingBook" data-session-count="19" data-cleanable-bytes="100768358" data-cleanable-size="96.1 MB" data-last-activity="2026-09-03T11:08:00" tabindex="0" aria-label="打开项目 ParsingBook 的会话详情"><div class="project-name"><div class="project-title">ParsingBook</div><div class="project-path">~/CodeSource/BoneProject/ParsingBook</div></div><div class="number">19</div><div class="size">96.1 MB</div><div class="date">2026/09/03 11:08</div><button class="details-link" type="button">查看详情 →</button></div>
+              <div class="project-row" data-project-row data-project="未关联项目" data-project-path="没有工作区归属的历史会话" data-session-count="6" data-cleanable-bytes="13421772" data-cleanable-size="12.8 MB" data-last-activity="2026-08-27T09:16:00" tabindex="0" aria-label="打开项目 未关联项目 的会话详情"><div class="project-name"><div class="project-title">未关联项目</div><div class="project-path">没有工作区归属的历史会话</div></div><div class="number">6</div><div class="size">12.8 MB</div><div class="date">2026/08/27 09:16</div><button class="details-link" type="button">查看详情 →</button></div>
+            </div>
+            <p class="protection-note"><strong>保护规则：</strong>详情弹窗默认选中归档会话；标星和置顶会话始终排除。</p>
+          </section>
+
+          <section class="tab-panel" id="orphans" role="tabpanel" hidden>
+            <div class="scan-result"><div class="scan-summary"><div><strong>找到 12 项孤儿数据，可释放 38.6 MB</strong><p>未被当前会话索引引用的记录，删除前会再次校验路径和引用关系。</p></div><button class="button small primary" type="button" id="orphan-clean">确认清理</button></div><div class="candidate-list"><div class="candidate-row"><div><div class="candidate-name">session-8f34…</div><div class="candidate-meta">会话记录 · 最后修改 2026/08/14 17:09</div></div><span class="candidate-size">18.2 MB</span></div><div class="candidate-row"><div><div class="candidate-name">pi-artifact-20aa…</div><div class="candidate-meta">未引用 Pi 数据 · 最后修改 2026/08/09 10:42</div></div><span class="candidate-size">11.7 MB</span></div><div class="candidate-row"><div><div class="candidate-name">workspace-session-3c12…</div><div class="candidate-meta">会话工作目录 · 未关联项目</div></div><span class="candidate-size">8.7 MB</span></div></div><div class="result-note"><span>!</span><span><strong>孤儿数据删除后不可恢复。</strong>扫描结果只包含 Proma 管理目录，不会触碰用户项目目录。</span></div></div>
+          </section>
+
+          <section class="tab-panel" id="schedule" role="tabpanel" hidden>
+            <div class="schedule-card"><div class="schedule-row"><div><h3>启动时清理临时文件</h3><p class="schedule-description">每次启动时删除预览和安装缓存。</p></div><button class="switch on" type="button" aria-label="启动时清理临时文件" data-switch></button></div><div class="schedule-row"><div><h3>自动清理归档会话</h3><p class="schedule-description">只清理已归档且超过宽限期的会话，保留标星和置顶。</p></div><select class="select" aria-label="自动清理周期"><option>禁用</option><option selected>超过 30 天</option><option>超过 90 天</option></select></div><div class="schedule-row"><div><h3>下次执行</h3><p class="schedule-description">按本机时间自动运行，执行前不弹窗。</p></div><span class="next-run">明天 09:00</span></div></div>
+          </section>
+        </section>
+
+        <section class="section" aria-labelledby="result-title"><div class="section-head"><div><h2 id="result-title">最近一次操作</h2><p class="section-description">清理结果会在完成后显示在这里。</p></div></div><div class="settings-card"><div class="settings-row"><div class="settings-row-copy"><div class="settings-label" id="operation-result">尚未执行清理</div><div class="settings-help">扫描不会删除文件；只有确认清理后才会改变磁盘内容。</div></div><span class="subtle" style="font-size:12px">—</span></div></div></section>
+      </div>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="modal" role="presentation">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <header class="modal-header"><div><h2 class="modal-title" id="modal-title">漫剧全流程制作</h2><p class="modal-subtitle" id="modal-subtitle">~/CodeSource/BoneProject/Manju · 32 个会话 · 可清理 612.4 MB</p></div><button class="close" type="button" aria-label="关闭" id="close">×</button></header>
+      <div class="modal-tools"><div class="segmented" role="group" aria-label="会话排序"><button class="segment active" type="button" data-sort="date">最后活动</button><button class="segment" type="button" data-sort="size">占用大小</button></div><div class="protection">标星 1 个已排除 · 置顶 2 个已排除</div></div>
+      <div class="session-list" id="session-list"><div class="session-head"><span><input type="checkbox" checked aria-label="全选可清理会话" id="select-all"></span><span>会话</span><span>最后活动</span><span>占用</span></div><label class="session-row" data-session-bytes="30200000" data-session-date="2026-09-04T20:54:00"><span><input class="session-select" type="checkbox" checked data-bytes="30200000"></span><span><span class="session-title">最近归档会话</span><span class="session-meta">归档 · 会话记录 30.2 MB + 工作目录 9.5 KB</span></span><span class="date">2026/09/04 20:54</span><span class="size">30.2 MB</span></label><label class="session-row" data-session-bytes="9600000" data-session-date="2026-09-02T13:20:00"><span><input class="session-select" type="checkbox" checked data-bytes="9600000"></span><span><span class="session-title">历史归档会话</span><span class="session-meta">归档 · 会话记录 8.4 MB + 工作目录 1.2 MB</span></span><span class="date">2026/09/02 13:20</span><span class="size">9.6 MB</span></label><label class="session-row protected" data-session-bytes="4300000" data-session-date="2026-09-04T21:05:00"><span><input class="session-select" type="checkbox" disabled data-bytes="4300000"></span><span><span class="session-title">当前制作主会话</span><span class="session-meta">未归档 · 置顶会话</span><span class="session-status">已保护</span></span><span class="date">2026/09/04 21:05</span><span class="size">4.3 MB</span></label><label class="session-row protected" data-session-bytes="2100000" data-session-date="2026-08-22T10:18:00"><span><input class="session-select" type="checkbox" disabled data-bytes="2100000"></span><span><span class="session-title">角色设定长期参考</span><span class="session-meta">未归档 · 标星会话</span><span class="session-status">已保护</span></span><span class="date">2026/08/22 10:18</span><span class="size">2.1 MB</span></label></div>
+      <footer class="modal-footer"><div class="selection">已选择 <strong id="selected-count">2</strong> 个会话，可释放 <strong id="selected-size">39.8 MB</strong></div><button class="button primary" type="button" id="session-clean">清理已选会话</button></footer>
+    </section>
+  </div>
+
+  <script>
+    // 页面会话 Tab、清理面板和项目详情弹窗的交互节点。
+    const tabs = [...document.querySelectorAll('[data-tab]')]
+    const panels = [...document.querySelectorAll('[role="tabpanel"]')]
+    const modal = document.querySelector('#modal')
+    const title = document.querySelector('#modal-title')
+    const subtitle = document.querySelector('#modal-subtitle')
+    const close = document.querySelector('#close')
+    // 项目表格和行集合用于表头排序及打开项目详情。
+    const projectTable = document.querySelector('[aria-label="项目会话汇总"]')
+    const projectRows = [...document.querySelectorAll('[data-project-row]')]
+    // 弹窗内的示例会话标题随当前项目切换，保持详情上下文一致。
+    const sessionTitles = [...document.querySelectorAll('.session-row .session-title')]
+    // 全量扫描入口和当前扫描定时器，覆盖归档会话与孤儿数据两类候选。
+    const scanButton = document.querySelector('[data-scan="all"]')
+    let scanTimer = null
+
+    // 切换会话清理 Tab，并保持 tab 与内容面板的可访问状态同步。
+    function setTab(tabName) {
+      tabs.forEach((tab) => tab.setAttribute('aria-selected', String(tab.dataset.tab === tabName)))
+      panels.forEach((panel) => { panel.hidden = panel.id !== tabName })
+    }
+    tabs.forEach((tab) => tab.addEventListener('click', () => setTab(tab.dataset.tab)))
+
+    // 打开指定项目详情，更新项目路径、会话数和可清理大小。
+    function openProject(row) {
+      title.textContent = row.dataset.project
+      subtitle.textContent = `${row.dataset.projectPath} · ${row.dataset.sessionCount} 个会话 · 可清理 ${row.dataset.cleanableSize}`
+      sessionTitles[0].textContent = `${row.dataset.project} · 最近归档会话`
+      sessionTitles[1].textContent = `${row.dataset.project} · 历史归档会话`
+      modal.classList.add('open')
+      document.body.classList.add('modal-open')
+      close.focus()
+    }
+    projectRows.forEach((row) => {
+      row.addEventListener('click', () => openProject(row))
+      row.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          openProject(row)
+        }
+      })
+      row.querySelector('.details-link').addEventListener('click', (event) => {
+        event.stopPropagation()
+        openProject(row)
+      })
+    })
+
+    // 按项目表头字段重排项目行，首点使用降序，再次点击切换方向。
+    function sortProjects(sortKey, direction) {
+      const factor = direction === 'asc' ? 1 : -1
+      const sortedRows = [...projectRows].sort((left, right) => {
+        const dataKey = sortKey === 'session-count' ? 'sessionCount' : 'cleanableBytes'
+        const leftValue = sortKey === 'last-activity' ? Date.parse(left.dataset.lastActivity) : Number(left.dataset[dataKey])
+        const rightValue = sortKey === 'last-activity' ? Date.parse(right.dataset.lastActivity) : Number(right.dataset[dataKey])
+        return (leftValue - rightValue) * factor
+      })
+      sortedRows.forEach((row) => projectTable.append(row))
+    }
+    document.querySelectorAll('[data-project-sort]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const direction = button.dataset.direction === 'desc' ? 'asc' : 'desc'
+        document.querySelectorAll('[data-project-sort]').forEach((item) => {
+          const active = item === button
+          item.classList.toggle('active', active)
+          item.dataset.direction = active ? direction : ''
+          item.querySelector('.sort-indicator').textContent = active ? (direction === 'asc' ? '↑' : '↓') : '↕'
+        })
+        sortProjects(button.dataset.projectSort, direction)
+      })
+    })
+
+    // 扫描入口只在当前扫描请求期间禁用，完成后恢复重新扫描。
+    function runFullScan() {
+      if (scanTimer !== null) return
+      scanButton.disabled = true
+      scanButton.textContent = '扫描中...'
+      document.querySelector('#operation-result').textContent = '正在扫描归档会话和孤儿数据...'
+      scanTimer = window.setTimeout(() => {
+        scanButton.textContent = '↻ 重新扫描'
+        scanButton.disabled = false
+        scanTimer = null
+        document.querySelector('#operation-result').textContent = '已完成全量扫描，找到 62 个归档会话和 12 项孤儿数据'
+        setTab('projects')
+      }, 650)
+    }
+    scanButton.addEventListener('click', runFullScan)
+    window.setTimeout(runFullScan, 0)
+
+    // 项目会话排序只影响弹窗内的会话行，不改变项目汇总排序。
+    document.querySelectorAll('[data-sort]').forEach((button) => button.addEventListener('click', () => {
+      document.querySelectorAll('[data-sort]').forEach((item) => item.classList.toggle('active', item === button))
+      const rows = [...document.querySelectorAll('.session-row')]
+      const key = button.dataset.sort
+      rows.sort((left, right) => key === 'size' ? Number(right.dataset.sessionBytes) - Number(left.dataset.sessionBytes) : Date.parse(right.dataset.sessionDate) - Date.parse(left.dataset.sessionDate))
+      rows.forEach((row) => document.querySelector('#session-list').append(row))
+    }))
+
+    // 关闭项目详情弹窗，并恢复页面滚动。
+    function closeModal() {
+      modal.classList.remove('open')
+      document.body.classList.remove('modal-open')
+    }
+    close.addEventListener('click', closeModal)
+    modal.addEventListener('click', (event) => { if (event.target === modal) closeModal() })
+    document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeModal() })
+
+    // 根据可清理复选框重新计算弹窗底部的数量和预计释放空间。
+    function updateSelection() {
+      const selected = [...document.querySelectorAll('.session-select:checked')]
+      const bytes = selected.reduce((sum, input) => sum + Number(input.dataset.bytes), 0)
+      document.querySelector('#selected-count').textContent = String(selected.length)
+      document.querySelector('#selected-size').textContent = `${(bytes / 1024 / 1024).toFixed(1)} MB`
+      document.querySelector('#select-all').checked = selected.length === document.querySelectorAll('.session-select:not(:disabled)').length
+    }
+    document.querySelectorAll('.session-select').forEach((input) => input.addEventListener('change', updateSelection))
+    document.querySelector('#select-all').addEventListener('change', (event) => {
+      document.querySelectorAll('.session-select:not(:disabled)').forEach((input) => { input.checked = event.target.checked })
+      updateSelection()
+    })
+    document.querySelector('#clean-temp').addEventListener('click', (event) => {
+      event.currentTarget.textContent = '已清理'
+      event.currentTarget.disabled = true
+      document.querySelector('#operation-result').textContent = '已清理临时文件，释放 264.1 MB'
+    })
+    document.querySelector('#orphan-clean').addEventListener('click', (event) => {
+      event.currentTarget.textContent = '已清理'
+      event.currentTarget.disabled = true
+      document.querySelector('#operation-result').textContent = '已清理 12 项孤儿数据，释放 38.6 MB'
+    })
+    document.querySelector('#session-clean').addEventListener('click', (event) => {
+      event.currentTarget.textContent = '已提交清理'
+      event.currentTarget.disabled = true
+      document.querySelector('#operation-result').textContent = `已提交 ${document.querySelector('#selected-count').textContent} 个会话清理`
+    })
+    document.querySelector('#refresh').addEventListener('click', (event) => {
+      event.currentTarget.textContent = '✓ 已刷新'
+      window.setTimeout(() => { event.currentTarget.textContent = '↻ 刷新' }, 1000)
+    })
+    document.querySelectorAll('[data-switch]').forEach((button) => button.addEventListener('click', () => button.classList.toggle('on')))
+  </script>
+</body>
+</html>

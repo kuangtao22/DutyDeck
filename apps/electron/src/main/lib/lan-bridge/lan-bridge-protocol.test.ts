@@ -39,6 +39,8 @@ describe('LAN Bridge 协议协商', () => {
       'trusted-device-credentials',
       'streaming',
       'connection-recovery',
+      'agent-session-metadata',
+      'automations',
     ])
     expect(new Set(capabilities).size).toBe(capabilities.length)
     expect(LAN_BRIDGE_WS_CAPABILITIES).toEqual([
@@ -47,6 +49,8 @@ describe('LAN Bridge 协议协商', () => {
       'trusted-device-credentials',
       'streaming',
       'connection-recovery',
+      'agent-session-metadata',
+      'automations',
     ])
     expect(new Set(LAN_BRIDGE_WS_CAPABILITIES).size).toBe(LAN_BRIDGE_WS_CAPABILITIES.length)
   })

@@ -60,10 +60,15 @@ export function registerLanBridgeHandlers(dependencies: LanBridgeHandlerDependen
   registerRoute('conversations.list', bind(handleListConversations))
   registerRoute('conversations.messages', bind(handleConversationMessages))
   registerRoute('conversations.search', bind(handleSearch))
+  registerRoute('conversations.toggle_pin', bind(handleConversationTogglePin))
   registerRoute('agent.sessions', bind(handleAgentSessions))
   registerRoute('agent.sessions.messages', bind(handleAgentSessionMessages))
   registerRoute('agent.sessions.search', bind(handleAgentSearch))
   registerRoute('agent.sessions.toggle_star', bind(handleAgentSessionToggleStar))
+  registerRoute('agent.sessions.toggle_pin', bind(handleAgentSessionTogglePin))
+  registerRoute('automations.list', bind(handleAutomationsList))
+  registerRoute('automations.toggle', bind(handleAutomationToggle))
+  registerRoute('automations.run_now', bind(handleAutomationRunNow))
   registerRoute('workspaces.list', bind(handleWorkspaces))
   registerRoute('subscribe', bind(handleSubscribe))
   registerRoute('unsubscribe', bind(handleUnsubscribe))
@@ -228,6 +233,25 @@ async function handleSearch(context: LanBridgeHandlerDependencies, client: Clien
   return { results }
 }
 
+/** 切换 Chat 会话置顶并通知其它移动端刷新列表。 */
+function handleConversationTogglePin(
+  context: LanBridgeHandlerDependencies,
+  client: ClientConnection,
+  data: Record<string, unknown>,
+) {
+  requireAuth(context.authService, client, data)
+  const conversationId = data.conversationId as string | undefined
+  if (!conversationId) {
+    throw Object.assign(new Error('conversationId required'), { errorCode: 'VALIDATION_ERROR' })
+  }
+  const conversation = context.promaAdapter.toggleConversationPin(conversationId)
+  context.getSessionManager()?.broadcast({
+    type: 'conversations.updated',
+    data: { conversationId },
+  })
+  return { conversation }
+}
+
 function handleAgentSessions(context: LanBridgeHandlerDependencies, client: ClientConnection, data: Record<string, unknown>) {
   requireAuth(context.authService, client, data)
   const sessions = context.promaAdapter.listAgentSessions()
@@ -272,6 +296,64 @@ function handleAgentSessionToggleStar(
     data: { sessionId },
   })
   return { session }
+}
+
+/** 切换 Agent 会话置顶，并通知其它移动端刷新权威列表。 */
+function handleAgentSessionTogglePin(
+  context: LanBridgeHandlerDependencies,
+  client: ClientConnection,
+  data: Record<string, unknown>,
+) {
+  requireAuth(context.authService, client, data)
+  const sessionId = data.sessionId as string | undefined
+  requireExistingAgentSession(context.promaAdapter, sessionId)
+  const session = context.promaAdapter.toggleAgentSessionPin(sessionId)
+  context.getSessionManager()?.broadcast({
+    type: 'agent.sessions.updated',
+    data: { sessionId },
+  })
+  return { session }
+}
+
+/** 返回移动端所需的自动计划摘要。 */
+function handleAutomationsList(
+  context: LanBridgeHandlerDependencies,
+  client: ClientConnection,
+  data: Record<string, unknown>,
+) {
+  requireAuth(context.authService, client, data)
+  return { automations: context.promaAdapter.listAutomations() }
+}
+
+/** 切换自动计划启停状态，返回服务端确认后的快照。 */
+function handleAutomationToggle(
+  context: LanBridgeHandlerDependencies,
+  client: ClientConnection,
+  data: Record<string, unknown>,
+) {
+  requireAuth(context.authService, client, data)
+  const id = typeof data.id === 'string' ? data.id : ''
+  const active = data.active
+  if (!id || typeof active !== 'boolean') {
+    throw Object.assign(new Error('id and active required'), { errorCode: 'VALIDATION_ERROR' })
+  }
+  const automation = context.promaAdapter.toggleAutomation(id, active)
+  context.getSessionManager()?.broadcast({ type: 'automations.updated', data: { id } })
+  return { automation }
+}
+
+/** 触发一次自动计划；调度器仍由主进程负责真实执行与状态持久化。 */
+async function handleAutomationRunNow(
+  context: LanBridgeHandlerDependencies,
+  client: ClientConnection,
+  data: Record<string, unknown>,
+) {
+  requireAuth(context.authService, client, data)
+  const id = typeof data.id === 'string' ? data.id : ''
+  if (!id) throw Object.assign(new Error('id required'), { errorCode: 'VALIDATION_ERROR' })
+  await context.promaAdapter.runAutomationNow(id)
+  context.getSessionManager()?.broadcast({ type: 'automations.updated', data: { id } })
+  return { accepted: true }
 }
 
 async function handleAgentSearch(context: LanBridgeHandlerDependencies, client: ClientConnection, data: Record<string, unknown>) {

@@ -54,6 +54,8 @@ import type {
   VoiceDictationTextDeliveryInput,
   VoiceDictationToggleInput,
   MicPermissionResult,
+  StorageCleanupPreviewOptions,
+  StorageCleanupExecuteRequest,
 } from '../types'
 import type {
   RuntimeStatus,
@@ -552,7 +554,7 @@ import {
   resolveAttachmentPath,
 } from './lib/config-paths'
 import { getCachedDefaultAppInfo, saveCachedDefaultAppInfo } from './lib/default-app-cache'
-import { calculateStorageStats, cleanupStorage, cleanupTempFiles } from './lib/storage-service'
+import { calculateStorageStats, cleanupStorage, cleanupTempFiles, previewStorageCleanup, executeStorageCleanup, resolveStorageSessionWorkspace, scanStorageOverview } from './lib/storage-service'
 import type { CleanupOptions } from './lib/storage-service'
 import {
   listAgentWorkspaces,
@@ -8345,6 +8347,10 @@ export function registerIpcHandlers(): void {
 
   // ===== 存储管理 =====
 
+  ipcMain.handle(STORAGE_IPC_CHANNELS.SCAN_OVERVIEW, async () => {
+    return scanStorageOverview()
+  })
+
   ipcMain.handle(STORAGE_IPC_CHANNELS.GET_STATS, async () => {
     return calculateStorageStats()
   })
@@ -8355,6 +8361,27 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(STORAGE_IPC_CHANNELS.CLEANUP_TEMP, async () => {
     return cleanupTempFiles()
+  })
+
+  ipcMain.handle(STORAGE_IPC_CHANNELS.PREVIEW_CLEANUP, async (_, options: StorageCleanupPreviewOptions) => {
+    return previewStorageCleanup(options)
+  })
+
+  ipcMain.handle(STORAGE_IPC_CHANNELS.EXECUTE_CLEANUP, async (_, request: StorageCleanupExecuteRequest) => {
+    return executeStorageCleanup(request)
+  })
+
+  ipcMain.handle(STORAGE_IPC_CHANNELS.OPEN_SESSION_WORKSPACE, async (_, sessionId: string): Promise<void> => {
+    /** 主进程按会话索引定位目录，防止渲染进程提交任意文件路径。 */
+    const sessionPath = (await resolveStorageSessionWorkspace(sessionId)).path
+    /** Electron 以空字符串表示打开成功，错误信息交给设置页展示。 */
+    const error = await shell.openPath(sessionPath)
+    if (error) throw new Error(`无法打开工作目录：${error}`)
+  })
+
+  ipcMain.handle(STORAGE_IPC_CHANNELS.GET_SESSION_WORKSPACE_TARGET, async (_, sessionId: string) => {
+    /** 同一校验用于文件夹入口与 Agent 分析入口，不接受渲染进程提交的路径。 */
+    return resolveStorageSessionWorkspace(sessionId)
   })
 
   // 启动时自动清理临时文件

@@ -2,26 +2,48 @@
  * 存储管理服务
  *
  * 提供磁盘用量统计和临时文件清理功能。
- * 孤儿数据清理因可能误伤用户工作资料而默认关闭。
+ * 孤儿数据只允许设置面板显式预览和确认，启动时自动清理仅处理归档会话。
  * 由设置面板"磁盘管理"Tab 和启动时自动清理逻辑调用。
  */
 
 import { existsSync, statSync, unlinkSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { rmSyncWithRetry } from './fs-retry'
 import { promises as fsPromises } from 'node:fs'
-import { join, basename, relative, isAbsolute } from 'node:path'
+import { join, basename, relative, isAbsolute, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { app } from 'electron'
 import {
   getConfigDir,
   getAgentSessionsDir,
   getSdkConfigDir,
+  getPiSessionsDir,
   getAgentWorkspacesDir,
   getAttachmentsDir,
   getConversationsDir,
+  resolveAgentSessionWorkspacePath,
 } from './config-paths'
-import { listAgentSessions } from './agent-session-manager'
-import { listAgentWorkspaces } from './agent-workspace-manager'
+import { getAgentSessionMeta, listAgentSessions } from './agent-session-manager'
+import { deleteAgentSession } from './agent-session-manager'
+import { isAgentSessionBusy } from './agent-service'
+import { getAgentWorkspace, listAgentWorkspaces } from './agent-workspace-manager'
+import {
+  executeStorageCleanup as executeStorageCleanupCore,
+  previewStorageCleanup as previewStorageCleanupCore,
+  type StorageCleanupContext,
+  type StorageCleanupSessionSnapshot,
+} from './storage-cleanup'
+import { buildStorageProjectUsage, type StorageSessionUsageInput } from './storage-usage'
+import { measureStorageWorkspace, type StorageWorkspaceSize } from './storage-size'
+import type {
+  StorageCleanupExecuteRequest,
+  StorageCleanupPreview,
+  StorageCleanupPreviewOptions,
+  StorageCleanupResult,
+  StorageProjectUsage,
+  StorageOverview,
+  StorageSessionWorkspaceTarget,
+} from '../../types/settings'
 
 // ─── 类型定义 ───
 
@@ -56,6 +78,8 @@ export interface StorageStats {
   categories: StorageCategory[]
   totalBytes: number
   calculatedAt: number
+  sessionProjects: StorageProjectUsage[]
+  sizeEstimateIncomplete: boolean
 }
 
 export interface CleanupOptions {
@@ -70,6 +94,144 @@ export interface CleanupResult {
   errors: string[]
 }
 
+/** 主进程内存中的短期预览缓存；应用重启后预览自然失效，不保存到磁盘。 */
+const storageCleanupPreviews = new Map<string, StorageCleanupPreview>()
+const STORAGE_PREVIEW_TTL_MS = 60 * 60 * 1000
+
+/**
+ * 从会话索引解析现存的受管工作目录，不接受渲染进程提供的路径，也不创建目录。
+ * @param sessionId 要打开的会话 ID。
+ * @returns 已确认存在的受管目录绝对路径和所属项目 ID。
+ */
+export async function resolveStorageSessionWorkspace(sessionId: string): Promise<StorageSessionWorkspaceTarget> {
+  if (typeof sessionId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/.test(sessionId)) {
+    throw new Error('无效的会话 ID')
+  }
+  /** 会话和工作区都从主进程索引重新读取，避免信任扫描时的过期路径。 */
+  const session = getAgentSessionMeta(sessionId)
+  /** 只有仍属于某个受管工作区的会话才能打开其工作目录。 */
+  const workspace = session?.workspaceId ? getAgentWorkspace(session.workspaceId) : undefined
+  if (!workspace) throw new Error('会话或所属项目已不存在')
+
+  /** 工作区 slug 必须是数据根下的单层目录。 */
+  const root = resolve(getConfigDir(), 'agent-workspaces')
+  /** 使用 resolve 和 relative 同时验证路径层级。 */
+  const workspacePath = resolve(root, workspace.slug)
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/.test(workspace.slug)
+    || relative(root, workspacePath) !== workspace.slug) {
+    throw new Error('工作区路径无效')
+  }
+  /** 只读解析会话目录，避免点击打开时意外创建空目录。 */
+  const sessionPath = resolveAgentSessionWorkspacePath(workspace.slug, sessionId)
+  for (const directory of [root, workspacePath, sessionPath]) {
+    try {
+      /** 每一层均拒绝符号链接，防止文件管理器被引到受管目录之外。 */
+      const stat = await fsPromises.lstat(directory)
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('工作目录路径不是安全的文件夹')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('工作目录不存在，可能已经被清理')
+      throw error
+    }
+  }
+  return { path: sessionPath, workspaceId: workspace.id }
+}
+
+/** 将当前索引投影为清理所需的最小快照，并解析受管工作区 slug。 */
+function getStorageSessionSnapshots(): StorageCleanupSessionSnapshot[] {
+  const workspaces = listAgentWorkspaces()
+  const workspaceSlugs = new Map(workspaces.map((workspace) => [workspace.id, workspace.slug]))
+  const workspaceNames = new Map(workspaces.map((workspace) => [workspace.id, workspace.name]))
+  return listAgentSessions().map((session) => ({
+    id: session.id,
+    title: session.title,
+    archived: session.archived === true,
+    starred: session.starred === true,
+    pinned: session.pinned === true,
+    updatedAt: session.updatedAt,
+    workspaceSlug: session.workspaceId ? workspaceSlugs.get(session.workspaceId) : undefined,
+    workspaceName: session.workspaceId ? workspaceNames.get(session.workspaceId) : undefined,
+    piSessionFile: session.piSessionFile,
+  }))
+}
+
+/**
+ * 构建清理核心依赖，所有路径均来自活动数据根和受管索引。
+ * @param workspaceSizeCache 本轮占用统计的目录计量缓存；不传则单独扫描。
+ * @returns 清理预览或执行使用的当前会话快照和操作函数。
+ */
+function createStorageCleanupContext(workspaceSizeCache?: Map<string, StorageWorkspaceSize>): StorageCleanupContext {
+  const sessions = getStorageSessionSnapshots()
+  return {
+    agentSessionsDir: getAgentSessionsDir(),
+    agentWorkspacesDir: getAgentWorkspacesDir(),
+    piSessionsDir: getPiSessionsDir(),
+    sessions,
+    runningSessionIds: new Set(sessions.filter((session) => isAgentSessionBusy(session.id)).map((session) => session.id)),
+    workspaceSizeCache,
+    // 归档清理只删除运行产物，保留用户可恢复的工作台资料。
+    deleteAgentSession: (sessionId) => deleteAgentSession(sessionId, { preserveSessionArtifacts: true }),
+    getCurrentSessions: getStorageSessionSnapshots,
+    getRunningSessionIds: () => new Set(getStorageSessionSnapshots().filter((session) => isAgentSessionBusy(session.id)).map((session) => session.id)),
+  }
+}
+
+/** 删除过期的内存预览，避免用户长期打开设置页时积累候选快照。 */
+function pruneStorageCleanupPreviews(now = Date.now()): void {
+  for (const [id, preview] of storageCleanupPreviews) {
+    if (now - preview.generatedAt > STORAGE_PREVIEW_TTL_MS) storageCleanupPreviews.delete(id)
+  }
+}
+
+/** 生成只读清理预览，并缓存一个短期确认令牌。 */
+export async function previewStorageCleanup(options: StorageCleanupPreviewOptions): Promise<StorageCleanupPreview> {
+  const now = Date.now()
+  pruneStorageCleanupPreviews(now)
+  const context = createStorageCleanupContext()
+  const generated = await previewStorageCleanupCore(context, options, now)
+  const preview: StorageCleanupPreview = { ...generated, operationId: randomUUID() }
+  storageCleanupPreviews.set(preview.operationId, preview)
+  return preview
+}
+
+/**
+ * 同一轮共享会话索引和目录计量，同时生成两枚独立的清理确认令牌。
+ * @returns 存储占用、归档预览和孤儿预览；不执行删除。
+ */
+export async function scanStorageOverview(): Promise<StorageOverview> {
+  pruneStorageCleanupPreviews()
+  const workspaceSizeCache = new Map<string, StorageWorkspaceSize>()
+  const context = createStorageCleanupContext(workspaceSizeCache)
+  const stats = await calculateStorageStats(context)
+  const now = Date.now()
+  /** 与旧设置页相同的候选期限和数量上限。 */
+  const options = { beforeDays: 0, gracePeriodMs: 7 * 24 * 60 * 60 * 1000, maxCandidates: 2_000 }
+  const archived = await previewStorageCleanupCore(context, { ...options, mode: 'archived' }, now)
+  const orphaned = await previewStorageCleanupCore(context, { ...options, mode: 'orphaned' }, now)
+  const archivedPreview: StorageCleanupPreview = { ...archived, operationId: randomUUID() }
+  const orphanPreview: StorageCleanupPreview = { ...orphaned, operationId: randomUUID() }
+  storageCleanupPreviews.set(archivedPreview.operationId, archivedPreview)
+  storageCleanupPreviews.set(orphanPreview.operationId, orphanPreview)
+  return { stats, archivedPreview, orphanPreview }
+}
+
+/** 执行主进程缓存的清理预览；请求只允许选择预览中已有的候选 ID。 */
+export async function executeStorageCleanup(request: StorageCleanupExecuteRequest): Promise<StorageCleanupResult> {
+  pruneStorageCleanupPreviews()
+  const preview = storageCleanupPreviews.get(request.operationId)
+  if (!preview) {
+    return {
+      operationId: request.operationId,
+      freedBytes: 0,
+      deletedCount: 0,
+      skippedCount: 0,
+      errors: ['清理预览已过期，请重新扫描后再执行'],
+    }
+  }
+  const result = await executeStorageCleanupCore(preview, createStorageCleanupContext(), request.candidateIds)
+  storageCleanupPreviews.delete(request.operationId)
+  return result
+}
+
 // ─── 工具函数 ───
 
 // 扫描时跳过的已知大型目录，防止超大工作区阻塞主进程事件循环
@@ -81,6 +243,8 @@ const SKIP_DIRS = new Set([
 
 // 单次扫描最大文件数上限，防止超大工作区导致无限递归
 const MAX_FILE_SCAN = 100_000
+const STAT_CONCURRENCY = 16
+const WORKSPACE_CONCURRENCY = 4
 const MAX_ORPHAN_ITEM_PREVIEW = 80
 
 // 孤儿目录无法可靠区分用户仍需保留的会话工作资料，默认不展示也不允许删除。
@@ -135,6 +299,25 @@ async function getDirSize(
   async function walk(dir: string, depth: number): Promise<void> {
     try {
       const entries = await fsPromises.readdir(dir, { withFileTypes: true })
+      /** 普通文件并发读取元数据，目录仍逐层遍历以保持全树上限。 */
+      const files = entries.filter((entry) => entry.isFile())
+      for (let index = 0; index < files.length && limit.remaining > 0; index += STAT_CONCURRENCY) {
+        const batch = files.slice(index, index + Math.min(STAT_CONCURRENCY, limit.remaining))
+        const sizes = await Promise.all(batch.map(async (entry) => {
+          try {
+            const stat = await fsPromises.lstat(join(dir, entry.name))
+            return stat.isFile() && !stat.isSymbolicLink() ? stat.size : null
+          } catch {
+            return null
+          }
+        }))
+        for (const size of sizes) {
+          if (size === null) continue
+          bytes += size
+          count++
+          limit.remaining--
+        }
+      }
       for (const entry of entries) {
         if (limit.remaining <= 0) return
         const fullPath = join(dir, entry.name)
@@ -143,11 +326,6 @@ async function getDirSize(
             if (depth === 0 && options.skipTopLevelDirs?.has(entry.name)) continue
             if (SKIP_DIRS.has(entry.name)) continue
             await walk(fullPath, depth + 1)
-          } else if (entry.isFile()) {
-            const stat = await fsPromises.stat(fullPath)
-            bytes += stat.size
-            count++
-            limit.remaining--
           }
         } catch { /* skip inaccessible */ }
       }
@@ -213,17 +391,22 @@ async function cleanupOrphanSessionWorkspaceDir(sessionDir: string): Promise<num
 
 // ─── 统计 ───
 
+/** 获取当前索引中的会话 ID，兼容旧版孤儿清理入口。 */
 function getActiveSessionIds(): Set<string> {
   return new Set(listAgentSessions().map((s) => s.id))
 }
 
+/** 获取当前索引中的项目 slug，兼容旧版孤儿清理入口。 */
 function getActiveWorkspaceSlugs(): Set<string> {
   return new Set(listAgentWorkspaces().map((w) => w.slug))
 }
 
-async function calcAgentSessionsCategory(): Promise<StorageCategory> {
+async function calcAgentSessionsCategory(
+  sessionSnapshots: readonly StorageCleanupSessionSnapshot[],
+  sessionUsage: Map<string, StorageSessionUsageInput>,
+): Promise<StorageCategory> {
   const dir = getAgentSessionsDir()
-  const activeIds = getActiveSessionIds()
+  const activeIds = new Set(sessionSnapshots.map((session) => session.id))
   let bytes = 0, count = 0, orphanBytes = 0, orphanCount = 0
   const orphanItems: StorageOrphanItem[] = []
   let orphanItemsTruncated = false
@@ -239,6 +422,8 @@ async function calcAgentSessionsCategory(): Promise<StorageCategory> {
           const id = basename(file, '.jsonl')
           bytes += stat.size
           count++
+          const usage = sessionUsage.get(id)
+          if (usage) usage.transcriptBytes = stat.size
           if (ORPHAN_DATA_CLEANUP_ENABLED && !activeIds.has(id)) {
             orphanBytes += stat.size
             orphanCount++
@@ -303,10 +488,14 @@ async function calcSdkConfigCategory(): Promise<StorageCategory> {
   }
 }
 
-async function calcWorkspacesCategory(): Promise<StorageCategory> {
+async function calcWorkspacesCategory(
+  sessionSnapshots: readonly StorageCleanupSessionSnapshot[],
+  sessionUsage: Map<string, StorageSessionUsageInput>,
+  workspaceSizeCache: Map<string, StorageWorkspaceSize>,
+): Promise<StorageCategory> {
   const wsDir = getAgentWorkspacesDir()
-  const activeIds = getActiveSessionIds()
-  const activeSlugs = getActiveWorkspaceSlugs()
+  const activeIds = new Set(sessionSnapshots.map((session) => session.id))
+  const activeSlugs = new Set(sessionSnapshots.flatMap((session) => session.workspaceSlug ? [session.workspaceSlug] : []))
   let bytes = 0, count = 0, orphanBytes = 0, orphanCount = 0
   const orphanItems: StorageOrphanItem[] = []
   let orphanItemsTruncated = false
@@ -319,42 +508,44 @@ async function calcWorkspacesCategory(): Promise<StorageCategory> {
         try {
           if (!(await fsPromises.lstat(slugDir)).isDirectory()) continue
           const entries = await fsPromises.readdir(slugDir)
-          for (const entry of entries) {
-            const entryPath = join(slugDir, entry)
-            try {
-              const stat = await fsPromises.lstat(entryPath)
-              if (!stat.isDirectory()) {
-                if (stat.isFile()) {
-                  bytes += stat.size
-                  count++
+          for (let index = 0; index < entries.length; index += WORKSPACE_CONCURRENCY) {
+            await Promise.all(entries.slice(index, index + WORKSPACE_CONCURRENCY).map(async (entry) => {
+              const entryPath = join(slugDir, entry)
+              try {
+                const stat = await fsPromises.lstat(entryPath)
+                if (!stat.isDirectory()) {
+                  if (stat.isFile()) {
+                    bytes += stat.size
+                    count++
+                  }
+                  return
                 }
-                continue
-              }
-              // 工作区级元目录不属于会话目录，不能按 orphan session 清理。
-              if (isWorkspaceMetadataDir(entry)) {
-                const sub = await getDirSize(entryPath)
+                // 工作区级元目录不属于会话目录，不能按 orphan session 清理。
+                if (isWorkspaceMetadataDir(entry)) {
+                  const sub = await getDirSize(entryPath)
+                  bytes += sub.bytes
+                  count += sub.count
+                  return
+                }
+                const sub = await measureStorageWorkspace(entryPath)
+                workspaceSizeCache.set(entryPath, sub)
                 bytes += sub.bytes
                 count += sub.count
-                continue
-              }
-              const sub = await getDirSize(entryPath)
-              bytes += sub.bytes
-              count += sub.count
-              // session 目录的 ID 不在活跃列表中 → 孤儿
-              if (ORPHAN_DATA_CLEANUP_ENABLED && !activeIds.has(entry) && !activeSlugs.has(entry)) {
-                const cleanable = await getDirSize(entryPath, { skipTopLevelDirs: PRESERVED_ORPHAN_SESSION_ENTRIES })
-                if (cleanable.count > 0) {
-                  orphanBytes += cleanable.bytes
+                const usage = sessionUsage.get(entry)
+                if (usage) usage.workspaceBytes = sub.bytes
+                // session 目录的 ID 不在活跃列表中 → 孤儿
+                if (ORPHAN_DATA_CLEANUP_ENABLED && !activeIds.has(entry) && !activeSlugs.has(entry) && sub.removableCount > 0) {
+                  orphanBytes += sub.removableBytes
                   orphanCount++
                   orphanItemsTruncated = addOrphanItem(orphanItems, {
                     kind: 'directory',
                     path: displayStoragePath(entryPath),
-                    bytes: cleanable.bytes,
-                    count: cleanable.count,
+                    bytes: sub.removableBytes,
+                    count: sub.removableCount,
                   }) || orphanItemsTruncated
                 }
-              }
-            } catch { /* skip */ }
+              } catch { /* skip */ }
+            }))
           }
         } catch { /* skip */ }
       }
@@ -415,11 +606,30 @@ async function calcTempFilesCategory(): Promise<StorageCategory> {
   }
 }
 
-export async function calculateStorageStats(): Promise<StorageStats> {
+/**
+ * 计算各分类和项目会话占用。
+ * @param context 可选的同轮清理上下文，用于复用索引及目录计量。
+ * @returns 当前存储分类、会话明细与大小估算标记。
+ */
+export async function calculateStorageStats(context?: StorageCleanupContext): Promise<StorageStats> {
+  const sessionSnapshots = context?.sessions ?? getStorageSessionSnapshots()
+  const workspaceSizeCache = context?.workspaceSizeCache ?? new Map<string, StorageWorkspaceSize>()
+  const sessionUsage = new Map<string, StorageSessionUsageInput>(sessionSnapshots.map((session) => [session.id, {
+    sessionId: session.id,
+    title: session.title,
+    workspaceSlug: session.workspaceSlug,
+    workspaceName: session.workspaceName,
+    transcriptBytes: 0,
+    workspaceBytes: 0,
+    updatedAt: session.updatedAt,
+    archived: session.archived,
+    starred: session.starred,
+    pinned: session.pinned,
+  }]))
   const categories = await Promise.all([
-    calcAgentSessionsCategory(),
+    calcAgentSessionsCategory(sessionSnapshots, sessionUsage),
     calcSdkConfigCategory(),
-    calcWorkspacesCategory(),
+    calcWorkspacesCategory(sessionSnapshots, sessionUsage, workspaceSizeCache),
     calcConversationsCategory(),
     calcAttachmentsCategory(),
     calcTempFilesCategory(),
@@ -428,6 +638,8 @@ export async function calculateStorageStats(): Promise<StorageStats> {
     categories,
     totalBytes: categories.reduce((sum, c) => sum + c.bytes, 0),
     calculatedAt: Date.now(),
+    sessionProjects: buildStorageProjectUsage([...sessionUsage.values()]),
+    sizeEstimateIncomplete: [...workspaceSizeCache.values()].some((size) => size.truncated),
   }
 }
 
@@ -528,29 +740,6 @@ async function cleanupOrphanWorkspaces(): Promise<CleanupResult> {
   return { freedBytes, deletedCount, errors }
 }
 
-function cleanupArchivedSessions(beforeDays: number): CleanupResult {
-  const cutoff = Date.now() - beforeDays * 24 * 60 * 60 * 1000
-  const sessions = listAgentSessions()
-  let freedBytes = 0, deletedCount = 0
-  const errors: string[] = []
-
-  for (const session of sessions) {
-    if (!session.archived || session.updatedAt > cutoff) continue
-
-    // 删除 JSONL 消息文件
-    const msgPath = join(getAgentSessionsDir(), `${session.id}.jsonl`)
-    if (existsSync(msgPath)) {
-      const freed = safeUnlink(msgPath)
-      if (freed > 0) { freedBytes += freed; deletedCount++ }
-    }
-  }
-
-  if (freedBytes > 0) {
-    console.log(`[存储清理] 归档数据: 释放 ${(freedBytes / 1024 / 1024).toFixed(1)} MB, 删除 ${deletedCount} 项`)
-  }
-  return { freedBytes, deletedCount, errors }
-}
-
 export async function cleanupStorage(options: CleanupOptions): Promise<CleanupResult> {
   if (options.orphansOnly && !ORPHAN_DATA_CLEANUP_ENABLED) {
     return {
@@ -582,7 +771,18 @@ export async function cleanupStorage(options: CleanupOptions): Promise<CleanupRe
       }
     } else if (options.archivedBeforeDays > 0) {
       if (cat === 'agent-sessions' || cat === 'sdk-config') {
-        merge(cleanupArchivedSessions(options.archivedBeforeDays))
+        const preview = await previewStorageCleanup({
+          mode: 'archived',
+          beforeDays: options.archivedBeforeDays,
+          // 启动自动清理沿用同一保留周期，避免刚归档的 artifact 被提前回收。
+          gracePeriodMs: options.archivedBeforeDays * 24 * 60 * 60 * 1000,
+          maxCandidates: 200,
+        })
+        const result = await executeStorageCleanup({
+          operationId: preview.operationId,
+          candidateIds: preview.candidates.map((candidate) => candidate.id),
+        })
+        merge({ freedBytes: result.freedBytes, deletedCount: result.deletedCount, errors: result.errors })
       }
     }
   }

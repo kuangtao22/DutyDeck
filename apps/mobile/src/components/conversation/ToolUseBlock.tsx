@@ -75,7 +75,7 @@ export function ToolUseBlock({ toolUse, result }: { toolUse: ToolUseContent; res
 
   return (
     <details className="group overflow-hidden rounded-md border border-border bg-muted/30">
-      <summary className="flex min-h-9 cursor-pointer select-none items-center gap-2 px-2.5 py-1.5 text-xs transition-colors hover:bg-muted/70 [&::-webkit-details-marker]:hidden">
+      <summary className="flex min-h-11 cursor-pointer select-none items-center gap-2 px-2.5 py-1.5 text-xs transition-colors hover:bg-muted/70 [&::-webkit-details-marker]:hidden">
         <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
         <ToolIcon aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate text-foreground/80">{summary}</span>

@@ -274,6 +274,40 @@ describe('LAN Bridge Proma Adapter', () => {
     })
   })
 
+  test('会话元数据与自动计划只透传移动端需要的稳定字段', async () => {
+    const automation = {
+      id: 'automation-1', name: '每日汇总', prompt: '内部提示词', active: true,
+      scheduleType: 'daily' as const, intervalMinutes: 10, timeOfDay: '09:00',
+      channelId: 'secret-channel', workspaceId: 'workspace-1', createdAt: 1, updatedAt: 2,
+      nextRunAt: 10, lastRunAt: 9, lastSessionId: 'auto-session', runCount: 2,
+      runHistory: [{ runAt: 9, sessionId: 'auto-session', status: 'success' as const, durationMs: 100 }],
+    }
+    const dependencies: LanBridgePromaDependencies = {
+      ...createDependencies(),
+      listAgentSessions: () => [{
+        id: 'child-agent', title: '研究子 Agent', parentSessionId: 'agent-1',
+        sourceDelegationId: 'delegation-1', delegationRole: 'research' as const,
+        delegationStatus: 'running' as const, delegationGoal: '核对数据', createdAt: 1, updatedAt: 2,
+      }],
+      getAgentSessionRuntimeStatus: () => 'running',
+      listAutomations: () => [automation],
+      updateAgentSessionPinned: (sessionId) => ({ ...automation, id: sessionId, title: '置顶后的子 Agent', createdAt: 1, updatedAt: 2 }),
+      updateAutomationActive: (id, active) => ({ ...automation, id, active }),
+      runAutomationNow: async () => {},
+    }
+    const adapter = createLanBridgePromaAdapter(dependencies)
+
+    expect(adapter.listAgentSessions()[0]).toMatchObject({
+      parentSessionId: 'agent-1', sourceDelegationId: 'delegation-1',
+      delegationRole: 'research', delegationStatus: 'running', delegationGoal: '核对数据',
+    })
+    expect(adapter.listAutomations()[0]).toMatchObject({
+      id: 'automation-1', name: '每日汇总', nextRunAt: 10, runHistory: [{ status: 'success' }],
+    })
+    expect(adapter.listAutomations()[0]).not.toHaveProperty('prompt')
+    await adapter.runAutomationNow('automation-1')
+  })
+
   test('搜索、设置和渠道逐字段映射且不泄漏内部配置', async () => {
     /** 固定时间戳用于验证两类搜索结果的稳定 LAN 结构。 */
     const matchedAt = 100

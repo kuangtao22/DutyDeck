@@ -15,6 +15,18 @@ export interface AgentStarUpdate {
   starred: boolean
 }
 
+/** 单个 Agent 置顶命令响应的安全结构。 */
+export interface AgentPinUpdate {
+  sessionId: string
+  pinned: boolean
+}
+
+/** 单个 Chat 置顶命令响应的安全结构。 */
+export interface ConversationPinUpdate {
+  conversationId: string
+  pinned: boolean
+}
+
 /**
  * 规范化服务端运行状态，未知新值按空闲兼容。
  *
@@ -80,6 +92,26 @@ export function readAgentStarUpdate(data: unknown): AgentStarUpdate | null {
   return { sessionId: record.id, starred: record.starred }
 }
 
+/** 校验置顶命令响应，只提取服务端确认的 ID 与布尔值。 */
+export function readAgentPinUpdate(data: unknown): AgentPinUpdate | null {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return null
+  const session = (data as Record<string, unknown>).session
+  if (typeof session !== 'object' || session === null || Array.isArray(session)) return null
+  const record = session as Record<string, unknown>
+  if (typeof record.id !== 'string' || typeof record.pinned !== 'boolean') return null
+  return { sessionId: record.id, pinned: record.pinned }
+}
+
+/** 校验 Chat 置顶命令响应。 */
+export function readConversationPinUpdate(data: unknown): ConversationPinUpdate | null {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return null
+  const conversation = (data as Record<string, unknown>).conversation
+  if (typeof conversation !== 'object' || conversation === null || Array.isArray(conversation)) return null
+  const record = conversation as Record<string, unknown>
+  if (typeof record.id !== 'string' || typeof record.pinned !== 'boolean') return null
+  return { conversationId: record.id, pinned: record.pinned }
+}
+
 /**
  * 合并单个 Agent 会话的实时状态。
  *
@@ -130,6 +162,22 @@ export function updateAgentStarred(
   return changed ? updated : conversations
 }
 
+/** 合并单个 Agent 的服务端置顶状态。 */
+export function updateAgentPinned(
+  conversations: ConvItem[],
+  sessionId: string,
+  pinned: boolean,
+): ConvItem[] {
+  let changed = false
+  const updated = conversations.map((conversation) => {
+    if (conversation.type !== 'agent' || conversation.id !== sessionId) return conversation
+    if (Boolean(conversation.pinned) === pinned) return conversation
+    changed = true
+    return { ...conversation, pinned }
+  })
+  return changed ? updated : conversations
+}
+
 /**
  * 合并当前 Agent 会话的实时状态。
  *
@@ -164,4 +212,42 @@ export function updateActiveAgentStarred(
   if (!active || active.type !== 'agent' || active.id !== sessionId) return active
   if (Boolean(active.starred) === starred) return active
   return { ...active, starred }
+}
+
+/** 合并当前 Agent 的服务端置顶状态。 */
+export function updateActiveAgentPinned(
+  active: ConvItem | null,
+  sessionId: string,
+  pinned: boolean,
+): ConvItem | null {
+  if (!active || active.type !== 'agent' || active.id !== sessionId) return active
+  if (Boolean(active.pinned) === pinned) return active
+  return { ...active, pinned }
+}
+
+/** 合并当前 Chat 的服务端置顶状态。 */
+export function updateActiveConversationPinned(
+  active: ConvItem | null,
+  conversationId: string,
+  pinned: boolean,
+): ConvItem | null {
+  if (!active || active.type !== 'chat' || active.id !== conversationId) return active
+  if (Boolean(active.pinned) === pinned) return active
+  return { ...active, pinned }
+}
+
+/** 合并 Chat 列表中的服务端置顶状态。 */
+export function updateConversationPinned(
+  conversations: ConvItem[],
+  conversationId: string,
+  pinned: boolean,
+): ConvItem[] {
+  let changed = false
+  const updated = conversations.map((conversation) => {
+    if (conversation.type !== 'chat' || conversation.id !== conversationId) return conversation
+    if (Boolean(conversation.pinned) === pinned) return conversation
+    changed = true
+    return { ...conversation, pinned }
+  })
+  return changed ? updated : conversations
 }
