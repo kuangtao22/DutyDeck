@@ -162,7 +162,7 @@ test('Release 工作流构建并发布 Linux x64 安装包', () => {
 test('Linux deb 包含 Electron Builder 必需的项目主页', () => {
   /** Electron 安装包元数据。 */
   const metadata = readElectronPackageMetadata()
-  expect(metadata.homepage).toBe('https://github.com/kuangtao22/Proma')
+  expect(metadata.homepage).toBe('https://github.com/kuangtao22/DutyDeck')
 })
 
 test('打包准备在清理运行时依赖目录前重建 node-pty', () => {
@@ -257,7 +257,7 @@ test('Bone 应用版本与更新频道保持一致', () => {
   expect(config.publish).toEqual({
     provider: 'github',
     owner: 'kuangtao22',
-    repo: 'Proma',
+    repo: 'DutyDeck',
   })
   expect(JSON.stringify(config.publish)).not.toContain('ErlichLiu')
   expect(updaterSource).toContain('autoUpdater.allowPrerelease = true')

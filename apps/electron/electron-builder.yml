@@ -241,4 +241,4 @@ deb:
 publish:
   provider: github
   owner: kuangtao22
-  repo: Proma
+  repo: DutyDeck

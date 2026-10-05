@@ -6,7 +6,7 @@ DutyDeck is a local-first engineering Agent workbench: on top of Proma's Chat, A
 
 > **This repository is a modified edition of Proma.** DutyDeck evolves from the upstream open-source project [Proma](https://github.com/proma-ai/Proma) (AGPL-3.0-only) and is independently maintained by [kuangtao22](https://github.com/kuangtao22). It is not affiliated with, nor endorsed by, the official Proma project. See [Relationship To Upstream Proma](#relationship-to-upstream-proma) for the upstream baseline and differences.
 
-[中文 README](./README.md) | [Proma Tutorial (upstream)](https://github.com/proma-ai/Proma/tree/main/tutorial) | [Changelog](./release-notes/bone) | [Download DutyDeck](https://github.com/kuangtao22/Proma/releases/latest)
+[中文 README](./README.md) | [Proma Tutorial (upstream)](https://github.com/proma-ai/Proma/tree/main/tutorial) | [Changelog](./release-notes/bone) | [Download DutyDeck](https://github.com/kuangtao22/DutyDeck/releases/latest)
 
 ## Why DutyDeck Exists
 
@@ -113,7 +113,7 @@ DutyDeck is a modified edition of Proma, not an official release:
 
 ### Download
 
-Download DutyDeck from [GitHub Releases](https://github.com/kuangtao22/Proma/releases), with macOS Apple Silicon, macOS Intel, Windows, Ubuntu/Debian x86_64 `.deb` and Linux x86_64 AppImage builds. Artifacts are named like `DutyDeck-<version>-macos-arm64.dmg`, `DutyDeck-<version>-windows-x64.exe` and `dutydeck_<version>_amd64.deb`. Linux installation, security boundaries and support scope are documented in [Linux notes](./docs/linux.md).
+Download DutyDeck from [GitHub Releases](https://github.com/kuangtao22/DutyDeck/releases), with macOS Apple Silicon, macOS Intel, Windows, Ubuntu/Debian x86_64 `.deb` and Linux x86_64 AppImage builds. Artifacts are named like `DutyDeck-<version>-macos-arm64.dmg`, `DutyDeck-<version>-windows-x64.exe` and `dutydeck_<version>_amd64.deb`. Linux installation, security boundaries and support scope are documented in [Linux notes](./docs/linux.md).
 
 All model channels are configured by you; DutyDeck ships no built-in subscription channel. The upstream commercial edition of Proma (proma.cool) is unrelated to this project.
 

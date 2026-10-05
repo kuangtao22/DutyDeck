@@ -9,7 +9,7 @@ DutyDeck 第一版 Linux 发布目标是 **Ubuntu 22.04 x86_64**，提供：
 
 ## 下载与安装
 
-从 [GitHub Releases](https://github.com/kuangtao22/Proma/releases) 下载对应版本：
+从 [GitHub Releases](https://github.com/kuangtao22/DutyDeck/releases) 下载对应版本：
 
 ```bash
 # deb：推荐
