@@ -3219,11 +3219,10 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   ])
 
   /**
-   * 今日活动视图行：跨项目扁平列表，按最后一次对话时间降序。
+   * 今日活动视图行：Chat 保持跨项目扁平列表，Agent 按会话树展示。
    *
-   * Agent 会话显示所属项目 Badge 以便跨项目辨认；委派子会话沿用活跃视图的
-   * 缩进行样式，避免在扁平列表里被误认为顶层会话。置顶会话不单独分组，
-   * 保持单条时间流水。
+   * Agent 父行复用活跃列表的委派摘要和展开状态，子会话不再因为按时间
+   * 扁平化而脱离父会话；父行按今日筛选结果排序，子行沿用委派状态排序。
    */
   const todayVirtualRows = React.useMemo<VirtualSidebarRow[]>(() => {
     if (viewMode !== 'today') return []
@@ -3251,47 +3250,41 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
       }))
     }
 
-    return todayAgentSessions.map((session) => {
-      if (isDelegatedChildSession(session)) {
-        return {
-          id: `agent-today-child-${session.id}`,
-          estimateSize: 34,
-          content: (
-            <div className="ml-6 border-l border-foreground/10 pl-2 pr-3">
-              <DelegatedChildSessionItem
-                session={session}
-                activeSessionId={activeSessionId}
-                activeDelegationSessionId={activeDelegationSessionId}
-                agentIndicatorMap={agentIndicatorMap}
-                relativeTimeNow={relativeTimeNow}
-                workspaceName={session.workspaceId ? workspaceNameMap.get(session.workspaceId) : undefined}
-                onSelect={handleSelectAgentSession}
-                onRequestDelete={handleRequestDelete}
-                onRequestMove={handleRequestMove}
-                onRename={handleAgentRename}
-                onTogglePin={handleTogglePinAgent}
-                onToggleStar={handleToggleStarAgent}
-                onToggleArchive={handleToggleArchiveAgent}
-              />
-            </div>
-          ),
-        }
-      }
+    // 今日 Agent 会话树：父行承载委派摘要，子行按需插入虚拟列表。
+    const todaySessionTrees = buildAgentSessionTrees(todayAgentSessions, agentIndicatorMap)
+    // 今日活动最终渲染的虚拟行集合，展开状态变化时重新计算。
+    const rows: VirtualSidebarRow[] = []
 
-      const rowStatus = agentIndicatorMap.get(session.id) ?? 'idle'
-      return {
-        id: `agent-today-${session.id}`,
+    for (const item of todaySessionTrees) {
+      // 当前树的子会话数量、选中态和展开态，复用活跃列表的判定规则。
+      const childCount = item.childSessions.length
+      const treeActive = treeContainsSessionId(item, activeSessionId)
+      const activeChildVisible = item.childSessions.some((child) => child.id === activeSessionId)
+      const expandedChildren = expandedDelegationParentIds.has(item.session.id)
+        || (activeChildVisible && !collapsedDelegationParentIds.has(item.session.id))
+      const rowStatus = getSessionTreeStatus(item, agentIndicatorMap)
+
+      rows.push({
+        id: `agent-today-${item.session.id}`,
         estimateSize: 34,
         content: (
           <div className="px-3">
             <AgentSessionItem
-              session={session}
-              active={session.id === activeSessionId}
+              session={item.session}
+              active={treeActive}
               indicatorStatus={rowStatus}
-              showPinIcon={!!session.pinned}
+              showPinIcon={!!item.session.pinned}
               disableMiniMap={!sessionHoverPreviewEnabled}
+              delegationSummary={childCount > 0
+                ? {
+                  total: childCount,
+                  settled: countSettledDelegatedChildren(item.childSessions, agentIndicatorMap),
+                  expanded: expandedChildren,
+                  onToggle: () => handleToggleDelegationParent(item.session.id, expandedChildren),
+                }
+                : undefined}
               leftAccent={getSessionLeftAccent(rowStatus)}
-              workspaceName={session.workspaceId ? workspaceNameMap.get(session.workspaceId) : undefined}
+              workspaceName={item.session.workspaceId ? workspaceNameMap.get(item.session.workspaceId) : undefined}
               relativeTimeNow={relativeTimeNow}
               onSelect={handleSelectAgentSession}
               onRequestDelete={handleRequestDelete}
@@ -3303,12 +3296,47 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
             />
           </div>
         ),
+      })
+
+      if (!expandedChildren) continue
+      // 展开后把子会话插到父行之后，保持统一缩进与操作回调。
+      for (const [childIndex, childSession] of item.childSessions.entries()) {
+        rows.push({
+          id: `agent-today-child-${childSession.id}`,
+          estimateSize: childIndex === 0 ? 36 : 34,
+          content: (
+            <div className={cn(
+              'ml-7 border-l border-foreground/10 pl-2',
+              childIndex === 0 && 'pt-0.5',
+            )}>
+              <DelegatedChildSessionItem
+                session={childSession}
+                activeSessionId={activeSessionId}
+                activeDelegationSessionId={activeDelegationSessionId}
+                agentIndicatorMap={agentIndicatorMap}
+                relativeTimeNow={relativeTimeNow}
+                workspaceName={childSession.workspaceId ? workspaceNameMap.get(childSession.workspaceId) : undefined}
+                onSelect={handleSelectAgentSession}
+                onRequestDelete={handleRequestDelete}
+                onRequestMove={handleRequestMove}
+                onRename={handleAgentRename}
+                onTogglePin={handleTogglePinAgent}
+                onToggleStar={handleToggleStarAgent}
+                onToggleArchive={handleToggleArchiveAgent}
+              />
+            </div>
+          ),
+        })
       }
-    })
+    }
+
+    return rows
   }, [
     activeDelegationSessionId,
     activeSessionId,
     agentIndicatorMap,
+    collapsedDelegationParentIds,
+    expandedDelegationParentIds,
     handleAgentRename,
     handleRequestDelete,
     handleRequestMove,
@@ -3801,13 +3829,17 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
             </div>
           </div>
 
-          {/* 今日活动：跨项目单列表，按最后一次对话时间降序 */}
+          {/* 今日活动：跨项目列表；Agent 会话按父子层级展开 */}
           {todayVirtualRows.length > 0 ? (
             <VirtualSidebarList
               key={mode === 'agent' ? 'agent-today-list' : 'chat-today-list'}
               className="flex-1 px-3 pt-2 pb-3"
               rows={todayVirtualRows}
-              activeRowId={activeSessionId ? `${mode === 'agent' ? 'agent' : 'chat'}-today-${activeSessionId}` : null}
+              activeRowId={activeSessionId
+                ? mode === 'agent' && todayAgentSessions.some((session) => session.id === activeSessionId && isDelegatedChildSession(session))
+                  ? `agent-today-child-${activeSessionId}`
+                  : `${mode === 'agent' ? 'agent' : 'chat'}-today-${activeSessionId}`
+                : null}
             />
           ) : (
             <div className="min-h-0 flex-1 px-6 pt-6 text-[12px] text-foreground/30 select-none">
