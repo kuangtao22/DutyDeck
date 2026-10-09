@@ -106,6 +106,8 @@ export interface ExportCanvasTextArtifactVersionToPathInput extends ExportCanvas
 export interface CanvasTextArtifactServiceDependencies {
   documents: {
     load: (target: CanvasTarget) => CanvasWorkspaceSnapshot
+    /** 知识索引使用的纯读入口；缺失时不得退回可能写入恢复状态的 load。 */
+    readSnapshot?: (target: CanvasTarget) => CanvasWorkspaceSnapshot
   }
   revisions: CanvasArtifactRevisionStore
   graph: CanvasTextArtifactGraphWriter
@@ -115,6 +117,8 @@ export interface CanvasTextArtifactServiceDependencies {
 /** 文档与 WebView 共享的版本事务能力。 */
 export interface CanvasTextArtifactService {
   read: (target: CanvasTextArtifactTarget) => Promise<CanvasTextArtifactSnapshot>
+  /** 从稳定主图和不可变 revision 纯读当前正文，不触发 Canvas 恢复写入。 */
+  readForKnowledge: (target: CanvasTextArtifactTarget) => Promise<CanvasTextArtifactSnapshot>
   listVersions: (identity: CanvasTextArtifactIdentity) => Promise<CanvasArtifactRevisionSummary[]>
   update: (input: CanvasTextArtifactServiceUpdateInput) => Promise<CanvasTextArtifactMutationResult>
   adopt: (input: CanvasTextArtifactServiceAdoptInput) => Promise<CanvasTextArtifactMutationResult>
@@ -418,6 +422,25 @@ export function createCanvasTextArtifactService(
   /** 服务公开实现，供 adapter 复用同一实例。 */
   const service: CanvasTextArtifactService = {
     read: async (target) => readCommittedTarget(target, false),
+    readForKnowledge: async (target) => {
+      /** 知识后台不能把普通 load 当纯读使用，否则可能提升或消费恢复候选。 */
+      const readSnapshot = dependencies.documents.readSnapshot
+      if (!readSnapshot) throw new Error('CANVAS_READ_ONLY_SNAPSHOT_UNAVAILABLE')
+      /** 稳定主图负责核验项目、Canvas 和节点当前身份。 */
+      const snapshot = readSnapshot(target)
+      /** 正文读取只允许当前图已经采用的精确 revision。 */
+      const node = requireAuthoritativeNode(snapshot.document, target)
+      if (node.contentRevision !== target.contentRevision) {
+        throw new Error('CANVAS_ARTIFACT_REVISION_CONFLICT')
+      }
+      /** 不可变 revision store 只读取正文，不执行 commit、reconcile 或其它写路径。 */
+      const revision = await dependencies.revisions.read(target, {
+        kind: target.kind,
+        contentId: target.contentId,
+        revision: target.contentRevision,
+      })
+      return toArtifactSnapshot(target, revision)
+    },
     listVersions: async (identity) => {
       /** 列表同样先从权威图重建 kind 与 contentId。 */
       const snapshot = dependencies.documents.load(identity)

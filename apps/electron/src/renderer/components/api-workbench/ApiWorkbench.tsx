@@ -136,6 +136,7 @@ import { ApiImportDialog } from './ApiImportDialog'
 import { ApiScenarioPanel } from './ApiScenarioPanel'
 import { ApiRequestMoveDialog } from './ApiRequestMoveDialog'
 import { ApiSplitHandle } from './ApiSplitHandle'
+import { ApiRequestDocumentation } from './ApiRequestDocumentation'
 import { API_WORKSPACE_VARIABLE_SCOPE, ApiCryptoConfigPanel } from './ApiCryptoConfigPanel'
 import type { ApiCryptoConfigOps } from './ApiCryptoConfigPanel'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -161,7 +162,7 @@ const METHODS: readonly ApiMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 
 /** 编辑器一级分区。 */
 type EditorSection = 'query' | 'headers' | 'body' | 'auth' | 'crypto' | 'cases' | 'assertions' | 'extract' | 'settings'
 /** 窄 Pane 当前显示的主区域。 */
-type CompactView = 'request' | 'response'
+type CompactView = 'request' | 'response' | 'documentation'
 /** 目录命名弹窗支持的操作。 */
 type CatalogNameAction =
   | { kind: 'create-collection' }
@@ -1675,6 +1676,14 @@ function ApiWorkbenchSession({ sessionId, uiScope, workspaceLabel }: { sessionId
   const activeTab = view.tabs.find((tab) => tab.id === view.activeTabId) ?? null
   /** 当前展示的运行。 */
   const activeRun = view.selectedRun ?? activeTab?.run ?? null
+  /** 文档只读取 catalog 中的已保存版本，不混入编辑器草稿。 */
+  const documentedRequest = activeTab?.requestId
+    ? catalog?.requests.find((request) => request.id === activeTab.requestId) ?? null
+    : null
+  /** 集合名称仅用于文档定位，不参与请求执行。 */
+  const documentedCollectionName = documentedRequest
+    ? catalog?.collections.find((collection) => collection.id === documentedRequest.collectionId)?.name ?? null
+    : null
   /** 是否使用紧凑布局。 */
   const compact = width < 720
 
@@ -2322,7 +2331,15 @@ function ApiWorkbenchSession({ sessionId, uiScope, workspaceLabel }: { sessionId
           <button type="button" className="shrink-0 rounded px-1 hover:bg-emerald-500/20" aria-label="关闭提示" onClick={() => setNotice(null)}><X className="size-3.5" /></button>
         </div>
       )}
-      {compact && <div className="flex h-9 shrink-0 items-center justify-center border-b border-border/50 bg-muted/20"><div className="flex rounded-md bg-muted p-0.5"><button type="button" className={cn('rounded px-3 py-1 text-xs', compactView === 'request' && 'bg-background shadow-sm')} onClick={() => setCompactView('request')}>请求</button><button type="button" className={cn('rounded px-3 py-1 text-xs', compactView === 'response' && 'bg-background shadow-sm')} onClick={() => setCompactView('response')}>响应</button></div></div>}
+      <div className={cn('flex h-9 shrink-0 items-center border-b border-border/50 bg-muted/20', compact ? 'justify-center' : 'justify-end px-3')}>
+        <div className="flex rounded-md bg-muted p-0.5">
+          {compact ? <>
+            <button type="button" className={cn('rounded px-3 py-1 text-xs', compactView === 'request' && 'bg-background shadow-sm')} onClick={() => { setCompactView('request'); setView((previous) => ({ ...previous, historyOpen: false })) }}>请求</button>
+            <button type="button" className={cn('rounded px-3 py-1 text-xs', compactView === 'response' && 'bg-background shadow-sm')} onClick={() => { setCompactView('response'); setView((previous) => ({ ...previous, historyOpen: false })) }}>响应</button>
+          </> : <button type="button" className={cn('rounded px-3 py-1 text-xs', compactView !== 'documentation' && 'bg-background shadow-sm')} onClick={() => { setCompactView('request'); setView((previous) => ({ ...previous, historyOpen: false })) }}>调试</button>}
+          <button type="button" className={cn('rounded px-3 py-1 text-xs', compactView === 'documentation' && 'bg-background shadow-sm')} onClick={() => { setCompactView('documentation'); setView((previous) => ({ ...previous, historyOpen: false })) }}>文档</button>
+        </div>
+      </div>
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {!compact && (
           <>
@@ -2345,7 +2362,9 @@ function ApiWorkbenchSession({ sessionId, uiScope, workspaceLabel }: { sessionId
             const activeTabId = previous.activeTabId === tabId ? tabs[Math.min(index, tabs.length - 1)]?.id ?? null : previous.activeTabId
             return { ...previous, tabs, activeTabId, selectedRun: tabs.find((tab) => tab.id === activeTabId)?.run ?? null }
           })} />
-          {!activeTab && !view.historyOpen && !activeRun ? (
+          {compactView === 'documentation' && !view.historyOpen ? (
+            <section className="min-h-0 flex-1"><ApiRequestDocumentation request={documentedRequest} collectionName={documentedCollectionName} /></section>
+          ) : !activeTab && !view.historyOpen && !activeRun ? (
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-center text-xs text-muted-foreground"><Archive className="size-6" /><span>从目录打开请求，或新建一个请求</span>{catalog.collections[0] && <Button type="button" variant="outline" size="sm" onClick={() => createRequest(catalog.collections[0]!.id)}><Plus className="mr-1 size-3.5" />新建请求</Button>}</div>
           ) : (
             <div ref={splitRef} className={cn('flex min-h-0 flex-1 overflow-hidden', compact ? 'flex-col' : 'flex-col')}>

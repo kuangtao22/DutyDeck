@@ -13,12 +13,15 @@ export function resolvePiThinkingLevel(
 ): AgentThinkingLevel {
   const reasoningProfile = resolveReasoningProfile({
     modelId,
+    provider,
     transport: inferReasoningTransport(provider),
   })
   if (reasoningProfile) {
     const persistedLevel = sessionMeta?.reasoningLevel ?? sessionMeta?.openAIThinkingLevel
     const configuredLevel = settings.agentThinking?.type === 'disabled' ? 'off' : settings.agentEffort
-    return normalizeReasoningLevel(reasoningProfile, persistedLevel ?? configuredLevel)!
+    /** 先保留旧档位兼容，再用本轮实际端点能力约束最终请求。 */
+    const normalized = normalizeReasoningLevel(reasoningProfile, persistedLevel ?? configuredLevel)!
+    return normalizeReasoningCapabilityLevel(capability, normalized)!
   }
   const configuredLevel = settings.agentThinking?.type === 'disabled' ? 'off' : settings.agentEffort
   if (capability) {

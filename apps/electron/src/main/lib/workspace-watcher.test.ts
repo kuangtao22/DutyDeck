@@ -45,6 +45,20 @@ describe('shouldNotifyForWatchFilename', () => {
   it('ignores events without a filename instead of bypassing the noise filter', () => {
     expect(shouldNotifyForWatchFilename(null)).toBe(false)
   })
+
+  test('Given DutyDeck 项目知识内部文件 When 判断 watcher 事件 Then 仅排除 .proma/knowledge 子树', () => {
+    const internalPaths = [
+      '.proma/knowledge/.knowledge.lock',
+      '.proma/knowledge/.knowledge.lock.owner-123',
+      '.proma/knowledge/manifest.json',
+      '.proma/knowledge/entries/id/revisions/revision/content.md',
+      'nested/.proma/knowledge/entries/id/revisions/revision/entry.json',
+    ]
+
+    for (const path of internalPaths) expect(shouldNotifyForWatchFilename(path)).toBe(false)
+    expect(shouldNotifyForWatchFilename('.proma/project-config/source.ts')).toBe(true)
+    expect(shouldNotifyForWatchFilename('.proma/knowledge-base/source.ts')).toBe(true)
+  })
 })
 
 describe('启动恢复监听目录清单', () => {

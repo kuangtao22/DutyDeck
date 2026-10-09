@@ -18,6 +18,11 @@ import type {
   ToolDefinition,
 } from './types.ts'
 import { resolveOpenAIResponsesUrl } from './url-utils.ts'
+import {
+  resolveMaxTokens,
+  resolveProviderReasoningRequest,
+  supportsTemperature,
+} from './request-parameters.ts'
 
 // ===== Responses API 类型（只声明 Proma 需要的字段） =====
 
@@ -242,12 +247,26 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
 
   buildStreamRequest(input: StreamRequestInput): ProviderRequest {
     const url = resolveOpenAIResponsesUrl(input.baseUrl, this.providerType)
+    const reasoning = resolveProviderReasoningRequest({
+      provider: this.providerType,
+      modelId: input.modelId,
+      transport: 'openai-responses',
+      thinkingEnabled: input.thinkingEnabled,
+      thinkingLevel: input.thinkingLevel,
+    })
+    const maxTokens = resolveMaxTokens(this.providerType, input.modelId, input.maxTokens)
     const bodyObj: Record<string, unknown> = {
       model: input.modelId,
       input: toResponsesInput(input),
       stream: true,
-      ...(input.temperature === undefined ? {} : { temperature: input.temperature }),
-      ...(input.maxTokens === undefined ? {} : { max_output_tokens: input.maxTokens }),
+      ...(input.temperature === undefined || !supportsTemperature(this.providerType, input.modelId)
+        ? {}
+        : { temperature: input.temperature }),
+      ...(maxTokens === undefined ? {} : { max_output_tokens: maxTokens }),
+    }
+
+    if (reasoning?.effort && (reasoning.encoding?.kind === 'openai-reasoning-effort' || reasoning.supportsEffort)) {
+      bodyObj.reasoning = { effort: reasoning.effort }
     }
 
     if (input.tools && input.tools.length > 0) {

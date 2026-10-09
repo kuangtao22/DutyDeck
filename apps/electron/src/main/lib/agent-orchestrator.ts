@@ -57,6 +57,8 @@ import { decryptApiKey, getChannelById, listChannels, persistCodexOAuthCredentia
 import pkg from '../../../package.json' with { type: 'json' }
 import { getEffectiveProxyUrl } from './proxy-settings-service'
 import { appendSDKMessages, updateAgentSessionMeta, getAgentSessionMeta, isAgentSessionDeleting, getAgentSessionMessages, removeSDKErrorMessage, updateSDKUserMessageSkillActivations, rewindPiAgentSession, resolveAgentCwd, getActiveWorktreePath, getAgentCwdMode, getSessionWorkbenchLayout } from './agent-session-manager'
+import type { SDKMessageAppendReceipt } from './agent-session-manager'
+import { getPersistedAgentMessageReceipt, readPersistedAgentEvidence } from './agent-session-manager'
 import { getAgentWorkspace, getProjectFilesPath, getWorkspaceMcpConfig, getWorkspaceAttachedDirectories, getWorkspaceAttachedFiles, getWorkspaceAgentsMdPath, readWorkspaceAgentsMd, getWorkspaceMemoryGuidance, isWorkspaceProjectKnowledgeMaintenanceApproved } from './agent-workspace-manager'
 import { getLocalProjectRootStatus } from './project-root-health'
 import { getMcpApiKeyEnvironment, getMcpOAuthHeaders } from './mcp-oauth-service'
@@ -84,6 +86,9 @@ import {
 import { validateToolInput } from './agent-tool-input-validator'
 import { estimateTokenCount, WRITE_CONTENT_TOKEN_THRESHOLD } from './agent-tool-token-estimator'
 import { buildPiBuiltinTools } from './adapters/pi-builtin-tools'
+import { createProjectKnowledgeAgent } from './project-knowledge-agent'
+import { buildProjectKnowledgeTools } from './project-knowledge-tools'
+import { getProjectKnowledgeBinding, getProjectKnowledgeService } from './project-knowledge-runtime'
 import { createApiAgentFacade } from './api-workbench/api-agent-facade'
 import { buildApiAgentTools, API_AGENT_TOOL_NAMES } from './api-workbench/api-agent-tools'
 import { getApiWorkbenchService } from './api-workbench/api-workbench-singleton'
@@ -607,7 +612,7 @@ export class AgentOrchestrator {
     sessionId: string,
     accumulatedMessages: SDKMessage[],
     durationMs?: number,
-  ): void {
+  ): SDKMessageAppendReceipt | undefined {
     if (accumulatedMessages.length === 0) return
 
     const hasCompactBoundary = accumulatedMessages.some((m) => {
@@ -648,7 +653,7 @@ export class AgentOrchestrator {
       return { ...m, _createdAt: now } as unknown as SDKMessage
     })
 
-    appendSDKMessages(sessionId, withTimestamps)
+    return appendSDKMessages(sessionId, withTimestamps)
   }
 
   private persistUserMessage(
@@ -659,7 +664,7 @@ export class AgentOrchestrator {
     vaultFocus?: import('@proma/shared').VaultFocusAttribution,
     canvasNodeReferences?: CanvasNodeReference[],
     mediaAttachments?: AgentMediaAttachment[],
-  ): string {
+  ): { uuid: string; receipt: SDKMessageAppendReceipt } {
     const persistedUuid = uuid ?? randomUUID()
     const userSDKMsg: SDKMessage = {
       type: 'user',
@@ -673,8 +678,8 @@ export class AgentOrchestrator {
       ...(canvasNodeReferences?.length ? { _canvasNodeReferences: canvasNodeReferences } : {}),
       ...(mediaAttachments?.length ? { mediaAttachments } : {}),
     } as unknown as SDKMessage
-    appendSDKMessages(sessionId, [userSDKMsg])
-    return persistedUuid
+    const receipt = appendSDKMessages(sessionId, [userSDKMsg])
+    return { uuid: persistedUuid, receipt }
   }
 
   private recordUserSkillActivations(
@@ -773,6 +778,10 @@ export class AgentOrchestrator {
     const streamStartedAt = input.startedAt ?? Date.now()
     let userMessagePersisted = false
     let initialUserMessageUuid: string | undefined
+    /** 当前运行消息仍按原顺序落盘，知识维护在本回合工具内完成。 */
+    const persistRunSDKMessages = (messages: SDKMessage[], durationMs?: number): void => {
+      this.persistSDKMessages(sessionId, messages, durationMs)
+    }
     let sessionMeta = getAgentSessionMeta(sessionId)
     /** 即使入参非法，也通过单次终态通知器隔离调用方回调异常。 */
     const terminalNotifier = createAgentRunTerminalNotifier<AgentMessage[], AgentRunCompleteOptions>({
@@ -867,7 +876,7 @@ export class AgentOrchestrator {
       if (userMessagePersisted) return
       // rawUserMessage 保留展示/持久化用的原始文本（@file 编码原文，remarkMentions 解码显示）；
       // userMessage 是传给 Agent 的 SDK 文本（@file 路径已解码为真实路径）。
-      initialUserMessageUuid = this.persistUserMessage(
+      const persisted = this.persistUserMessage(
         sessionId,
         rawUserMessage ?? userMessage,
         Date.now(),
@@ -880,6 +889,7 @@ export class AgentOrchestrator {
         canvasNodeReferences,
         mediaAttachments,
       )
+      initialUserMessageUuid = persisted.uuid
       userMessagePersisted = true
     }
 
@@ -961,6 +971,13 @@ export class AgentOrchestrator {
         terminalNotifier.onError(`消息保存失败：${message}`)
         completeBeforeRun()
         return
+      }
+    } else if (retryOfErrorUuid && userMessageUuid) {
+      /** 重试成功时复用原用户消息依据，不把失败回合重发成新的输入。 */
+      const receipt = getPersistedAgentMessageReceipt(sessionId, userMessageUuid)
+      const evidence = receipt ? readPersistedAgentEvidence(sessionId, [receipt]) : undefined
+      if (receipt && evidence?.records.some((record) => record.uuid === userMessageUuid && record.role === 'user' && record.text === (rawUserMessage ?? userMessage))) {
+        initialUserMessageUuid = userMessageUuid
       }
     }
 
@@ -1286,6 +1303,7 @@ export class AgentOrchestrator {
         runWorkspaceSlugWrite: (slug, effect) => workspaceOperationGuard.runWorkspaceSlugWrite(slug, effect),
         toolMode: runToolMode,
         sessionId,
+        userMessageId: initialUserMessageUuid,
         channelId,
         modelId: selectedModelId,
         workspaceId,
@@ -1362,8 +1380,25 @@ export class AgentOrchestrator {
         getBatch: (sceneId, batchId) => factoryRuntime.batches().get(sceneId, batchId),
         assertAdoptable: (sceneId, batchId) => factoryRuntime.batches().assertAdoptable(sceneId, batchId),
       }) : null
+      /** 普通前台回合的知识能力；提炼复用当前模型和 Skill，不另起后台模型。 */
+      const projectKnowledge = !automationContext ? createProjectKnowledgeAgent({
+        sessionId, toolMode: runToolMode, triggeredBy: input.triggeredBy,
+        getSession: getAgentSessionMeta,
+        getBinding: getProjectKnowledgeBinding,
+        assertRunActive: runIdentity.assertActive,
+        get service() { return getProjectKnowledgeService() },
+        /** 维护工厂惰性执行，只在普通前台会话通过 Facade 准入后绑定。 */
+        ...(initialUserMessageUuid && runWorkspaceSkillsEnabled ? {
+          maintenance: () => getProjectKnowledgeService().createAgentMaintenance({
+            sessionId, userMessageId: initialUserMessageUuid!,
+            assertRunActive: runIdentity.assertActive,
+            canMutate: () => getPermissionMode() !== 'plan',
+          }),
+        } : {}),
+      }) : undefined
       piBuiltinTools = [
         ...builtinMcpResult.tools,
+        ...(projectKnowledge ? buildProjectKnowledgeTools(piSdk, projectKnowledge) : []),
         ...(apiFacade ? buildApiAgentTools(piSdk, apiFacade) : []),
         ...(capabilityFactoryFacade ? buildCapabilityFactoryAgentTools(piSdk, capabilityFactoryFacade) : []),
       ]
@@ -1420,6 +1455,17 @@ export class AgentOrchestrator {
         console.log(`[Agent 编排] 注入 referenced_planning: ${mentionedTodoIds?.length ?? 0} todos, ${mentionedCalendarEventIds?.length ?? 0} calendar events`)
       }
 
+      /** 本地知识检索不扫描项目、不调用付费模型，资料仅作为用户上下文而非系统指令。 */
+      if (projectKnowledge && userMessage.trim() !== '/compact') {
+        try {
+          const knowledgeContext = await projectKnowledge.buildContext(rawUserMessage ?? userMessage)
+          checkpoint()
+          if (knowledgeContext) enrichedMessage = `${knowledgeContext}\n\n${enrichedMessage}`
+        } catch (error) {
+          checkpoint()
+          console.warn('[项目知识] 本轮检索不可用，继续用户任务:', error instanceof Error ? error.message : '未知错误')
+        }
+      }
       const contextualMessage = [dynamicCtx, enrichedMessage].filter(Boolean).join('\n\n')
 
       const isCompactCommand = userMessage.trim() === '/compact'
@@ -1604,6 +1650,21 @@ export class AgentOrchestrator {
           /** Design 上下文预检失败转为稳定 deny，禁止进入付费图片执行器。 */
           const message = error instanceof Error ? error.message : String(error)
           return { behavior: 'deny', message }
+        }
+
+        /** 知识写工具经过通用参数、次数和扩展守卫，计划模式不会隐式写入。 */
+        const knowledgeWriteTools = new Set([
+          'proma_knowledge_submit', 'proma_knowledge_plan', 'proma_knowledge_outline', 'proma_knowledge_document', 'proma_knowledge_asset',
+        ])
+        if (toolName === 'proma_knowledge_status') {
+          if (!projectKnowledge || options.signal.aborted) return { behavior: 'deny', message: '当前运行不能读取项目知识流程' }
+          return { behavior: 'allow', updatedInput: input }
+        }
+        if (knowledgeWriteTools.has(toolName)) {
+          if (!projectKnowledge || !runWorkspaceSkillsEnabled || currentMode === 'plan' || options.signal.aborted) {
+            return { behavior: 'deny', message: '当前运行不能提交项目知识' }
+          }
+          return { behavior: 'allow', updatedInput: input }
         }
 
         /** 接口出网与保存各自批准精确快照；只读工具仍受 facade 身份检查。 */
@@ -2042,9 +2103,11 @@ export class AgentOrchestrator {
         currentModelId: selectedModelId,
         projectInstructions,
         projectKnowledgeMaintenanceApproved,
+        projectKnowledgeAvailable: Boolean(projectKnowledge && runWorkspaceSkillsEnabled && initialUserMessageUuid),
         productivityTools,
         memoryGuidance,
         memoryRefreshOpportunity,
+        workspaceMemoryRecordAvailable: runToolMode === 'standard' && initialPermissionMode !== 'plan' && Boolean(workspaceSlug) && (!input.triggeredBy || input.triggeredBy === 'user'),
       }) + (automationContext ? `\n\n## 定时任务执行上下文\n\n${automationContext}` : '')
       /** 单次可信运行场景放在通用规则之后，使专用会话覆盖普通入口分流语义。 */
       const systemPromptAppend = [baseSystemPrompt, extensions.systemPromptAppend]
@@ -2113,8 +2176,8 @@ export class AgentOrchestrator {
       }
       const handleContextWindow = (cw: number): void => {
         if (!isLatestRunGeneration(this.latestRunGenerations, sessionId, runGeneration)) return
-        const inferredWindow = inferContextWindow(modelId)
-        const contextWindow = Math.max(cw, inferredWindow ?? 0) || cw
+        const inferredWindow = inferContextWindow(modelId, channel.provider)
+        const contextWindow = Number.isFinite(cw) && cw > 0 ? cw : inferredWindow ?? 200_000
         console.log(`[Agent 编排] 缓存 contextWindow: ${contextWindow}`)
         // result 消息里的真实 contextWindow 透传到 renderer，
         // 覆盖流式过程中按模型名推断的 fallback 值（智谱等端点会把 [1m] 等后缀剥掉，导致 fallback 不准）
@@ -2197,6 +2260,7 @@ export class AgentOrchestrator {
         ...((channel.provider === 'openai-codex' || channel.provider === 'github-copilot' || channel.provider === 'xai' || channel.provider === 'openai-responses' || channel.provider === 'openai' || channel.provider === 'custom')
           && resolveReasoningProfile({
             modelId: selectedModelId,
+            provider: channel.provider,
             // Copilot 的 GPT 使用 Responses；适配器会按实际 model.api 排除 Claude。
             transport: channel.provider === 'github-copilot' ? 'openai-responses' : inferReasoningTransport(channel.provider),
           })?.id.startsWith('openai-reasoning-') && {
@@ -2244,7 +2308,7 @@ export class AgentOrchestrator {
         // adapter query exists yet to cancel. Never start that later query.
         if (this.activeSessions.get(sessionId) !== runGeneration) {
           const wasStoppedByUser = this.consumeStoppedByUser(sessionId, runGeneration)
-          this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
+          persistRunSDKMessages(accumulatedMessages, Date.now() - queryStartedAt)
           try { updateAgentSessionMeta(sessionId, { stoppedByUser: wasStoppedByUser }) } catch { /* 会话可能已删除 */ }
           await runFileChanges?.finish()
           completeRun(getAgentSessionMessages(sessionId), { stoppedByUser: wasStoppedByUser, startedAt: streamStartedAt })
@@ -2270,6 +2334,7 @@ export class AgentOrchestrator {
           let pendingNext: Promise<IteratorResult<SDKMessage>> | null = null
           // 捕获 result.subtype 以传递给前端（用于区分 success/error_max_turns/error_max_budget_usd）
           let capturedResultSubtype: string | undefined
+          /** 子任务未完成时不得把本回合当作正式项目知识。 */
           // Host 终态可能携带 completion_blocked 等终止原因，不能只依赖 subtype 判断。
           let capturedTerminalReason: string | undefined
           // 捕获 result.errors[] 错误详情：SDK 在 error_during_execution 等场景下会把真实错误原因
@@ -2463,7 +2528,7 @@ export class AgentOrchestrator {
                   // Reuse the Pi UUID to replace the latest partial frame with normal markdown output.
                   emitLiveSdkMessage(partialOutput)
                 }
-                this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
+                persistRunSDKMessages(accumulatedMessages, Date.now() - queryStartedAt)
                 accumulatedMessages.length = 0
                 if (typedError.code === 'prompt_too_long') {
                   try { updateAgentSessionMeta(sessionId, { sdkSessionId: undefined }) } catch { /* 忽略 */ }
@@ -2558,7 +2623,7 @@ export class AgentOrchestrator {
               capturedResultErrors = Array.isArray(rawResultErrors)
                 ? rawResultErrors.filter((e): e is string => typeof e === 'string' && e.trim().length > 0)
                 : undefined
-              this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
+              persistRunSDKMessages(accumulatedMessages, Date.now() - queryStartedAt)
               accumulatedMessages.length = 0
               console.log(
                 `[Agent 编排] result 到达: sessionId=${sessionId}, subtype=${capturedResultSubtype ?? 'unknown'}` +
@@ -2640,7 +2705,7 @@ export class AgentOrchestrator {
           const wasStoppedByUser = this.consumeStoppedByUser(sessionId, runGeneration)
 
           // 15. 持久化 assistant 消息
-          this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
+          persistRunSDKMessages(accumulatedMessages, Date.now() - queryStartedAt)
 
           if (isLatestRunGeneration(this.latestRunGenerations, sessionId, runGeneration)) {
             try { updateAgentSessionMeta(sessionId, wasStoppedByUser ? { stoppedByUser: true } : {}) } catch { /* 忽略 */ }
@@ -2675,7 +2740,7 @@ export class AgentOrchestrator {
           if (this.activeSessions.get(sessionId) !== runGeneration) {
             const wasStoppedByUser = this.consumeStoppedByUser(sessionId, runGeneration)
             if (isLatestRunGeneration(this.latestRunGenerations, sessionId, runGeneration)) {
-              this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
+              persistRunSDKMessages(accumulatedMessages, Date.now() - queryStartedAt)
               try { updateAgentSessionMeta(sessionId, { stoppedByUser: wasStoppedByUser }) } catch { /* 会话可能已删除 */ }
             }
             await runFileChanges?.finish()
@@ -2740,7 +2805,7 @@ export class AgentOrchestrator {
           // 保存已累积的部分内容
           if (accumulatedMessages.length > 0) {
             try {
-              this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
+              persistRunSDKMessages(accumulatedMessages, Date.now() - queryStartedAt)
               console.log(`[Agent 编排] 已保存部分执行结果 (${accumulatedMessages.length} 条消息)`)
             } catch (saveError) {
               console.error('[Agent 编排] 保存部分内容失败:', saveError)

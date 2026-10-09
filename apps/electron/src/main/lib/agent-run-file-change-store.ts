@@ -7,6 +7,7 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { AgentRunFileChange, AgentRunFileChangesSnapshot } from '@proma/shared'
+import { shouldTrackAgentRunFilePath } from './agent-run-file-change-path-policy'
 import { getAgentSessionMessagesPath } from './config-paths'
 import { readJsonFileSafe, writeJsonFileAtomic } from './safe-file'
 
@@ -43,6 +44,12 @@ export interface AgentRunFileChangesStore {
 export function createAgentRunFileChangesStore(
   resolveSessionMessagesPath: AgentSessionMessagesPathResolver = getAgentSessionMessagesPath,
 ): AgentRunFileChangesStore {
+  /** 兼容清理历史快照，同时保证新快照不会继续持久化宿主内部知识文件。 */
+  function filterInternalFiles(snapshot: AgentRunFileChangesSnapshot): AgentRunFileChangesSnapshot {
+    const files = snapshot.files.filter((file) => shouldTrackAgentRunFilePath(file.path))
+    return files.length === snapshot.files.length ? snapshot : { ...snapshot, files }
+  }
+
   /** 先经现有 JSONL 路径入口校验，再推导受控的统计目录。 */
   function getSessionDirectory(sessionId: string): string {
     const messagesPath = resolveSessionMessagesPath(sessionId)
@@ -81,7 +88,7 @@ export function createAgentRunFileChangesStore(
             validate: isAgentRunFileChangesSnapshot,
             maxBytes: MAX_SNAPSHOT_BYTES,
           })
-          if (snapshot) snapshots.push(snapshot)
+          if (snapshot) snapshots.push(filterInternalFiles(snapshot))
         } catch {
           /** 单轮损坏不影响其它统计文件。 */
         }
@@ -96,7 +103,7 @@ export function createAgentRunFileChangesStore(
       const filePath = getSnapshotPath(sessionId, snapshot.runId)
       mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
       /** 每轮文件可由下一次权威快照完整替换，无需额外 .bak 占用。 */
-      writeJsonFileAtomic(filePath, snapshot, true)
+      writeJsonFileAtomic(filePath, filterInternalFiles(snapshot), true)
     },
 
     removeAgentRunFileChanges(sessionId): void {

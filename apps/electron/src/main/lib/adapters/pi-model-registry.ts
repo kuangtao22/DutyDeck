@@ -16,6 +16,8 @@ import {
   inferCodexAlignedGPT5ContextWindow,
   isMimoV26Model,
   getGeminiModelCapability,
+  getModelCapabilities,
+  getModelReasoningCapability,
   resolveReasoningCapability,
   resolveReasoningProfile,
   type CodexOAuthCredentials,
@@ -24,6 +26,7 @@ import {
   type ReasoningCapability,
   type ReasoningTransport,
   type ProviderType,
+  type ModelCapabilityCost,
 } from '@proma/shared'
 import {
   getPromaUserAgent,
@@ -103,9 +106,10 @@ function toReasoningTransport(api: Api): ReasoningTransport {
 function compilePiReasoningCapabilities(
   api: Api,
   modelId: string | undefined,
+  provider?: ProviderType,
 ): Pick<PiModelDefaults, 'compat' | 'thinkingLevelMap'> | undefined {
   const transport = toReasoningTransport(api)
-  const profile = resolveReasoningProfile({ modelId, transport })
+  const profile = resolveReasoningProfile({ modelId, transport, provider })
   const encoding = profile?.encodings[transport]
   if (!encoding) return undefined
 
@@ -734,11 +738,16 @@ export async function resolvePiReasoningCapability(
   modelId: string | undefined,
 ): Promise<ReasoningCapability | undefined> {
   const resolvedModelId = stripLegacyAgentSdkContextSuffix(modelId)
+  if (getModelCapabilities(provider, resolvedModelId)?.reasoning === false) return undefined
+  /** 端点快照已经有控制声明时，UI 与运行时共用该精确能力。 */
+  const capability = getModelReasoningCapability(provider, resolvedModelId)
+  if (capability) return capability
   const catalogModel = resolvedModelId
     ? await findPiCatalogModel(provider, resolvedModelId)
     : undefined
   const profile = resolveReasoningProfile({
     modelId: resolvedModelId,
+    provider,
     transport: provider === 'openai-codex' || provider === 'xai'
       ? 'openai-responses'
       : toReasoningTransport(resolvePiApi(provider, catalogModel?.api)),
@@ -752,11 +761,34 @@ export async function resolvePiReasoningCapability(
   })
 }
 
+/** 合并目录价格，补齐 Pi 要求的四项基础及阶梯费率，保留上游已有阈值。 */
+function resolveModelCost(catalogCost: PiModelCost | undefined, updated: ModelCapabilityCost | undefined): PiModelCost {
+  /** 未列出的费率继续使用当前 Pi 目录，不把缺失误写为免费。 */
+  const previous = catalogCost ?? ZERO_MODEL_COST
+  /** 基础费率四项完整，阶梯省略项也能安全回退。 */
+  const base = {
+    input: updated?.input ?? previous.input,
+    output: updated?.output ?? previous.output,
+    cacheRead: updated?.cacheRead ?? previous.cacheRead,
+    cacheWrite: updated?.cacheWrite ?? previous.cacheWrite,
+  }
+  /** 上游显式提供阶梯时更新，同阈值缺项保留原已知值。 */
+  const tiers = updated?.tiers?.map((tier) => ({
+    ...base,
+    ...previous.tiers?.find((candidate) => candidate.inputTokensAbove === tier.inputTokensAbove),
+    ...tier,
+  })) ?? previous.tiers
+  return { ...base, ...(tiers ? { tiers } : {}) }
+}
+
 async function resolvePiModelDefaults(input: Pick<PiModelBuildInput, 'provider' | 'model'>): Promise<PiModelDefaults> {
   const catalogModel = input.model ? await findPiCatalogModel(input.provider, input.model) : undefined
-  const codexAlignedCapabilities = getCodexAlignedGPT5Capabilities(input.model)
+  /** 只覆盖该供应商的精确模型；未知代理继续使用 Pi catalog。 */
+  const capability = getModelCapabilities(input.provider, input.model)
+  /** 思考列表由同一个端点快照约束。 */
+  const reasoningCapability = getModelReasoningCapability(input.provider, input.model)
   const api = resolvePiApi(input.provider, catalogModel?.api)
-  const providerSpecificCapabilities = compilePiReasoningCapabilities(api, input.model)
+  const providerSpecificCapabilities = compilePiReasoningCapabilities(api, input.model, input.provider)
   const glmModelId = input.model?.toLowerCase()
   const isVolcengineGlm5x = (input.provider === 'doubao' || input.provider === 'doubao-api' || input.provider === 'ark-coding-plan')
     && (glmModelId === 'glm-5.2' || glmModelId === 'glm-5.3')
@@ -764,30 +796,53 @@ async function resolvePiModelDefaults(input: Pick<PiModelBuildInput, 'provider' 
     && (glmModelId === 'glm-5.3' || glmModelId === 'glm-5.3-flash' || glmModelId === 'glm-5.3-flashx')
   // 新模型可能尚未进入 Pi catalog，使用共享层的精确 ID 判断避免误伤未来版本。
   const isCatalogMissingMimoV26Family = !catalogModel && isMimoV26Model(glmModelId)
-  const catalogContextWindow = catalogModel?.contextWindow ?? DEFAULT_CONTEXT_WINDOW
   const inferredContextWindow = inferContextWindow(input.model) ?? DEFAULT_CONTEXT_WINDOW
   const shouldForceAdaptiveThinking = shouldForcePiAdaptiveThinking(api, catalogModel, input.model)
+  /** 支持性必须显式写 null，Pi 会把省略的标准等级视为支持。 */
+  const thinkingLevelMap = reasoningCapability
+    ? Object.fromEntries((['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const).map((level) => [
+        level,
+        reasoningCapability.levels.includes(level) ? level === 'off' ? 'none' : level : null,
+      ]))
+    : providerSpecificCapabilities?.thinkingLevelMap ?? catalogModel?.thinkingLevelMap
+  /** 不跨协议拷贝整份 compat；温度限制是可安全共享的能力约束。 */
+  const supportsTemperature = capability?.temperature
+    ?? (catalogModel?.api === api ? (catalogModel.compat as { supportsTemperature?: boolean } | undefined)?.supportsTemperature : undefined)
+  /** 临时 provider 不保留厂商名，必须显式告知 Pi 已验证的 Qwen/ZAI 思考协议。 */
+  const snapshotReasoningCompat: PiCatalogModel['compat'] = api === 'openai-completions'
+    && reasoningCapability && capability && (input.provider === 'qwen' || input.provider === 'zhipu')
+    ? {
+        thinkingFormat: input.provider === 'qwen' ? 'qwen' : 'zai',
+        supportsReasoningEffort: capability.reasoningOptions.some((option) => option.type === 'effort'),
+        ...(input.provider === 'qwen' && capability.reasoningOptions.some((option) => option.type === 'budget_tokens')
+          ? { thinkingTokenBudgetField: 'thinking_budget' as const } : {}),
+      }
+    : undefined
   return {
     api,
-    reasoning: catalogModel?.reasoning ?? true,
-    thinkingLevelMap: providerSpecificCapabilities?.thinkingLevelMap
-      ?? catalogModel?.thinkingLevelMap,
-    compat: shouldForceAdaptiveThinking
-      ? { ...providerSpecificCapabilities?.compat, forceAdaptiveThinking: true }
-      : providerSpecificCapabilities?.compat,
-    input: catalogModel ? [...catalogModel.input] : ['text', 'image'],
-    cost: catalogModel ? { ...catalogModel.cost } : { ...ZERO_MODEL_COST },
-    // Codex 对齐策略优先；其他模型仍保留 catalog 与 shared inference 中更大的已验证能力。
-    contextWindow: codexAlignedCapabilities?.contextWindow ?? Math.max(catalogContextWindow, inferredContextWindow),
+    reasoning: capability?.reasoning ?? catalogModel?.reasoning ?? true,
+    thinkingLevelMap,
+    compat: {
+      ...snapshotReasoningCompat,
+      ...providerSpecificCapabilities?.compat,
+      ...(shouldForceAdaptiveThinking ? { forceAdaptiveThinking: true } : {}),
+      ...(supportsTemperature === undefined ? {} : { supportsTemperature }),
+    },
+    input: capability
+      ? capability.inputModalities.includes('image') ? ['text', 'image'] : ['text']
+      : catalogModel ? [...catalogModel.input] : ['text', 'image'],
+    cost: resolveModelCost(catalogModel?.cost, capability?.cost),
+    // 精确供应商目录优先，不能用无渠道的默认 200K 抬高小窗口模型。
+    contextWindow: capability?.contextWindow ?? catalogModel?.contextWindow ?? inferredContextWindow,
     // Pi catalog 缺少时，GLM-5.3 系列仍按官方 128K 输出上限注册。
-    maxTokens: isVolcengineGlm5x
+    maxTokens: capability?.maxOutputTokens ?? (isVolcengineGlm5x
       ? VOLCENGINE_GLM_MAX_TOKENS
       : (catalogModel?.maxTokens
         ?? (isCatalogMissingGlm53Family
           ? GLM_53_FAMILY_MAX_TOKENS
           : isCatalogMissingMimoV26Family
             ? MIMO_V26_FAMILY_MAX_TOKENS
-            : DEFAULT_MAX_TOKENS)),
+            : DEFAULT_MAX_TOKENS))),
   }
 }
 

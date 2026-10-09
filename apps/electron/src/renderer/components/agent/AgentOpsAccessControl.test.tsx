@@ -43,6 +43,6 @@ describe('Agent 运维模式入口', () => {
         { database: '日志库', tables: null, readRows: false },
       ] }] }, 60_000, new Map([['data:private-source-id', '业务连接-名称特别长但不应遮挡能力与期限']])).target)
       .toBe('业务连接-名称特别长但不应遮挡能力与期限 · 订单数据库 · items 等 2 表 / 日志库 · 全部表')
-    expect(summarizeServerOpsReadAccess(null, 60_000)).toEqual({ target: '未授权', capability: '结构/行/SQL 未启用', remaining: '无租约' })
+    expect(summarizeServerOpsReadAccess(null, 60_000)).toEqual({ target: '未授权', capability: '结构/行/SQL 未启用', remaining: '无授权' })
   })
 })

@@ -62,6 +62,18 @@ describe('Agent 工作区迁移准入', () => {
 })
 
 describe('Agent sendMessage 准入顺序合同', () => {
+  test('Given 知识库已进入两步流程 When Agent注册与授权工具 Then 记忆保持独立且知识写入继续受计划模式守卫', () => {
+    const source = readFileSync(join(import.meta.dir, 'agent-orchestrator.ts'), 'utf8')
+    expect(source).not.toContain("tool.name !== 'proma_memory_record'")
+    expect(source).not.toContain("toolName === 'proma_memory_record' && projectKnowledge?.getWorkflowStatus")
+    expect(source).not.toContain('knowledgeWorkflowActive = Boolean(workflow?.approved || workflow?.outline)')
+    expect(source).toContain("workspaceMemoryRecordAvailable: runToolMode === 'standard'")
+    expect(source).toContain('memoryGuidance = workspaceSlug && !automationContext && !input.triggeredBy')
+    expect(source).toContain('memoryRefreshOpportunity = workspaceSlug && !automationContext && !input.triggeredBy && !memoryGuidance?.needsCollaborationProfile')
+    expect(source).toContain("'proma_knowledge_plan', 'proma_knowledge_outline', 'proma_knowledge_document', 'proma_knowledge_asset'")
+    expect(source).toContain('currentMode === \'plan\' || options.signal.aborted')
+  })
+
   test('Given Canvas 工具使用扩展 allowlist When 普通 Agent 检查权限 Then 不替换原有工具策略', () => {
     const source = readFileSync(join(import.meta.dir, 'agent-orchestrator.ts'), 'utf8')
     expect(source).toContain("extensions.allowedToolNamesMode === 'extend'")
@@ -331,7 +343,7 @@ describe('Agent sendMessage 准入顺序合同', () => {
     /** 正常完成通知起点。 */
     const finalCompletionStart = source.indexOf('// 发送完成信号', resultEnd)
     /** 正常完成通知终点。 */
-    const finalCompletionEnd = source.indexOf('return', finalCompletionStart)
+    const finalCompletionEnd = source.indexOf('\n          return', finalCompletionStart)
     /** 正常完成实际调用。 */
     const finalCompletionBody = source.slice(finalCompletionStart, finalCompletionEnd)
 

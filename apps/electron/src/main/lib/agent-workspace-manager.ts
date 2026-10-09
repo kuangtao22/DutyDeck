@@ -1213,6 +1213,16 @@ const AUTO_MEMORY_DIR = 'memory'
 const LEGACY_AUTO_MEMORY_DIR = '.claude/memory'
 const AUTO_MEMORY_INDEX = 'MEMORY.md'
 
+/** 工作区记忆追加操作的持久化结果。 */
+export interface WorkspaceMemoryAppendResult {
+  /** 本次追加的状态。 */
+  status: 'created' | 'appended' | 'already_recorded'
+  /** 相对工作区 memory/ 的规范化 Markdown 路径。 */
+  relativePath: string
+  /** 实际写入的绝对路径，供 Agent 在回复中准确告知用户。 */
+  absolutePath: string
+}
+
 function isRegularFile(path: string): boolean {
   try {
     return lstatSync(path).isFile()
@@ -1659,6 +1669,94 @@ export function writeWorkspaceAutoMemoryFile(workspaceSlug: string, relativePath
   }
   writeTextFileAtomic(abs, content)
   console.log(`[Agent 工作区] 已更新长期记忆文件: ${workspaceSlug}/${relativePath}`)
+}
+
+/**
+ * 以原子写入方式向工作区 Markdown 记忆追加一条记录，并识别完全重复的重试。
+ * @param workspaceSlug 当前会话绑定的工作区 slug。
+ * @param relativePath 相对工作区 memory/ 的 Markdown 文件路径。
+ * @param content 本次需要追加的 Markdown 内容。
+ * @returns 追加状态及相对、绝对保存路径。
+ */
+export function appendWorkspaceAutoMemoryFile(
+  workspaceSlug: string,
+  relativePath: string,
+  content: string,
+): WorkspaceMemoryAppendResult {
+  /** 确保记忆目录已经完成旧版目录迁移并且不是符号链接。 */
+  const memoryDir = getWorkspaceAutoMemoryDir(workspaceSlug)
+  /** 复用记忆文件路径校验，拒绝绝对路径、目录穿越和越界软链接。 */
+  const absolutePath = resolveAutoMemoryFilePath(memoryDir, relativePath)
+  /** 统一 Windows 分隔符，供扩展名校验和回执路径使用。 */
+  const normalizedRelativePath = relative(memoryDir, absolutePath).split(/[\\/]/).join('/')
+  if (normalizedRelativePath.length > 1024) {
+    throw new Error('长期记忆相对路径不能超过 1024 个字符')
+  }
+  if (!normalizedRelativePath.toLowerCase().endsWith('.md')) {
+    throw new Error('长期记忆只允许写入 Markdown 文件')
+  }
+  if (typeof content !== 'string' || content.trim().length === 0) {
+    throw new Error('记忆内容不能为空')
+  }
+
+  /** 记忆文件沿用既有 10 MB 上限，避免异常输入造成大文件占用。 */
+  const normalizedContent = content.replace(/\r\n?/g, '\n').trim()
+  if (Buffer.byteLength(normalizedContent, 'utf-8') > SKILL_FILE_SIZE_LIMIT) {
+    throw new Error(`内容过大（超过 ${SKILL_FILE_SIZE_LIMIT / 1024 / 1024} MB）`)
+  }
+
+  /** 已存在的目标必须是普通文件；不读取或覆盖目标软链接。 */
+  const fileExists = existsSync(absolutePath)
+  if (fileExists && !isRegularFile(absolutePath)) {
+    throw new Error(`长期记忆目标不是普通文件: ${normalizedRelativePath}`)
+  }
+  if (fileExists && statSync(absolutePath).size > SKILL_FILE_SIZE_LIMIT) {
+    throw new Error('长期记忆文件超过 10 MB 限制')
+  }
+  /** 保留用户已有 Markdown 原文，仅用归一化副本判断请求是否已经记录。 */
+  const existingContent = fileExists ? readFileSync(absolutePath, 'utf-8') : ''
+  const normalizedExistingContent = existingContent.replace(/\r\n?/g, '\n')
+  /** 查找按完整段落边界保存过的同一条内容，避免工具重试重复追加。 */
+  let occurrence = normalizedExistingContent.indexOf(normalizedContent)
+  while (occurrence >= 0) {
+    /** 只有完整记录边界匹配才视为重复，避免把较长记录中的子串误判。 */
+    const entryEnd = occurrence + normalizedContent.length
+    /** 只检查匹配点前两个字符，避免每次搜索都复制整段文件前缀。 */
+    const startsAtEntryBoundary = occurrence === 0 || normalizedExistingContent.slice(occurrence - 2, occurrence) === '\n\n'
+    /** 只检查匹配点后的两个字符，确认内容位于文件尾或完整 Markdown 段落边界。 */
+    const suffixLength = normalizedExistingContent.length - entryEnd
+    const endsAtEntryBoundary = suffixLength === 0
+      || (suffixLength === 1 && normalizedExistingContent[entryEnd] === '\n')
+      || (suffixLength >= 2 && normalizedExistingContent.slice(entryEnd, entryEnd + 2) === '\n\n')
+    if (startsAtEntryBoundary && endsAtEntryBoundary) {
+      return { status: 'already_recorded', relativePath: normalizedRelativePath, absolutePath }
+    }
+    occurrence = normalizedExistingContent.indexOf(normalizedContent, occurrence + 1)
+  }
+
+  /** 原子写入需要的父目录，支持 memory/ 下的主题子目录。 */
+  const parentDirectory = dirname(absolutePath)
+  if (!existsSync(parentDirectory)) mkdirSync(parentDirectory, { recursive: true })
+  /** 与原有 Markdown 分隔留白兼容，不改写已有内容和行尾格式。 */
+  const separator = existingContent.length === 0
+    ? ''
+    : /(?:\r?\n){2}$/.test(existingContent)
+      ? ''
+      : /\r?\n$/.test(existingContent)
+        ? '\n'
+        : '\n\n'
+  /** 通过统一安全封装原子替换，避免进程中断留下半条记忆。 */
+  const updatedContent = `${existingContent}${separator}${normalizedContent}\n`
+  if (Buffer.byteLength(updatedContent, 'utf-8') > SKILL_FILE_SIZE_LIMIT) {
+    throw new Error('长期记忆文件超过 10 MB 限制')
+  }
+  writeTextFileAtomic(absolutePath, updatedContent)
+  console.log(`[Agent 工作区] 已追加长期记忆: ${workspaceSlug}/${normalizedRelativePath}`)
+  return {
+    status: fileExists ? 'appended' : 'created',
+    relativePath: normalizedRelativePath,
+    absolutePath,
+  }
 }
 
 /** 把相对路径限制在 Skill 根目录内，并拒绝直接覆盖 SKILL.md */

@@ -108,15 +108,18 @@ export function getSessionContextUsageRatio(sessionId: string): number | undefin
  *   - 单 entry（常态）：行为与从前一致
  *   - 多 entry：避免被子 agent 的小窗口拉低、过早误触发 daily 切换阈值
  *
- * 每个 entry 优先用 SDK 实测的 contextWindow，缺失时按本次 Agent provider 的运行窗口推断。
+ * 每个 entry 优先用 SDK 实测的 contextWindow，缺失或非法时按本次 Agent provider 的运行窗口推断。
  */
 function pickResultContextWindow(result: SDKResultMessage): number | undefined {
   if (!result.modelUsage) return undefined
   let best: number | undefined
   for (const [modelId, info] of Object.entries(result.modelUsage)) {
     const fallbackModelId = result._channelModelId ?? modelId
-    const fallbackWindow = inferContextWindow(fallbackModelId)
-    const win = Math.max(info?.contextWindow ?? 0, fallbackWindow ?? 0) || undefined
+    /** SDK 返回的正数窗口是本次真实运行值，不能被静态 fallback 抬高。 */
+    const reportedWindow = info?.contextWindow
+    const win = typeof reportedWindow === 'number' && Number.isFinite(reportedWindow) && reportedWindow > 0
+      ? reportedWindow
+      : inferContextWindow(fallbackModelId, result._channelProvider)
     if (win === undefined) continue
     if (best === undefined || win > best) best = win
   }

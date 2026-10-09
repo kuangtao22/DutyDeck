@@ -412,13 +412,14 @@ describe('服务器运维 IPC', () => {
     expect(JSON.stringify(records)).not.toContain('SELECT')
     fixture.registration.dispose()
   })
-  test('Given 已有 SSH 操作授权 When 未确认影响直接授予读取 Then 拒绝且保留原授权', async () => {
-    /** 窗口不能静默替换另一任务权限。 */
+  test('Given 已有旧版 SSH 授权 When 统一授权保存 Then 保留旧会话权限且授权撤销时一并清理同目标旧权限', async () => {
     const fixture = createAgentAccessHarness()
     fixture.access.grant({ sessionId: 'session-1', hostId: 'host-1', granted: true })
     await expect(invoke(fixture.handlers, SERVER_OPS_AGENT_READ_CHANNELS.SET, fixture.sender,
-      { sessionId: 'session-1', resources: [{ kind: 'ssh', hostId: 'host-1' }] })).rejects.toThrow('SERVER_OPS_ACCESS_IMPACT_CHANGED')
+      { sessionId: 'session-1', resources: [{ kind: 'ssh', hostId: 'host-1' }] })).resolves.toMatchObject({ sessionId: 'session-1' })
     expect(fixture.access.getCurrent()).toBeDefined()
+    await invoke(fixture.handlers, SERVER_OPS_AGENT_READ_CHANNELS.SET, fixture.sender, { sessionId: 'session-1', resources: [] })
+    expect(fixture.access.getCurrent()).toBeUndefined()
     fixture.registration.dispose()
   })
 
@@ -460,16 +461,15 @@ describe('服务器运维 IPC', () => {
     fixture.registration.dispose()
   })
 
-  test('Given 普通会话 When 授予只读资源 Then 互斥广播并沿用会话与主机撤权入口', async () => {
+  test('Given 普通会话 When 授予统一资源 Then 保留旧版授权并沿用会话与主机撤权入口', async () => {
     const fixture = createAgentAccessHarness()
     fixture.access.grant({ sessionId: 'session-1', hostId: 'host-1', granted: true })
     const input = { sessionId: 'session-1', resources: [{ kind: 'ssh', hostId: 'host-1' }] }
     const impact = await invoke(fixture.handlers, SERVER_OPS_AGENT_ACCESS_MANAGEMENT_CHANNELS.IMPACT, fixture.sender) as { token: string }
     const result = await invoke(fixture.handlers, SERVER_OPS_AGENT_READ_CHANNELS.SET, fixture.sender, { grant: input, impactToken: impact.token })
     expect(result).toMatchObject(input)
-    expect(fixture.access.getCurrent()).toBeUndefined()
+    expect(fixture.access.getCurrent()).toEqual({ sessionId: 'session-1', hostId: 'host-1', granted: true })
     expect(fixture.events.some((event) => event.channel === SERVER_OPS_AGENT_READ_CHANNELS.CHANGED)).toBe(true)
-    expect(fixture.events.some((event) => event.channel === SERVER_OPS_IPC_CHANNELS.AGENT_ACCESS_CHANGED && (event.payload as { current: unknown }).current === null)).toBe(true)
     fixture.registration.revokeSession('session-1')
     expect(fixture.access.getReadAccess('session-1')).toBeUndefined()
     await invoke(fixture.handlers, SERVER_OPS_AGENT_READ_CHANNELS.SET, fixture.sender, input)

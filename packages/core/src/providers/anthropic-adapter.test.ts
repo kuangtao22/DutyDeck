@@ -80,14 +80,16 @@ describe('AnthropicAdapter 显式关闭思考', () => {
     expect(body.max_tokens).toBe(321)
   })
 
-  test('Given GLM 默认开启思考 When 调用方关闭 Then 请求显式发送 disabled', () => {
+  test('Given GLM 不支持关闭思考 When 调用方关闭 Then 归一化为有效 high', () => {
     const adapter = new AnthropicAdapter('zhipu-coding')
     const request = adapter.buildStreamRequest({
       baseUrl: 'https://open.bigmodel.cn/api/anthropic', apiKey: 'test-key',
       modelId: 'glm-5.3', history: [], userMessage: '只返回 JSON',
       thinkingEnabled: false, readImageAttachments: () => [],
     })
-    expect(JSON.parse(request.body).thinking).toEqual({ type: 'disabled' })
+    const body = JSON.parse(request.body) as { thinking?: unknown; output_config?: unknown }
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.output_config).toEqual({ effort: 'high' })
   })
 
   test('Given 不支持禁用字段的 Token Plan When 关闭思考 Then 仍省略 thinking', () => {
@@ -98,6 +100,89 @@ describe('AnthropicAdapter 显式关闭思考', () => {
       thinkingEnabled: false, readImageAttachments: () => [],
     })
     expect(JSON.parse(request.body).thinking).toBeUndefined()
+  })
+
+  test('Given DeepSeek V4 Pro 请求 low When 构建请求 Then 保留有效 low 而不是固定 max', () => {
+    const adapter = new AnthropicAdapter('deepseek')
+    const request = adapter.buildStreamRequest({
+      baseUrl: 'https://api.deepseek.com/anthropic', apiKey: 'test-key',
+      modelId: 'deepseek-v4-pro', history: [], userMessage: '测试',
+      thinkingEnabled: true, thinkingLevel: 'low', readImageAttachments: () => [],
+    })
+    expect(JSON.parse(request.body).output_config).toEqual({ effort: 'low' })
+  })
+
+  test('Given Claude 支持 effort When 请求 low Then adaptive 请求携带 low', () => {
+    const adapter = new AnthropicAdapter('anthropic')
+    const request = adapter.buildStreamRequest({
+      baseUrl: 'https://api.anthropic.com', apiKey: 'test-key',
+      modelId: 'claude-opus-4-7', history: [], userMessage: '测试',
+      thinkingEnabled: true, thinkingLevel: 'low', readImageAttachments: () => [],
+    })
+    const body = JSON.parse(request.body) as { thinking?: unknown; output_config?: unknown }
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.output_config).toEqual({ effort: 'low' })
+  })
+
+  test('Given Claude 不支持 temperature When 调用方传入温度 Then 请求省略 temperature', () => {
+    const adapter = new AnthropicAdapter('anthropic')
+    const request = adapter.buildStreamRequest({
+      baseUrl: 'https://api.anthropic.com', apiKey: 'test-key',
+      modelId: 'claude-opus-4-7', history: [], userMessage: '测试',
+      temperature: 0.2, readImageAttachments: () => [],
+    })
+    expect(JSON.parse(request.body).temperature).toBeUndefined()
+  })
+
+  test('Given manual thinking 开启 When 构建请求 Then 预算合法且省略 temperature', () => {
+    const adapter = new AnthropicAdapter('anthropic')
+    const request = adapter.buildStreamRequest({
+      baseUrl: 'https://api.anthropic.com', apiKey: 'test-key',
+      modelId: 'claude-haiku-4-5', history: [], userMessage: '测试',
+      thinkingEnabled: true, thinkingLevel: 'minimal', temperature: 0.2,
+      maxTokens: 5000, readImageAttachments: () => [],
+    })
+    const body = JSON.parse(request.body) as { thinking?: { budget_tokens?: number }; temperature?: number }
+
+    expect(body.thinking?.budget_tokens).toBeGreaterThanOrEqual(1024)
+    expect(body.thinking?.budget_tokens).toBeLessThan(5000)
+    expect(body.temperature).toBeUndefined()
+  })
+
+  test('Given maxTokens 无法容纳 manual 最小预算 When 构建请求 Then 明确拒绝', () => {
+    const adapter = new AnthropicAdapter('anthropic')
+
+    expect(() => adapter.buildStreamRequest({
+      baseUrl: 'https://api.anthropic.com', apiKey: 'test-key',
+      modelId: 'claude-haiku-4-5', history: [], userMessage: '测试',
+      thinkingEnabled: true, thinkingLevel: 'minimal', maxTokens: 1024,
+      readImageAttachments: () => [],
+    })).toThrow('budget_tokens')
+  })
+
+  test('Given manual 高档位和可用的较小输出上限 When 构建请求 Then 收紧预算并保持用户输出上限', () => {
+    /** 高档预算应服从调用方总上限，不能拒绝仍容得下最低思考预算的合法请求。 */
+    const request = new AnthropicAdapter('anthropic').buildStreamRequest({
+      baseUrl: 'https://api.anthropic.com', apiKey: 'test-key',
+      modelId: 'claude-haiku-4-5', history: [], userMessage: '测试',
+      thinkingEnabled: true, thinkingLevel: 'high', maxTokens: 5000,
+      readImageAttachments: () => [],
+    })
+    /** 输出硬上限和协议预算必须同时满足。 */
+    const body = JSON.parse(request.body) as { max_tokens: number; thinking: { budget_tokens: number } }
+    expect(body.max_tokens).toBe(5000)
+    expect(body.thinking.budget_tokens).toBeGreaterThanOrEqual(1024)
+    expect(body.thinking.budget_tokens).toBeLessThan(5000)
+  })
+
+  test('Given 显式输出上限超过模型能力 When 构建 Anthropic 请求 Then 清晰拒绝', () => {
+    const adapter = new AnthropicAdapter('anthropic')
+
+    expect(() => adapter.buildStreamRequest({
+      baseUrl: 'https://api.anthropic.com', apiKey: 'test-key',
+      modelId: 'claude-haiku-4-5', history: [], userMessage: '测试',
+      maxTokens: 64001, readImageAttachments: () => [],
+    })).toThrow('maxTokens')
   })
 })
 

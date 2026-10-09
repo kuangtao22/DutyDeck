@@ -1,4 +1,5 @@
 import { isGpt6AstraFamily, isGpt6LunaFamily, isGpt6SolFamily } from '../utils/model-family'
+import { getModelCapabilities, getModelReasoningCapability } from '../utils/model-capabilities'
 import type { ProviderType } from './channel'
 import type { AgentThinkingLevel } from './agent'
 
@@ -71,7 +72,7 @@ export interface PiCatalogReasoningMetadata {
  * 不携带 protocol encoding；Pi catalog 继续负责把所选 level 编码为实际请求字段。
  */
 export interface ReasoningCapability {
-  source: 'profile' | 'pi-catalog'
+  source: 'profile' | 'pi-catalog' | 'models-dev'
   levels: readonly AgentThinkingLevel[]
   defaultLevel: AgentThinkingLevel
 }
@@ -84,11 +85,13 @@ export interface ResolveReasoningCapabilityInput {
 export interface ResolveReasoningProfileInput {
   modelId: string | undefined
   transport: ReasoningTransport
+  /** 已知渠道优先使用自身目录，缺省时仅对已有协议 profile 做模型级兼容。 */
+  provider?: ProviderType
 }
 
-const DEEPSEEK_V4_LEVELS = ['off', 'low', 'high', 'xhigh', 'max'] as const satisfies readonly AgentThinkingLevel[]
-const K3_LEVELS = ['off', 'low', 'high', 'max'] as const satisfies readonly AgentThinkingLevel[]
-const GLM_52_LEVELS = ['off', 'high', 'max'] as const satisfies readonly AgentThinkingLevel[]
+const DEEPSEEK_V4_LEVELS = ['off', 'low', 'high', 'max'] as const satisfies readonly AgentThinkingLevel[]
+const K3_LEVELS = ['low', 'high', 'max'] as const satisfies readonly AgentThinkingLevel[]
+const GLM_52_LEVELS = ['high', 'max'] as const satisfies readonly AgentThinkingLevel[]
 const GLM_53_LEVELS = ['low', 'high', 'max'] as const satisfies readonly AgentThinkingLevel[]
 /**
  * GLM-5.3 强制开启思考，深度由 reasoning_effort / output_config.effort 控制。
@@ -102,9 +105,8 @@ const GLM_53_EFFORT_MAP: ReasoningEffortMap = {
 const OPENAI_STANDARD_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh'] as const satisfies readonly AgentThinkingLevel[]
 const OPENAI_MAX_LEVELS = [...OPENAI_STANDARD_LEVELS, 'max'] as const satisfies readonly AgentThinkingLevel[]
 
-// DeepSeek Anthropic compatibility only honors output_config.effort. The official
-// V4 Flash and Pro mappings differ at low and xhigh; off is handled by emitting
-// `thinking: { type: 'disabled' }` rather than an effort value.
+// DeepSeek Anthropic 兼容接口使用 output_config.effort；Flash/Pro 都支持 low，
+// 历史 xhigh 别名分别归一为 high/max。关闭由 thinking.type=disabled 编码。
 const DEEPSEEK_V4_FLASH_EFFORT_MAP: ReasoningEffortMap = {
   minimal: null,
   low: 'low',
@@ -115,7 +117,7 @@ const DEEPSEEK_V4_FLASH_EFFORT_MAP: ReasoningEffortMap = {
 }
 const DEEPSEEK_V4_PRO_EFFORT_MAP: ReasoningEffortMap = {
   minimal: null,
-  low: 'high',
+  low: 'low',
   medium: null,
   high: 'high',
   xhigh: 'max',
@@ -172,7 +174,7 @@ function normalizeDeepSeekV4Level(level: AgentThinkingLevel | undefined): AgentT
     case 'high':
       return 'high'
     case 'xhigh':
-      return 'xhigh'
+      return 'high'
     case 'max':
       return 'max'
     default:
@@ -183,7 +185,7 @@ function normalizeDeepSeekV4Level(level: AgentThinkingLevel | undefined): AgentT
 function normalizeK3Level(level: AgentThinkingLevel | undefined): AgentThinkingLevel {
   switch (level) {
     case 'off':
-      return 'off'
+      return 'high'
     case 'minimal':
     case 'low':
       return 'low'
@@ -199,7 +201,6 @@ function normalizeK3Level(level: AgentThinkingLevel | undefined): AgentThinkingL
 }
 
 function normalizeGlm52Level(level: AgentThinkingLevel | undefined): AgentThinkingLevel {
-  if (level === 'off') return 'off'
   return level === 'xhigh' || level === 'max' ? 'max' : 'high'
 }
 
@@ -257,7 +258,7 @@ const DEEPSEEK_V4_PRO_PROFILE: ReasoningProfile = {
   id: 'deepseek-v4-pro',
   levels: DEEPSEEK_V4_LEVELS,
   defaultLevel: 'high',
-  normalize: normalizeDeepSeekV4Level,
+  normalize: (level) => level === 'xhigh' ? 'max' : normalizeDeepSeekV4Level(level),
   encodings: {
     'anthropic-messages': { kind: 'deepseek-output-effort', effortMap: DEEPSEEK_V4_PRO_EFFORT_MAP },
   },
@@ -354,21 +355,61 @@ export const REASONING_PROFILES: readonly ReasoningProfile[] = [
   OPENAI_SOL_LUNA_PROFILE,
 ]
 
-/** 仅按模型 ID 匹配，再以实际 transport 确认该模型是否有已验证的协议 encoding。 */
+/** 用端点声明约束已验证的协议编码；旧会话档位先兼容转换，再落到合法档位。 */
+function constrainProfile(profile: ReasoningProfile, capability: ReasoningCapability | undefined): ReasoningProfile {
+  if (!capability) return profile
+  /** 沿用产品默认值，但默认值本身也必须在供应商支持范围内。 */
+  const defaultLevel = capability.levels.includes(profile.defaultLevel) ? profile.defaultLevel : capability.defaultLevel
+  /** 对所有产品档位显式标注支持性，避免 Pi 将缺失的标准档位当作支持。 */
+  const effortMap = Object.fromEntries(PI_EXTENDED_THINKING_LEVELS.map((level) => [
+    level,
+    capability.levels.includes(level) ? level === 'off' ? 'none' : level : null,
+  ])) as ReasoningEffortMap
+  /** 只保留原 profile 已验证的 transport，不给模型增加新协议。 */
+  const encodings = Object.fromEntries(Object.entries(profile.encodings).map(([transport, encoding]) => [
+    transport, { ...encoding, effortMap },
+  ])) as ReasoningProfile['encodings']
+  return {
+    ...profile,
+    levels: capability.levels,
+    defaultLevel,
+    encodings,
+    normalize: (level) => {
+      if (level === undefined) return defaultLevel
+      if (capability.levels.includes(level)) return level
+      return normalizeReasoningCapabilityLevel({ ...capability, defaultLevel }, profile.normalize(level))!
+    },
+  }
+}
+
+/** 校验已验证 profile 的渠道归属；目录未收录的其他渠道不得仅凭同名模型借用编码。 */
+function supportsProfileProvider(profile: ReasoningProfile, provider: ProviderType | undefined): boolean {
+  if (!provider || provider === 'custom') return true
+  if (profile.id.startsWith('openai-reasoning-')) {
+    return ['openai', 'openai-responses', 'openai-codex', 'github-copilot', 'xai'].includes(provider)
+  }
+  if (profile.id.startsWith('deepseek-')) return provider === 'deepseek'
+  if (profile.id === 'kimi-k3') return provider === 'kimi-api' || provider === 'kimi-coding'
+  return ['zhipu', 'zhipu-coding', 'zhipu-coding-team', 'doubao', 'doubao-api', 'ark-coding-plan'].includes(provider)
+}
+
+/** 同时匹配渠道、模型与实际 transport，避免向同名的未知端点发送专属参数。 */
 export function resolveReasoningProfile(input: ResolveReasoningProfileInput): ReasoningProfile | undefined {
-  const modelId = input.modelId?.toLowerCase()
+  /** 兼容历史大小写及上下文后缀。 */
+  const modelId = input.modelId?.trim().toLowerCase().replace(/\[1m\]$/i, '')
   if (!modelId) return undefined
 
+  /** 自定义网关沿用已知模型的编码合同，窗口和费用不会沿此路径跨供应商继承。 */
+  const openAICapability = getModelReasoningCapability('openai', modelId)
   const isOpenAITransport = input.transport === 'openai-completions' || input.transport === 'openai-responses'
-  const isOpenAIReasoningModel = !modelId.endsWith('-chat-latest')
+  const isOpenAIReasoningModel = openAICapability !== undefined
     && (modelId.startsWith('gpt-5') || /^(o1|o3|o4)(?:-|$)/.test(modelId))
-  if (isGpt6AstraFamily(modelId)) {
-    return OPENAI_ASTRA_PROFILE.encodings[input.transport] ? OPENAI_ASTRA_PROFILE : undefined
-  }
-  if (isGpt6SolFamily(modelId) || isGpt6LunaFamily(modelId)) {
-    return OPENAI_SOL_LUNA_PROFILE.encodings[input.transport] ? OPENAI_SOL_LUNA_PROFILE : undefined
-  }
-  const profile = /^deepseek-flash(?:-|$)/.test(modelId)
+  /** 先确定编码候选，再统一经过供应商能力约束。 */
+  const profile = isGpt6AstraFamily(modelId)
+    ? OPENAI_ASTRA_PROFILE
+    : isGpt6SolFamily(modelId) || isGpt6LunaFamily(modelId)
+    ? OPENAI_SOL_LUNA_PROFILE
+    : /^deepseek-flash(?:-|$)/.test(modelId)
     ? DEEPSEEK_FLASH_PROFILE
     : /^deepseek-v4-flash(?:-|$)/.test(modelId)
     ? DEEPSEEK_V4_FLASH_PROFILE
@@ -384,7 +425,15 @@ export function resolveReasoningProfile(input: ResolveReasoningProfileInput): Re
               ? /^gpt-5\.6(?:-|$)/.test(modelId) ? OPENAI_MAX_PROFILE : OPENAI_STANDARD_PROFILE
               : undefined
 
-  return profile?.encodings[input.transport] ? profile : undefined
+  if (!profile?.encodings[input.transport]) return undefined
+  /** 显式非推理模型与其他渠道的未知模型不能继承同名 profile。 */
+  const modelCapability = getModelCapabilities(input.provider, modelId)
+  if (modelCapability?.reasoning === false
+    || !modelCapability && !supportsProfileProvider(profile, input.provider)) return undefined
+  /** 供应商专属档位优先；未声明目录的旧兼容渠道保留已知模型协议行为。 */
+  const capability = getModelReasoningCapability(input.provider, modelId)
+    ?? (isOpenAIReasoningModel && (!input.provider || input.provider === 'custom') ? openAICapability : undefined)
+  return constrainProfile(profile, capability)
 }
 
 const PI_EXTENDED_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const satisfies readonly AgentThinkingLevel[]

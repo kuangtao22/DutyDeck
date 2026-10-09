@@ -364,7 +364,7 @@ function createAssistantDeltaPreview(payload: AgentAssistantDeltaPayload, metada
   } as SDKAssistantMessage
 }
 
-function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
+export function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
   // sdk_delta 的文本和 thinking 已直接写入 liveMessages；只保留工具启动控制状态，
   // 避免每个 token 都触发第二份 AgentStreamState 更新和渲染路径。
   if (payload.kind === 'sdk_delta') return payload.delta.deltas.flatMap(deltaToLegacyControlEvents)
@@ -391,7 +391,7 @@ function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
         return [{ type: 'model_resolved', model: evt.model }]
       case 'context_window':
         // main 进程从 SDK result 拿到的真实 contextWindow，转成 usage_update 让 atom 合并到 streamState
-        return [{ type: 'usage_update', usage: { contextWindow: evt.contextWindow } }]
+        return [{ type: 'usage_update', usage: { contextWindow: evt.contextWindow, contextWindowSource: 'runtime' } }]
       case 'permission_mode_changed':
         return [{ type: 'permission_mode_changed', mode: evt.mode }]
       case 'run_resumed':
@@ -503,7 +503,7 @@ function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
         // 因为部分端点（如智谱）会在 message.model 里剥掉 [1m] 等规格后缀，
         // 导致 glm-x-preview[1m] 被识别成 glm-x-preview（200K）。
         const modelName = aMsg._channelModelId ?? aMsg.message.model
-        const fallbackWindow = inferContextWindow(modelName)
+        const fallbackWindow = inferContextWindow(modelName, aMsg._channelProvider)
         events.push({
           type: 'usage_update',
           usage: {
@@ -512,7 +512,7 @@ function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
             outputTokens: u.output_tokens,
             cacheReadTokens: u.cache_read_input_tokens,
             cacheCreationTokens: u.cache_creation_input_tokens,
-            ...(fallbackWindow ? { contextWindow: fallbackWindow } : {}),
+            ...(fallbackWindow ? { contextWindow: fallbackWindow, contextWindowSource: 'inferred' as const } : {}),
           },
         })
       }
@@ -551,17 +551,32 @@ function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
       // 多 entry 场景（Task 子 Agent 等）：取最大 contextWindow，
       // 避免子 Agent 的小窗口覆盖主模型的大窗口、导致指示器飘忽。
       let contextWindow: number | undefined
-      const fallbackWindow = inferContextWindow(rMsg._channelModelId)
+      /** 跟随最终入选窗口记录来源，防止 fallback 覆盖更早到达的真实值。 */
+      let contextWindowSource: 'inferred' | 'runtime' | undefined
+      const fallbackWindow = inferContextWindow(rMsg._channelModelId, rMsg._channelProvider)
       if (rMsg.modelUsage) {
         for (const [modelId, info] of Object.entries(rMsg.modelUsage)) {
-          const modelFallbackWindow = inferContextWindow(rMsg._channelModelId ?? modelId)
-          const candidate = Math.max(info?.contextWindow ?? 0, modelFallbackWindow ?? 0) || undefined
-          if (candidate && (contextWindow === undefined || candidate > contextWindow)) {
+          /** SDK 返回的正数窗口是本次真实运行值，静态推断仅处理缺失或非法值。 */
+          const reportedWindow = info?.contextWindow
+          const hasReportedWindow = typeof reportedWindow === 'number'
+            && Number.isFinite(reportedWindow)
+            && reportedWindow > 0
+          const candidate = hasReportedWindow
+            ? reportedWindow
+            : inferContextWindow(rMsg._channelModelId ?? modelId, rMsg._channelProvider)
+          const candidateSource = hasReportedWindow ? 'runtime' : 'inferred'
+          if (candidate && (
+            contextWindow === undefined
+            || candidate > contextWindow
+            || (candidate === contextWindow && candidateSource === 'runtime')
+          )) {
             contextWindow = candidate
+            contextWindowSource = candidateSource
           }
         }
       } else {
         contextWindow = fallbackWindow
+        if (fallbackWindow !== undefined) contextWindowSource = 'inferred'
       }
       // result.usage 是整个 query 内所有模型调用的累计求和，不能当成当前上下文占用，
       // 否则进度环会虚高、冲破 100%（PR #821 修的正是这个问题）。
@@ -580,6 +595,7 @@ function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
           ...(rMsg.usageStatus ? { usageStatus: rMsg.usageStatus } : {}),
           costUsd: rMsg.total_cost_usd,
           contextWindow,
+          ...(contextWindowSource ? { contextWindowSource } : {}),
           ...(inputTokens != null && { inputTokens }),
           ...(u && { outputTokens: u.output_tokens }),
           ...(u && { cacheReadTokens: u.cache_read_input_tokens }),

@@ -32,3 +32,16 @@ describe('MiMo V2.6 上下文能力', () => {
     expect(inferContextWindow('mimo-v2.60-preview')).toBe(DEFAULT_CONTEXT_WINDOW)
   })
 })
+
+describe('按供应商推断上下文', () => {
+  test('Given 同名 GPT-6 When 分别来自 API 与订阅 Then 使用各自窗口', () => {
+    expect(inferContextWindow('gpt-6-astra', 'openai-responses')).toBe(1_050_000)
+    expect(inferContextWindow('gpt-6-astra', 'openai-codex')).toBe(372_000)
+    expect(inferContextWindow('gpt-6.1-sol', 'openai')).toBe(1_050_000)
+    expect(inferContextWindow('gpt-6.1-sol', 'openai-codex')).toBe(272_000)
+  })
+
+  test('Given GPT-4o When 已知供应商 Then 不使用 200K 无来源默认值', () => {
+    expect(inferContextWindow('gpt-4o', 'openai')).toBe(128_000)
+  })
+})

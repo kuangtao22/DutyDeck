@@ -36,7 +36,7 @@ import { McpCard } from './McpCard'
 import { SkillDetailView } from './SkillDetailView'
 import { McpDetailView } from './McpDetailView'
 import { ImportSkillDialog } from './ImportSkillDialog'
-import { WorkspaceMemoryTab } from './WorkspaceMemoryTab'
+import { ProjectKnowledgeTab } from './ProjectKnowledgeTab'
 import { groupSkills } from './skillGrouping'
 import { EMBEDDED_CATALOG_TWO_COLUMN_MIN_WIDTH, IntegrationCatalog } from './IntegrationCatalog'
 import { CredentialDialog } from './CredentialDialog'
@@ -251,8 +251,6 @@ export function AgentSkillsView({
     () => Object.keys(data.mcpConfig.servers ?? {}).length,
     [data.mcpConfig],
   )
-  const memoryCount = (data.capabilities?.memory.agentsMd.exists ? 1 : 0) + (data.capabilities?.memory.autoMemory.fileCount ?? 0)
-
   const selectedSkill = selectedSkillWorkspaceSlug === data.workspaceSlug
     && data.loadedWorkspaceSlug === data.workspaceSlug
     ? data.skills.find((s) => s.slug === selectedSkillSlug) ?? null
@@ -614,7 +612,7 @@ export function AgentSkillsView({
       <div className={cn('titlebar-no-drag mx-auto flex w-full max-w-6xl shrink-0 items-center justify-between', embedded ? 'px-4 py-3' : 'px-8 pt-14 pb-4')}>
         <div className="flex items-center gap-2.5">
           <Blocks className="size-6 text-foreground/70" />
-          <h1 className={cn('font-semibold text-foreground', embedded ? 'text-lg' : 'text-2xl')}>{embedded ? (tab === 'mcp' ? 'MCP' : 'Skills') : 'Agent 技能'}</h1>
+          <h1 className={cn('font-semibold text-foreground', embedded ? 'text-lg' : 'text-2xl')}>{embedded ? (tab === 'mcp' ? 'MCP' : tab === 'memory' ? '项目知识库' : 'Skills') : 'Agent 技能'}</h1>
         </div>
 
         {!embedded && <Popover open={wsPopoverOpen} onOpenChange={setWsPopoverOpen}>
@@ -665,7 +663,7 @@ export function AgentSkillsView({
 
       {embedded && (
         <div className="titlebar-no-drag mx-auto w-full max-w-6xl shrink-0 px-3 pb-3">
-          <AgentActionHint action={tab === 'skills' ? '创建、整理、更新或删除 Skills' : '查找、配置或移除 MCP'} />
+          <AgentActionHint action={tab === 'skills' ? '创建、整理、更新或删除 Skills' : tab === 'mcp' ? '查找、配置或移除 MCP' : '扫描、检索或阅读项目资料'} />
         </div>
       )}
 
@@ -684,7 +682,7 @@ export function AgentSkillsView({
           {([
             { value: 'skills' as const, label: 'Skills', count: data.skills.length },
             { value: 'mcp' as const, label: 'MCP', count: mcpCount },
-            { value: 'memory' as const, label: '记忆', count: memoryCount },
+            { value: 'memory' as const, label: '项目知识库', count: undefined },
           ]).map(({ value, label, count }) => (
             <button
               key={value}
@@ -695,21 +693,21 @@ export function AgentSkillsView({
               )}
             >
               {label}
-              <span className="text-[11px] tabular-nums text-muted-foreground">{count}</span>
+              {count !== undefined && <span className="text-[11px] tabular-nums text-muted-foreground">{count}</span>}
             </button>
           ))}
         </div>}
 
         {/* 搜索框 */}
-        <div className="flex h-8 flex-1 items-center gap-2 rounded-lg border border-border/60 bg-content-area px-3 transition-colors focus-within:border-primary/40">
+        {tab !== 'memory' && <div className="flex h-8 flex-1 items-center gap-2 rounded-lg border border-border/60 bg-content-area px-3 transition-colors focus-within:border-primary/40">
           <Search size={14} className="shrink-0 text-foreground/40" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={tab === 'skills' ? '搜索 Skills...' : tab === 'mcp' ? '搜索 MCP 服务器...' : '搜索记忆文件...'}
+            placeholder={tab === 'skills' ? '搜索 Skills...' : '搜索 MCP 服务器...'}
             className="w-full bg-transparent text-[13px] text-foreground placeholder:text-foreground/35 focus:outline-none"
           />
-        </div>
+        </div>}
 
         {/* 社区市场（占位） */}
         {tab === 'skills' && (
@@ -771,8 +769,8 @@ export function AgentSkillsView({
       </div>
 
       {/* 内容 */}
-      <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
-        <div className={cn('mx-auto w-full max-w-6xl', embedded ? 'px-3 pb-4' : 'px-8 pb-10')}>
+      <div className={cn('min-h-0 flex-1 scrollbar-thin', tab === 'memory' ? 'overflow-hidden' : 'overflow-y-auto')}>
+        <div className={cn('mx-auto w-full max-w-6xl', tab === 'memory' && 'h-full', embedded ? 'px-3 pb-4' : 'px-8 pb-10')}>
           {data.loading ? (
             <div className="py-20 text-center text-sm text-muted-foreground">加载中...</div>
           ) : tab === 'skills' ? (
@@ -817,7 +815,7 @@ export function AgentSkillsView({
               onRequestCredential={setPendingCredentialIntegration}
             />
           ) : (
-            <WorkspaceMemoryTab workspaceSlug={data.workspaceSlug} search={search} />
+            <ProjectKnowledgeTab workspaceSlug={data.workspaceSlug} />
           )}
         </div>
       </div>

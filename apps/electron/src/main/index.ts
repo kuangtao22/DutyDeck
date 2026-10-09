@@ -82,6 +82,7 @@ for (const key of Object.keys(process.env)) {
 
 import { createApplicationMenu } from './menu'
 import { registerIpcHandlers } from './ipc'
+import { startProjectKnowledgeObservation } from './lib/project-knowledge-observer'
 import { getDefaultDesignJobManager } from './lib/design/design-job-manager'
 import { createTray, destroyTray, getTray, setTrayFlash } from './tray'
 import { initializeRuntime } from './lib/runtime-init'
@@ -911,6 +912,9 @@ async function bootstrap(): Promise<void> {
 
   // Register IPC handlers
   registerIpcHandlers()
+  /** 已建库项目的离线增量发现与队列恢复，不扫描未授权项目。 */
+  const stopKnowledgeObservation = startProjectKnowledgeObservation()
+  app.once('before-quit', stopKnowledgeObservation)
 
   // IPC 初始化默认 Manager 后，收敛上次进程遗留的运行中 Design Job。
   await safeAwait('recoverDesignJobs', async () => { await getDefaultDesignJobManager()?.recoverAll() })

@@ -1,5 +1,7 @@
 import { createApiWorkbenchPreload } from './api-workbench-preload'
 import { createCapabilityFactoryPreload } from './capability-factory-preload'
+import { createProjectKnowledgePreload } from './project-knowledge-preload'
+import type { ProjectKnowledgeApi } from '@proma/shared'
 import type { ApiWorkbenchApi } from '@proma/shared'
 import type { CapabilityFactoryApi } from '@proma/shared'
 import type { AgentToolMode } from '@proma/shared'
@@ -296,7 +298,7 @@ import { QUICK_TASK_IPC_CHANNELS, TRAY_IPC_CHANNELS, VOICE_DICTATION_IPC_CHANNEL
 /**
  * 暴露给渲染进程的 API 接口定义
  */
-export interface ElectronAPI extends LanBridgePreloadApi, NormalPathManagementPreloadApi, DesignPreloadApi, ServerOpsTrustPreload, ServerOpsDockerPreload, ServerOpsFilesPreload, ServerOpsConsolePreloadApi, ServerOpsTransferPreload, ServerOpsDataPreload, ServerOpsProjectPreload, ServerOpsScriptPreload, ServerOpsAgentReadPreload, ServerOpsConnectionDraftPreload, MediaPreloadApi, CanvasMediaPreloadApi {
+export interface ElectronAPI extends LanBridgePreloadApi, NormalPathManagementPreloadApi, DesignPreloadApi, ServerOpsTrustPreload, ServerOpsDockerPreload, ServerOpsFilesPreload, ServerOpsConsolePreloadApi, ServerOpsTransferPreload, ServerOpsDataPreload, ServerOpsProjectPreload, ServerOpsScriptPreload, ServerOpsAgentReadPreload, ServerOpsConnectionDraftPreload, MediaPreloadApi, CanvasMediaPreloadApi, ProjectKnowledgeApi {
   // ===== 运行时相关 =====
 
   /**
@@ -1544,6 +1546,7 @@ const designPreloadApi = createDesignPreloadApi(ipcRenderer)
 const pathManagementPreloadApi = createNormalPathManagementPreloadApi(ipcRenderer)
 
 const electronAPI: ElectronAPI = {
+  ...createProjectKnowledgePreload((channel, input) => ipcRenderer.invoke(channel, input)),
   ...createServerOpsTrustPreload((channel, input) => ipcRenderer.invoke(channel, input)),
   ...createServerOpsDockerPreload((channel, input) => ipcRenderer.invoke(channel, input)),
   ...createServerOpsFilesPreload((channel, input) => ipcRenderer.invoke(channel, input)),

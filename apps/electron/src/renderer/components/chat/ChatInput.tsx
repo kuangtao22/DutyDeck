@@ -44,6 +44,7 @@ import {
   conversationQuotedSelectionMapAtom,
   conversationDraftSyncVersionsAtom,
   conversationDraftSyncVersionAtomFamily,
+  channelsAtom,
 } from '@/atoms/chat-atoms'
 import type { PendingAttachment } from '@/atoms/chat-atoms'
 import {
@@ -111,6 +112,13 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
   }, [conversationId, setDraftsMap, setDraftSyncVersions])
 
   const [selectedModel] = useConversationModel()
+  /** 已加载的渠道列表；引用仅在配置刷新时变化。 */
+  const channels = useAtomValue(channelsAtom)
+  /** 当前模型所属渠道的供应商，用于按端点匹配模型能力。 */
+  const selectedProvider = React.useMemo(
+    () => channels.find((channel) => channel.id === selectedModel?.channelId)?.provider,
+    [channels, selectedModel?.channelId],
+  )
   const setPendingAttachments = onSetPendingAttachments
   const [isDragOver, setIsDragOver] = React.useState(false)
   const chatVoiceInputId = React.useId()
@@ -349,7 +357,7 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
   const toolbarItems = React.useMemo<ToolbarItem[]>(() => [
     // Chat 可能与主 Agent 输入框并存；不能复用其全局 open atom，否则两个 Popover 会同时打开、互相关闭。
     { key: 'model', node: <ModelSelector excludedProviders={['openai-codex', 'github-copilot', 'xai']} /> },
-    { key: 'thinking', node: <ChatThinkingPopover modelId={selectedModel?.modelId} /> },
+    { key: 'thinking', node: <ChatThinkingPopover provider={selectedProvider} modelId={selectedModel?.modelId} /> },
     {
       key: 'attach',
       node: (
@@ -375,7 +383,7 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
     { key: 'tools', node: <ToolSelectorPopover /> },
     { key: 'context', node: <ContextSettingsPopover /> },
     { key: 'clear', node: <ClearContextButton onClick={onClearContext} /> },
-  ], [handleOpenFileDialog, selectedModel?.modelId, onClearContext, chatVoiceInputId])
+  ], [handleOpenFileDialog, selectedModel?.modelId, selectedProvider, onClearContext, chatVoiceInputId])
 
   const trailingNode = streaming ? (
     <Tooltip>

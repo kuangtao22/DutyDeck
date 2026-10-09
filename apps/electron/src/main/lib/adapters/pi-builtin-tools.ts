@@ -41,7 +41,8 @@ import {
 import { getAgentSessionMeta, updateAgentSessionMeta } from '../agent-session-manager'
 import { getMainWindow } from '../main-window-store'
 import { getMainRepoRoot, listWorktrees } from '../git-diff-service'
-import { getWorktreeRepos, getAgentWorkspace, listAgentWorkspaces, listAgentWorkspacesWithProjectRootStatus } from '../agent-workspace-manager'
+import { getWorktreeRepos, getAgentWorkspace, getWorkspaceAutoMemoryDir, listAgentWorkspaces, listAgentWorkspacesWithProjectRootStatus } from '../agent-workspace-manager'
+import { appendWorkspaceMemoryWithJournal } from '../project-knowledge-memory-journal'
 import { resolveAutomationWorkspace, summarizeAutomationWorkspace } from './automation-workspace'
 import { isBuiltinMcpUserEnabled } from '../builtin-mcp/settings'
 import { downloadInstaller, launchInstaller } from '../installer-downloader'
@@ -122,7 +123,7 @@ export interface PiBuiltinToolsContext {
   modelId?: string
   workspaceId?: string
   workspaceSlug?: string
-  /** 由主进程绑定的工作区写守卫；缺失时不开放 MCP 配置能力。 */
+  /** 由主进程绑定的工作区写守卫；缺失时不开放记忆和 MCP 配置写入。 */
   runWorkspaceSlugWrite?: <T>(workspaceSlug: string, effect: () => T) => T | Promise<T>
   /** 当前 Agent 工作目录；用于解析生图产物、参考图和本地网页预览的相对路径。 */
   agentCwd?: string
@@ -130,6 +131,8 @@ export interface PiBuiltinToolsContext {
   allowedRoots?: string[]
   permissionMode?: PromaPermissionMode
   triggeredBy?: 'user' | 'automation' | 'delegation' | 'external'
+  /** 当前用户消息的稳定 UUID，供显式记忆操作恢复与去重。 */
+  userMessageId?: string
   /** 当前运行启用的 Todo、日程与 Vault 能力。 */
   productivityTools?: ProductivityToolsSettings
   /** 最近一次用户选择的 Windows 终端 profile。 */
@@ -269,6 +272,47 @@ function buildWorkspaceMcpManagementTools(sdk: PiSdk, ctx: PiBuiltinToolsContext
       },
     }),
   ] as ToolDefinition[]
+}
+
+/** 只为具备工作区写守卫的前台用户标准会话构建记忆追加工具。 */
+function buildWorkspaceMemoryRecordTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDefinition[] {
+  /** 计划模式、自动化、委派、外部来源及无工作区授权的会话不允许写长期记忆。 */
+  const sourceAllowed = ctx.triggeredBy === undefined || ctx.triggeredBy === 'user'
+  if (!ctx.workspaceSlug || !ctx.runWorkspaceSlugWrite || !sourceAllowed || ctx.permissionMode === 'plan') return []
+
+  /** 固定本轮当前工作区与授权守卫，工具参数不能指定其他工作区。 */
+  const workspaceSlug = ctx.workspaceSlug
+  const runWorkspaceSlugWrite = ctx.runWorkspaceSlugWrite
+  return [
+    sdk.defineTool({
+      name: 'proma_memory_record',
+      label: '记录工作区记忆',
+      description: 'append a concise, user-approved Markdown memory entry to the current workspace memory directory. Only relative .md paths and content are accepted; existing content is preserved and exact retries are deduplicated.',
+      parameters: Type.Object({
+        relativePath: Type.String({ minLength: 1, maxLength: 1024, description: 'Markdown path relative to the current workspace memory/ directory, such as user-profile.md or decisions/tooling.md.' }),
+        content: Type.String({ minLength: 1, maxLength: 20000, description: 'A concise Markdown entry to append. Do not include secrets or unsupported inferences.' }),
+      }, { additionalProperties: false }),
+      async execute(_toolCallId: string, params: unknown) {
+        /** 仅接收 TypeBox 已校验的相对路径和 Markdown 内容。 */
+        const args = params as { relativePath: string; content: string }
+        /** 每次写入都经过主进程工作区守卫，并返回可核对的保存路径。 */
+        const result = await runWorkspaceSlugWrite(workspaceSlug, () => appendWorkspaceMemoryWithJournal({
+          workspaceSlug,
+          sessionId: ctx.sessionId,
+          toolCallId: _toolCallId,
+          userMessageId: ctx.userMessageId,
+          relativePath: args.relativePath,
+          content: args.content,
+        }))
+        return jsonToolResult({
+          status: result.status,
+          relativePath: result.relativePath,
+          operationId: result.operationId,
+          absolutePath: `${getWorkspaceAutoMemoryDir(workspaceSlug)}/${result.relativePath}`,
+        })
+      },
+    }) as ToolDefinition,
+  ]
 }
 
 function buildWebTools(sdk: PiSdk): ToolDefinition[] {
@@ -1800,6 +1844,13 @@ export async function buildPiBuiltinTools(
     tools.push(...buildWorkspaceMcpManagementTools(sdk, ctx))
   } catch (error) {
     console.error('[Pi 桥接] 注入 MCP 管理工具失败:', error)
+  }
+
+  /** 记忆写入使用独立窄工具，不继承通用 Write 或 Bash 的文件权限。 */
+  try {
+    tools.push(...buildWorkspaceMemoryRecordTools(sdk, ctx))
+  } catch (error) {
+    console.error('[Pi 桥接] 注入工作区记忆工具失败:', error)
   }
 
   /** 工具构建层独立复核运行来源，防止上游错误传入 Facade。 */

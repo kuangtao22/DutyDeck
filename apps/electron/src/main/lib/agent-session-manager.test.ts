@@ -318,6 +318,167 @@ describe('Agent 会话 JSONL 读取', () => {
     expect(manager.getAgentSessionMessages(retained.id)).toHaveLength(1)
   })
 
+  test('Given SDK 批次写入 When 使用持久回执读取 Then 只返回 user/assistant 纯文本并保留字节身份', () => {
+    const sessionId = 'persisted-evidence'
+    indexSessionForAppend(sessionId)
+    writeAgentSessionJsonl(sessionId, [])
+    const receipt = manager.appendSDKMessages(sessionId, [
+      { type: 'user', uuid: 'user-evidence', message: { content: [{ type: 'text', text: '用户需求' }] } } as SDKMessage,
+      { type: 'tool_result', uuid: 'tool-evidence', message: { content: [{ type: 'text', text: '工具内部' }] } } as SDKMessage,
+      { type: 'assistant', uuid: 'assistant-evidence', message: { content: [{ type: 'text', text: '助手结论' }] } } as SDKMessage,
+    ])
+    expect(receipt.status).toBe('written')
+    expect(receipt.messages).toHaveLength(3)
+    const evidence = manager.readPersistedAgentEvidence(sessionId, [receipt])
+    expect(evidence.records.map((record) => record.text)).toEqual(['用户需求', '助手结论'])
+    expect(evidence.truncated).toBe(false)
+  })
+
+  test('Given 删除中的会话 When 追加 SDK 消息 Then 返回 skipped 且不伪造成功回执', () => {
+    const session = manager.createAgentSession('回执删除边界')
+    manager.markAgentSessionDeleting(session.id)
+    const receipt = manager.appendSDKMessages(session.id, [{ type: 'assistant', uuid: 'late', message: { content: [] } } as SDKMessage])
+    expect(receipt).toEqual({ sessionId: session.id, status: 'skipped', reason: 'deleting' })
+  })
+
+  test('Given 回执对应文件已被替换 When 读取证据 Then 拒绝整批范围', () => {
+    const sessionId = 'replaced-evidence'
+    indexSessionForAppend(sessionId)
+    writeAgentSessionJsonl(sessionId, [])
+    const receipt = manager.appendSDKMessages(sessionId, [{ type: 'user', uuid: 'replace-user', message: { content: [{ type: 'text', text: '原始' }] } } as SDKMessage])
+    const path = join(tempHome, '.proma', 'agent-sessions', `${sessionId}.jsonl`)
+    const replacement = `${path}.replacement`
+    writeFileSync(replacement, readFileSync(path))
+    rmSync(path)
+    writeFileSync(path, readFileSync(replacement))
+    const evidence = manager.readPersistedAgentEvidence(sessionId, [receipt])
+    expect(evidence.records).toEqual([])
+    expect(evidence.skipped).toBe(1)
+  })
+
+  test('Given 证据正文超过预算 When 读取回执 Then 截断且不超过预算', () => {
+    const sessionId = 'budget-evidence'
+    indexSessionForAppend(sessionId)
+    writeAgentSessionJsonl(sessionId, [])
+    const receipt = manager.appendSDKMessages(sessionId, [{ type: 'user', uuid: 'budget-user', message: { content: [{ type: 'text', text: '预算'.repeat(100) }] } } as SDKMessage])
+    const evidence = manager.readPersistedAgentEvidence(sessionId, [receipt], { maxBytes: 16 })
+    expect(evidence.records).toEqual([])
+    expect(evidence.truncated).toBe(true)
+  })
+
+  test('Given 已保存证据 When Skill metadata 原子重写两次 Then 消息正文身份仍可读取', () => {
+    const sessionId = 'metadata-evidence'
+    indexSessionForAppend(sessionId); writeAgentSessionJsonl(sessionId, [])
+    const receipt = manager.appendSDKMessages(sessionId, [
+      { type: 'user', uuid: 'stable-user', message: { content: [{ type: 'text', text: '记住：使用 Bun' }] } } as SDKMessage,
+      { type: 'assistant', uuid: 'stable-answer', message: { content: [{ type: 'text', text: '已记录' }] } } as SDKMessage,
+    ])
+    manager.updateSDKUserMessageSkillActivations(sessionId, 'stable-user', [{ slug: 'demo', source: 'workspace', mode: 'manual' }] as never)
+    manager.updateSDKUserMessageSkillActivations(sessionId, 'stable-user', [{ slug: 'second', source: 'workspace', mode: 'manual' }] as never)
+    expect(manager.readPersistedAgentEvidence(sessionId, [receipt]).records.map((record) => record.text)).toEqual(['记住：使用 Bun', '已记录'])
+  })
+
+  test('Given 多批已保存证据 When 共享文本预算 Then 总读取不按批次重置', () => {
+    const sessionId = 'multi-budget-evidence'
+    indexSessionForAppend(sessionId); writeAgentSessionJsonl(sessionId, [])
+    const receipts = ['one', 'two'].map((uuid) => manager.appendSDKMessages(sessionId, [
+      { type: 'user', uuid, message: { content: [{ type: 'text', text: '12345678' }] } } as SDKMessage,
+    ]))
+    const evidence = manager.readPersistedAgentEvidence(sessionId, receipts, { maxBytes: 10 })
+    expect(evidence.records).toHaveLength(1)
+    expect(evidence.truncated).toBe(true)
+  })
+
+  test('Given 失败回合有部分输出 When 删除错误并成功重试 Then 原用户可定位且仅纳入本次输出和追加纠正', () => {
+    const sessionId = 'retry-evidence'
+    indexSessionForAppend(sessionId); writeAgentSessionJsonl(sessionId, [])
+    manager.appendSDKMessages(sessionId, [
+      { type: 'user', uuid: 'retry-user', message: { content: '决定：使用 Bun' } } as SDKMessage,
+      { type: 'assistant', uuid: 'failed-partial', message: { content: '失败回合中的未经确认建议' } } as SDKMessage,
+      { type: 'assistant', uuid: 'retry-error', error: 'api_error', message: { content: '请求失败' } } as SDKMessage,
+    ])
+    expect(manager.removeSDKErrorMessage(sessionId, 'retry-error')).toBe(true)
+    const userReceipt = manager.getPersistedAgentMessageReceipt(sessionId, 'retry-user')
+    expect(userReceipt).toBeDefined()
+    const boundary = manager.getPersistedAgentTurnReceipt(sessionId, 'retry-user')!.messages!.at(-1)!.uuid
+    manager.appendSDKMessages(sessionId, [
+      { type: 'user', uuid: 'queued-user', message: { content: '纠正：构建也使用 Bun' } } as SDKMessage,
+      { type: 'assistant', uuid: 'retry-answer', message: { content: '已完成构建' } } as SDKMessage,
+    ])
+    manager.updateSDKUserMessageSkillActivations(sessionId, 'retry-user', [{ slug: 'build', source: 'workspace', mode: 'manual' }] as never)
+    const receipt = manager.getPersistedAgentTurnReceipt(sessionId, 'retry-user', boundary)
+    expect(receipt).toBeDefined()
+    expect(manager.readPersistedAgentEvidence(sessionId, [receipt!]).records.map((record) => record.uuid))
+      .toEqual(['retry-user', 'queued-user', 'retry-answer'])
+    expect(manager.getPersistedAgentMessageReceipt(sessionId, 'retry-error')).toBeUndefined()
+  })
+
+  test('Given 已保存多条证据 When 回退截断 Then 保留消息仍可定位且删除的旧回执不可读', () => {
+    const sessionId = 'truncate-evidence'
+    indexSessionForAppend(sessionId); writeAgentSessionJsonl(sessionId, [])
+    const receipt = manager.appendSDKMessages(sessionId, [
+      { type: 'user', uuid: 'kept-user', message: { content: '保留原文' } } as SDKMessage,
+      { type: 'assistant', uuid: 'removed-answer', message: { content: '将被回退' } } as SDKMessage,
+    ])
+    manager.truncateSDKMessages(sessionId, 'kept-user')
+    expect(manager.getPersistedAgentMessageReceipt(sessionId, 'kept-user')).toBeDefined()
+    expect(manager.getPersistedAgentMessageReceipt(sessionId, 'removed-answer')).toBeUndefined()
+    expect(manager.readPersistedAgentEvidence(sessionId, [receipt]).records.map((record) => record.uuid)).toEqual(['kept-user'])
+  })
+
+  test.each(['正常回合', '成功重试'])('Given %s 真实落盘且更新 Skill metadata When 完成维护后开启新对话 Then 自动取得已保存项目决定', async (mode) => {
+    /** 端到端使用真实会话 JSONL、知识版本库与 Agent 上下文，仅替换远端模型。 */
+    const { createProjectKnowledgeService } = await import('./project-knowledge/service')
+    const { createKnowledgeMaintenance } = await import('./project-knowledge-maintenance')
+    const { createProjectKnowledgeAgent } = await import('./project-knowledge-agent')
+    const sessionId = mode === '成功重试' ? 'knowledge-retry-e2e' : 'knowledge-e2e'
+    indexSessionForAppend(sessionId); writeAgentSessionJsonl(sessionId, [])
+    const root = join(tempHome, sessionId); mkdirSync(root)
+    const project = { projectId: 'workspace-a', projectRoot: root, memoryRoot: join(root, 'memory'), cacheRoot: join(root, 'cache') }
+    const service = createProjectKnowledgeService({ resolveProject: () => project })
+    await service.store.initialize(project, 'workspace-a')
+    /** 不调用网络、不消耗用户渠道预算，验证真实持久化到读取链路。 */
+    const maintenance = createKnowledgeMaintenance({ store: service.store, resolveProject: () => project,
+      getSession: manager.getAgentSessionMeta, readEvidence: manager.readPersistedAgentEvidence,
+      validateModel: () => undefined,
+      callModel: async ({ prompt }) => {
+        expect(prompt).not.toContain('失败回合的部分输出')
+        if (mode === '成功重试') expect(prompt).toContain('约定：构建也使用 Bun')
+        return JSON.stringify({ candidates: [{ title: '项目包管理器', content: '采用 Bun', category: 'engineering', kind: 'decision', messageId: 'e2e-user', quote: '决定：项目统一使用 Bun' }] })
+      },
+    })
+    await maintenance.updateSettings({ workspaceId: 'workspace-a', enabled: true, channelId: 'test', modelId: 'test', dailyJobLimit: 1 })
+    await maintenance.wait('workspace-a')
+    const startedAt = Date.now()
+    const user = manager.appendSDKMessages(sessionId, [{ type: 'user', uuid: 'e2e-user', message: { content: [{ type: 'text', text: '决定：项目统一使用 Bun' }] } } as SDKMessage])
+    /** 重试保留同一用户 UUID，并使用失败回合末尾身份限定本次证据。 */
+    let boundary: string | undefined
+    if (mode === '成功重试') {
+      manager.appendSDKMessages(sessionId, [
+        { type: 'assistant', uuid: 'e2e-partial', message: { content: '失败回合的部分输出' } } as SDKMessage,
+        { type: 'assistant', uuid: 'e2e-error', error: 'api_error', message: { content: '请求失败' } } as SDKMessage,
+      ])
+      manager.removeSDKErrorMessage(sessionId, 'e2e-error')
+      expect(manager.getPersistedAgentMessageReceipt(sessionId, 'e2e-user')).toBeDefined()
+      boundary = manager.getPersistedAgentTurnReceipt(sessionId, 'e2e-user')!.messages!.at(-1)!.uuid
+      manager.appendSDKMessages(sessionId, [{ type: 'user', uuid: 'e2e-queued', message: { content: '约定：构建也使用 Bun' } } as SDKMessage])
+    }
+    manager.updateSDKUserMessageSkillActivations(sessionId, 'e2e-user', [{ slug: 'implementation', source: 'workspace', mode: 'manual' }] as never)
+    const assistant = manager.appendSDKMessages(sessionId, [{ type: 'assistant', uuid: 'e2e-assistant', message: { content: [{ type: 'thinking', thinking: '内部推理不入库' }, { type: 'text', text: '已采用此决定' }] } } as SDKMessage])
+    const turnReceipt = manager.getPersistedAgentTurnReceipt(sessionId, 'e2e-user', boundary)
+    await maintenance.enqueue({ workspaceId: 'workspace-a', sessionId, userMessageId: 'e2e-user', startedAt,
+      toolMode: 'standard', resultSubtype: 'success', terminalReason: 'completed', receipts: turnReceipt ? [turnReceipt] : [user, assistant] })
+    await maintenance.wait('workspace-a')
+    expect(maintenance.status('workspace-a').pendingTurns).toBe(0)
+    const facade = createProjectKnowledgeAgent({ sessionId: 'new-conversation', toolMode: 'standard',
+      getSession: () => ({ id: 'new-conversation', title: '新对话', workspaceId: 'workspace-a', createdAt: 1, updatedAt: 1 }),
+      getBinding: () => root, assertRunActive: () => undefined, service })
+    const context = await facade!.buildContext('项目采用什么包管理器 Bun')
+    expect(context).toContain('决定：项目统一使用 Bun')
+    expect(context).toContain('e2e-user')
+    expect(context).not.toContain('内部推理')
+  })
+
   test('Given Pi与旧格式图片混合的超大工具结果 When 落盘 Then 只剥离大图且单行不超过256K', () => {
     const sessionId = 'session-oversized-tool-images'
     indexSessionForAppend(sessionId)

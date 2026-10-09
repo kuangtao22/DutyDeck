@@ -1319,11 +1319,17 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
     if (options.requireUserVisibleSession(grant.sessionId).archived && grant.resources.length) throw new Error('SERVER_OPS_AGENT_SESSION_NOT_ALLOWED')
     /** 先验证整组事实再一次替换，任一资源失效不能清除现有有效授权。 */
     const bindings = captureServerOpsReadBindings(grant.resources, options)
-    const previous = options.access.getCurrent() ?? null
-    if (grant.resources.length && previous && submitted.token !== accessImpact().token) throw new Error('SERVER_OPS_ACCESS_IMPACT_CHANGED')
+    /** 从完整会话集合移除 SSH 资源时，同一目标上的旧授权也一起撤销。 */
+    const previousRead = options.access.getReadAccess(grant.sessionId)
+    const retainedHostIds = new Set(grant.resources.flatMap((resource) => resource.kind === 'ssh' ? [resource.hostId] : []))
+    const removedHostIds = new Set(previousRead?.resources.flatMap((resource) => resource.kind === 'ssh' && !retainedHostIds.has(resource.hostId) ? [resource.hostId] : []) ?? [])
     options.access.grantRead(grant, bindings)
-    if (previous && !options.access.getCurrent()) {
-      broadcast(SERVER_OPS_IPC_CHANNELS.AGENT_ACCESS_CHANGED, { previous, current: null } satisfies ServerOpsAgentAccessChanged)
+    const legacy = options.access.getCurrent()
+    if (legacy && legacy.sessionId === grant.sessionId && removedHostIds.has(legacy.hostId)) {
+      const previous = { ...legacy }
+      if (options.access.revoke(legacy.sessionId, legacy.hostId)) {
+        broadcast(SERVER_OPS_IPC_CHANNELS.AGENT_ACCESS_CHANGED, { previous, current: null } satisfies ServerOpsAgentAccessChanged)
+      }
     }
     return options.access.getReadAccess(grant.sessionId) ?? null
   })

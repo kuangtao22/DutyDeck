@@ -1,4 +1,5 @@
 import { dirname } from 'node:path'
+import { shouldTrackAgentRunFilePath } from './agent-run-file-change-path-policy'
 
 // 高频变动目录：跳过依赖、缓存和构建中间物，防止产生 IPC 事件风暴。
 const HIGH_NOISE_SEGMENTS = new Set([
@@ -14,7 +15,8 @@ const GIT_DIFF_STATE_FILES = new Set([
 ])
 
 export function isHighNoisePath(normalizedPath: string): boolean {
-  return normalizedPath.split('/').some((seg) => HIGH_NOISE_SEGMENTS.has(seg))
+  return !shouldTrackAgentRunFilePath(normalizedPath)
+    || normalizedPath.split('/').some((seg) => HIGH_NOISE_SEGMENTS.has(seg))
 }
 
 /** fs.watch 在部分平台/事件上可能返回 Buffer 或 null。未知路径不触发刷新，避免绕过噪声过滤。 */

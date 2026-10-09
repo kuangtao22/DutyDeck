@@ -3392,7 +3392,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
         onClick: handleOpenVault,
       }] : []),
       ...(mode === "agent" ? [{
-        label: "项目记忆",
+        label: "项目知识库",
         icon: <Brain size={16} />,
         active: isWorkspaceComponentActive("memory"),
         onClick: () => handleOpenCapabilityComponent("memory"),
@@ -3773,7 +3773,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
       {mode === 'agent' && (
         <div className="px-3 pb-0.5">
           <WorkspaceComponentSidebarEntry
-            label="项目记忆"
+            label="项目知识库"
             icon={<Brain size={16} />}
             active={isWorkspaceComponentActive('memory')}
             onClick={() => handleOpenCapabilityComponent('memory')}

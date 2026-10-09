@@ -145,6 +145,7 @@ export function resolvePiOpenAIReasoningProfile(
   if (!isGithubCopilotResponses && !isNativeResponsesProvider) return undefined
   return resolveReasoningProfile({
     modelId,
+    provider,
     transport: isGithubCopilotResponses ? 'openai-responses' : inferReasoningTransport(provider),
   })
 }
@@ -1712,6 +1713,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       const deepSeekReasoningProfile = input.provider === 'deepseek'
         ? resolveReasoningProfile({
           modelId: input.model,
+          provider: input.provider,
           transport: 'anthropic-messages',
         })
         : undefined

@@ -166,9 +166,19 @@ function createFixture(options: { failCommitOnce?: boolean } = {}) {
   }
 
   /** 文本产物服务依赖的权威图读取。 */
-  const load = (): CanvasWorkspaceSnapshot => ({
-    document: structuredClone(currentDocument), writable: true, nodeIssues: [],
-  })
+  let loadCalls = 0
+  /** 普通读写路径的权威图加载，会计数以证明知识读取不调用它。 */
+  const load = (): CanvasWorkspaceSnapshot => {
+    loadCalls += 1
+    return { document: structuredClone(currentDocument), writable: true, nodeIssues: [] }
+  }
+  /** 纯读稳定主图调用次数。 */
+  let readSnapshotCalls = 0
+  /** 不提升恢复候选的稳定主图读取替身。 */
+  const readSnapshot = (): CanvasWorkspaceSnapshot => {
+    readSnapshotCalls += 1
+    return { document: structuredClone(currentDocument), writable: true, nodeIssues: [] }
+  }
   /** 在内存中应用真实 GraphWriter 产生的同批节点并推进图 revision。 */
   const commitNodes = (expectedRevision: number, nodes: CanvasDocument['nodes']): CanvasDocument => {
     if (currentDocument.revision !== expectedRevision) throw new Error('CANVAS_REVISION_CONFLICT')
@@ -238,7 +248,7 @@ function createFixture(options: { failCommitOnce?: boolean } = {}) {
   }
   /** 被测文本产物服务。 */
   const service = createCanvasTextArtifactService({
-    documents: { load },
+    documents: { load, readSnapshot },
     revisions,
     graph,
     writeTextFileAtomic: (path, content) => { exports.push({ path, content }) },
@@ -253,6 +263,8 @@ function createFixture(options: { failCommitOnce?: boolean } = {}) {
     graphInputs,
     exports,
     batchIntents,
+    getLoadCalls: () => loadCalls,
+    getReadSnapshotCalls: () => readSnapshotCalls,
     getDocument: () => structuredClone(currentDocument),
     setDocument: (document: CanvasDocument) => { currentDocument = structuredClone(document) },
     /** 修改指定版本状态，用于验证 prepared 恢复候选的公开边界。 */
@@ -271,6 +283,37 @@ function createFixture(options: { failCommitOnce?: boolean } = {}) {
 }
 
 describe('Canvas Text Artifact Service', () => {
+  test('Given 当前正文已提交 When 知识库纯读 Then 只读稳定主图与精确 revision 且不调用恢复 load', async () => {
+    /** 带纯读主图入口的文本产物 fixture。 */
+    const fixture = createFixture()
+
+    /** 知识库读取当前文档节点采用的精确正文。 */
+    const artifact = await fixture.service.readForKnowledge({
+      projectId: 'project-1', canvasId: 'canvas-1', nodeId: 'doc-1',
+      kind: 'document', contentId: 'content-1', contentRevision: 2,
+    })
+
+    expect(artifact.content).toBe('# 第二版')
+    expect(fixture.getReadSnapshotCalls()).toBe(1)
+    expect(fixture.getLoadCalls()).toBe(0)
+    expect(fixture.preparedInputs).toHaveLength(0)
+    expect(fixture.committedIdentities).toHaveLength(0)
+    expect(fixture.reconciledDocuments).toHaveLength(0)
+    expect(fixture.graphInputs).toHaveLength(0)
+  })
+
+  test('Given 知识读取声明的正文版本已过期 When 纯读 Then 在访问 revision 正文前拒绝', async () => {
+    /** 当前图采用 revision 2 的文本产物 fixture。 */
+    const fixture = createFixture()
+
+    await expect(fixture.service.readForKnowledge({
+      projectId: 'project-1', canvasId: 'canvas-1', nodeId: 'doc-1',
+      kind: 'document', contentId: 'content-1', contentRevision: 1,
+    })).rejects.toThrow('CANVAS_ARTIFACT_REVISION_CONFLICT')
+    expect(fixture.getReadSnapshotCalls()).toBe(1)
+    expect(fixture.getLoadCalls()).toBe(0)
+  })
+
   test('Given 文档节点采用 revision 2 When 保存正文 Then 准备 revision 3 并只更新原节点引用', async () => {
     const fixture = createFixture()
 

@@ -2,6 +2,7 @@ import { lstat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import type { AgentFileChangeCapture, AgentRunFileChangesSnapshot } from '@proma/shared'
+import { shouldTrackAgentRunFilePath } from './agent-run-file-change-path-policy'
 import { AgentRunFileTracker } from './agent-run-file-tracker'
 import { subscribeAgentFileObservations } from './agent-file-observation-bus'
 
@@ -27,6 +28,7 @@ function normalizePath(path: string, cwd: string): string {
 }
 // 复用既有监听，不创建第二套 fs.watch；同一共享根只有唯一工具证据才能归属。
 subscribeAgentFileObservations((path) => {
+  if (!shouldTrackAgentRunFilePath(path)) return
   // Git 元数据会触发右侧累计差异刷新，但不属于业务文件修改。
   if (path.split(/[\\/]/).includes('.git')) return
   const candidates = [...activeRuns].filter(run => run.owns(path))
@@ -70,6 +72,7 @@ class RunFileChanges {
   /** 接收权限通过后的采集阶段，返回可等待的完成边界。 */
   capture(capture: AgentFileChangeCapture): Promise<void> {
     if (this.ended) return Promise.resolve()
+    if (capture.path && !shouldTrackAgentRunFilePath(normalizePath(capture.path, this.options.cwd))) return Promise.resolve()
     if (capture.phase === 'invalidate' && capture.path && this.owns(capture.path)) {
       const path = normalizePath(capture.path, this.options.cwd)
       if (this.invalidated.size < 256) this.invalidated.add(path)
@@ -100,7 +103,7 @@ class RunFileChanges {
   /** 保存纯元数据；目录监听信号不作为文件行展示，缺失路径保留删除证据。 */
   private async save(endedAt?: number): Promise<void> {
     if (!this.options.isValid()) return
-    const files = this.tracker.snapshot().map(file => this.invalidated.has(file.path)
+    const files = this.tracker.snapshot().filter(file => shouldTrackAgentRunFilePath(file.path)).map(file => this.invalidated.has(file.path)
       ? { path: file.path, status: 'unknown' as const, statsState: 'unavailable' as const } : file)
     const visible = await Promise.all(files.map(async file => {
       if (file.status !== 'unknown') return file

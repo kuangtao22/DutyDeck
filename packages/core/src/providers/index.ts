@@ -17,6 +17,7 @@ export * from './types.ts'
 export * from './sse-reader.ts'
 export * from './url-utils.ts'
 export * from './thinking-capability.ts'
+export * from './request-parameters.ts'
 export * from './user-agent.ts'
 
 // 导出适配器类
@@ -35,14 +36,14 @@ const adapterRegistry = new Map<ProviderType, ProviderAdapter>([
   ['kimi-api', new AnthropicAdapter('kimi-api')],       // Kimi API 的 Anthropic 协议端点
   ['kimi-coding', new AnthropicAdapter('kimi-coding')], // Kimi Coding Plan 订阅制（强制 User-Agent）
   ['opencode-go-openai', new OpenAIAdapter('opencode-go-openai')], // OpenCode Go 的 OpenAI 兼容端点
-  ['zhipu', new OpenAIAdapter()],         // 智谱 AI 使用 OpenAI 兼容协议
+  ['zhipu', new OpenAIAdapter('zhipu')],  // 智谱 AI 使用 OpenAI 兼容协议
   ['zhipu-coding', new AnthropicAdapter('zhipu-coding')], // 智谱 Coding Plan 订阅制（强制 User-Agent）
   ['zhipu-coding-team', new AnthropicAdapter('zhipu-coding-team')], // 智谱 Coding Plan 团队版
   ['ark-coding-plan', new AnthropicAdapter('ark-coding-plan')], // 火山方舟 Agent Plan 使用 Anthropic 兼容协议
   ['minimax', new AnthropicAdapter('minimax')], // MiniMax 使用 Anthropic 兼容协议
-  ['doubao', new OpenAIAdapter()],        // 火山方舟 Coding Plan 使用 OpenAI 兼容协议
-  ['doubao-api', new OpenAIAdapter()],    // 豆包 API 使用 OpenAI 兼容协议
-  ['qwen', new OpenAIAdapter()],          // 通义千问使用 OpenAI 兼容协议
+  ['doubao', new OpenAIAdapter('doubao')],        // 火山方舟 Coding Plan 使用 OpenAI 兼容协议
+  ['doubao-api', new OpenAIAdapter('doubao-api')], // 豆包 API 使用 OpenAI 兼容协议
+  ['qwen', new OpenAIAdapter('qwen')],            // 通义千问使用 OpenAI 兼容协议
   ['qwen-anthropic', new AnthropicAdapter('qwen-anthropic')],       // 通义千问 DashScope Anthropic 兼容协议
   ['qwen-token-plan', new AnthropicAdapter('qwen-token-plan')],     // 通义千问 Token Plan Anthropic 兼容协议
   ['xiaomi', new AnthropicAdapter('xiaomi')],                       // 小米 MiMo API 使用 Anthropic 兼容协议

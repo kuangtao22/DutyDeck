@@ -58,6 +58,31 @@ describe('OpenAIResponsesAdapter', () => {
     expect(body.max_output_tokens).toBe(321)
   })
 
+  test('Given 支持推理档位的模型 When 请求 low Then 写入 Responses reasoning', () => {
+    const request = adapter.buildStreamRequest({
+      baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-test', modelId: 'gpt-5.1', history: [], userMessage: '你好',
+      thinkingEnabled: true, thinkingLevel: 'low', readImageAttachments: () => [],
+    })
+    const body = JSON.parse(request.body) as { reasoning?: { effort?: string } }
+    expect(body.reasoning).toEqual({ effort: 'low' })
+  })
+
+  test('Given 模型不支持 temperature When 调用方传入温度 Then 请求省略 temperature', () => {
+    const request = adapter.buildStreamRequest({
+      baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-test', modelId: 'gpt-5-pro', history: [], userMessage: '你好',
+      temperature: 0.2, readImageAttachments: () => [],
+    })
+    const body = JSON.parse(request.body) as { temperature?: number }
+    expect(body.temperature).toBeUndefined()
+  })
+
+  test('Given 显式输出上限超过模型能力 When 构建 Responses 请求 Then 清晰拒绝', () => {
+    expect(() => adapter.buildStreamRequest({
+      baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-test', modelId: 'gpt-5.1', history: [], userMessage: '你好',
+      maxTokens: 128001, readImageAttachments: () => [],
+    })).toThrow('maxTokens')
+  })
+
   test('Given Responses 文本 delta When parseSSELine Then 输出 chunk', () => {
     expect(adapter.parseSSELine(JSON.stringify({ type: 'response.output_text.delta', delta: 'hi' }))).toEqual([
       { type: 'chunk', delta: 'hi' },

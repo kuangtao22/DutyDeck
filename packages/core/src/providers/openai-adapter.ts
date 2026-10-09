@@ -22,6 +22,12 @@ import type {
   ContinuationMessage,
 } from './types.ts'
 import { resolveOpenAIChatCompletionsUrl } from './url-utils.ts'
+import {
+  getDeclaredReasoningSupport,
+  resolveMaxTokens,
+  resolveProviderReasoningRequest,
+  supportsTemperature,
+} from './request-parameters.ts'
 
 // ===== OpenAI 特有类型 =====
 
@@ -165,6 +171,7 @@ function appendContinuationMessages(
       messages.push({
         role: 'assistant',
         content: contMsg.content || null,
+        ...(contMsg.reasoning ? { reasoning_content: contMsg.reasoning } : {}),
         tool_calls: contMsg.toolCalls.map((tc) => ({
           id: tc.id,
           type: 'function' as const,
@@ -195,13 +202,51 @@ export class OpenAIAdapter implements ProviderAdapter {
   buildStreamRequest(input: StreamRequestInput): ProviderRequest {
     const url = resolveOpenAIChatCompletionsUrl(input.baseUrl, this.providerType)
     const messages = toOpenAIMessages(input)
+    const reasoning = resolveProviderReasoningRequest({
+      provider: this.providerType,
+      modelId: input.modelId,
+      transport: 'openai-completions',
+      thinkingEnabled: input.thinkingEnabled,
+      thinkingLevel: input.thinkingLevel,
+    })
+    const maxTokens = resolveMaxTokens(this.providerType, input.modelId, input.maxTokens)
 
     const bodyObj: Record<string, unknown> = {
       model: input.modelId,
       messages,
       stream: true,
-      ...(input.temperature === undefined ? {} : { temperature: input.temperature }),
-      ...(input.maxTokens === undefined ? {} : { max_tokens: input.maxTokens }),
+      ...(input.temperature === undefined || !supportsTemperature(this.providerType, input.modelId)
+        ? {}
+        : { temperature: input.temperature }),
+    }
+    if (maxTokens !== undefined) {
+      const usesCompletionTokens = this.providerType === 'openai'
+        && getDeclaredReasoningSupport(this.providerType, input.modelId) === true
+      bodyObj[usesCompletionTokens ? 'max_completion_tokens' : 'max_tokens'] = maxTokens
+    }
+
+    if (reasoning?.supportsToggle && this.providerType === 'zhipu') {
+      bodyObj.thinking = reasoning.enabled
+        ? { type: 'enabled', clear_thinking: false }
+        : { type: 'disabled' }
+      if (reasoning.enabled && reasoning.supportsEffort) bodyObj.reasoning_effort = reasoning.effort
+    } else if (reasoning && this.providerType === 'qwen') {
+      bodyObj.enable_thinking = reasoning.enabled
+      if (reasoning.effort && reasoning.supportsEffort) bodyObj.reasoning_effort = reasoning.effort
+      if (reasoning.enabled && reasoning.budgetTokens !== undefined) {
+        const outputLimit = maxTokens ?? reasoning.maxOutputTokens
+        if (outputLimit !== undefined && outputLimit <= 1) {
+          throw new RangeError(`thinking_budget 必须小于 maxTokens ${outputLimit}`)
+        }
+        bodyObj.thinking_budget = outputLimit === undefined
+          ? reasoning.budgetTokens
+          : Math.max(1, Math.min(reasoning.budgetTokens, outputLimit - 1))
+      }
+    } else if (reasoning?.effort && reasoning.encoding?.kind === 'zai-thinking-effort') {
+      bodyObj.thinking = { type: reasoning.enabled ? 'enabled' : 'disabled' }
+      if (reasoning.enabled) bodyObj.reasoning_effort = reasoning.effort
+    } else if (reasoning?.effort && (reasoning.encoding?.kind === 'openai-reasoning-effort' || reasoning.supportsEffort)) {
+      bodyObj.reasoning_effort = reasoning.effort
     }
 
     // 工具定义

@@ -93,6 +93,63 @@ describe('Pi MCP 配置管理工具边界', () => {
   })
 })
 
+describe('Pi 工作区记忆记录工具合同', () => {
+  test('Given 当前用户的工作区 Agent When 构建工具 Then 只注册受工作区写守卫保护的记忆工具', async () => {
+    const standard = await buildPiBuiltinTools(sdk, {
+      sessionId: 'session-memory',
+      channelId: 'channel-1',
+      workspaceSlug: 'project-a',
+      runWorkspaceSlugWrite: (_workspaceSlug, effect) => effect(),
+      productivityTools: { todosEnabled: false, calendarEnabled: false, obsidianEnabled: false },
+    })
+    expect(standard.tools.map((tool) => tool.name)).toContain('proma_memory_record')
+
+    const missingGuard = await buildPiBuiltinTools(sdk, {
+      sessionId: 'session-memory',
+      channelId: 'channel-1',
+      workspaceSlug: 'project-a',
+      productivityTools: { todosEnabled: false, calendarEnabled: false, obsidianEnabled: false },
+    })
+    expect(missingGuard.tools.map((tool) => tool.name)).not.toContain('proma_memory_record')
+
+    const automation = await buildPiBuiltinTools(sdk, {
+      sessionId: 'session-memory',
+      channelId: 'channel-1',
+      workspaceSlug: 'project-a',
+      triggeredBy: 'automation',
+      runWorkspaceSlugWrite: (_workspaceSlug, effect) => effect(),
+      productivityTools: { todosEnabled: false, calendarEnabled: false, obsidianEnabled: false },
+    })
+    expect(automation.tools.map((tool) => tool.name)).not.toContain('proma_memory_record')
+
+    const planning = await buildPiBuiltinTools(sdk, {
+      sessionId: 'session-memory',
+      channelId: 'channel-1',
+      workspaceSlug: 'project-a',
+      permissionMode: 'plan',
+      runWorkspaceSlugWrite: (_workspaceSlug, effect) => effect(),
+      productivityTools: { todosEnabled: false, calendarEnabled: false, obsidianEnabled: false },
+    })
+    expect(planning.tools.map((tool) => tool.name)).not.toContain('proma_memory_record')
+  })
+
+  test('Given 记忆工具 schema When 检查参数 Then 只暴露工作区内相对 Markdown 路径和追加内容', async () => {
+    const result = await buildPiBuiltinTools(sdk, {
+      sessionId: 'session-memory',
+      channelId: 'channel-1',
+      workspaceSlug: 'project-a',
+      runWorkspaceSlugWrite: (_workspaceSlug, effect) => effect(),
+      productivityTools: { todosEnabled: false, calendarEnabled: false, obsidianEnabled: false },
+    })
+    const tool = result.tools.find((entry) => entry.name === 'proma_memory_record')
+    const schema = JSON.stringify(tool?.parameters)
+
+    expect(schema).toContain('relativePath')
+    expect(schema).toContain('content')
+    expect(tool?.description).toContain('append')
+  })
+})
+
 describe('Pi Server Ops 工具合同', () => {
   test('Given 草稿能力可用 When 按来源和模式构建 Then 仅普通用户标准模式注册', async () => {
     /** 注册检查不调用草稿写入，也不引入真实配置。 */

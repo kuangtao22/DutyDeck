@@ -22,6 +22,12 @@ import type {
 } from './types.ts'
 import { getGeminiModelCapability, normalizeGeminiThinkingLevel } from '@proma/shared'
 import { normalizeBaseUrl } from './url-utils.ts'
+import {
+  getDeclaredReasoningSupport,
+  resolveMaxTokens,
+  resolveProviderReasoningRequest,
+  supportsTemperature,
+} from './request-parameters.ts'
 
 // ===== Google 特有类型 =====
 
@@ -199,16 +205,48 @@ export class GoogleAdapter implements ProviderAdapter {
   buildStreamRequest(input: StreamRequestInput): ProviderRequest {
     const url = normalizeBaseUrl(input.baseUrl)
     const contents = toGoogleContents(input)
+    const declaredReasoningSupport = getDeclaredReasoningSupport(this.providerType, input.modelId)
+    const reasoning = resolveProviderReasoningRequest({
+      provider: this.providerType,
+      modelId: input.modelId,
+      transport: 'other',
+      thinkingEnabled: input.thinkingEnabled,
+      thinkingLevel: input.thinkingLevel,
+    })
+    const maxTokens = resolveMaxTokens(this.providerType, input.modelId, input.maxTokens)
 
     // 构建 generationConfig
     const generationConfig: Record<string, unknown> = {}
 
-    if (input.temperature !== undefined) generationConfig.temperature = input.temperature
-    if (input.maxTokens !== undefined) generationConfig.maxOutputTokens = input.maxTokens
+    if (input.temperature !== undefined && supportsTemperature(this.providerType, input.modelId)) {
+      generationConfig.temperature = input.temperature
+    }
+    if (maxTokens !== undefined) generationConfig.maxOutputTokens = maxTokens
 
     // Gemini 3 使用 thinkingLevel 而非旧版 thinkingBudget。未知/旧模型保留预算模式，
     // 已知 Gemini 3 文本模型则按其官方合法档位归一化，避免 3.7/3.8 收到 minimal 后 400。
-    if (input.thinkingEnabled) {
+    if (reasoning) {
+      if (!reasoning.enabled && reasoning.supportsToggle && reasoning.budgetTokens === 0) {
+        generationConfig.thinkingConfig = {
+          includeThoughts: false,
+          thinkingBudget: 0,
+        }
+      } else if (reasoning.supportsEffort && reasoning.effort) {
+        generationConfig.thinkingConfig = {
+          includeThoughts: true,
+          thinkingLevel: reasoning.effort.toUpperCase(),
+        }
+      } else if (reasoning.supportsBudgetTokens && reasoning.budgetTokens !== undefined) {
+        generationConfig.thinkingConfig = {
+          includeThoughts: reasoning.enabled,
+          thinkingBudget: reasoning.budgetTokens,
+        }
+      } else if (reasoning.supportsToggle && /gemma-?4/i.test(input.modelId)) {
+        generationConfig.thinkingConfig = reasoning.enabled
+          ? { includeThoughts: true, thinkingLevel: reasoning.level.toUpperCase() }
+          : { includeThoughts: false, thinkingBudget: 0 }
+      }
+    } else if (declaredReasoningSupport !== false && input.thinkingEnabled) {
       const geminiCapability = getGeminiModelCapability(input.modelId)
       if (geminiCapability) {
         const selectedLevel = normalizeGeminiThinkingLevel(

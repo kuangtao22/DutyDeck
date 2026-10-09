@@ -210,7 +210,7 @@ function CompactStatusNotice({ message }: { message: SDKSystemMessage }): React.
 // extractMeta / MessageMeta 已迁移至 @proma/session-core
 
 /** 从 turn 消息列表中提取 result 消息的耗时和用量数据 */
-function extractTurnUsage(turnMessages: SDKMessage[]): { durationMs?: number; usage?: AgentEventUsage } {
+export function extractTurnUsage(turnMessages: SDKMessage[]): { durationMs?: number; usage?: AgentEventUsage } {
   for (const msg of turnMessages) {
     if (msg.type !== 'result') continue
     const resultMsg = msg as SDKResultMessage
@@ -226,14 +226,17 @@ function extractTurnUsage(turnMessages: SDKMessage[]): { durationMs?: number; us
     if (resultMsg.modelUsage) {
       for (const [modelId, info] of Object.entries(resultMsg.modelUsage)) {
         const fallbackModelId = resultMsg._channelModelId ?? modelId
-        const fallbackWindow = inferContextWindow(fallbackModelId)
-        const candidate = Math.max(info?.contextWindow ?? 0, fallbackWindow ?? 0) || undefined
+        /** SDK 返回的正数窗口是该历史调用的真实值，静态推断仅处理缺失或非法值。 */
+        const reportedWindow = info?.contextWindow
+        const candidate = typeof reportedWindow === 'number' && Number.isFinite(reportedWindow) && reportedWindow > 0
+          ? reportedWindow
+          : inferContextWindow(fallbackModelId, resultMsg._channelProvider)
         if (candidate && (contextWindow === undefined || candidate > contextWindow)) {
           contextWindow = candidate
         }
       }
     } else {
-      contextWindow = inferContextWindow(resultMsg._channelModelId)
+      contextWindow = inferContextWindow(resultMsg._channelModelId, resultMsg._channelProvider)
     }
     return {
       durationMs,

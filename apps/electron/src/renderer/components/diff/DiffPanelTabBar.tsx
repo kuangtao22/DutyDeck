@@ -116,7 +116,7 @@ export function DiffPanelTabBar({
       ...(productivityTools.calendarEnabled ? [{ type: 'item', id: 'open-calendar', label: '打开日程' } as const] : []),
       { type: 'item', id: 'open-skills', label: '打开 Skills' } as const,
       { type: 'item', id: 'open-mcp', label: '打开 MCP' } as const,
-      { type: 'item', id: 'open-memory', label: '打开项目记忆' } as const,
+      { type: 'item', id: 'open-memory', label: '打开项目知识库' } as const,
     ] : []),
     ...(onOpenChat ? [
       { type: 'separator' } as const,

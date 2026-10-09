@@ -43,6 +43,8 @@ export {
 } from './context-window'
 export { isGpt6AstraFamily, isGpt6SolFamily, isGpt6LunaFamily, isGpt61SolFamily } from './model-family'
 export { calculateContextUsageRatio } from './context-usage'
+export { getModelCapabilities, getModelReasoningCapability } from './model-capabilities'
+export type { ModelCapabilities, ModelCapabilityCost, ModelReasoningOption } from './model-capabilities'
 export {
   getGeminiModelCapability,
   normalizeGeminiThinkingLevel,

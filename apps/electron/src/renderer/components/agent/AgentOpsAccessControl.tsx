@@ -23,8 +23,16 @@ export async function persistAgentToolMode(
   publish(session)
 }
 
+/** 模式切换入口只属于运维授权弹窗；资源保存期间禁止并发修改模式。 */
+interface AgentOpsAccessControlProps {
+  sessionId: string
+  disabled?: boolean
+  /** 主进程成功保存后通知弹窗关闭，避免随后保存资源又切回运维模式。 */
+  onModeChanged?: () => void
+}
+
 /** 仅在运维授权弹窗内提供会话工具模式设置，聊天输入区不展示运维控件。 */
-export function AgentOpsAccessControl({ sessionId }: { sessionId: string }): React.ReactElement {
+export function AgentOpsAccessControl({ sessionId, disabled = false, onModeChanged }: AgentOpsAccessControlProps): React.ReactElement {
   /** 只订阅会话元数据，不订阅输入草稿或消息历史。 */
   const sessions = useAtomValue(agentSessionsAtom)
   const setSessions = useSetAtom(agentSessionsAtom)
@@ -33,12 +41,13 @@ export function AgentOpsAccessControl({ sessionId }: { sessionId: string }): Rea
   const [switching, setSwitching] = React.useState(false)
   /** 模式更新完成后才替换 Jotai 中对应的会话元数据。 */
   const changeMode = async (next: AgentToolMode): Promise<void> => {
-    if (!session || switching || next === mode) return
+    if (!session || disabled || switching || next === mode) return
     setSwitching(true)
     try {
       await persistAgentToolMode(sessionId, next, window.electronAPI.updateAgentSessionToolMode, (updated) => {
         setSessions((previous) => previous.map((item) => item.id === sessionId ? updated : item))
       })
+      onModeChanged?.()
     } catch (error) {
       toast.error('切换运维模式失败', { description: error instanceof Error ? error.message : '请稍后重试' })
     } finally {
@@ -49,7 +58,7 @@ export function AgentOpsAccessControl({ sessionId }: { sessionId: string }): Rea
   return <div className="flex items-center gap-1" data-agent-ops-access-control>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button type="button" variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-xs" disabled={!session || switching} aria-label="选择 Agent 工具模式">
+        <Button type="button" variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-xs" disabled={disabled || !session || switching} aria-label="选择 Agent 工具模式">
           {switching ? <LoaderCircle className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}
           {mode === 'server-ops-read' ? '运维只读' : mode === 'server-ops-write' ? '运维读写' : '标准'}
         </Button>
@@ -58,7 +67,7 @@ export function AgentOpsAccessControl({ sessionId }: { sessionId: string }): Rea
       <DropdownMenuContent align="start" className="z-[270]">
         <DropdownMenuItem onSelect={() => { void changeMode('standard') }}>标准模式</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => { void changeMode('server-ops-read') }}>运维只读</DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => { void changeMode('server-ops-write') }}>运维读写（可改数据库）</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => { void changeMode('server-ops-write') }}>运维读写</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   </div>

@@ -33,6 +33,9 @@ export const SAFE_TOOLS: readonly string[] = [
   'BrowserClose',
   'BrowserPreviewOpen',
   'TodoRead',        // Todo 列表读取
+  'proma_knowledge_search', // 当前项目内有预算的知识检索，Facade 再核验会话来源。
+  'proma_knowledge_read',   // 已登记资料的有界读取，不接受任意路径。
+  'proma_knowledge_maintenance_next', // 仅返回当前项目未处理来源的有界元数据。
 
   'TaskOutput',      // 后台任务输出
   // 注意：AskUserQuestion 不在此列表 — 由 canUseTool 拦截并展示交互式 UI

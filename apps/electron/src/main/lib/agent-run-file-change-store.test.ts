@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentRunFileChangesSnapshot } from '@proma/shared'
@@ -127,6 +127,37 @@ describe('Agent 本轮文件统计持久化', () => {
     writeFileSync(sourcePath, 'changed after persistence\n', 'utf8')
 
     expect(store.readAgentRunFileChanges('session-immutable-stats')).toEqual([snapshot])
+  })
+
+  test('Given 新快照混入宿主知识文件 When 持久化 Then 磁盘与读取结果只保留项目文件', () => {
+    prepareTemporaryDataRoot()
+    const sessionId = 'session-filter-internal-write'
+    const snapshot = createSnapshot({ files: [
+      { path: '/workspace/.proma/knowledge/manifest.json', status: 'modified', statsState: 'complete', additions: 1, deletions: 1 },
+      { path: '/workspace/.proma/project-config/source.ts', status: 'modified', statsState: 'complete', additions: 2, deletions: 0 },
+    ] })
+
+    store.writeAgentRunFileChanges(sessionId, snapshot)
+
+    const persisted = JSON.parse(readFileSync(snapshotPath(sessionId, snapshot.runId), 'utf8')) as AgentRunFileChangesSnapshot
+    expect(persisted.files.map((file) => file.path)).toEqual(['/workspace/.proma/project-config/source.ts'])
+    expect(store.readAgentRunFileChanges(sessionId)).toEqual([persisted])
+  })
+
+  test('Given 历史快照已包含宿主知识文件 When 读取 Then 兼容过滤且保留普通文件', () => {
+    prepareTemporaryDataRoot()
+    const sessionId = 'session-filter-internal-history'
+    const snapshot = createSnapshot({ files: [
+      { path: '/workspace/.proma/knowledge/.knowledge.lock.owner-old', status: 'unknown', statsState: 'unavailable' },
+      { path: '/workspace/src/app.ts', status: 'modified', statsState: 'complete', additions: 1, deletions: 0 },
+    ] })
+    const path = snapshotPath(sessionId, snapshot.runId)
+    mkdirSync(join(path, '..'), { recursive: true })
+    writeFileSync(path, JSON.stringify(snapshot), 'utf8')
+
+    expect(store.readAgentRunFileChanges(sessionId)[0]?.files).toEqual([
+      { path: '/workspace/src/app.ts', status: 'modified', statsState: 'complete', additions: 1, deletions: 0 },
+    ])
   })
 
   test('Given 会话被删除 When 清理本轮统计 Then 仅移除该会话的统计目录', () => {

@@ -111,7 +111,7 @@ function WorkspaceMenuThemeInitializer(): null {
 export function WorkspaceAddTabMenuApp(): React.ReactElement {
   /** 子窗口预热后由主进程推送本次菜单内容，避免重复加载页面。 */
   const [entries, setEntries] = React.useState<WorkspaceMenuEntryInput[]>([])
-  /** 保持 Radix 菜单与主进程窗口显示状态同步。 */
+  /** 显示状态仅由主进程推送，避免 Radix 迟到的 window.blur 关闭新一轮菜单。 */
   const [open, setOpen] = React.useState(false)
 
   React.useEffect(() => {
@@ -132,10 +132,6 @@ export function WorkspaceAddTabMenuApp(): React.ReactElement {
       <DropdownMenu
         open={open}
         modal={false}
-        onOpenChange={(nextOpen) => {
-          setOpen(nextOpen)
-          if (!nextOpen) void window.electronAPI.dismissWorkspaceMenu()
-        }}
       >
         <DropdownMenuTrigger asChild>
           <button
@@ -151,9 +147,21 @@ export function WorkspaceAddTabMenuApp(): React.ReactElement {
           sideOffset={0}
           avoidCollisions={false}
           className="w-[228px] titlebar-no-drag"
+          onFocusOutside={(event) => {
+            /** popup.blur 会由主进程处理跨窗口失焦；阻止 Radix 旧层的异步焦点事件关闭新菜单。 */
+            event.preventDefault()
+          }}
+          onCloseAutoFocus={(event) => {
+            /** 菜单关闭后不要把焦点恢复到隐藏 trigger，避免重新抢回 popup 焦点。 */
+            event.preventDefault()
+          }}
+          onPointerDownOutside={(event) => {
+            /** 透明留白属于 popup 内部，点击不会触发原生 blur，需显式请求主进程关闭。 */
+            event.preventDefault()
+            void window.electronAPI.dismissWorkspaceMenu()
+          }}
           onEscapeKeyDown={(event) => {
             event.preventDefault()
-            setOpen(false)
             void window.electronAPI.dismissWorkspaceMenu()
           }}
         >
@@ -164,7 +172,11 @@ export function WorkspaceAddTabMenuApp(): React.ReactElement {
                 key={entry.id}
                 disabled={entry.disabled}
                 data-workspace-menu-action={entry.id}
-                onSelect={() => { void window.electronAPI.selectWorkspaceMenuAction(entry.id) }}
+                onSelect={(event) => {
+                  /** 选择与关闭由同一次 SELECT 完成，避免额外的 Radix 关闭事件串入下一轮。 */
+                  event.preventDefault()
+                  void window.electronAPI.selectWorkspaceMenuAction(entry.id)
+                }}
               >
                 {getWorkspaceMenuIcon(entry.id)}
                 {entry.label}

@@ -33,9 +33,9 @@ interface PersistedReadAuthorizationState {
 /** 限制可恢复的会话授权数量，避免配置膨胀；单文件还受字节上限保护。 */
 const MAX_READ_SESSIONS = 32
 
-/** 主进程服务器 Agent 授权 Store；SSH/Redis 只在明确撤销或身份变化时失效。 */
+/** 主进程服务器 Agent 授权 Store；新旧 SSH 授权并存以兼容旧会话，用户撤销时按资源收回。 */
 export class ServerOpsAgentAccessStore {
-  /** 旧 SSH 操作权限仍使用全局单槽，与全部只读授权互斥。 */
+  /** 旧版 SSH 授权仍使用全局单槽，保留到旧版会话明确撤销。 */
   private current: ServerOpsAgentAccess | undefined
   /** 会话隔离的持久只读授权；最多三十二个会话。 */
   private readonly readAccesses = new Map<string, ReadAuthorization>()
@@ -66,7 +66,7 @@ export class ServerOpsAgentAccessStore {
   /** 授予旧操作权限，先持久撤销所有只读授权再发布新状态。 */
   grant(access: ServerOpsAgentAccess): void {
     this.refreshFromPersistence()
-    /** 旧操作权限仍与只读授权互斥，切换时把撤销原子写入共享配置。 */
+    /** 旧入口沿用全局替换语义，撤销原子写入共享配置；后续统一授权仍可独立新增。 */
     this.replaceReadAccesses(new Map([...this.readAccesses.keys()].map((sessionId) => [sessionId, undefined])), () => {
       this.current = { ...access, granted: true }
     })
@@ -111,7 +111,7 @@ export class ServerOpsAgentAccessStore {
       access,
       bindings: new Map(bindings.map((binding) => [binding.key, { ...binding }])),
     }
-    this.replaceRead(grant.sessionId, authorization, () => { this.current = undefined })
+    this.replaceRead(grant.sessionId, authorization)
     return this.getReadAccess(grant.sessionId)
   }
 

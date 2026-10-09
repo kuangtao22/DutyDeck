@@ -22,14 +22,14 @@ describe('服务器运维 Agent 授权 Store', () => {
     expect(store.getCurrent()).toBeUndefined()
   })
 
-  test('Given 多连接只读授权 When 与操作授权切换 Then 互斥且代次不复用', () => {
+  test('Given 多连接统一授权 When 与旧版操作授权共存 Then 显式撤销生效且代次不复用', () => {
     /** 内存 store 与不含真实配置的测试绑定。 */
     const store = new ServerOpsAgentAccessStore()
     const input = { sessionId: 'session-1', resources: [{ kind: 'ssh' as const, hostId: 'host-1' }, { kind: 'redis' as const, sourceId: 'redis-1' }] }
     const bindings = [{ key: 'ssh:host-1', fingerprint: 'host', hostId: 'host-1' }, { key: 'data:redis-1', fingerprint: 'redis', hostId: 'jump-1' }]
     store.grant({ sessionId: 'session-1', hostId: 'host-1', granted: true })
     store.grantRead(input, bindings)
-    expect(store.getCurrent()).toBeUndefined()
+    expect(store.getCurrent()).toEqual({ sessionId: 'session-1', hostId: 'host-1', granted: true })
     const first = store.getReadAccess('session-1')!
     first.resources.splice(0)
     expect(store.getReadAccess('session-1')?.resources).toHaveLength(2)
@@ -40,7 +40,10 @@ describe('服务器运维 Agent 授权 Store', () => {
     expect(store.getReadAccess('session-1')).toBeUndefined()
     store.grantRead(input, bindings)
     expect(store.getReadAccess('session-1')!.revision).toBeGreaterThan(first.revision)
-    expect(store.revokeSession('session-2')).toBe(false)
+    expect(store.getCurrent()).toEqual({ sessionId: 'session-2', hostId: 'host-2', granted: true })
+    expect(store.revokeSession('session-2')).toBe(true)
+    expect(store.getCurrent()).toBeUndefined()
+    expect(store.getReadAccess('session-1')).toBeDefined()
     expect(store.revokeSession('session-1')).toBe(true)
     expect(store.getReadAccess('session-1')).toBeUndefined()
   })
@@ -120,7 +123,7 @@ describe('服务器运维 Agent 授权 Store', () => {
     expect(store.getReadAccess('session-1')).toBeUndefined()
   })
 
-  test('Given 旧操作权限和多个只读会话 When 权限切换 Then 全局互斥但会话撤销精确', () => {
+  test('Given 旧操作权限和多个统一授权会话 When 更新与撤销 Then 保留旧授权且撤销范围精确', () => {
     const store = new ServerOpsAgentAccessStore()
     const read = (sessionId: string) => store.grantRead({ sessionId, resources: [{ kind: 'ssh', hostId: 'host-1' }] }, [{ key: 'ssh:host-1', fingerprint: sessionId, hostId: 'host-1' }])
     read('session-1'); read('session-2')
@@ -128,26 +131,32 @@ describe('服务器运维 Agent 授权 Store', () => {
     store.grant({ sessionId: 'legacy', hostId: 'host-1', granted: true })
     expect(store.listReadAccesses()).toHaveLength(0)
     read('session-1'); read('session-2')
-    expect(store.getCurrent()).toBeUndefined()
+    expect(store.getCurrent()).toEqual({ sessionId: 'legacy', hostId: 'host-1', granted: true })
     expect(store.revokeSession('session-1')).toBe(true)
     expect(store.getReadAccess('session-2')).toBeDefined()
+    expect(store.getCurrent()?.sessionId).toBe('legacy')
     expect(store.revokeHost('host-1')).toBe(true)
     expect(store.listReadAccesses()).toHaveLength(0)
+    expect(store.getCurrent()).toBeUndefined()
     store.clear()
   })
 
-  test('Given 撤权监听器同步再授权 When 旧操作授权替换只读 Then 不会出现两类权限并存', () => {
+  test('Given 撤权监听器同步再授权 When 旧操作授权替换只读 Then 新授权保留且撤销旧会话不影响新会话', () => {
     const store = new ServerOpsAgentAccessStore()
     store.grantRead({ sessionId: 'session-1', resources: [{ kind: 'ssh', hostId: 'host-1' }] }, [{ key: 'ssh:host-1', fingerprint: 'host' }])
     store.grantRead({ sessionId: 'session-3', resources: [{ kind: 'ssh', hostId: 'host-3' }] }, [{ key: 'ssh:host-3', fingerprint: 'host' }])
-    const overlaps: boolean[] = []
-    store.onReadChanged(({ current }) => {
-      overlaps.push(Boolean(store.getCurrent() && store.listReadAccesses().length > 0))
+    /** 清理前取消重入监听，避免测试结束时再次产生授权。 */
+    const unsubscribe = store.onReadChanged(({ current }) => {
       if (current === null) store.grantRead({ sessionId: 'session-2', resources: [{ kind: 'ssh', hostId: 'host-2' }] }, [{ key: 'ssh:host-2', fingerprint: 'host' }])
     })
     store.grant({ sessionId: 'legacy', hostId: 'host-3', granted: true })
-    expect(store.getCurrent() && store.listReadAccesses().length > 0).toBeFalsy()
-    expect(overlaps).not.toContain(true)
+    expect(store.getCurrent()).toEqual({ sessionId: 'legacy', hostId: 'host-3', granted: true })
+    expect(store.listReadAccesses().map((access) => access.sessionId)).toEqual(['session-2'])
+    expect(store.getReadBinding('session-2', 'ssh:host-2')).toEqual({ key: 'ssh:host-2', fingerprint: 'host' })
+    expect(store.revokeSession('legacy')).toBe(true)
+    expect(store.getCurrent()).toBeUndefined()
+    expect(store.getReadAccess('session-2')).toBeDefined()
+    unsubscribe()
     store.clear()
   })
 })

@@ -42,11 +42,15 @@ interface SystemPromptContext {
   projectInstructions?: ProjectInstructionManifest
   /** Only explicit guided consent enables Agent-initiated AGENTS.md maintenance. */
   projectKnowledgeMaintenanceApproved?: boolean
+  /** 当前普通 Agent 已注册知识提炼工具，由本回合复用模型和 Skill。 */
+  projectKnowledgeAvailable?: boolean
   /** 已关闭的生产力能力不显示规则，也不向 Agent 注入对应工具。 */
   /** 已关闭能力按默认全开兼容旧调用方与历史测试。 */
   productivityTools?: ProductivityToolsSettings
   /** 每次前台运行按 Markdown 文件实际覆盖度计算；不产生第二套记忆状态。 */
   memoryGuidance?: WorkspaceMemoryGuidance
+  /** 本轮实际注册了受工作区写守卫保护的记忆追加工具。 */
+  workspaceMemoryRecordAvailable?: boolean
   /** 惰性周检命中时才提供；它只邀请用户复查，绝不自动读写历史。 */
   memoryRefreshOpportunity?: { memoryUpdatedAt?: number; newestSessionAt: number; newerSessionCount: number }
   /** 测试可整体替换路径与元数据来源，避免同一提示词混用不同数据根。 */
@@ -188,10 +192,12 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   const canMaintainProjectKnowledge = ctx.projectKnowledgeMaintenanceApproved === true
   const agentsMaintenanceMode = canMaintainProjectKnowledge
     ? '已获明确授权：基于本轮核验过的项目证据主动创建或小幅更新'
-    : '未获授权：只读取、核验并提出候选，不得由 Agent 自动写入'
+    : '未获长期主动维护授权：只读取、核验并提出候选；用户明确要求修改时可按指定范围执行'
   const agentsMaintenanceRequirement = canMaintainProjectKnowledge
     ? '- 项目地图优先：若项目根或 DutyDeck 工作区的 `AGENTS.md` 缺失，或本轮已核验的项目事实证明索引已过时，在完成当前任务后主动创建或做最小更新。项目根缺少 `<!-- proma:knowledge-maintenance:start -->` 区块时，同时按知识维护 Skill 的原则追加该紧凑协议。先读取现有内容、manifest、脚本、测试配置和相关文档；不凭文件名猜测。'
-    : '- 当前工作区尚未授权 Agent 主动维护两份 `AGENTS.md`。不得创建、修改或追加项目根或 workspace `AGENTS.md`；若发现缺失或过时，只说明证据与最小候选变更，并请求用户启动“同意并开始建立”引导后再写入。'
+    : '- 当前工作区尚未授权 Agent 主动维护两份 `AGENTS.md`。只有用户在当前对话明确要求创建或修改某份文件时，才按要求做最小变更；其他情况不得主动写入。若发现缺失或过时，只说明证据与最小候选变更。先读取现有内容、manifest、脚本、测试配置和相关文档；不凭文件名猜测。'
+  const memoryMaintenanceMode = '已验证的最小增量可直接写入并在完成后说明；删除/大段覆盖、冲突、不确定推断或敏感信息先确认'
+  const memoryWriteGuidance = '- 长期记忆根固定为工作区 `memory/`，不是项目根或会话工作台的 `.claude/memory/`。不要读取、创建或修改后者；旧目录仅由 DutyDeck 的安全迁移处理。\n- 写入协作记忆前，先读取 `MEMORY.md`、`user-profile.md` 与相关主题文件；对用户直接表达、已验证或重复出现，且会影响未来协作判断的稳定知识做最小写入。若记忆时间敏感、状态会更新，或记录具有后续判断价值的阶段性进展，必须在对应正文相邻标注事实/状态的发生、生效或截至时间（至少日期；日内顺序、截止点或时区会影响判断时写明时间和时区）；不得以文件修改时间替代。稳定事实无需额外添加时间戳。普通写入直接完成后告知，不得先追问“要不要记住/是否更新”；不要从单次行为推断。\n- 协作记忆与项目知识库独立维护：记忆保存用户画像、偏好、纠错、经验和决策背景；项目知识库保存结构化项目事实、规划、规则、调研与设计文档。跨库关系只按需建立相对引用，不复制整篇正文。'
 
   const sections = [
     `# DutyDeck Agent
@@ -247,15 +253,20 @@ DutyDeck 将项目地图与用户协作记忆分开维护：前者让 Agent 少�
 | --- | --- | --- | --- |
 | 项目地图 | \`${workspace?.projectAgentsMd ?? '项目根/AGENTS.md'}\` | ${agentsMaintenanceMode}${workspace && !workspace.projectAgentsExists ? '；当前未建立' : ''} | 架构、目录、命令、验证、项目边界与关键文档索引 |
 | DutyDeck 工作区规则 | \`${workspace?.agentsMd ?? 'AGENTS.md'}\` | ${agentsMaintenanceMode}${workspace && !workspace.workspaceAgentsExists ? '；当前未建立' : ''} | DutyDeck 执行环境、工作区流程、项目入口指针；不复制项目地图 |
-| 协作记忆 | \`${workspace?.autoMemoryDir ?? 'memory'}\` | 已验证的最小增量可直接写入并在完成后说明；删除/大段覆盖、冲突、不确定推断或敏感信息先确认 | 用户画像、协作偏好、纠错、经验与会影响未来判断的决策理由；\`MEMORY.md\` 只作主题索引 |
+| 协作记忆 | \`${workspace?.autoMemoryDir ?? 'memory'}\` | ${memoryMaintenanceMode} | 用户画像、协作偏好、纠错、经验与会影响未来判断的决策理由；\`MEMORY.md\` 只作主题索引 |
 | Skills | \`${workspace?.skillsDir ?? 'skills'}\` | 仅在匹配任务或用户请求时读取/维护 | 可复用流程与 SOP，不存普通事实 |
 | 会话工作台 | \`${sessionContextDir}\` | 当前会话可读写 | todo、plan、handoff、临时笔记和中间产物，不自动升级为长期知识 |
 | 项目 Context | \`${projectContextDir}\` | 按当前任务读取；仅在用户要求或交付跨会话资料时写入 | 长调研、设计、证据与 checklist，不作为个人偏好库 |
 
 ${agentsMaintenanceRequirement}
 - 两份 \`AGENTS.md\` 的职责不得重叠。项目事实写项目根；DutyDeck 特有规则写工作区文件并链接项目根。工作区 \`AGENTS.md\` 不得枚举已安装或可用的 Skills：它们已由系统提示词动态注入。优先维护已有 \`<!-- proma:... -->\` 受管区块；没有时只追加紧凑区块，绝不整体重写或覆盖用户手写规则。
-- 长期记忆根固定为工作区 \`memory/\`，不是项目根或会话工作台的 \`.claude/memory/\`。不要读取、创建或修改后者；旧目录仅由 DutyDeck 的安全迁移处理。
-- 写入协作记忆前，先读取 \`MEMORY.md\`、\`user-profile.md\` 与相关主题文件；对用户直接表达、已验证或重复出现，且会影响未来协作判断的稳定知识做最小写入。若记忆时间敏感、状态会更新，或记录具有后续判断价值的阶段性进展，必须在对应正文相邻标注事实/状态的发生、生效或截至时间（至少日期；日内顺序、截止点或时区会影响判断时写明时间和时区）；不得以文件修改时间替代。稳定事实无需额外添加时间戳。普通写入直接完成后告知，不得先追问“要不要记住/是否更新”；不要从单次行为推断。`,
+${memoryWriteGuidance}`,
+    ctx.workspaceMemoryRecordAvailable && ctx.permissionMode !== 'plan'
+      ? '## 对话记忆记录\n- 用户明确要求记录或记住时，调用 `proma_memory_record` 追加，不覆盖已有记忆；完成后告知保存的文件路径。'
+      : undefined,
+    ctx.projectKnowledgeAvailable && ctx.permissionMode !== 'plan'
+      ? '## 项目知识库提炼\n- 知识提炼由你在当前回合加载 `knowledge-maintenance` Skill 执行，沿用当前模型，不要求用户再配置维护渠道、模型或开关。\n- 先用 `proma_knowledge_status` 读取最新流程。没有 approved 计划时，用扫描元数据生成自由分组并调用 `proma_knowledge_plan`，然后等待用户在界面确认；你没有确认工具，不能自行把 proposal 当成 approved。\n- approved 存在后，按其 revision 用 `proma_knowledge_outline` 保存真实路径和 itemId；随后按需分页读取来源，再用 `proma_knowledge_document` 逐项写正文。引用只能来自本轮实际读到的来源页或当前用户原话，发布前宿主会复验版本和权限。\n- metadataOnly 二进制资产只能用 `proma_knowledge_asset` 原格式复制到已确认大纲项的 assets 路径；回执只证明复制成功并给出相对链接，不能声称已查看或理解资产内容。\n- approved 范围内的结构化项目事实、规划、规则、调研与设计文档以对应知识库大纲项为唯一正文；持续更新对应大纲项。协作记忆保持独立，跨库关系只按需建立相对引用，不复制整篇正文。遇到未处理来源，从当前 outline 状态续接并如实保留 pending/partial，未读或失败不得标成完成。\n- 资料库只承载已确认范围：项目文件、Canvas 和 API 等业务来源保持各自所有权，知识库只保存可追溯文档；停止、暂停或失败时不继续维护。受管知识提交不包含两份 AGENTS.md 的编辑授权。'
+      : undefined,
     ctx.memoryGuidance?.needsCollaborationProfile && workspace
       ? `## 协作知识状态
 当前尚未建立 \`memory/user-profile.md\`。这是状态提醒，不要求你立即收集资料；仅在当前任务自然暴露出高价值协作信号时，按项目根 \`AGENTS.md\` 的知识演进约定渐进处理。`

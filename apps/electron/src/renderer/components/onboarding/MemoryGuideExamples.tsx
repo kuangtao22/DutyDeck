@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import memoryGenerateExample from '@/assets/onboarding/guide-memory-generate.png'
 import memoryFilesExample from '@/assets/onboarding/guide-memory.png'
 
 interface ImageSize {
@@ -127,29 +126,13 @@ export function MemoryGuideExamples() {
       </div>
 
       <div className="mt-14 space-y-16 md:mt-16 md:space-y-20">
-        <article className="grid gap-10 border-t border-[#151515]/15 pt-10 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-center">
-          <figure className="min-w-0 overflow-hidden rounded-lg bg-[#f4f5f6] shadow-[0_14px_30px_rgba(21,21,21,0.12)]">
-            <img
-              src={memoryGenerateExample}
-              alt="在协作知识页面为项目建立项目地图与协作画像的示例"
-              className="block h-auto w-full"
-            />
-          </figure>
-          <div className="min-w-0">
-            <h3 className="mt-3 text-2xl font-medium text-neutral-900 md:text-3xl">先建立项目地图，再沉淀协作记忆</h3>
-            <p className="mt-4 text-base leading-[1.7] text-neutral-600 md:text-lg">
-              在协作知识页先建立项目地图。Agent 会核验项目并维护两层 AGENTS.md，再通过真实对话逐步了解你的协作偏好；历史会话只在你之后明确授权时分批作为补充证据。
-            </p>
-          </div>
-        </article>
-
         <article className="grid gap-10 border-t border-[#151515]/15 pt-10 lg:grid-cols-[22rem_minmax(0,1fr)] lg:items-center">
           <div className="min-w-0 lg:order-1">
             <h3 className="mt-3 text-2xl font-medium text-neutral-900 md:text-3xl">
               Agent 整理好的<b className="font-medium text-neutral-900">偏好和记忆可以随时编辑</b>
             </h3>
             <p className="mt-4 text-base leading-[1.7] text-neutral-600 md:text-lg">
-              “记忆”只保存会影响未来协作判断的偏好、纠错和经验。你可以手动编辑这些 md 文件；项目地图则保留在对应的 AGENTS.md，避免每个 Agent 重复探索项目。
+              “记忆”只保存会影响未来协作判断的偏好、纠错和经验。你可以手动编辑这些 md 文件；项目规则保留在 AGENTS.md，与协作记忆分开维护。
             </p>
           </div>
           <div className="lg:order-2">

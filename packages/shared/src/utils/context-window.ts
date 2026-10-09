@@ -9,6 +9,8 @@
 
 import { getGeminiModelCapability } from './gemini-model-capabilities'
 import { isGpt6AstraFamily, isGpt6LunaFamily, isGpt6SolFamily, isGpt61SolFamily } from './model-family'
+import { getModelCapabilities } from './model-capabilities'
+import type { ProviderType } from '../types/channel'
 
 /** 默认上下文窗口（无法识别模型时使用） */
 export const DEFAULT_CONTEXT_WINDOW = 200_000
@@ -154,8 +156,11 @@ export function supports1MContext(modelId: string): boolean {
  * SDK 流式过程中不返回此字段，只有 result 消息的 modelUsage 才带（且部分渠道不返回）。
  * 本函数提供一个按模型家族的 fallback，保证进度环永远有分母可用。
  */
-export function inferContextWindow(model?: string): number | undefined {
+export function inferContextWindow(model?: string, provider?: ProviderType): number | undefined {
   if (!model) return undefined
+  /** 已知渠道使用精确端点上限，历史无渠道记录继续沿用原回退逻辑。 */
+  const capability = getModelCapabilities(provider, model)
+  if (capability?.contextWindow !== undefined) return capability.contextWindow
   if (isGpt61SolFamily(model)) return CODEX_GPT_61_SOL_CONTEXT_WINDOW
   const codexAlignedWindow = inferCodexAlignedGPT5ContextWindow(model)
   if (codexAlignedWindow !== undefined) return codexAlignedWindow

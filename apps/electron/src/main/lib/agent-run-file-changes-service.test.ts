@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentRunFileChangesSnapshot } from '@proma/shared'
@@ -57,6 +57,37 @@ describe('本轮统计生命周期', () => {
     expect(first.saved.at(-1)?.hasUnattributedChanges).toBe(true)
     expect(second.saved.at(-1)?.hasUnattributedChanges).toBe(true)
     expect(first.saved.at(-1)?.files).toEqual([])
+  })
+
+  test('Given 宿主知识写入与普通 .proma 源码变化 When watcher 上报 Then 只记录普通源码', async () => {
+    const { cwd, run, saved } = await fixture()
+    const internal = join(cwd, '.proma', 'knowledge', '.knowledge.lock.owner-123')
+    const source = join(cwd, '.proma', 'project-config', 'source.ts')
+    await mkdir(join(cwd, '.proma', 'knowledge'), { recursive: true })
+    await mkdir(join(cwd, '.proma', 'project-config'), { recursive: true })
+    await writeFile(internal, 'owner')
+    await writeFile(source, 'export const value = 1\n')
+
+    publishAgentFileObservation(internal)
+    publishAgentFileObservation(source)
+    await run.finish()
+
+    expect(saved.at(-1)?.files).toEqual([{ path: source, status: 'unknown', statsState: 'unavailable' }])
+    expect(saved.at(-1)?.hasUnattributedChanges).toBeUndefined()
+  })
+
+  test('Given 写工具显式触碰宿主知识文件 When 采集 Then 不进入本轮文件快照', async () => {
+    const { cwd, run, saved } = await fixture()
+    const internal = join(cwd, '.proma', 'knowledge', 'manifest.json')
+    await mkdir(join(cwd, '.proma', 'knowledge'), { recursive: true })
+
+    await run.capture({ phase: 'before', path: internal })
+    await writeFile(internal, '{}')
+    await run.capture({ phase: 'after', path: internal })
+    await run.finish()
+
+    expect(saved.at(-1)?.files).toEqual([])
+    expect(saved.at(-1)?.hasUnattributedChanges).toBeUndefined()
   })
 })
 

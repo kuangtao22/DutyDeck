@@ -439,13 +439,21 @@ export const LiveMarkdownEditor = React.forwardRef<LiveMarkdownEditorHandle, Liv
     mount.className = 'h-full min-h-0'
     host.appendChild(mount)
 
-    let ready = false
+    /** 仅抑制初始化阶段主动同步受控值的回调，不能丢弃已可交互编辑器中的输入。 */
+    let synchronizingInitialValue = false
     let disposed = false
     let localInstance: Instance | null = null
     const instancePromise = Promise.resolve(ink(mount, {
       doc: valueRef.current,
       files: { clipboard: false, dragAndDrop: false, injectMarkup: true },
-      hooks: { afterUpdate: (nextValue) => { if (ready) onChangeRef.current(nextValue) } },
+      hooks: {
+        afterUpdate: (nextValue) => {
+          if (disposed || synchronizingInitialValue) return
+          // ink 的实例 Promise 可能晚于可编辑 DOM 就绪；同步记录输入，避免随后用旧 props 回填。
+          valueRef.current = nextValue
+          onChangeRef.current(nextValue)
+        },
+      },
       interface: {
         appearance: 'auto', attribution: false, autocomplete: false, images: false,
         lists: true, readonly: readOnly, spellcheck: false, toolbar: false,
@@ -540,8 +548,12 @@ export const LiveMarkdownEditor = React.forwardRef<LiveMarkdownEditorHandle, Liv
         return
       }
       instanceRef.current = instance
-      if (instance.getDoc() !== valueRef.current) instance.update(valueRef.current)
-      ready = true
+      synchronizingInitialValue = true
+      try {
+        if (instance.getDoc() !== valueRef.current) instance.update(valueRef.current)
+      } finally {
+        synchronizingInitialValue = false
+      }
       onReadyRef.current?.()
     })
 
@@ -557,7 +569,6 @@ export const LiveMarkdownEditor = React.forwardRef<LiveMarkdownEditorHandle, Liv
 
     return () => {
       disposed = true
-      ready = false
       resizeObserver.disconnect()
       scheduler.dispose()
       window.removeEventListener('transitionend', onTransitionEnd)

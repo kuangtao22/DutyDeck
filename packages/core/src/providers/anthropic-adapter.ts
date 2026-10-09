@@ -12,7 +12,7 @@
  * 思考模式按模型能力分支（见 thinking-capability.ts）：
  * - Opus 4.7 / Mythos Preview：adaptive 唯一模式（发 `{type: 'adaptive'}`）
  * - Opus 4.6 / Sonnet 5：推荐 adaptive
- * - DeepSeek v4 系列：`{type: 'enabled'}` + `output_config.effort = 'max'`
+ * - DeepSeek v4 系列：`{type: 'enabled'}` + 所选 `output_config.effort`
  * - 更老的 Claude 系列及 DeepSeek v3：manual（旧版 `{type: 'enabled', budget_tokens}`）
  * - K3 / GLM-5.2：由 shared reasoning profile 编译为 adaptive + effort
  * - Kimi（K2 系列）：不发 thinking 字段
@@ -38,6 +38,12 @@ import type {
 import { resolveAnthropicMessagesUrl } from './url-utils.ts'
 import { detectThinkingCapability } from './thinking-capability.ts'
 import { getPromaUserAgent } from './user-agent.ts'
+import {
+  getDeclaredReasoningSupport,
+  resolveMaxTokens,
+  resolveProviderReasoningRequest,
+  supportsTemperature,
+} from './request-parameters.ts'
 
 // ===== Anthropic 特有类型 =====
 
@@ -309,58 +315,91 @@ export class AnthropicAdapter implements ProviderAdapter {
     const url = this.resolveMessagesUrl(input.baseUrl)
     const messages = toAnthropicMessages(input)
     const capability = detectThinkingCapability(this.providerType, input.modelId)
+    const declaredReasoningSupport = getDeclaredReasoningSupport(this.providerType, input.modelId)
+    const reasoning = resolveProviderReasoningRequest({
+      provider: this.providerType,
+      modelId: input.modelId,
+      transport: 'anthropic-messages',
+      thinkingEnabled: input.thinkingEnabled,
+      thinkingLevel: input.thinkingLevel,
+    })
+    const thinkingEnabled = reasoning?.enabled ?? input.thinkingEnabled
 
     // manual 模式：budget_tokens 必须 < max_tokens，所以开启时放大上限
     // adaptive / effort-based 模式：max_tokens 作为「思考+回答」的总硬上限，给充足空间
     const manualThinkingBudget = 16384
-    let maxTokens: number
+    let defaultMaxTokens: number
     if (this.providerType === 'minimax') {
-      maxTokens = 2048
-    } else if (!input.thinkingEnabled) {
-      maxTokens = 8192
+      defaultMaxTokens = 2048
+    } else if (!thinkingEnabled) {
+      defaultMaxTokens = 8192
     } else if (capability.mode === 'manual-only') {
-      maxTokens = manualThinkingBudget + 16384
+      defaultMaxTokens = manualThinkingBudget + 16384
     } else {
-      maxTokens = 32000
+      defaultMaxTokens = 32000
     }
+    const maxTokens = resolveMaxTokens(
+      this.providerType,
+      input.modelId,
+      input.maxTokens,
+      defaultMaxTokens,
+    )!
 
     const body: Record<string, unknown> = {
       model: input.modelId,
-      max_tokens: input.maxTokens ?? maxTokens,
+      max_tokens: maxTokens,
       messages,
       stream: true,
-      ...(input.temperature === undefined ? {} : { temperature: input.temperature }),
+      ...(input.temperature === undefined
+        || !supportsTemperature(this.providerType, input.modelId)
+        || capability.mode === 'manual-only' && thinkingEnabled
+        ? {}
+        : { temperature: input.temperature }),
     }
 
     // 根据模型能力选择思考协议
     // - adaptive-only / adaptive-preferred：发 { type: 'adaptive', display: 'summarized' }
     //   （Opus 4.7 的 display 默认是 'omitted'，需显式 'summarized' 才能收到 thinking 文本流）
     // - manual-only：发旧版 { type: 'enabled', budget_tokens }
-    // - effort-based-max（DeepSeek v4 系列）：{type: 'enabled'} + output_config.effort='max'
+    // - effort-based-max（DeepSeek v4 系列）：{type: 'enabled'} + 所选 output_config.effort
     //   DeepSeek v4 默认就开启思考，所以关闭时必须显式 {type: 'disabled'}
-    if (capability.mode === 'effort-based-max') {
-      if (input.thinkingEnabled) {
+    if (declaredReasoningSupport !== false && capability.mode === 'effort-based-max') {
+      if (thinkingEnabled) {
         body.thinking = { type: 'enabled' }
-        body.output_config = { effort: 'max' }
+        body.output_config = { effort: reasoning?.effort ?? 'max' }
       } else {
         body.thinking = { type: 'disabled' }
       }
-    } else if (input.thinkingEnabled === false && capability.disableStrategy === 'explicit-disabled') {
+    } else if (
+      declaredReasoningSupport !== false
+      && thinkingEnabled === false
+      && capability.disableStrategy === 'explicit-disabled'
+    ) {
       // GLM 等模型默认开启思考；省略字段不会关闭，可能耗尽额度而没有正文。
       body.thinking = { type: 'disabled' }
-    } else if (input.thinkingEnabled) {
+    } else if (declaredReasoningSupport !== false && thinkingEnabled) {
       if (capability.mode === 'adaptive-only' || capability.mode === 'adaptive-preferred') {
         body.thinking = {
           type: 'adaptive',
           display: 'summarized',
         }
-        if (capability.effort) {
-          body.output_config = { effort: capability.effort }
+        const effort = reasoning?.effort ?? capability.effort
+        if (effort) {
+          body.output_config = { effort }
         }
       } else if (capability.mode === 'manual-only') {
+        /** 产品档位对应的目标预算，仍须服从调用方的总输出限制。 */
+        const requestedBudget = reasoning?.budgetTokens ?? manualThinkingBudget
+        /** 目录未列出最低值时沿用 Anthropic manual thinking 的 1024 下限。 */
+        const minimumBudget = reasoning?.minimumBudgetTokens ?? 1024
+        if (minimumBudget >= maxTokens) {
+          throw new RangeError(
+            `thinking budget_tokens 最低 ${minimumBudget} 必须小于 maxTokens ${maxTokens}`,
+          )
+        }
         body.thinking = {
           type: 'enabled',
-          budget_tokens: manualThinkingBudget,
+          budget_tokens: Math.max(minimumBudget, Math.min(requestedBudget, maxTokens - 1)),
         }
       }
     }
@@ -376,7 +415,7 @@ export class AnthropicAdapter implements ProviderAdapter {
 
     // 工具续接消息
     if (input.continuationMessages && input.continuationMessages.length > 0) {
-      appendContinuationMessages(messages, input.continuationMessages, !!input.thinkingEnabled)
+      appendContinuationMessages(messages, input.continuationMessages, !!thinkingEnabled)
     }
 
     const requestBody = JSON.stringify(body)

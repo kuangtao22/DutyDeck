@@ -9,7 +9,7 @@ import { atom } from 'jotai'
 import type { Getter } from 'jotai'
 import { atomWithStorage, selectAtom } from 'jotai/utils'
 import { atomFamily } from 'jotai-family'
-import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, AgentEffort, SDKMessage, UnstagedChangesResult, CanvasNodeReference } from '@proma/shared'
+import type { AgentSessionMeta, AgentEvent, AgentEventUsage, AgentWorkspace, AgentPendingFile, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, AgentEffort, SDKMessage, UnstagedChangesResult, CanvasNodeReference } from '@proma/shared'
 import { PROMA_DEFAULT_PERMISSION_MODE } from '@proma/shared'
 import { calculateDockBadgeCount, countPendingRequests } from '@/lib/dock-badge-count'
 import { setBoundedSDKMessageCache } from '@/lib/agent-message-cache-budget'
@@ -105,6 +105,8 @@ export interface AgentStreamState {
   costUsd?: number
   /** 模型上下文窗口大小 */
   contextWindow?: number
+  /** 上下文窗口来自模型推断还是本次 SDK 运行时报告。 */
+  contextWindowSource?: 'inferred' | 'runtime'
   /** 当前上下文 token 是 Pi 手动压缩后的预估值 */
   contextUsageIsEstimated?: boolean
   /** 当前 thinking block 的 token 估算值（SDK 实时估算，非计费值） */
@@ -259,11 +261,15 @@ export function isActivityGroup(item: ActivityGroup | ToolActivity): item is Act
 }
 
 
-/** 待预填到新 Agent 会话输入框的提示词；仅由用户手动发送。 */
+/** 外部入口交给 Agent 会话的提示词；默认只预填，显式 autoSend 时直接调度。 */
 export interface AgentPendingPrompt {
   sessionId: string
   message: string
   additionalDirectories?: string[]
+  /** 为 true 时不写入输入框，直接通过主进程即时提交或进入 deferred queue。 */
+  autoSend?: boolean
+  /** 自动发送时显式传递的 Skill 引用，避免从提示词文本猜测能力。 */
+  mentionedSkills?: string[]
   /** 保留调用方关联的 Todo 引用元数据，发送时由用户确认。 */
   mentionedTodoIds?: string[]
 }
@@ -1502,6 +1508,25 @@ export const agentSessionIndicatorMapAtom = atom<Map<string, SessionIndicatorSta
   return getStableIndicatorMap(Array.from(map.entries()))
 })
 
+/** 按来源优先级解析一次上下文窗口更新；非法值保持上一状态。 */
+function resolveContextWindowUpdate(
+  previous: AgentStreamState,
+  usage: AgentEventUsage,
+): Pick<AgentStreamState, 'contextWindow' | 'contextWindowSource'> | undefined {
+  const contextWindow = usage.contextWindow
+  if (typeof contextWindow !== 'number' || !Number.isFinite(contextWindow) || contextWindow <= 0) {
+    return undefined
+  }
+  // 推断值不能覆盖本轮已经取得的 SDK 真实值；runtime 与旧协议值仍可更新模型切换后的窗口。
+  if (usage.contextWindowSource === 'inferred' && previous.contextWindowSource === 'runtime') {
+    return undefined
+  }
+  return {
+    contextWindow,
+    contextWindowSource: usage.contextWindowSource,
+  }
+}
+
 /**
  * 处理 AgentEvent 并更新流式状态（纯函数）
  */
@@ -1551,8 +1576,8 @@ export function applyAgentEvent(
       // 永远停留在 inputTokens=0 不显示。
       //
       // 旧格式允许 result 兜底；新版 Pi 的 result 始终是累计值，只能从 assistant 取得上下文。
-      // - contextWindow：取流式与 result 的较大值（result 未必更权威——多 entry 时
-      //   子 Agent 的小窗口可能拉低值，Fix 1/2 已从源头取 max，此处作为安全网）。
+      // - contextWindow：result 转换层已在多 entry 内取最大；这里让后到的真实运行值
+      //   覆盖流式阶段按模型名生成的 fallback，避免把真实 128K 错抬成默认 200K。
       // - costUsd：仅采用完整统计的整轮成本。
       const needResultFallback = prev.contextUsageIsEstimated === true
         || (prev.usageStatus !== 'known' && (prev.inputTokens == null || prev.inputTokens <= 0))
@@ -1560,6 +1585,10 @@ export function applyAgentEvent(
         && event.usage?.usageStatus === undefined
         && event.usage?.inputTokens != null
         && (event.usage.inputTokens > 0 || prev.contextUsageIsEstimated !== true)
+      /** result 窗口已携来源，按真实值优先规则生成最小状态补丁。 */
+      const contextWindowUpdate = event.usage
+        ? resolveContextWindowUpdate(prev, event.usage)
+        : undefined
       return {
         ...prev,
         ...(event.usage ? {
@@ -1569,11 +1598,7 @@ export function applyAgentEvent(
             && { usageStatus: prev.usageStatus ?? 'partial' as const }),
           ...((event.usage.usageStatus === undefined || event.usage.usageStatus === 'known')
             && event.usage.costUsd != null && { costUsd: event.usage.costUsd }),
-          ...(event.usage.contextWindow != null && {
-            contextWindow: prev.contextWindow != null
-              ? Math.max(prev.contextWindow, event.usage.contextWindow)
-              : event.usage.contextWindow,
-          }),
+          ...contextWindowUpdate,
           ...(shouldUseResultUsage && {
             usageStatus: 'known' as const,
             ...(event.usage.inputTokens != null && { inputTokens: event.usage.inputTokens }),
@@ -1604,6 +1629,8 @@ export function applyAgentEvent(
 
     case 'usage_update': {
       const resumed = clearFinishedCompactionForResumedWork(prev)
+      /** 流式窗口可能乱序到达，来源标记用于阻止 fallback 反向覆盖真实值。 */
+      const contextWindowUpdate = resolveContextWindowUpdate(resumed, event.usage)
       return {
         ...resumed,
         usageStatus: event.usage.usageStatus
@@ -1617,10 +1644,8 @@ export function applyAgentEvent(
           ...(event.usage.cacheReadTokens != null && { cacheReadTokens: event.usage.cacheReadTokens }),
           ...(event.usage.cacheCreationTokens != null && { cacheCreationTokens: event.usage.cacheCreationTokens }),
           ...(event.usage.costUsd != null && { costUsd: event.usage.costUsd }),
-          // contextWindow 取 max，兼顾流式模型推断与后端 context_window 事件。
-          ...(event.usage.contextWindow && {
-            contextWindow: Math.max(resumed.contextWindow ?? 0, event.usage.contextWindow),
-          }),
+          // 后端 context_window 事件晚于流式 fallback，可信正数应直接覆盖早先推断。
+          ...contextWindowUpdate,
         }),
       }
     }

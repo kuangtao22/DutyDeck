@@ -72,6 +72,14 @@ describe('接口工作台 UI 集成', () => {
     expect(source).toContain('<ApiImportDialog')
   })
 
+  test('Given 已保存请求自动生成文档 When 检查工作台接线 Then 宽窄布局都可进入只读文档且只读目录版本', async () => {
+    const source = await Bun.file(new URL('./ApiWorkbench.tsx', import.meta.url)).text()
+    expect(source).toContain("type CompactView = 'request' | 'response' | 'documentation'")
+    expect(source).toContain('>文档</button>')
+    expect(source).toContain('<ApiRequestDocumentation')
+    expect(source).toContain('catalog?.requests.find((request) => request.id === activeTab.requestId)')
+  })
+
   test('Given 工作台已交付运行时变量提取 When 检查组件源码 Then 提供声明编辑器与结果分区', async () => {
     /** 重发只允许当前会话里来自已保存请求的运行。 */
     const received: unknown[] = []
@@ -167,7 +175,7 @@ describe('接口工作台 UI 集成', () => {
   test('Given 用户打开加号菜单 When 检查入口 Then 接口工作台与其它工作区能力同级', async () => {
     const source = await Bun.file(new URL('../diff/DiffPanelTabBar.tsx', import.meta.url)).text()
 
-    expect(source).toContain("onOpenWorkspaceComponent('api-workbench')")
+    expect(source).toContain("case 'open-api-workbench': onOpenWorkspaceComponent?.('api-workbench')")
     expect(source).toContain('打开接口工作台')
   })
 

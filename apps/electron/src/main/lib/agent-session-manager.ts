@@ -9,10 +9,10 @@ import { removeAgentRunFileChanges } from './agent-run-file-change-store'
  * 照搬 conversation-manager.ts 的模式。
  */
 
-import { readFileSync, appendFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, createReadStream, createWriteStream, statSync, lstatSync, type WriteStream } from 'node:fs'
+import { readFileSync, appendFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, createReadStream, createWriteStream, statSync, lstatSync, openSync, readSync, closeSync, fstatSync, constants as fsConstants, type WriteStream } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { writeJsonFileAtomic, writeTextFileAtomic, readJsonFileSafe, readJsonFileStrict } from './safe-file'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { rmSyncWithRetry, renameWithRetry } from './fs-retry'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
@@ -796,16 +796,181 @@ const MAX_SDK_MESSAGE_LENGTH = 256 * 1024 // ~256K chars
 /** 截断后保留的预览文本长度 */
 const TRUNCATED_PREVIEW_LENGTH = 2000
 
+/** 一条已实际写入 JSONL 的消息身份与字节范围。 */
+export interface PersistedSDKMessageIdentity {
+  /** 消息稳定身份及当前实际 JSON 行摘要。 */
+  uuid: string
+  sha256: string
+  /** 仅正文与角色的摘要；Skill 元数据改写不改变证据含义。 */
+  contentSha256?: string
+  byteOffset: number
+  byteLength: number
+}
+
+/** SDK 消息批次的可持久化落盘回执。 */
+export interface SDKMessageAppendReceipt {
+  sessionId: string
+  status: 'written' | 'skipped'
+  fileIdentity?: { dev: number; ino: number }
+  byteOffset?: number
+  byteLength?: number
+  messages?: PersistedSDKMessageIdentity[]
+  reason?: 'empty' | 'deleting' | 'missing-session'
+  /** 近期定位窗口之外的消息未包含在本回执中。 */
+  truncated?: boolean
+}
+
+/** 从可信落盘消息提取出的近期纯文本证据。 */
+export interface PersistedAgentEvidenceRecord {
+  uuid: string
+  role: 'user' | 'assistant'
+  text: string
+  sha256: string
+  byteOffset: number
+  byteLength: number
+}
+
+/** 有界的已落盘 Agent 证据读取结果。 */
+export interface PersistedAgentEvidence {
+  sessionId: string
+  records: PersistedAgentEvidenceRecord[]
+  truncated: boolean
+  skipped: number
+  /** 实际文件 I/O 字节数，供多回合近期读取共用总预算。 */
+  readBytes?: number
+}
+
+const MAX_PERSISTED_EVIDENCE_BYTES = 48 * 1024
+
+/** 仅投影用户正文和助手公开文本，工具入参、输出与思考内容均不作为知识依据。 */
+function plainEvidenceText(value: unknown): { role: 'user' | 'assistant'; uuid: string; text: string } | null {
+  if (!value || typeof value !== 'object') return null
+  /** 结构检查先于正文投影。 */
+  const message = value as { type?: unknown; uuid?: unknown; message?: { content?: unknown } }
+  if ((message.type !== 'user' && message.type !== 'assistant') || typeof message.uuid !== 'string') return null
+  const content = message.message?.content
+  if (typeof content === 'string') return { role: message.type, uuid: message.uuid, text: content }
+  if (!Array.isArray(content) || content.some((block: unknown) => {
+    if (!block || typeof block !== 'object') return true
+    const item = block as { type?: unknown; text?: unknown }
+    return item.type === 'text' ? typeof item.text !== 'string' : !(message.type === 'assistant' && item.type === 'thinking')
+  })) return null
+  const text = content.filter((block: { type: string }) => block.type === 'text').map((block: { text: string }) => block.text).join('')
+  return text ? { role: message.type, uuid: message.uuid, text } : null
+}
+
+/** 规范化摘要不含模型内部元数据，仍绑定角色和消息身份。 */
+function evidenceContentDigest(value: unknown): string | undefined {
+  const plain = plainEvidenceText(value)
+  return plain ? createHash('sha256').update(JSON.stringify(plain)).digest('hex') : undefined
+}
+
+/** 元数据重写后的定位表只保存消息摘要和字节范围，不保存正文副本。 */
+interface EvidenceLocationIndex {
+  fileIdentity: { dev: number; ino: number }
+  messages: Record<string, PersistedSDKMessageIdentity>
+}
+
+/** 对既有 JSONL 重写结果建立最近 1000 条公开消息的有界定位表。 */
+function writeEvidenceLocations(filePath: string, content: string): void {
+  const stat = lstatSync(filePath)
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) return
+  const identities: PersistedSDKMessageIdentity[] = []
+  let byteOffset = 0
+  for (const line of content.split('\n')) {
+    const byteLength = Buffer.byteLength(line + '\n')
+    if (line) {
+      const value: unknown = JSON.parse(line)
+      const plain = plainEvidenceText(value)
+      if (plain) identities.push({ uuid: plain.uuid, sha256: createHash('sha256').update(line).digest('hex'),
+        contentSha256: evidenceContentDigest(value), byteOffset, byteLength })
+    }
+    byteOffset += byteLength
+  }
+  const index: EvidenceLocationIndex = { fileIdentity: { dev: stat.dev, ino: stat.ino },
+    messages: Object.fromEntries(identities.slice(-1000).map((identity) => [identity.uuid, identity])) }
+  writeJsonFileAtomic(`${filePath}.evidence-index.json`, index)
+}
+
+/** 原子替换会话正文后同步定位表；缓存失败仅停止知识取证，不改变原业务成功结果。 */
+function rewriteSDKTranscript(filePath: string, content: string): void {
+  writeTextFileAtomic(filePath, content)
+  try { writeEvidenceLocations(filePath, content) } catch {
+    console.warn('[Agent 会话] 知识证据定位更新失败，将跳过无法核验的消息')
+  }
+}
+
+/** 仅当应用生成的定位表仍绑定当前文件时，允许重绑定同正文消息。 */
+function readEvidenceLocations(filePath: string, maximumBytes: number): { index: EvidenceLocationIndex; bytes: number } | undefined {
+  const path = `${filePath}.evidence-index.json`
+  if (!existsSync(path)) return undefined
+  const stat = lstatSync(path)
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > Math.min(512 * 1024, maximumBytes)) return undefined
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8')) as EvidenceLocationIndex
+    return value?.fileIdentity && value.messages && typeof value.messages === 'object' ? { index: value, bytes: stat.size } : undefined
+  } catch { return undefined }
+}
+
+/** 追加时只增量维护最近消息定位；成功重试可沿原 UUID 获取保存回执。 */
+function updateEvidenceLocationsForAppend(filePath: string, receipt: SDKMessageAppendReceipt): void {
+  if (!receipt.fileIdentity) return
+  const previous = readEvidenceLocations(filePath, 512 * 1024)?.index
+  const retained = previous?.fileIdentity.dev === receipt.fileIdentity.dev && previous.fileIdentity.ino === receipt.fileIdentity.ino
+    ? Object.values(previous.messages) : []
+  const identities = new Map(retained.map((identity) => [identity.uuid, identity]))
+  for (const identity of receipt.messages ?? []) if (identity.contentSha256) identities.set(identity.uuid, identity)
+  const messages = [...identities.values()].sort((left, right) => left.byteOffset - right.byteOffset).slice(-1000)
+  writeJsonFileAtomic(`${filePath}.evidence-index.json`, { fileIdentity: receipt.fileIdentity,
+    messages: Object.fromEntries(messages.map((identity) => [identity.uuid, identity])) })
+}
+
+/** 重试只定位已存在消息，不追加第二份用户输入，也不全量重读历史。 */
+export function getPersistedAgentMessageReceipt(sessionId: string, uuid: string): SDKMessageAppendReceipt | undefined {
+  if (!getAgentSessionMeta(sessionId) || isAgentSessionDeleting(sessionId)) return undefined
+  const path = getAgentSessionMessagesPath(sessionId)
+  if (!existsSync(path)) return undefined
+  const stat = lstatSync(path)
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) return undefined
+  const index = readEvidenceLocations(path, 512 * 1024)?.index
+  const identity = index?.messages[uuid]
+  if (!identity || index?.fileIdentity.dev !== stat.dev || index.fileIdentity.ino !== stat.ino) return undefined
+  return { sessionId, status: 'written', fileIdentity: index.fileIdentity,
+    byteOffset: identity.byteOffset, byteLength: identity.byteLength, messages: [identity] }
+}
+
+/** 取得首用户和本次运行的近期证据；重试边界使用 UUID，避免元数据重写导致字节偏移失效。 */
+export function getPersistedAgentTurnReceipt(sessionId: string, firstUserUuid: string, afterMessageUuid?: string): SDKMessageAppendReceipt | undefined {
+  const first = getPersistedAgentMessageReceipt(sessionId, firstUserUuid)
+  if (!first) return undefined
+  const index = readEvidenceLocations(getAgentSessionMessagesPath(sessionId), 512 * 1024)?.index
+  if (!index || index.fileIdentity.dev !== first.fileIdentity?.dev || index.fileIdentity.ino !== first.fileIdentity.ino) return undefined
+  /** 重试起点若已离开有界定位表则拒绝推测，调用方可回退到本次运行直接收集的回执。 */
+  const boundary = afterMessageUuid ? index.messages[afterMessageUuid] : undefined
+  if (afterMessageUuid && !boundary) return undefined
+  const identities = Object.values(index.messages).filter((identity) => boundary
+    ? identity.uuid === firstUserUuid || identity.byteOffset > boundary.byteOffset
+    : identity.byteOffset >= first.byteOffset!)
+    .sort((left, right) => left.byteOffset - right.byteOffset)
+  const selected = identities.length > 64 ? [identities[0]!, ...identities.slice(-63)] : identities
+  const last = selected[selected.length - 1]
+  if (!last) return first
+  return { ...first, byteLength: last.byteOffset + last.byteLength - first.byteOffset!, messages: selected, truncated: identities.length > selected.length }
+}
+const MAX_PERSISTED_EVIDENCE_IO_BYTES = 512 * 1024
+const MAX_PERSISTED_EVIDENCE_MESSAGE_BYTES = 256 * 1024
+
 /**
  * 追加 SDKMessage 到会话的 JSONL 文件（Phase 4 新持久化格式）
  *
  * 每条 SDKMessage 单独一行 JSON。读取时通过 `type` 字段区分新旧格式。
  * 超过 256K chars 的消息会被自动截断以防止存储膨胀。
  */
-export function appendSDKMessages(id: string, messages: SDKMessage[]): void {
-  if (messages.length === 0) return
+export function appendSDKMessages(id: string, messages: SDKMessage[]): SDKMessageAppendReceipt {
+  if (messages.length === 0) return { sessionId: id, status: 'skipped', reason: 'empty' }
   // 序列化前按批次复核删除标记与权威索引，拒绝已不存在的会话。
-  if (isAgentSessionDeleting(id) || !getAgentSessionMeta(id)) return
+  if (isAgentSessionDeleting(id)) return { sessionId: id, status: 'skipped', reason: 'deleting' }
+  if (!getAgentSessionMeta(id)) return { sessionId: id, status: 'skipped', reason: 'missing-session' }
 
   const filePath = getAgentSessionMessagesPath(id)
 
@@ -813,17 +978,125 @@ export function appendSDKMessages(id: string, messages: SDKMessage[]): void {
     // 整批只做一次同步追写：逐条 appendFileSync 会为每条消息各做一次 open/write/close，
     // 一轮输出常见几十条消息，在多 Agent 并发下会持续阶段性阻塞主进程，
     // 进而延迟键盘事件的 IPC 转发（表现为 renderer 内无长任务但输入延迟高）。
+    const startOffset = existsSync(filePath) ? statSync(filePath).size : 0
     let payload = ''
+    const serializedMessages: Array<{ message: SDKMessage; line: string }> = []
     /** 先在本批 SDK 序列内验证 tool_use 身份，再允许提升图片附件标记。 */
     const messagesWithVerifiedImages = attachToolResultImages(messages)
     for (const message of messagesWithVerifiedImages) {
-      payload += serializeSDKMessageForStorage(message) + '\n'
+      const line = serializeSDKMessageForStorage(message)
+      serializedMessages.push({ message, line })
+      payload += line + '\n'
     }
     appendFileSync(filePath, payload, 'utf-8')
+    const fileStat = statSync(filePath)
+    let offset = startOffset
+    const identities: PersistedSDKMessageIdentity[] = []
+    for (const { message, line } of serializedMessages) {
+      const byteLength = Buffer.byteLength(line + '\n', 'utf8')
+      const uuid = getStoredMessageUuid(message)
+      if (uuid) identities.push({
+        uuid,
+        sha256: createHash('sha256').update(line, 'utf8').digest('hex'),
+        contentSha256: evidenceContentDigest(JSON.parse(line) as unknown),
+        byteOffset: offset,
+        byteLength,
+      })
+      offset += byteLength
+    }
+    const receipt: SDKMessageAppendReceipt = {
+      sessionId: id,
+      status: 'written',
+      fileIdentity: { dev: fileStat.dev, ino: fileStat.ino },
+      byteOffset: startOffset,
+      byteLength: Buffer.byteLength(payload, 'utf8'),
+      messages: identities,
+    }
+    /** 定位缓存失败不改变消息已写入的事实，当前回合仍可使用返回回执。 */
+    try { updateEvidenceLocationsForAppend(filePath, receipt) } catch { console.warn('[Agent 会话] 证据定位缓存更新失败') }
+    return receipt
   } catch (error) {
     console.error(`[Agent 会话] 追加 SDKMessage 失败 (${id}):`, error)
     throw new Error('追加 SDKMessage 失败')
   }
+}
+
+/** 读取回执指定的 JSONL 字节范围，只接受 user/assistant 纯文本消息。 */
+export function readPersistedAgentEvidence(
+  sessionId: string,
+  receipts: readonly SDKMessageAppendReceipt[],
+  options: { maxBytes?: number; maxIoBytes?: number } = {},
+): PersistedAgentEvidence {
+  const result: PersistedAgentEvidence = { sessionId, records: [], truncated: receipts.some((receipt) => receipt.truncated), skipped: 0 }
+  const maxBytes = options.maxBytes ?? MAX_PERSISTED_EVIDENCE_BYTES
+  const maxIoBytes = options.maxIoBytes ?? MAX_PERSISTED_EVIDENCE_IO_BYTES
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > MAX_PERSISTED_EVIDENCE_BYTES) throw new Error('证据读取预算非法')
+  if (!Number.isSafeInteger(maxIoBytes) || maxIoBytes < 0 || maxIoBytes > MAX_PERSISTED_EVIDENCE_IO_BYTES) throw new Error('证据 I/O 预算非法')
+  if (isAgentSessionDeleting(sessionId) || !getAgentSessionMeta(sessionId)) return result
+  const filePath = getAgentSessionMessagesPath(sessionId)
+  if (!existsSync(filePath)) return result
+  const fileStat = lstatSync(filePath)
+  if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.nlink !== 1) return result
+  const candidates = receipts.filter((receipt) => receipt.sessionId === sessionId && receipt.status === 'written')
+  /** 文件没被重写时不读定位表；重写后只使用同正文摘要的当前定位。 */
+  const locations = candidates.some((receipt) => receipt.fileIdentity?.dev !== fileStat.dev || receipt.fileIdentity.ino !== fileStat.ino)
+    ? readEvidenceLocations(filePath, maxIoBytes) : undefined
+  const locationIndex = locations?.index
+  const accepted = candidates.flatMap((receipt) => {
+    if (receipt.fileIdentity?.dev === fileStat.dev && receipt.fileIdentity.ino === fileStat.ino) return [receipt]
+    if (locationIndex?.fileIdentity.dev !== fileStat.dev || locationIndex.fileIdentity.ino !== fileStat.ino) return []
+    const messages = (receipt.messages ?? []).flatMap((identity) => {
+      const current = locationIndex.messages[identity.uuid]
+      return identity.contentSha256 && current?.contentSha256 === identity.contentSha256 ? [current] : []
+    })
+    return messages.length ? [{ ...receipt, fileIdentity: locationIndex.fileIdentity, byteOffset: 0, byteLength: fileStat.size, messages }] : []
+  })
+  result.skipped += candidates.length - accepted.length
+  const handle = openSync(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
+  try {
+    const openedStat = fstatSync(handle)
+    if (openedStat.dev !== fileStat.dev || openedStat.ino !== fileStat.ino || openedStat.nlink !== 1 || !openedStat.isFile()) {
+      result.skipped += accepted.length
+      return result
+    }
+    let ioBytes = locations?.bytes ?? 0
+    result.readBytes = ioBytes
+    let textBytes = 0
+    for (const receipt of accepted) {
+      if (receipt.byteOffset === undefined || receipt.byteLength === undefined || receipt.byteOffset < 0 || receipt.byteLength < 0) {
+        result.skipped += 1
+        continue
+      }
+      for (const identity of receipt.messages ?? []) {
+        if (identity.byteLength > MAX_PERSISTED_EVIDENCE_MESSAGE_BYTES) { result.truncated = true; return result }
+        const end = identity.byteOffset + identity.byteLength
+        if (!Number.isSafeInteger(end) || identity.byteOffset < receipt.byteOffset || end > receipt.byteOffset + receipt.byteLength || end > openedStat.size) { result.skipped += 1; continue }
+        if (!Number.isSafeInteger(identity.byteLength) || identity.byteLength < 1 || !Number.isSafeInteger(identity.byteOffset)) { result.skipped += 1; continue }
+        if (ioBytes + identity.byteLength > maxIoBytes) { result.truncated = true; return result }
+        ioBytes += identity.byteLength
+        result.readBytes = ioBytes
+        const lineBytes = Buffer.allocUnsafe(identity.byteLength)
+        const bytesRead = readSync(handle, lineBytes, 0, lineBytes.length, identity.byteOffset)
+        if (bytesRead !== lineBytes.length) { result.skipped += 1; continue }
+        if (lineBytes.length === 0 || lineBytes[lineBytes.length - 1] !== 0x0a) { result.skipped += 1; continue }
+        const line = new TextDecoder('utf-8', { fatal: true }).decode(lineBytes.subarray(0, -1))
+        if (createHash('sha256').update(line, 'utf8').digest('hex') !== identity.sha256) { result.skipped += 1; continue }
+        let parsed: unknown
+        try { parsed = JSON.parse(line) } catch { result.skipped += 1; continue }
+        if (!parsed || typeof parsed !== 'object' || !('uuid' in parsed) || (parsed as { uuid?: unknown }).uuid !== identity.uuid) { result.skipped += 1; continue }
+        const plain = plainEvidenceText(parsed)
+        if (!plain || (identity.contentSha256 && identity.contentSha256 !== evidenceContentDigest(parsed))) { result.skipped += 1; continue }
+        const text = plain.text
+        const encodedLength = Buffer.byteLength(text, 'utf8')
+        if (textBytes + encodedLength > maxBytes) { result.truncated = true; return result }
+        textBytes += encodedLength
+        result.records.push({ uuid: identity.uuid, role: plain.role, text, sha256: identity.contentSha256 ?? identity.sha256, byteOffset: identity.byteOffset, byteLength: identity.byteLength })
+      }
+    }
+  } catch {
+    result.skipped += 1
+  } finally { closeSync(handle) }
+  return result
 }
 
 /**
@@ -1027,6 +1300,12 @@ export function deleteAgentSession(id: string, options: { preserveSessionArtifac
     } catch (error) {
       console.warn(`[Agent 会话] 删除消息文件失败 (${id}):`, error)
     }
+  }
+
+  /** 定位表仅含证据摘要，跟随会话删除，避免留下不可用索引。 */
+  const evidenceIndexPath = `${filePath}.evidence-index.json`
+  if (existsSync(evidenceIndexPath)) {
+    try { unlinkSync(evidenceIndexPath) } catch { console.warn('[Agent 会话] 证据定位表清理失败') }
   }
 
   // 清理 session 工作目录
@@ -1396,7 +1675,7 @@ export async function rewindPiAgentSession(sessionId: string, assistantMessageUu
       retainedAssistantUuids.has(messageUuid) && Boolean(rewindManager.getEntry(mappedEntryId))),
   )
 
-  writeTextFileAtomic(filePath, truncatedContent)
+  rewriteSDKTranscript(filePath, truncatedContent)
   try {
     updateAgentSessionMeta(sessionId, {
       sdkSessionId: rewindManager.getSessionId(),
@@ -1404,7 +1683,7 @@ export async function rewindPiAgentSession(sessionId: string, assistantMessageUu
       piEntryBindings: retainedBindings,
     })
   } catch (error) {
-    try { writeTextFileAtomic(filePath, originalContent) } catch { /* 保留原始 metadata 错误 */ }
+    try { rewriteSDKTranscript(filePath, originalContent) } catch { /* 保留原始 metadata 错误 */ }
     throw error
   }
 
@@ -1685,7 +1964,7 @@ export function truncateSDKMessages(id: string, upToUuidInclusive: string): SDKM
   const kept = messages.slice(0, cutIndex + 1)
 
   const content = kept.map((m) => JSON.stringify(m)).join('\n') + (kept.length > 0 ? '\n' : '')
-  writeTextFileAtomic(filePath, content)
+  rewriteSDKTranscript(filePath, content)
 
   console.log(`[Agent 会话] 消息已截断: sessionId=${id}, 保留 ${kept.length}/${messages.length} 条`)
   return kept
@@ -1712,7 +1991,7 @@ export function removeSDKErrorMessage(id: string, errorUuid: string): boolean {
 
   const kept = messages.filter((_, index) => index !== targetIndex)
   const content = kept.map((message) => JSON.stringify(message)).join('\n') + (kept.length > 0 ? '\n' : '')
-  writeTextFileAtomic(filePath, content)
+  rewriteSDKTranscript(filePath, content)
   console.log(`[Agent 会话] 已删除重试前错误: sessionId=${id}, uuid=${errorUuid}`)
   return true
 }
@@ -1747,7 +2026,7 @@ export function updateSDKUserMessageSkillActivations(
 
   messages[targetIndex] = { ...target, skill_activations: merged }
   const content = messages.map((message) => JSON.stringify(message)).join('\n') + '\n'
-  writeTextFileAtomic(filePath, content)
+  rewriteSDKTranscript(filePath, content)
   return true
 }
 

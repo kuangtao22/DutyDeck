@@ -514,6 +514,8 @@ export interface AgentEventUsage {
   cacheCreationTokens?: number
   costUsd?: number
   contextWindow?: number
+  /** contextWindow 的来源；旧事件缺失时按兼容值处理。 */
+  contextWindowSource?: 'inferred' | 'runtime'
 }
 
 /** SDK 子任务 / SubAgent 用量统计 */

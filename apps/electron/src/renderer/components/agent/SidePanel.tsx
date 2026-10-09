@@ -100,7 +100,7 @@ import {
   setActiveAgentCanvasWorkspaceTab,
 } from '@/atoms/agent-atoms'
 import type { AgentSidePanelTab, AgentFileSourceFilter, AgentExplorationBranchTab, PersistedAgentCanvasWorkspaceState, WorkspaceComponentTab } from '@/atoms/agent-atoms'
-import { WorkspaceMemoryTab } from '@/components/agent-skills/WorkspaceMemoryTab'
+import { ProjectKnowledgeTab } from '@/components/agent-skills/ProjectKnowledgeTab'
 import { AgentSkillsView } from '@/components/agent-skills/AgentSkillsView'
 import { PlanningView } from '@/components/planning/PlanningView'
 import { AutomationFormView } from '@/components/automation/AutomationFormView'
@@ -1001,10 +1001,10 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
     // 用户正在阅读 Skills 或项目记忆时，只保留新变更，不抢焦点或覆盖其当前文件。
     if (isOpen && isUserPriorityWorkspaceComponentTab(effectiveActiveTab)) return
 
-    setMemoryNavigationRequest({ workspaceSlug: workspaceSlug!, relativePath: latestMemoryChange.relativePath, mode: 'change' })
+    setMemoryNavigationRequest({ workspaceSlug: workspaceSlug!, sessionId, relativePath: latestMemoryChange.relativePath, mode: 'change' })
     setIsOpen(true)
     onTabChange('memory')
-  }, [agentStreamState?.running, agentStreamState?.startedAt, effectiveActiveTab, isOpen, latestMemoryChange, onTabChange, setIsOpen, setMemoryNavigationRequest, setWorkspaceComponentTabs, workspaceSlug])
+  }, [agentStreamState?.running, agentStreamState?.startedAt, effectiveActiveTab, isOpen, latestMemoryChange, onTabChange, setIsOpen, setMemoryNavigationRequest, setWorkspaceComponentTabs, workspaceSlug, sessionId])
 
   const handleClosePreviewTab = React.useCallback((previewId: string) => {
     const closingFile = previewFiles.find((file) => getPreviewFileId(file) === previewId)
@@ -1773,7 +1773,7 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
         automations: { label: '定时任务', icon: <Clock className="size-3.5" /> },
         skills: { label: 'Skills', icon: <Blocks className="size-3.5" /> },
         mcp: { label: 'MCP', icon: <ServerCog className="size-3.5" /> },
-        memory: { label: '项目记忆', icon: <Brain className="size-3.5" /> },
+        memory: { label: '项目知识库', icon: <Brain className="size-3.5" /> },
         vault: { label: OBSIDIAN_NAME, icon: <ObsidianIcon className="size-3.5" /> },
         'server-ops': { label: '运维', icon: <ServerCog className="size-3.5" /> },
         'api-workbench': { label: '接口', icon: <Braces className="size-3.5" /> },
@@ -2188,7 +2188,7 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
     ) : paneTab === 'memory' ? (
       workspaceSlug ? (
         <div className="min-h-0 flex-1 overflow-hidden p-2">
-          <WorkspaceMemoryTab workspaceSlug={workspaceSlug} sessionId={sessionId} embedded onCloseChangeView={() => handleCloseWorkspaceTab('memory')} />
+          <ProjectKnowledgeTab workspaceSlug={workspaceSlug} sessionId={sessionId} embedded onRequestClose={() => handleCloseWorkspaceTab('memory')} />
         </div>
       ) : (
         <div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">等待项目初始化...</div>

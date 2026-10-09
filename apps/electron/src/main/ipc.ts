@@ -5,6 +5,9 @@ import { registerCapabilityFactoryIpc } from './lib/capability-factory/capabilit
 import { CAPABILITY_FACTORY_CHANNELS } from '@proma/shared'
 import { createCapabilityFactorySessionRuntime } from './lib/capability-factory/capability-factory-session-runtime'
 import { setCapabilityFactoryChangeSink } from './lib/capability-factory/capability-factory-events'
+import { registerProjectKnowledgeIpc } from './lib/project-knowledge-ipc'
+import { getProjectKnowledgeBinding, getProjectKnowledgeService, registerProjectKnowledgeSources } from './lib/project-knowledge-runtime'
+import { createProjectKnowledgeSources } from './lib/project-knowledge-sources'
 import { getCapabilityFactoryService, shutdownCapabilityFactory } from './lib/capability-factory/capability-factory-singleton'
 import { createCapabilityFactoryRunner } from './lib/capability-factory/capability-factory-run'
 import { createCapabilityFactoryEvaluator } from './lib/capability-factory/capability-factory-evaluate'
@@ -2368,6 +2371,14 @@ export function registerIpcHandlers(): void {
     const contents = getStoredMainWindow()?.webContents
     return contents && !contents.isDestroyed() ? [contents] : []
   }
+  /** 全屏项目页与 Agent 右侧知识视图共用窄 IPC，扫描租约由运行时持续持有。 */
+  registerProjectKnowledgeIpc({
+    ipc: ipcMain,
+    isAuthorizedSender: (event) => listAuthorizedDesignWebContents().some((contents) => contents.id === event.sender.id),
+    assertProject: getProjectKnowledgeBinding,
+    assertWritable: (workspaceId) => workspaceOperationGuard.assertWorkspaceWritable(workspaceId),
+    get service() { return getProjectKnowledgeService() },
+  })
   /** 接口工作台只信任主窗口，workspace 从当前普通会话元数据解析。 */
   registerApiWorkbenchIpc({
     ipc: ipcMain,
@@ -3374,6 +3385,11 @@ export function registerIpcHandlers(): void {
     revisions: canvasArtifactRevisionStore,
     graph: canvasTextArtifactGraphWriter,
   })
+  /** 资料扫描与检索复用受控业务服务；不会遍历 Canvas/API 内部数据目录。 */
+  registerProjectKnowledgeSources(createProjectKnowledgeSources({
+    canvasSessions: canvasSessionStore, canvasDocuments: canvasDocumentStore, canvasArtifacts: canvasTextArtifactService,
+    apiWorkbench: { getCatalog: (projectId) => getApiWorkbenchService().getCatalog(projectId) },
+  }))
   /** 三类产物共享唯一能力表；具体存储与任务服务仍由各自适配器持有。 */
   const canvasArtifactRegistry = createCanvasArtifactRegistry([
     createCanvasTextArtifactAdapter('document', canvasTextArtifactService),
@@ -5762,6 +5778,10 @@ export function registerIpcHandlers(): void {
 
       try {
         const session = createAgentSession(undefined, channelId, workspace.id, modelId)
+        /** 项目与首会话均已创建后自动登记资料，扫描失败不回滚用户项目。 */
+        void getProjectKnowledgeService().startScan(workspace.id).catch(() => {
+          console.warn('[项目知识库] 新项目扫描未启动，可在知识库中重试')
+        })
         feishuBridgeManager.ensureSessionMirror(session).catch((error) => {
           console.error('[飞书 Session 镜像] 项目首个会话建群失败:', error)
         })

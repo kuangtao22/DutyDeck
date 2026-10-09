@@ -257,6 +257,74 @@ describe('Agent 上下文压缩状态', () => {
     expect(result.contextWindow).toBe(200_000)
   })
 
+  test('Given 流式 fallback 为 200K When 后续收到真实 128K 窗口 Then 用真实值覆盖 fallback', () => {
+    const result = applyAgentEvent(createStreamState({ contextWindow: 200_000 }), {
+      type: 'usage_update',
+      usage: { contextWindow: 128_000 },
+    })
+
+    expect(result.contextWindow).toBe(128_000)
+  })
+
+  test('Given 流式 fallback 为 200K When complete 携带真实 128K 窗口 Then 用真实值覆盖 fallback', () => {
+    const result = applyAgentEvent(createStreamState({ contextWindow: 200_000 }), {
+      type: 'complete',
+      usage: { contextWindow: 128_000 },
+    })
+
+    expect(result.contextWindow).toBe(128_000)
+  })
+
+  test('Given 真实 128K 先到 When 推断 200K 后到再 complete Then 全程保留真实窗口', () => {
+    /** 先到的主进程 context_window 是本轮 SDK 已确认的真实值。 */
+    const runtime = applyAgentEvent(createStreamState({ contextWindow: undefined }), {
+      type: 'usage_update',
+      usage: { contextWindow: 128_000, contextWindowSource: 'runtime' },
+    } as Parameters<typeof applyAgentEvent>[1])
+    /** assistant usage 随后到达时只携按模型名推断的 fallback。 */
+    const inferred = applyAgentEvent(runtime, {
+      type: 'usage_update',
+      usage: { inputTokens: 64_000, contextWindow: 200_000, contextWindowSource: 'inferred' },
+    } as Parameters<typeof applyAgentEvent>[1])
+    /** result complete 重申真实窗口，最终值也必须稳定。 */
+    const completed = applyAgentEvent(inferred, {
+      type: 'complete',
+      usage: { contextWindow: 128_000, contextWindowSource: 'runtime' },
+    } as Parameters<typeof applyAgentEvent>[1])
+
+    expect(runtime.contextWindow).toBe(128_000)
+    expect(inferred.contextWindow).toBe(128_000)
+    expect(completed.contextWindow).toBe(128_000)
+  })
+
+  test('Given 已有旧模型真实 128K When 新模型报告真实 1M Then 更新为新模型窗口', () => {
+    const previous = applyAgentEvent(createStreamState({ contextWindow: undefined }), {
+      type: 'usage_update',
+      usage: { contextWindow: 128_000, contextWindowSource: 'runtime' },
+    } as Parameters<typeof applyAgentEvent>[1])
+
+    const switched = applyAgentEvent(previous, {
+      type: 'usage_update',
+      usage: { contextWindow: 1_000_000, contextWindowSource: 'runtime' },
+    } as Parameters<typeof applyAgentEvent>[1])
+
+    expect(switched.contextWindow).toBe(1_000_000)
+  })
+
+  test('Given 旧协议事件没有来源 When 携带有效窗口 Then 保持可更新兼容性', () => {
+    const runtime = applyAgentEvent(createStreamState({ contextWindow: undefined }), {
+      type: 'usage_update',
+      usage: { contextWindow: 200_000, contextWindowSource: 'runtime' },
+    } as Parameters<typeof applyAgentEvent>[1])
+
+    const result = applyAgentEvent(runtime, {
+      type: 'usage_update',
+      usage: { contextWindow: 128_000 },
+    })
+
+    expect(result.contextWindow).toBe(128_000)
+  })
+
   test('given no stream usage when partial result arrives then do not use it as exact fallback', () => {
     const result = applyAgentEvent(createStreamState({ inputTokens: 0, outputTokens: undefined }), {
       type: 'complete',

@@ -141,7 +141,8 @@ import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
 import { useOpenPreview } from '@/components/diff/preview-opener'
 import { resolveAgentSendToolMode } from './AgentOpsAccessControl'
-import type { AgentDeferredQueueMessageInput, AgentMediaAttachment, AgentSendInput, AgentPendingFile, AgentThinkingLevel, CanvasNodeReference, FileDialogLargeFile, FileDialogResult, ModelOption, ReasoningCapability, SDKMessage, SDKUserMessage } from '@proma/shared'
+import { buildAutoPendingPromptSubmission, claimAgentPendingPrompt } from './agent-pending-prompt'
+import type { AgentDeferredQueueMessageInput, AgentMediaAttachment, AgentSendInput, AgentPendingFile, AgentThinkingLevel, CanvasNodeReference, FileDialogLargeFile, FileDialogResult, ModelOption, ProviderType, ReasoningCapability, SDKMessage, SDKUserMessage } from '@proma/shared'
 import { inferContextWindow, inferReasoningTransport, isCodexFastModeSupportedModel, MAX_ATTACHMENT_SIZE, normalizeReasoningCapabilityLevel, normalizeReasoningLevel, resolveReasoningCapability, resolveReasoningProfile } from '@proma/shared'
 import { fileToBase64, formatFileNames, getFileParentPath } from '@/lib/file-utils'
 import { getFilePanelDragData, INSERT_FILE_MENTION_EVENT, type FilePanelDragItem } from '@/lib/file-panel-drag'
@@ -294,8 +295,10 @@ function getMediaAttachments(attachments?: readonly AgentQueuedAttachment[]): Ag
 function resolveRunContextWindow(
   modelId: string | undefined,
   previous: number | undefined,
+  /** 当前选择渠道的实际供应商，避免把 API 与 Codex 窗口混用。 */
+  provider?: ProviderType,
 ): number | undefined {
-  return inferContextWindow(modelId) ?? previous
+  return inferContextWindow(modelId, provider) ?? previous
 }
 
 interface SDKMessageRecord {
@@ -877,6 +880,7 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
   const reasoningProfile = hasSessionMeta
     ? resolveReasoningProfile({
       modelId: agentModelId ?? undefined,
+      provider: agentChannelProvider,
       transport: inferReasoningTransport(agentChannelProvider),
     })
     : undefined
@@ -917,7 +921,8 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
   const normalizedReasoningLevel = reasoningProfile
     ? normalizeReasoningLevel(reasoningProfile, persistedReasoningLevel ?? fallbackOpenAIThinkingLevel)
     : normalizeReasoningCapabilityLevel(effectiveReasoningCapability, persistedReasoningLevel ?? fallbackOpenAIThinkingLevel)
-  const openAIThinkingLevel = normalizedReasoningLevel ?? (persistedReasoningLevel ?? fallbackOpenAIThinkingLevel)
+  const openAIThinkingLevel = normalizeReasoningCapabilityLevel(effectiveReasoningCapability, normalizedReasoningLevel)
+    ?? (persistedReasoningLevel ?? fallbackOpenAIThinkingLevel)
 
   // Pi runtime supports all protocols, so any enabled channel with an enabled model is available.
   const hasAvailableModel = React.useMemo(
@@ -1379,15 +1384,56 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
     })
   }, [sessionId, sessions, setAttachedFilesMap])
 
-  // 外部入口创建的新会话只预填提示词；用户确认后再自行发送。
-  // 等待 messagesLoaded，避免会话水合时覆盖刚写入的输入草稿。
+  // 普通外部入口仍只预填；显式 autoSend 的系统任务直接调度且不触碰用户草稿。
+  // 等待 messagesLoaded，避免会话水合与发送初始化竞争。
   React.useEffect(() => {
     if (!messagesLoaded || !pendingPrompt || pendingPrompt.sessionId !== sessionId) return
+
+    if (pendingPrompt.autoSend) {
+      let claimed = false
+      store.set(agentPendingPromptAtom, (current) => {
+        const claim = claimAgentPendingPrompt(current, pendingPrompt)
+        claimed = claim.claimed
+        return claim.next
+      })
+      if (!claimed) return
+      if (!agentChannelId || !hasAvailableModel) {
+        toast.error('知识维护任务尚未提交', { description: '当前 Agent 没有可用的渠道或模型，请从项目知识库重新更新。' })
+        return
+      }
+      const submittedPrompt = pendingPrompt
+      void window.electronAPI.submitOrEnqueueAgentMessage(buildAutoPendingPromptSubmission(submittedPrompt, {
+        queueMessageId: crypto.randomUUID(),
+        channelId: agentChannelId,
+        modelId: agentModelId || undefined,
+        workspaceId: currentWorkspaceId || undefined,
+        toolMode: resolveAgentSendToolMode(store.get(agentSessionsAtom), sessionId),
+        permissionMode,
+      })).then(() => {
+        toast.success('知识维护任务已提交给项目 Agent')
+      }).catch((error: unknown) => {
+        toast.error('知识维护任务提交失败', { description: `${getErrorMessage(error)}。请从项目知识库重新更新。` })
+      })
+      return
+    }
 
     setInputContent(pendingPrompt.message)
     setInputHtmlContent('')
     setPendingPrompt(null)
-  }, [messagesLoaded, pendingPrompt, sessionId, setInputContent, setInputHtmlContent, setPendingPrompt])
+  }, [
+    agentChannelId,
+    agentModelId,
+    currentWorkspaceId,
+    hasAvailableModel,
+    messagesLoaded,
+    pendingPrompt,
+    permissionMode,
+    sessionId,
+    setInputContent,
+    setInputHtmlContent,
+    setPendingPrompt,
+    store,
+  ])
 
   // ===== 附件处理 =====
 
@@ -2410,7 +2456,7 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
         model: agentModelId || undefined,
         startedAt: streamStartedAt,
         inputTokens: existing?.inputTokens,
-        contextWindow: resolveRunContextWindow(agentModelId || undefined, existing?.contextWindow),
+        contextWindow: resolveRunContextWindow(agentModelId || undefined, existing?.contextWindow, agentChannelProvider),
       })
       return map
     })
@@ -2670,7 +2716,7 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
         model: agentModelId || undefined,
         startedAt: streamStartedAt,
         inputTokens: existing?.inputTokens,
-        contextWindow: resolveRunContextWindow(agentModelId || undefined, existing?.contextWindow),
+        contextWindow: resolveRunContextWindow(agentModelId || undefined, existing?.contextWindow, agentChannelProvider),
       })
       return map
     })
@@ -2680,6 +2726,7 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
       // Agent 侧使用解码后的文本（@file 真实路径）；持久化/展示保留编码原文，避免新历史记录被 \S+ 截断
       userMessage: lastUserMessage,
       rawUserMessage: lastUserRawMessage,
+      userMessageUuid: lastUserSDKMessage.uuid,
       channelId: agentChannelId,
       modelId: agentModelId || undefined,
       workspaceId: currentWorkspaceId || undefined,

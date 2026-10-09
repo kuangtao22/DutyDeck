@@ -122,4 +122,30 @@ describe('Agent 会话上下文用量', () => {
       calculateContextUsageRatio(960, 372_000),
     )
   })
+
+  test('Given result 提供真实 128K 窗口 When 模型推断回退为 200K Then 使用真实窗口计算占用率', () => {
+    writeSession([{
+      type: 'result',
+      subtype: 'success',
+      usage: { input_tokens: 64_000, output_tokens: 1 },
+      modelUsage: { 'unknown-128k-model': { contextWindow: 128_000 } },
+    }])
+
+    expect(getSessionContextUsageRatio('session-1')).toBe(
+      calculateContextUsageRatio(64_000, 128_000),
+    )
+  })
+
+  test('Given result 的运行时窗口非法 When 模型可推断 Then 仅此时使用推断窗口', () => {
+    writeSession([{
+      type: 'result',
+      subtype: 'success',
+      usage: { input_tokens: 64_000, output_tokens: 1 },
+      modelUsage: { 'unknown-model': { contextWindow: 0 } },
+    }])
+
+    expect(getSessionContextUsageRatio('session-1')).toBe(
+      calculateContextUsageRatio(64_000, inferContextWindow('unknown-model')),
+    )
+  })
 })
