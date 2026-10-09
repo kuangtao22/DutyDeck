@@ -40,6 +40,7 @@ import type {
   ServerOpsServiceListResult,
   ServerOpsDataQueryInput,
   ServerOpsDataQueryResult,
+  ServerOpsDataSource,
   ServerOpsDataWriteResult,
   ServerOpsAgentReadChanged,
   ServerOpsAgentDiscoveryResult,
@@ -181,6 +182,22 @@ export interface ServerOpsAgentReadFacade {
   databaseQuery(input: Omit<ServerOpsDataQueryInput, 'queryId'>, signal?: AbortSignal): Promise<ServerOpsDataQueryResult>
   /** 受控 SQL 写入；只在允许逐次审批写入的运行中暴露，结果可能为 unknown/partial。 */
   databaseWrite?: (input: { sourceId: string; database: string; sql: string; timeoutMs?: number }, signal?: AbortSignal) => Promise<ServerOpsDataWriteResult>
+  /** 生成写入审批快照；快照只用于宿主确认展示，不会改变工具执行。 */
+  prepareWriteApproval?: (toolName: 'ops_database_write' | 'ops_redis_write', input: Record<string, unknown>) => Promise<ServerOpsWriteApprovalSnapshot>
+  /** 用户批准后复核审批快照，任何目标或正文变化都拒绝执行。 */
+  revalidateWriteApproval?: (snapshot: ServerOpsWriteApprovalSnapshot, input: Record<string, unknown>) => Promise<void>
+}
+
+/** 写入确认卡使用的主进程快照；不包含密码、凭据值或不可展示的连接秘密。 */
+export interface ServerOpsWriteApprovalSnapshot {
+  toolName: 'ops_database_write' | 'ops_redis_write'
+  sourceId: string
+  target: string
+  database: string
+  operation: string
+  fingerprint: string
+  title: string
+  description: string
 }
 
 /** 一次读取开始时冻结的权限代次和精确资源。 */
@@ -229,6 +246,14 @@ function isInteractiveSource(source: CreateServerOpsAgentReadFacadeInput['trigge
 function stableErrorCode(error: unknown): string {
   const message = error instanceof Error ? error.message : ''
   return /^[A-Z][A-Z0-9_]{2,100}$/u.test(message) ? message : 'SERVER_OPS_AGENT_READ_FAILED'
+}
+
+/** 生成不包含凭据的公开数据源目标描述，供审批卡直接展示。 */
+function formatWriteTarget(source: ServerOpsDataSource, database: string): string {
+  const endpoint = source.engine === 'sqlite'
+    ? source.filePath ?? '文件路径未知'
+    : `${source.address ?? '地址未知'}:${source.port ?? '端口未知'}`
+  return `${source.label} · ${endpoint} · 数据库 ${database}`
 }
 
 /** 判断最终 Pi 文本是否仍在固定预算内。 */
@@ -663,6 +688,87 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
     return scope
   }
 
+  /** 校验数据库写入目标并返回不含凭据的审批快照。 */
+  const prepareDatabaseWriteApproval = async (raw: Record<string, unknown>): Promise<ServerOpsWriteApprovalSnapshot> => {
+    const record = exactRecord(raw, ['sourceId', 'database', 'sql'], ['timeoutMs'])
+    const sourceId = readId(record.sourceId)
+    const database = readIdentifier(record.database, 64)
+    const sql = record.sql
+    if (typeof sql !== 'string' || sql.trim().length === 0 || sql.length > 16_384 || sql.includes('\u0000')) {
+      throw new Error('SERVER_OPS_AGENT_WRITE_INPUT_INVALID')
+    }
+    if (record.timeoutMs !== undefined
+      && (typeof record.timeoutMs !== 'number' || !Number.isSafeInteger(record.timeoutMs)
+        || record.timeoutMs < 1_000 || record.timeoutMs > 300_000)) {
+      throw new Error('SERVER_OPS_AGENT_WRITE_INPUT_INVALID')
+    }
+    const authorized = requireDatabaseAuthorized(sourceId)
+    const resource = authorized.resource as ServerOpsDatabaseResource
+    if (resource.kind !== 'mysql' && resource.kind !== 'sqlite') throw new Error('SERVER_OPS_DATA_WRITE_ENGINE_UNSUPPORTED')
+    let scope: ReturnType<typeof analyzeServerOpsSqlWriteScope>
+    try { scope = analyzeServerOpsSqlWriteScope(sql, database, resource.kind) } catch { throw new Error('SERVER_OPS_AGENT_WRITE_INPUT_INVALID') }
+    requireDatabaseScope(resource, database)
+    for (const table of scope.tables) requireDatabaseScope(resource, database, table)
+    const { data, source } = requireDataSource(sourceId, resource.kind)
+    let schema: Awaited<ReturnType<NonNullable<ServerOpsAgentReadFacadeServices['data']>['listSchemaTables']>>
+    try {
+      schema = await data.listSchemaTables({ sourceId, database })
+    } catch {
+      throw new Error('SERVER_OPS_AGENT_SCOPE_REQUIRED')
+    }
+    const isSameTable = (left: string, right: string): boolean => resource.kind === 'mysql'
+      ? left.toLowerCase() === right.toLowerCase()
+      : left === right
+    if (scope.tables.some((table) => schema.tables.some((entry) => entry.type === 'view' && isSameTable(entry.name, table)))) {
+      throw new Error('SERVER_OPS_AGENT_SCOPE_REQUIRED')
+    }
+    if (source.transport !== 'direct') throw new Error('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED')
+    if (!data.writeSource) throw new Error('SERVER_OPS_DATA_UNAVAILABLE')
+    const binding = captureBindings([resource])[0]
+    if (!binding) throw new Error('SERVER_OPS_AGENT_RESOURCE_CHANGED')
+    const fingerprint = createHash('sha256').update(JSON.stringify({
+      binding: binding.fingerprint, revision: authorized.revision, sourceId, database, sql,
+      timeoutMs: record.timeoutMs ?? null,
+    })).digest('hex')
+    const target = formatWriteTarget(source, database)
+    return {
+      toolName: 'ops_database_write', sourceId, database, target, operation: sql, fingerprint,
+      title: '数据库写入需要确认',
+      description: `目标：${target}\n风险：这段 SQL 会直接修改数据库数据；目标、数据库、SQL 或连接配置发生变化时会重新确认。\n注意：请确认已有备份或可恢复手段，执行结果未知时不会自动重试。`,
+    }
+  }
+
+  /** 校验 Redis 写入目标并返回不含凭据的审批快照。 */
+  const prepareRedisWriteApproval = async (raw: Record<string, unknown>): Promise<ServerOpsWriteApprovalSnapshot> => {
+    const request = parseServerOpsRedisCommandInput(raw, 'write')
+    const authorized = requireAuthorized('redis', request.sourceId)
+    const { source } = requireDataSource(request.sourceId, 'redis')
+    const binding = captureBindings([authorized.resource])[0]
+    if (!binding) throw new Error('SERVER_OPS_AGENT_RESOURCE_CHANGED')
+    const database = source.database ?? '0'
+    const fingerprint = createHash('sha256').update(JSON.stringify({
+      binding: binding.fingerprint, sourceId: request.sourceId, database, command: request.command, args: request.args,
+    })).digest('hex')
+    const target = formatWriteTarget(source, database)
+    return {
+      toolName: 'ops_redis_write', sourceId: request.sourceId, database, target,
+      operation: [request.command, ...request.args].join(' '), fingerprint,
+      title: 'Redis 写入需要确认',
+      description: `目标：${target}\n风险：本次命令会修改 Redis 数据；命令、参数、逻辑库或连接配置发生变化时会重新确认。\n注意：结果未知时必须先读取核对，不能自动重试。`,
+    }
+  }
+
+  /** 复用同一套主进程校验，确保批准后目标和正文仍与展示快照完全一致。 */
+  const revalidateWriteApproval = async (snapshot: ServerOpsWriteApprovalSnapshot, raw: Record<string, unknown>): Promise<void> => {
+    const current = snapshot.toolName === 'ops_database_write'
+      ? await prepareDatabaseWriteApproval(raw)
+      : await prepareRedisWriteApproval(raw)
+    if (current.toolName !== snapshot.toolName || current.fingerprint !== snapshot.fingerprint
+      || current.operation !== snapshot.operation || current.target !== snapshot.target || current.database !== snapshot.database) {
+      throw new Error('SERVER_OPS_AGENT_WRITE_APPROVAL_EXPIRED')
+    }
+  }
+
   return {
     checkDatabaseTables(raw) {
       /** 结构组合始终使用持久禁用规则的精确目标，目录裁剪不参与权限判断。 */
@@ -712,6 +818,14 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
     },
 
     ...(input.allowDatabaseWrite ? {
+      prepareWriteApproval: async (toolName: 'ops_database_write' | 'ops_redis_write', raw: Record<string, unknown>): Promise<ServerOpsWriteApprovalSnapshot> => {
+        checkRun()
+        return toolName === 'ops_database_write' ? prepareDatabaseWriteApproval(raw) : prepareRedisWriteApproval(raw)
+      },
+      revalidateWriteApproval: async (snapshot: ServerOpsWriteApprovalSnapshot, raw: Record<string, unknown>): Promise<void> => {
+        checkRun()
+        await revalidateWriteApproval(snapshot, raw)
+      },
       async databaseWrite(raw: { sourceId: string; database: string; sql: string; timeoutMs?: number }, signal?: AbortSignal): Promise<ServerOpsDataWriteResult> {
         /** 写入入口只接受有限字段，来源快照与 writeId 由主进程生成。 */
         const record = exactRecord(raw, ['sourceId', 'database', 'sql'], ['timeoutMs'])

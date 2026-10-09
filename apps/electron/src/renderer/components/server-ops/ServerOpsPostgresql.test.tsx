@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test'
+import * as React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { EditorState } from '@codemirror/state'
 import { CompletionContext } from '@codemirror/autocomplete'
 import { PostgreSQL, sql } from '@codemirror/lang-sql'
@@ -14,17 +16,14 @@ import {
 import { createServerOpsSqlCompletionSource } from './server-ops-sql-completion'
 import type { ServerOpsSqlCompletionSchema } from './server-ops-sql-completion'
 import { createServerOpsQueryableScope, toggleServerOpsExcludedTable } from './server-ops-agent-table-scope'
-import { getServerOpsManualWriteUnavailableReason } from './ServerOpsDatabaseWorkbench'
+import { ServerOpsSqlQueryPanel } from './ServerOpsSqlQueryPanel'
 
 describe('PostgreSQL 运维表单与补全', () => {
-  test('Given PostgreSQL 或 SSH 数据源 When 进入数据库工作台 Then 手工写模式明确禁用', () => {
-    const base: ServerOpsDataSource = {
-      id: 'source-1', label: '业务库', engine: 'postgresql', transport: 'direct', address: '127.0.0.1', port: 5432,
-      tlsMode: 'required', hasPassword: true, createdAt: 1, updatedAt: 1,
-    }
-    expect(getServerOpsManualWriteUnavailableReason(base)).toContain('PostgreSQL')
-    expect(getServerOpsManualWriteUnavailableReason({ ...base, engine: 'mysql', transport: 'ssh', hostId: 'host-1', port: 3306 })).toContain('SSH 跳板')
-    expect(getServerOpsManualWriteUnavailableReason({ ...base, engine: 'mysql', port: 3306 })).toBeUndefined()
+  test('Given PostgreSQL 数据源 When 进入查询工作台 Then 只显示只读 SELECT 且没有写模式入口', () => {
+    const html = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={{}} sourceId="source-1" database="business" configurationKey="v1" available dialect="postgresql" />)
+    expect(html).toContain('只读 SELECT')
+    expect(html).not.toContain('写模式')
+    expect(html).not.toContain('确认执行写入')
   })
 
   test('Given 大小写不同的 PostgreSQL 表 When 勾选第二张表 Then 不撤销第一张表的禁用', () => {

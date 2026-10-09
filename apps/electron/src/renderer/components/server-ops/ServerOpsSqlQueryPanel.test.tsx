@@ -121,44 +121,13 @@ describe('ServerOpsSqlQueryPanel', () => {
     expect(html).not.toContain('执行查询')
   })
 
-  test('Given 默认只读模式 When 渲染 Then 不出现写入标记且写模式按钮需要显式开启', () => {
-    const html = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={{ writeServerOpsDatabase: async () => createWriteProjection().execution!.result, cancelServerOpsDatabaseWrite: async () => undefined }} sourceId="source-1" source={mysqlSource} database="main" configurationKey="v1" available />)
+  test('Given 数据库查询页 When 渲染 Then 只显示只读能力且不再提供写模式切换', () => {
+    const html = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={{}} sourceId="source-1" database="main" configurationKey="v1" available />)
     expect(html).toContain('只读 SELECT')
     expect(html).not.toContain('写入模式 · 会修改数据')
-    /** 写模式默认关闭：按钮存在、aria-pressed 为假且未被禁用，必须由用户显式开启。 */
-    expect(html).toContain('aria-pressed="false"')
-    expect(html).toContain('写模式</button>')
-    expect(html).not.toMatch(/aria-pressed="false" disabled=""/)
+    expect(html).not.toContain('写模式</button>')
+    expect(html).not.toContain('aria-pressed')
     expect(html).not.toContain('data-server-ops-sql-write-result')
-  })
-
-  test('Given 旧 preload 缺少写接口 When 渲染 Then 写模式入口禁用并说明原因', () => {
-    /** 只读接口齐全但写接口缺失：必须显式禁用写模式，而不是让按钮点了没反应。 */
-    const html = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={{}} sourceId="source-1" source={mysqlSource} database="main" configurationKey="v1" available />)
-    /** 不依赖属性顺序：禁用状态与原因文案各自断言。 */
-    expect(html).toMatch(/aria-pressed="false" disabled=""/)
-    expect(html).toContain('title="当前客户端不支持写库，请完整退出并重启客户端后再试。"')
-  })
-
-  test('Given 写接口存在但没有完整数据源快照 When 渲染 Then 禁用写模式而不是按 sourceId 猜目标', () => {
-    const html = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={{
-      writeServerOpsDatabase: async () => createWriteProjection().execution!.result,
-      cancelServerOpsDatabaseWrite: async () => undefined,
-    }} sourceId="source-1" database="main" configurationKey="v1" available />)
-    expect(html).toMatch(/aria-pressed="false" disabled=""/)
-    expect(html).toContain('当前数据源快照不可用，无法安全执行写入。')
-  })
-
-  test('Given PostgreSQL 或 SSH 跳板目标 When 渲染 Then 写模式禁用并解释真实原因', () => {
-    const api = { writeServerOpsDatabase: async () => createWriteProjection().execution!.result, cancelServerOpsDatabaseWrite: async () => undefined }
-    const postgresSource = { ...mysqlSource, id: 'source-pg', engine: 'postgresql' as const }
-    const postgres = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={api} sourceId="source-pg" source={postgresSource} database="app" configurationKey="v1" available dialect="postgresql" writeDisabledReason="当前 PostgreSQL 暂不支持手工写入。" />)
-    expect(postgres).toMatch(/aria-pressed="false" disabled=""/)
-    expect(postgres).toContain('当前 PostgreSQL 暂不支持手工写入。')
-    const sshSource = { ...mysqlSource, id: 'source-ssh', transport: 'ssh' as const, hostId: 'host-1' }
-    const ssh = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={api} sourceId="source-ssh" source={sshSource} database="app" configurationKey="v1" available writeDisabledReason="经 SSH 跳板的数据源暂不支持手工写入，请改用直连。" />)
-    expect(ssh).toMatch(/aria-pressed="false" disabled=""/)
-    expect(ssh).toContain('经 SSH 跳板的数据源暂不支持手工写入，请改用直连。')
   })
 
   test('Given 写执行成功 When 渲染写入结果 Then 明确说明改动是否已生效', () => {
@@ -209,19 +178,7 @@ describe('ServerOpsSqlQueryPanel', () => {
     expect(html).toContain('部分改动已经生效，请核对数据库后再决定是否重跑')
   })
 
-  test('Given 写模式下渲染历史 When 传入运行入口 Then 每条记录同时提供运行与回填', () => {
-    const html = renderToStaticMarkup(<ServerOpsSqlQueryHistory projection={{
-      ...createServerOpsSqlQueryHistoryIdleProjection(),
-      context: { sourceId: 'source-1', database: 'main', configurationKey: 'v1' },
-      status: 'ready',
-      entries: [{ id: 'entry-1', sourceId: 'source-1', database: 'main', createdAt: 1, sql: 'UPDATE t SET n = 1' }],
-    }} onUse={() => undefined} onRun={() => undefined} onRefresh={() => undefined} />)
-    expect(html).toContain('>运行</button>')
-    expect(html).toContain('填入编辑器')
-    expect(html).toContain('回填并打开写入确认')
-  })
-
-  test('Given 只读模式渲染历史 When 未传运行入口 Then 不出现运行按钮', () => {
+  test('Given 查询历史 When 渲染 Then 只提供回填入口，不提供直接运行写入', () => {
     const html = renderToStaticMarkup(<ServerOpsSqlQueryHistory projection={{
       ...createServerOpsSqlQueryHistoryIdleProjection(),
       context: { sourceId: 'source-1', database: 'main', configurationKey: 'v1' },
@@ -248,12 +205,12 @@ describe('ServerOpsSqlQueryPanel', () => {
         },
         { id: 'entry-3', sourceId: 'source-1', database: 'main', createdAt: 30, sql: 'SELECT 1' },
       ],
-    }} onUse={() => undefined} onRun={() => undefined} runDisabled onRefresh={() => undefined} />)
+    }} onUse={() => undefined} onRefresh={() => undefined} />)
     expect(html).toContain('已提交')
     expect(html).toContain('12 ms')
     expect(html).toContain('影响 5 行')
     expect(html).toContain('未收到结束回执')
     expect(html).toContain('历史语句（无运行结果）')
-    expect(html).toMatch(/disabled=""[^>]*title="回填并打开写入确认"/)
+    expect(html).not.toContain('回填并打开写入确认')
   })
 })

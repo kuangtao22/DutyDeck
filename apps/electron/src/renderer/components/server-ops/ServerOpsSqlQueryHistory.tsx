@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { ArrowUpToLine, History, LoaderCircle, Play, RefreshCw } from 'lucide-react'
+import { ArrowUpToLine, History, LoaderCircle, RefreshCw } from 'lucide-react'
 import { SERVER_OPS_DATA_QUERY_HISTORY_LIMIT } from '@proma/shared'
 import { Button } from '@/components/ui/button'
 import type { ServerOpsSqlQueryHistoryProjection } from './server-ops-sql-query-history-controller'
@@ -11,10 +11,6 @@ export interface ServerOpsSqlQueryHistoryProps {
   projection: ServerOpsSqlQueryHistoryProjection
   onUse: (sql: string) => void
   onRefresh: () => void
-  /** 写模式下提供的「运行」入口：回填后立即走写入确认，只读模式不传。 */
-  onRun?: (sql: string) => void
-  /** 在途写入期间禁用所有历史重跑入口，保持同一数据源单飞。 */
-  runDisabled?: boolean
 }
 
 /** 单条历史的运行事实；旧条目和缺失结束回执必须明确区分。 */
@@ -37,7 +33,7 @@ function ServerOpsSqlHistoryExecution({ entry }: { entry: ServerOpsDataQueryHist
 }
 
 /** 当前库的本地 SQL 历史列表，与结果表共用输出区且独立滚动。 */
-export function ServerOpsSqlQueryHistory({ projection, onUse, onRefresh, onRun, runDisabled = false }: ServerOpsSqlQueryHistoryProps): React.ReactElement {
+export function ServerOpsSqlQueryHistory({ projection, onUse, onRefresh }: ServerOpsSqlQueryHistoryProps): React.ReactElement {
   /** 列表刷新期间保留原记录，但明确显示读取状态。 */
   const loading = projection.status === 'loading'
   return <section className="flex min-h-40 min-w-0 flex-1 flex-col" aria-label="查询历史语句" data-server-ops-sql-history>
@@ -52,7 +48,6 @@ export function ServerOpsSqlQueryHistory({ projection, onUse, onRefresh, onRun, 
       {projection.entries.map((entry) => <li key={entry.id} className="min-w-0 px-4 py-3 transition-colors hover:bg-muted/20">
         <div className="mb-1.5 flex min-w-0 flex-wrap items-center gap-2">
           <time className="mr-auto text-[11px] tabular-nums text-muted-foreground" dateTime={new Date(entry.execution?.startedAt ?? entry.createdAt).toISOString()}>{new Date(entry.execution?.startedAt ?? entry.createdAt).toLocaleString('zh-CN', { hour12: false })}</time>
-          {onRun ? <Button type="button" variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-[11px] text-amber-700 dark:text-amber-400" disabled={runDisabled} onClick={() => onRun(entry.sql)} title="回填并打开写入确认"><Play className="size-3.5" aria-hidden="true" />运行</Button> : null}
           <Button type="button" variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-[11px]" onClick={() => onUse(entry.sql)}><ArrowUpToLine className="size-3.5" aria-hidden="true" />填入编辑器</Button>
         </div>
         <div className="mb-1.5"><ServerOpsSqlHistoryExecution entry={entry} /></div>

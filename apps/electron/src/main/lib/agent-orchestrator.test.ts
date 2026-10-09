@@ -466,10 +466,10 @@ describe('Agent sendMessage 准入顺序合同', () => {
     const start = source.indexOf('const canUseTool = async')
     const end = source.indexOf('// 13. 构建 Adapter 查询选项', start)
     const body = source.slice(start, end)
-    /** 六条独立审批分支各复核一次；接口工作台与编排工厂分别在审批返回和最终放行前复核两次。 */
+    /** 数据库/Redis 写入在原生审批返回后还要复核一次主进程快照。 */
     const revalidationCalls = body.match(/revalidateSingleApprovalResult\(/g)?.length ?? 0
 
-    expect(revalidationCalls).toBe(10)
+    expect(revalidationCalls).toBe(11)
     expect(body).not.toContain('return permissionService.requestSingleApproval(sessionId, toolName, input, options')
   })
 

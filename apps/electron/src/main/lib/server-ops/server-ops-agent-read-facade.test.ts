@@ -1051,6 +1051,28 @@ describe('Server Ops Agent 多资源只读 Facade', () => {
     expect(writes).toBe(0)
   })
 
+  test('Given 写入审批快照 When SQL 或连接身份变化 Then 批准失效且不允许继续执行', async () => {
+    const deps = dependencies()
+    deps.services.data!.writeSource = async () => ({
+      writeId: 'unused', database: 'app', statementCount: 1, affectedRows: 0,
+      committed: true, outcome: 'committed', durationMs: 0, statements: [], warnings: [],
+    })
+    const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps, allowDatabaseWrite: true })!
+    const input = { sourceId: 'source-1', database: 'app', sql: 'UPDATE users SET state = 1' }
+    const snapshot = await facade.prepareWriteApproval!('ops_database_write', input)
+    expect(snapshot).toMatchObject({ toolName: 'ops_database_write', target: '订单库 · 10.0.0.2:3306 · 数据库 app', operation: input.sql })
+    await expect(facade.revalidateWriteApproval!(snapshot, { ...input, sql: 'DELETE FROM users' })).rejects.toThrow('SERVER_OPS_AGENT_WRITE_APPROVAL_EXPIRED')
+
+    const redisDeps = dependencies()
+    redisDeps.services.data!.listSources = () => ({ sources: [source({ engine: 'redis', port: 6379, database: '0' })] })
+    const redis = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: redisDeps, allowDatabaseWrite: true })!
+    const redisInput = { sourceId: 'source-1', command: 'SET', args: ['key', 'value'] }
+    const redisSnapshot = await redis.prepareWriteApproval!('ops_redis_write', redisInput)
+    expect(redisSnapshot.description).toContain('Redis 数据')
+    redisDeps.services.data!.listSources = () => ({ sources: [source({ engine: 'redis', port: 6379, database: '0', label: '已换绑 Redis' })] })
+    await expect(redis.revalidateWriteApproval!(redisSnapshot, redisInput)).rejects.toThrow('SERVER_OPS_AGENT_WRITE_APPROVAL_EXPIRED')
+  })
+
   test('Given 只读模式或非直连/非支持引擎 When Agent 请求写入 Then 在执行前拒绝', async () => {
     const readonlyDeps = dependencies()
     readonlyDeps.services.data!.writeSource = async () => { throw new Error('must-not-run') }

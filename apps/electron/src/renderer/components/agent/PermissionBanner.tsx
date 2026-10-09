@@ -17,6 +17,7 @@ import type { DangerLevel } from '@proma/shared'
 import { describeApiWorkbenchApproval, formatApiApprovalCaseDiff } from './api-approval-view'
 import { describeCapabilityFactoryApproval } from './capability-factory-approval-view'
 import { CapabilityFactoryAdoptionReview } from './CapabilityFactoryAdoptionReview'
+import { describeServerOpsApproval } from './server-ops-approval-view'
 
 /** 危险等级对应的图标颜色 */
 const DANGER_ICON_STYLES: Record<DangerLevel, string> = {
@@ -55,6 +56,8 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
   /** 采纳复用原有审批卡，但不能被通用 Enter 快捷键误批。 */
   const factoryApproval = request ? describeCapabilityFactoryApproval(request.toolName, request.toolInput) : null
   const isAdoption = !!factoryApproval?.adoption
+  /** 数据库与 Redis 写入使用同一张原生确认卡，但正文和风险单独排版。 */
+  const serverOpsApproval = request ? describeServerOpsApproval(request.toolName, request.toolInput, request.sdkTitle, request.sdkDescription) : null
   /** 同步记录当前审批身份，阻止尚未清理的旧快捷键监听器批准下一条请求。 */
   const currentApprovalRef = React.useRef({ sessionId, requestId: request?.requestId, isAdoption })
   currentApprovalRef.current = { sessionId, requestId: request?.requestId, isAdoption }
@@ -207,13 +210,26 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
             )}
           </div>
         ) : null}
+        {serverOpsApproval ? (
+          <div className="space-y-1.5" data-server-ops-approval>
+            <p className="text-xs font-medium text-foreground">{serverOpsApproval.title}</p>
+            {serverOpsApproval.details.map((detail) => <p key={detail} className="whitespace-pre-wrap break-words text-xs text-muted-foreground">{detail}</p>)}
+            <div className="rounded bg-background/50 px-2 py-1.5">
+              <p className="mb-1 text-[11px] text-muted-foreground">本次将执行的内容</p>
+              <pre className="max-h-[220px] overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5">{serverOpsApproval.operation}</pre>
+            </div>
+            <div className="rounded bg-background/50 px-2 py-1.5 space-y-1">
+              {serverOpsApproval.warnings.map((warning) => <p key={warning} className="text-[11px] text-amber-600">{warning}</p>)}
+            </div>
+          </div>
+        ) : null}
         {/* SDK 可读标题（优先展示，描述操作意图） */}
-        {!isAdoption && request.sdkTitle && (
+        {!isAdoption && !serverOpsApproval && request.sdkTitle && (
           <p className="text-xs text-foreground">{request.sdkTitle}</p>
         )}
         {/* SDK 详细描述（与标题不同时才展示） */}
-        {!isAdoption && request.sdkDescription && request.sdkDescription !== request.sdkTitle && (
-          <p className="text-xs text-muted-foreground">{request.sdkDescription}</p>
+        {!isAdoption && !serverOpsApproval && request.sdkDescription && request.sdkDescription !== request.sdkTitle && (
+          <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground">{request.sdkDescription}</p>
         )}
         {/* Bash 命令：始终展示代码块 */}
         {request.command ? (
@@ -224,7 +240,7 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
           <pre className="text-xs font-mono bg-background/50 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto">
             {JSON.stringify(request.toolInput, null, 2)}
           </pre>
-        ) : !request.sdkTitle && !isAdoption ? (
+        ) : !request.sdkTitle && !isAdoption && !serverOpsApproval ? (
           <p className="text-xs text-muted-foreground">
             {request.description}
           </p>

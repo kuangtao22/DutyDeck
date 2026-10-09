@@ -42,13 +42,6 @@ export interface ServerOpsDatabaseWorkbenchProps {
   onSourceMutated?: (change: ServerOpsDataSourceMutation) => void
 }
 
-/** 返回当前数据源不能进入手工写模式的原因；undefined 表示 renderer 支持。 */
-export function getServerOpsManualWriteUnavailableReason(source: ServerOpsDataSource): string | undefined {
-  if (source.transport === 'ssh') return '经 SSH 跳板的数据源暂不支持手工写入，请改用直连。'
-  if (source.engine === 'postgresql') return '当前 PostgreSQL 暂不支持手工写入。'
-  return undefined
-}
-
 /**
  * MySQL 工作台：连接管理、表浏览、实例诊断各有独立控制器。
  * 布局展开只改变父容器，不卸载控制器；全局仅保留轻量导航。
@@ -95,8 +88,6 @@ export function ServerOpsDatabaseWorkbench({ api, source, jumpHost, viewScope, r
   const [managementController] = React.useState(() => createServerOpsDataServicesController({ api, publish: setManagement, automaticDiagnostics: false, onSourceMutated: (change) => mutationRef.current?.(change) }))
   /** 直连不依赖 SSH；跳板未连通只影响读取，不影响编辑配置。 */
   const readable = source.transport === 'direct' || (jumpHost !== null && jumpHost.id === source.hostId && jumpHost.connected)
-  /** 写能力比只读范围更窄，界面必须在开关处直接说明原因。 */
-  const writeDisabledReason = getServerOpsManualWriteUnavailableReason(source)
   React.useEffect(() => { defaultDatabaseController.setSource(source) }, [defaultDatabaseController, source])
   /** 配置同 ID 更新后，新请求不再携带旧目标导航。 */
   React.useEffect(() => {
@@ -179,7 +170,7 @@ export function ServerOpsDatabaseWorkbench({ api, source, jumpHost, viewScope, r
           <ServerOpsSchemaBrowserView projection={schema} showDatabaseSelector={false} onSelectDatabase={selectDatabase} onOpenTable={schemaController.openTable} onBackToList={schemaController.backToList} onDetailTabChange={schemaController.setDetailTab} onLoadRows={schemaController.loadRows} onOpenCell={schemaController.openCell} onCloseCell={schemaController.closeCell} onApplyRowFilters={schemaController.applyRowFilters} onLoadFilterFields={schemaController.loadFilterFields} onRefresh={schemaController.refresh} onRefreshTables={schemaController.refreshTables} directoryWidth={navigation.directoryWidth} onDirectoryWidthChange={(directoryWidth) => updateNavigation({ directoryWidth })} />
         </TabsContent>
         <TabsContent value="query" className={contentClass}>
-          <ServerOpsSqlQueryPanel api={api} sourceId={source.id} source={source} database="main" configurationKey={identity} available={readable} dialect="sqlite" {...(writeDisabledReason === undefined ? {} : { writeDisabledReason })} />
+          <ServerOpsSqlQueryPanel api={api} sourceId={source.id} database="main" configurationKey={identity} available={readable} dialect="sqlite" />
         </TabsContent>
       </Tabs>
     ) : <Tabs className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" value={navigation.section} onValueChange={(section) => updateNavigation({ section: section as ServerOpsDatabaseSection })}>
@@ -212,7 +203,7 @@ export function ServerOpsDatabaseWorkbench({ api, source, jumpHost, viewScope, r
             <ServerOpsSchemaBrowserView projection={schema} showDatabaseSelector={false} onSelectDatabase={selectDatabase} onOpenTable={schemaController.openTable} onBackToList={schemaController.backToList} onDetailTabChange={schemaController.setDetailTab} onLoadRows={schemaController.loadRows} onOpenCell={schemaController.openCell} onCloseCell={schemaController.closeCell} onApplyRowFilters={schemaController.applyRowFilters} onLoadFilterFields={schemaController.loadFilterFields} onRefresh={schemaController.refresh} onRefreshTables={schemaController.refreshTables} directoryWidth={navigation.directoryWidth} onDirectoryWidthChange={(directoryWidth) => updateNavigation({ directoryWidth })} />
           </TabsContent>
           <TabsContent value="query" className={contentClass}>
-            <ServerOpsSqlQueryPanel api={api} sourceId={source.id} source={source} database={schema.database} configurationKey={identity} available={readable && schema.collectedAt !== undefined} dialect={source.engine === 'postgresql' ? 'postgresql' : 'mysql'} {...(writeDisabledReason === undefined ? {} : { writeDisabledReason })} />
+            <ServerOpsSqlQueryPanel api={api} sourceId={source.id} database={schema.database} configurationKey={identity} available={readable && schema.collectedAt !== undefined} dialect={source.engine === 'postgresql' ? 'postgresql' : 'mysql'} />
           </TabsContent>
           {databasePages.map(([page]) => page === 'browse' || page === 'query' ? null : <TabsContent key={page} value={page} className={contentClass}>
             <ServerOpsDatabaseDiagnostics engine={source.engine} projection={databaseDiagnostics} page={page} scope="database" onRefresh={databaseDiagnosticsController.refresh} />

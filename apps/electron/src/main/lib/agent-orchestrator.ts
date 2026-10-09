@@ -103,7 +103,7 @@ import {
   createCapabilityFactoryModelCall, resolveCapabilityFactoryModels,
 } from './capability-factory/capability-factory-model-call'
 import { createServerOpsAgentFacade } from './server-ops/server-ops-agent-facade'
-import { createServerOpsAgentReadFacade } from './server-ops/server-ops-agent-read-facade'
+import { createServerOpsAgentReadFacade, type ServerOpsWriteApprovalSnapshot } from './server-ops/server-ops-agent-read-facade'
 import { createServerOpsConnectionDraftAgent } from './server-ops/server-ops-connection-draft-agent'
 import { getAgentVaultRoots, getVaultUserContext } from './vault-service'
 import { buildPiMcpTools } from './adapters/pi-mcp-tools'
@@ -1781,21 +1781,46 @@ export class AgentOrchestrator {
 
         // 数据库写入始终使用 Agent 原生单次确认，优先于扩展自动审批与 bypass 分支。
         if (toolName === 'ops_database_write' || toolName === 'ops_redis_write') {
+          if (!serverOpsReadFacade) {
+            return { behavior: 'deny' as const, message: '当前运行不具备该数据源写入能力。' }
+          }
           if (currentMode === 'plan') {
             return { behavior: 'deny' as const, message: '计划模式下不能修改数据库或 Redis，请在计划获批后执行。' }
           }
           if (toolName === 'ops_database_write' ? !serverOpsReadFacade?.databaseWrite : !serverOpsReadFacade?.redisWrite) {
             return { behavior: 'deny' as const, message: '当前运行不具备该数据源写入能力。' }
           }
+          if (!serverOpsReadFacade.prepareWriteApproval || !serverOpsReadFacade.revalidateWriteApproval) {
+            return { behavior: 'deny' as const, message: '写入审批快照不存在或已失效，请重新发起操作。' }
+          }
+          /** 审批展示与批准后的主进程复核共用同一份不可伪造快照。 */
+          let approvalSnapshot: ServerOpsWriteApprovalSnapshot
+          try {
+            approvalSnapshot = await serverOpsReadFacade.prepareWriteApproval(toolName, input)
+          } catch (error) {
+            return { behavior: 'deny' as const, message: error instanceof Error ? error.message : '写入审批快照不存在或已失效，请重新发起操作。' }
+          }
           /** 本次审批只批准当前数据修改调用，不能加入永久或会话白名单。 */
           const result = await permissionService.requestSingleApproval(
-            sessionId, toolName, input, options,
+            sessionId,
+            toolName,
+            input,
+            { ...options, title: approvalSnapshot.title, description: approvalSnapshot.description, displayName: approvalSnapshot.toolName },
             (request) => {
               if (denyStaleToolRun()) return
               this.eventBus.emit(sessionId, { kind: 'proma_event', event: { type: 'permission_request', request } })
             },
           )
-          return revalidateSingleApprovalResult(result, denyStaleToolRun, getPermissionMode)
+          const checked = revalidateSingleApprovalResult(result, denyStaleToolRun, getPermissionMode)
+          if (checked.behavior !== 'allow' || options.signal.aborted) {
+            return checked.behavior === 'deny' ? checked : { behavior: 'deny', message: '操作已中止' }
+          }
+          try {
+            await serverOpsReadFacade.revalidateWriteApproval(approvalSnapshot, input)
+          } catch (error) {
+            return { behavior: 'deny', message: error instanceof Error ? error.message : '写入审批已失效，请重新确认。' }
+          }
+          return revalidateSingleApprovalResult({ behavior: 'allow', updatedInput: input }, denyStaleToolRun, getPermissionMode)
         }
 
         /** 付费或高影响工具按可信运行策略决定逐次确认或自动执行，plan 与中止始终优先拒绝。 */
