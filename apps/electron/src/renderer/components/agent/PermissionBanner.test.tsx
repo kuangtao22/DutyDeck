@@ -33,6 +33,35 @@ function apiScenarioApproval(toolInput: Record<string, unknown>): PermissionRequ
 }
 
 describe('权限横幅', () => {
+  test('Given 采纳草案缺少对比测试 When 渲染原有审批卡 Then 仍展示具体改动和预期收益且不弹全局对话框', () => {
+    /** 同一条宿主快照将实际差异与 Agent 判断分开，避免把预期当实测结论。 */
+    const store = createStore()
+    store.set(allPendingPermissionRequestsAtom, new Map([['session-1', [{
+      ...apiSendApproval({ approval: {
+        kind: 'operation', operation: 'adoptDraft', title: '采纳「角色提取」草案',
+        lines: ['v20 → v21'], destructive: false, appliesImmediately: true,
+        adoption: {
+          changes: ['扫描角色：从「总结人物」改为「逐字引用原文后列出人物」'],
+          rationale: '补充原文引用要求',
+          proposal: { problem: '当前提示词未约束引用必须逐字一致', expectedBenefit: '减少改写原文造成的引用失配', risk: '严格引用可能增加漏提，需要边界样本验证' },
+          benefits: [], currentProblems: [], remainingRisks: [], validation: '尚未对比测试，预期收益待验证',
+        },
+      } }), toolName: 'factory_apply_operation', allowAlways: true,
+    }]]]))
+    const html = renderToStaticMarkup(<Provider store={store}><PermissionBanner sessionId="session-1" onStop={() => undefined} /></Provider>)
+    expect(html).toContain('factory-adoption-review')
+    expect(html).toContain('逐字引用原文后列出人物')
+    expect(html).toContain('当前提示词未约束引用必须逐字一致')
+    expect(html).toContain('预期收益（待验证）')
+    expect(html).toContain('减少改写原文造成的引用失配')
+    expect(html).toContain('确认采纳')
+    expect(html).toContain('暂不采纳')
+    expect(html).not.toContain('alertdialog')
+    expect(html).not.toContain('本次会话总是允许')
+    expect(html).not.toContain('Enter 允许')
+    expect(html).not.toContain('暂无可由当前草案对比证据确认的收益')
+  })
+
   test('Given 没有待处理请求 When 渲染 Then 不占用聊天空间', () => {
     const html = renderToStaticMarkup(
       <Provider store={createStore()}>

@@ -18,6 +18,17 @@ export {
 export { diffCapabilities } from './capabilities-diff'
 export type { CapabilityChange } from './capabilities-diff'
 export {
+  canAdoptOptimization,
+  compareOptimizationPair,
+  groupOptimizationRuns,
+  isAdoptableOptimizationBatch,
+  isAdoptableOptimizationComparison,
+  isPromptOnlyOptimization,
+  optimizationKey,
+  sceneStandardsKey,
+  type OptimizationPair,
+} from './capability-factory-optimization'
+export {
   DEFAULT_CONTEXT_WINDOW,
   ONE_MILLION_CONTEXT_WINDOW,
   CODEX_GPT_54_55_CONTEXT_WINDOW,

@@ -2,32 +2,52 @@
  * 编排工厂的 Agent 工具定义。
  *
  * **工具清单就是权限清单**：这里没有的，Agent 就做不到。
- * 工具包括场景 / 版本 / 虚拟接入 / 任务 / 运行的读取，草案与虚拟接入的两段式写入，
- * 以及单步试跑和整链候选对比。
- * 刻意不提供：采纳版本、回滚、导出能力包、删除场景（都是人工动作，见 facade 顶部的说明）。
- *
- * 新增工具时仍要保持这条权限边界：Agent 可验证候选，但不能采纳或交付。
+ * 工具包括工厂读取、单次与批次运行，以及严格白名单内的两段式修改。
+ * 修改的 prepare 阶段冻结目标并生成审批快照，apply 阶段由宿主权限层授权后执行。
  */
 import { Type } from 'typebox'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
-import type { CapabilitySceneDefinition } from '@proma/shared'
+import type { CapabilityFactoryBatchRequest, CapabilitySceneDefinition } from '@proma/shared'
 import type { CapabilityFactoryAgentFacade } from './capability-factory-agent-facade'
 
-/** 精确工具名集合用于权限分派，禁止前缀放行未知能力。 */
-export const CAPABILITY_FACTORY_AGENT_TOOL_NAMES = [
+/** 只读工具可用于计划模式；列表结果保持摘要化。 */
+export const CAPABILITY_FACTORY_AGENT_READ_TOOL_NAMES = [
   'factory_list_scenes',
   'factory_get_scene',
   'factory_list_versions',
-  'factory_prepare_draft',
-  'factory_apply_draft',
   'factory_list_stubs',
-  'factory_prepare_stub',
-  'factory_apply_stub',
   'factory_list_runs',
   'factory_get_run',
   'factory_list_tasks',
+  'factory_list_datasets',
+  'factory_list_evaluations',
+  'factory_list_deliveries',
+  'factory_list_batches',
+  'factory_get_batch',
+] as const
+
+/** 会发起模型调用或长任务的工具；计划模式必须整体拒绝。 */
+export const CAPABILITY_FACTORY_AGENT_RUN_TOOL_NAMES = [
   'factory_run_scene',
   'factory_run_step',
+  'factory_run_batch',
+] as const
+
+/** 两段式修改工具；apply 必须经过宿主真实授权。 */
+export const CAPABILITY_FACTORY_AGENT_APPLY_TOOL_NAMES = [
+  'factory_prepare_draft',
+  'factory_apply_draft',
+  'factory_prepare_stub',
+  'factory_apply_stub',
+  'factory_prepare_operation',
+  'factory_apply_operation',
+] as const
+
+/** 精确工具名集合用于权限分派，禁止前缀放行未知能力。 */
+export const CAPABILITY_FACTORY_AGENT_TOOL_NAMES = [
+  ...CAPABILITY_FACTORY_AGENT_READ_TOOL_NAMES,
+  ...CAPABILITY_FACTORY_AGENT_RUN_TOOL_NAMES,
+  ...CAPABILITY_FACTORY_AGENT_APPLY_TOOL_NAMES,
 ] as const
 
 /** Pi SDK 在此只需要工具定义工厂，不引入另一套 Agent runtime。 */
@@ -42,15 +62,52 @@ function result(value: unknown) {
 /**
  * 构建编排工厂的窄工具集。
  *
- * 注意工具描述里的两条硬约束（写进描述是因为模型读得到它）：
- * ① saving a draft never takes effect —— 人必须在界面上采纳；
- * ② 采纳、回滚、导出不由你执行。
+ * 工具描述明确区分准备与应用：模型不能通过参数自报批准，宿主只认 preparedId 对应的快照。
  */
 export function buildCapabilityFactoryAgentTools(
   sdk: CapabilityFactoryToolSdk,
   facade: CapabilityFactoryAgentFacade,
 ): ToolDefinition[] {
   const sceneId = Type.String({ minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$' })
+  const entityId = Type.String({ minLength: 1, maxLength: 128 })
+  const datasetCase = Type.Object({
+    name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+    input: Type.Record(Type.String(), Type.Unknown()),
+    expected: Type.Optional(Type.Unknown()),
+    fromRunId: Type.Optional(entityId),
+  }, { additionalProperties: false })
+  const adoptionProposal = Type.Object({
+    problem: Type.String({ minLength: 1, maxLength: 240 }),
+    expectedBenefit: Type.String({ minLength: 1, maxLength: 240 }),
+    risk: Type.Optional(Type.String({ minLength: 1, maxLength: 240 })),
+  }, { additionalProperties: false })
+  /** 草案采纳范围必须是整份、单个步骤或单个步骤的评审标准。 */
+  const adoptionScope = Type.Union([
+    Type.Object({ kind: Type.Literal('all') }, { additionalProperties: false }),
+    Type.Object({ kind: Type.Literal('step'), stepId: sceneId }, { additionalProperties: false }),
+    Type.Object({ kind: Type.Literal('stepAcceptance'), stepId: sceneId }, { additionalProperties: false }),
+  ])
+  const operation = Type.Union([
+    Type.Object({ kind: Type.Literal('createScene'), name: Type.String({ minLength: 1, maxLength: 200 }) }, { additionalProperties: false }),
+    Type.Object({ kind: Type.Literal('renameScene'), sceneId, name: Type.String({ minLength: 1, maxLength: 200 }) }, { additionalProperties: false }),
+    Type.Object({ kind: Type.Literal('deleteScene'), sceneId }, { additionalProperties: false }),
+    Type.Object({ kind: Type.Literal('discardDraft'), sceneId }, { additionalProperties: false }),
+    Type.Object({
+      kind: Type.Literal('adoptDraft'), sceneId, scope: Type.Optional(adoptionScope), testedBatchId: Type.Optional(entityId),
+      proposal: adoptionProposal,
+    }, { additionalProperties: false }),
+    Type.Object({ kind: Type.Literal('rollback'), sceneId, targetVersion: Type.Integer({ minimum: 1 }) }, { additionalProperties: false }),
+    Type.Object({
+      kind: Type.Literal('exportPackage'), sceneId,
+      packageVersion: Type.String({ minLength: 1, maxLength: 64 }),
+      fileName: Type.String({ minLength: 1, maxLength: 121 }),
+      projectId: Type.Optional(entityId),
+    }, { additionalProperties: false }),
+    Type.Object({ kind: Type.Literal('createDataset'), name: Type.String({ minLength: 1, maxLength: 200 }) }, { additionalProperties: false }),
+    Type.Object({ kind: Type.Literal('addDatasetCases'), datasetId: entityId, cases: Type.Array(datasetCase, { minItems: 1, maxItems: 10 }) }, { additionalProperties: false }),
+    Type.Object({ kind: Type.Literal('deleteDatasetCase'), datasetId: entityId, caseId: entityId }, { additionalProperties: false }),
+    Type.Object({ kind: Type.Literal('deleteStub'), capabilityId: entityId }, { additionalProperties: false }),
+  ])
 
   return [
     sdk.defineTool({
@@ -77,7 +134,7 @@ export function buildCapabilityFactoryAgentTools(
     sdk.defineTool({
       name: 'factory_prepare_draft',
       label: '准备场景草案',
-      description: 'Step 1 of 2 for changing a scene. Computes exactly what would change and returns a preparedId plus an approval snapshot; nothing is written yet. A definition identical to the current one is rejected as "no actual change". If the scene changes before you apply, the preparedId becomes invalid and you must prepare again. Call factory_apply_draft with the preparedId only after the human has seen the change list. '
+      description: 'Step 1 of 2 for changing a scene. Computes exactly what would change and returns a preparedId plus a frozen snapshot; nothing is written yet. A definition identical to the current one is rejected as "no actual change". If the scene changes before you apply, the preparedId becomes invalid and you must prepare again. Continue with factory_apply_draft within the authorized optimization task; draft writes do not require a separate human confirmation and do not change the live version. '
         + 'Before you shape a definition, apply the rule from your factory guidance: a scene orchestrates only what the model must do (llm/extract steps) — deterministic local logic belongs to the input/output boundary, not to the flow.',
       parameters: Type.Object({
         sceneId,
@@ -136,7 +193,7 @@ export function buildCapabilityFactoryAgentTools(
     sdk.defineTool({
       name: 'factory_apply_draft',
       label: '应用场景草案',
-      description: 'Step 2 of 2: write the previously prepared draft. This still never takes effect on the live scene — a human must adopt the draft in the workbench, and adopting, rolling back and exporting the capability package are not actions you can perform. Only a preparedId issued by factory_prepare_draft is accepted, and the written content is exactly the snapshot that was shown for approval.',
+      description: 'Step 2 of 2: write the previously prepared draft without changing the live version. Only a preparedId issued by factory_prepare_draft is accepted, and the written content is exactly the snapshot shown for approval. Adoption, rollback and export use factory_prepare_operation followed by factory_apply_operation.',
       parameters: Type.Object({
         preparedId: Type.String({ minLength: 1, maxLength: 64 }),
       }, { additionalProperties: false }),
@@ -152,7 +209,7 @@ export function buildCapabilityFactoryAgentTools(
     sdk.defineTool({
       name: 'factory_prepare_stub',
       label: '准备虚拟接入',
-      description: 'Step 1 of 2 for binding a capability stub. Returns a preparedId plus an approval snapshot; nothing is written yet. The capability must already be declared by the scene\'s CURRENT definition (if you only just added it in a draft, the human must adopt that draft first). Generate the payload from the REAL contract of the consuming project (field names, types and nesting must match its actual response) — a stub that merely makes the run pass turns the whole factory green while the real integration regresses. Placeholder values are allowed only when the human has no real data yet, and they must stay recognizable as placeholders.',
+      description: 'Step 1 of 2 for binding a capability stub. Returns a preparedId plus an approval snapshot; nothing is written yet. The capability must already be declared by the scene\'s CURRENT definition; if it only exists in a draft, adopt that draft first through the operation flow. Generate the payload from the REAL contract of the consuming project (field names, types and nesting must match its actual response) — a stub that merely makes the run pass turns the whole factory green while the real integration regresses. Placeholder values are allowed only when no real data is available yet, and they must stay recognizable as placeholders.',
       parameters: Type.Object({
         capabilityId: Type.String({ minLength: 1, maxLength: 128 }),
         note: Type.String({ minLength: 1, maxLength: 200 }),
@@ -196,28 +253,95 @@ export function buildCapabilityFactoryAgentTools(
       async execute(_id, input) { return result(facade.listTasks(input.sceneId)) },
     }),
     sdk.defineTool({
+      name: 'factory_list_datasets',
+      label: '读取测试数据集',
+      description: 'List saved test datasets with their exact cases and versions. Read-only. Dataset versions change whenever a case is added or removed.',
+      parameters: Type.Object({}, { additionalProperties: false }),
+      async execute() { return result(facade.listDatasets()) },
+    }),
+    sdk.defineTool({
+      name: 'factory_list_evaluations',
+      label: '读取评测记录',
+      description: 'List recent persisted evaluations for one scene, including constraint and review evidence summaries. Missing or failed review is not a pass.',
+      parameters: Type.Object({ sceneId }, { additionalProperties: false }),
+      async execute(_id, input) { return result(facade.listEvaluations(input.sceneId)) },
+    }),
+    sdk.defineTool({
+      name: 'factory_list_deliveries',
+      label: '读取交付记录',
+      description: 'List local capability-package deliveries and their verification state. Read-only.',
+      parameters: Type.Object({}, { additionalProperties: false }),
+      async execute() { return result(facade.listDeliveries()) },
+    }),
+    sdk.defineTool({
+      name: 'factory_list_batches',
+      label: '读取批次摘要',
+      description: 'List persisted batch summaries for a scene. Returns counts and quality/comparison summaries without copying full inputs.',
+      parameters: Type.Object({ sceneId }, { additionalProperties: false }),
+      async execute(_id, input) { return result(facade.listBatches(input.sceneId)) },
+    }),
+    sdk.defineTool({
+      name: 'factory_get_batch',
+      label: '读取批次详情',
+      description: 'Read one persisted evaluation or comparison batch by ID. Use run IDs from its items to inspect full model output and review evidence.',
+      parameters: Type.Object({ sceneId, batchId: entityId }, { additionalProperties: false }),
+      async execute(_id, input) { return result(facade.getBatch(input.sceneId, input.batchId)) },
+    }),
+    sdk.defineTool({
+      name: 'factory_prepare_operation',
+      label: '准备工厂操作',
+      description: 'Step 1 of 2 for scene lifecycle, draft adoption/discard, rollback, export, dataset changes, or stub deletion. Freezes the exact target state and returns an approval snapshot; writes nothing. For a single-block adoption, explicitly use adoptDraft scope kind=step or kind=stepAcceptance; omitting scope means the WHOLE draft. Unselected draft changes remain pending. Partial scope MUST NOT include testedBatchId because whole-draft evidence cannot prove a partial adoption. Every new adoptDraft request MUST include proposal with a concrete problem and expected benefit; risk is optional. Proposal is an Agent judgment awaiting review, never a test conclusion. The host separately derives verified benefits, current problems, remaining risks, and validation scope only from matching test evidence. Legacy internal calls without proposal remain readable through the exact draft diff and note.',
+      parameters: Type.Object({ operation }, { additionalProperties: false }),
+      async execute(_id, input) { return result(facade.prepareOperation(input.operation)) },
+    }),
+    sdk.defineTool({
+      name: 'factory_apply_operation',
+      label: '执行工厂操作',
+      description: 'Step 2 of 2: apply exactly one prepared operation after host authorization. Only a live preparedId is accepted; changed or missing target snapshots fail closed. Draft adoption ALWAYS waits for an explicit human approval dialog, even in bypassPermissions; do not ask a separate chat confirmation before calling this tool. Dataset preparation can proceed autonomously; destructive operations require approval. testedBatchId adoption is independently verified by the host.',
+      parameters: Type.Object({ preparedId: Type.String({ minLength: 1, maxLength: 64 }) }, { additionalProperties: false }),
+      async execute(_id, input) { return result(await facade.applyOperation(input.preparedId)) },
+    }),
+    sdk.defineTool({
+      name: 'factory_run_batch',
+      label: '批量测试编排场景',
+      description: 'Run a persisted evaluation or baseline/candidate comparison batch over an existing dataset or saved task IDs. Maximum 10 cases per batch and 3 comparison rounds per Agent turn. For a dataset with more than 10 cases, pass 1-10 unique caseIds from that dataset and run it in bounded batches. A comparison freezes the version, draft, inputs, criteria and model bindings.',
+      parameters: Type.Object({
+        sceneId,
+        kind: Type.Union([Type.Literal('evaluation'), Type.Literal('comparison')]),
+        datasetId: Type.Optional(entityId),
+        caseIds: Type.Optional(Type.Array(entityId, { minItems: 1, maxItems: 10, uniqueItems: true })),
+        taskIds: Type.Optional(Type.Array(entityId, { minItems: 1, maxItems: 10 })),
+        expectedVersion: Type.Optional(Type.Integer({ minimum: 1 })),
+        expectedDraftCreatedAt: Type.Optional(Type.Integer({ minimum: 0 })),
+        expectedDraftDefinition: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+      }, { additionalProperties: false }),
+      async execute(_id, input) {
+        return result(await facade.runBatch(input as unknown as CapabilityFactoryBatchRequest))
+      },
+    }),
+    sdk.defineTool({
       name: 'factory_run_scene',
       label: '运行整链对比',
       description: 'Run a whole scene without changing or adopting its definition. For an optimization comparison, run the current baseline and pending draft candidate with the SAME input, expectedVersion and comparisonId; use role=baseline with target=current, then role=candidate with target=draft and pass BOTH the exact expectedDraftCreatedAt and expectedDraftDefinition returned by factory_get_scene. Comparison runs do not add duplicate saved tasks. The host rejects a changed version/draft and rejects a candidate with changes outside llm/extract prompts (including review standards, model slots, workflow or contracts), so prompt improvement cannot be manufactured by relaxing evaluation criteria or changing models.',
       parameters: Type.Object({
         sceneId,
         input: Type.Record(Type.String(), Type.Unknown()),
-        target: Type.Union([Type.Literal('current'), Type.Literal('draft')]),
-        expectedVersion: Type.Integer({ minimum: 1 }),
+        target: Type.Optional(Type.Union([Type.Literal('current'), Type.Literal('draft')])),
+        expectedVersion: Type.Optional(Type.Integer({ minimum: 1 })),
         expectedDraftCreatedAt: Type.Optional(Type.Integer({ minimum: 0 })),
         expectedDraftDefinition: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-        comparisonId: Type.String({ minLength: 1, maxLength: 128 }),
-        comparisonRole: Type.Union([Type.Literal('baseline'), Type.Literal('candidate')]),
+        comparisonId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+        comparisonRole: Type.Optional(Type.Union([Type.Literal('baseline'), Type.Literal('candidate')])),
       }, { additionalProperties: false }),
       async execute(_id, input) {
         return result(await facade.runScene(input.sceneId, input.input, {
-          target: input.target,
-          expectedVersion: input.expectedVersion,
+          ...(input.target === undefined ? {} : { target: input.target }),
+          ...(input.expectedVersion === undefined ? {} : { expectedVersion: input.expectedVersion }),
           ...(input.expectedDraftCreatedAt === undefined ? {} : { expectedDraftCreatedAt: input.expectedDraftCreatedAt }),
           ...(input.expectedDraftDefinition === undefined
             ? {} : { expectedDraftDefinition: input.expectedDraftDefinition as unknown as CapabilitySceneDefinition }),
-          comparisonId: input.comparisonId,
-          comparisonRole: input.comparisonRole,
+          ...(input.comparisonId === undefined ? {} : { comparisonId: input.comparisonId }),
+          ...(input.comparisonRole === undefined ? {} : { comparisonRole: input.comparisonRole }),
         }))
       },
     }),

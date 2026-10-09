@@ -58,7 +58,7 @@ export function CapabilityFactoryStepForm({
       <Tabs value={view} onValueChange={setView}>
         <TabsList aria-label="步骤版本"><TabsTrigger value="compare">版本对比</TabsTrigger><TabsTrigger value="edit" disabled={!editStep}>编辑草案</TabsTrigger></TabsList>
       </Tabs>
-      <p className="text-[11px] text-muted-foreground">当前运行 v{scene.currentVersion} · 草案 v{scene.currentVersion + 1} 尚未采纳{dirty ? ' · 含未保存修改' : ''}。采纳会应用整份场景草案。</p>
+      <p className="text-[11px] text-muted-foreground">当前运行 v{scene.currentVersion} · 草案 v{scene.currentVersion + 1} 尚未采纳{dirty ? ' · 含未保存修改' : ''}。采纳后仅当前步骤生效，其余草案改动继续保留。</p>
     </div> : null}
     {scene.draft && view === 'compare' ? <div className="flex min-h-0 flex-1 flex-col gap-2 px-5 pb-4">
       <Tabs value={part} onValueChange={(value) => setPart(value as 'prompt' | 'config')}>
@@ -67,7 +67,7 @@ export function CapabilityFactoryStepForm({
       <CapabilityFactoryDefinitionDiff currentVersion={scene.currentVersion} fileName={part === 'prompt' ? 'prompt.txt' : 'step.json'}
         before={part === 'prompt' ? change.before && 'prompt' in change.before ? change.before.prompt : '' : serializeDraftValue(change.before ? { position: change.beforePosition, step: change.before } : null)}
         after={part === 'prompt' ? editedStep && 'prompt' in editedStep ? editedStep.prompt : '' : serializeDraftValue(editedStep ? { position: change.afterPosition, step: editedStep } : null)} />
-      {!editStep ? <p className="text-xs text-amber-600 dark:text-amber-400">此步骤将在采纳整份草案后移除。</p> : null}
+      {!editStep ? <p className="text-xs text-amber-600 dark:text-amber-400">此草案将移除步骤，涉及流程结构变化，需审核整份草案后采纳。</p> : null}
     </div> : <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 pb-5">
       {promptable ? <>
         <Label htmlFor={idPrefix + '-prompt'} className="sr-only">提示词</Label>
@@ -75,7 +75,7 @@ export function CapabilityFactoryStepForm({
           className="min-h-64 resize-y font-mono text-xs leading-6"
           onChange={(event) => setPrompt(event.target.value)} />
         <p className="text-[11px] leading-relaxed text-muted-foreground">
-          保存并采纳后，在「运行」中提交任务、查看过程和评审结果。
+          保存并采纳仅让当前步骤生效；之后可在「运行」中提交任务、查看过程和评审结果。
         </p>
         {slots.length > 0 ? <details className="text-[11px] text-muted-foreground">
           <summary className="cursor-pointer">变量来源</summary>
@@ -91,7 +91,7 @@ export function CapabilityFactoryStepForm({
       </>}
     </div>}
     <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border/50 px-5 py-4">
-      {scene.draft && !dirty && onAdoptDraft ? <Button size="sm" disabled={saving || stale} onClick={onAdoptDraft}>采纳整份草案 v{scene.currentVersion + 1}</Button> : null}
+      {scene.draft && change.stepChanged && !dirty && onAdoptDraft ? <Button size="sm" disabled={saving || stale} onClick={onAdoptDraft}>采纳当前步骤</Button> : null}
       {promptable && (view === 'edit' || dirty || !scene.draft) ? <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button type="button" size="sm" disabled={saving || stale || prompt.trim().length === 0}>
@@ -100,7 +100,7 @@ export function CapabilityFactoryStepForm({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="z-[110]">
           <DropdownMenuItem onSelect={() => onSave(definitionWithEdits(), false)}>保存为草案</DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => onSave(definitionWithEdits(), true)}>{scene.draft ? '保存并采纳整份草案' : '保存并采纳'}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onSave(definitionWithEdits(), true)}>保存并采纳当前步骤</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu> : <Button type="button" size="sm" variant="ghost" disabled={saving} onClick={onClose}>关闭</Button>}
     </div>
@@ -156,6 +156,7 @@ function OpenedStepDialog({ open, sessionId, scene, step, onSceneChanged, onOpen
       if (adopt && saved.draft) await window.electronAPI.capabilityFactory.invoke('adoptDraft', {
         sessionId, sceneId: saved.id, expectedVersion: saved.currentVersion,
         expectedDraftCreatedAt: saved.draft.createdAt, expectedDraftDefinition: saved.draft.definition,
+        scope: { kind: 'step', stepId: step.id },
       })
       if (targetRef.current !== target) return
       onSceneChanged()

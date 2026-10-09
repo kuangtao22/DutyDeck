@@ -16,6 +16,7 @@ import { allPendingPermissionRequestsAtom } from '@/atoms/agent-atoms'
 import type { DangerLevel } from '@proma/shared'
 import { describeApiWorkbenchApproval, formatApiApprovalCaseDiff } from './api-approval-view'
 import { describeCapabilityFactoryApproval } from './capability-factory-approval-view'
+import { CapabilityFactoryAdoptionReview } from './CapabilityFactoryAdoptionReview'
 
 /** 危险等级对应的图标颜色 */
 const DANGER_ICON_STYLES: Record<DangerLevel, string> = {
@@ -44,14 +45,28 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
   const [allRequests, setAllRequests] = useAtom(allPendingPermissionRequestsAtom)
   const requests = allRequests.get(sessionId) ?? []
   const [responding, setResponding] = React.useState(false)
+  /** 同一帧的重复点击也只能发送一次；React 状态更新不能充当同步锁。 */
+  const responseInFlight = React.useRef(false)
+  /** 错误绑定请求身份，防止前一请求的异步失败污染后续审批。 */
+  const [responseError, setResponseError] = React.useState<{ requestId: string; message: string } | null>(null)
   const respondRef = React.useRef<(behavior: 'allow' | 'deny', alwaysAllow?: boolean) => void>()
 
   const request = requests[0] ?? null
+  /** 采纳复用原有审批卡，但不能被通用 Enter 快捷键误批。 */
+  const factoryApproval = request ? describeCapabilityFactoryApproval(request.toolName, request.toolInput) : null
+  const isAdoption = !!factoryApproval?.adoption
+  /** 同步记录当前审批身份，阻止尚未清理的旧快捷键监听器批准下一条请求。 */
+  const currentApprovalRef = React.useRef({ sessionId, requestId: request?.requestId, isAdoption })
+  currentApprovalRef.current = { sessionId, requestId: request?.requestId, isAdoption }
 
   // Enter 键快捷允许
   React.useEffect(() => {
-    if (!request) return
+    if (!request || isAdoption) return
     const handleKeyDown = (e: KeyboardEvent): void => {
+      /** passive effect 清理可能晚于新卡片渲染；只允许操作注册时的同一条普通请求。 */
+      const currentApproval = currentApprovalRef.current
+      if (currentApproval.isAdoption || currentApproval.sessionId !== sessionId
+        || currentApproval.requestId !== request.requestId) return
       if (
         e.target instanceof HTMLInputElement ||
         e.target instanceof HTMLTextAreaElement ||
@@ -64,7 +79,7 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [request?.requestId])
+  }, [sessionId, request?.requestId, isAdoption])
 
   if (!request) return null
 
@@ -74,8 +89,10 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
 
   /** 响应权限请求 */
   const respond = async (behavior: 'allow' | 'deny', alwaysAllow = false): Promise<void> => {
-    if (responding) return
+    if (responseInFlight.current) return
+    responseInFlight.current = true
     setResponding(true)
+    setResponseError(null)
 
     try {
       await window.electronAPI.respondPermission({
@@ -94,7 +111,9 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
       })
     } catch (error) {
       console.error('[PermissionBanner] 响应失败:', error)
+      setResponseError({ requestId: request.requestId, message: '提交审核结果失败，请重试。' })
     } finally {
+      responseInFlight.current = false
       setResponding(false)
     }
   }
@@ -107,7 +126,7 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
    * 都不是本工具时返回 null，横幅降级到原始的 JSON 展示。
    */
   const apiApproval = describeApiWorkbenchApproval(request.toolName, request.toolInput)
-    ?? describeCapabilityFactoryApproval(request.toolName, request.toolInput)
+    ?? factoryApproval
 
   return (
     <div
@@ -118,7 +137,7 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
         <div className="flex items-center gap-2">
           <IconComponent className={`size-4 ${iconColor}`} />
           <span className="text-sm font-medium">
-            {isDangerous ? '危险操作需要确认' : '需要确认'}
+            {isAdoption ? '采纳草案需要确认' : isDangerous ? '危险操作需要确认' : '需要确认'}
           </span>
           {requests.length > 1 && (
             <span className="text-xs text-muted-foreground">
@@ -149,6 +168,7 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
             {apiApproval.lines.map((line) => (
               <p key={line} className="text-xs text-muted-foreground font-mono break-all">{line}</p>
             ))}
+            {factoryApproval?.adoption && <CapabilityFactoryAdoptionReview summary={factoryApproval.adoption} />}
             {apiApproval.files.length > 0 && (
               <div className="rounded bg-background/50 px-2 py-1.5 space-y-1">
                 <p className="text-[11px] text-muted-foreground">本次将读取并上传的文件（批准后才读取字节）</p>
@@ -188,11 +208,11 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
           </div>
         ) : null}
         {/* SDK 可读标题（优先展示，描述操作意图） */}
-        {request.sdkTitle && (
+        {!isAdoption && request.sdkTitle && (
           <p className="text-xs text-foreground">{request.sdkTitle}</p>
         )}
         {/* SDK 详细描述（与标题不同时才展示） */}
-        {request.sdkDescription && request.sdkDescription !== request.sdkTitle && (
+        {!isAdoption && request.sdkDescription && request.sdkDescription !== request.sdkTitle && (
           <p className="text-xs text-muted-foreground">{request.sdkDescription}</p>
         )}
         {/* Bash 命令：始终展示代码块 */}
@@ -204,7 +224,7 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
           <pre className="text-xs font-mono bg-background/50 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto">
             {JSON.stringify(request.toolInput, null, 2)}
           </pre>
-        ) : !request.sdkTitle ? (
+        ) : !request.sdkTitle && !isAdoption ? (
           <p className="text-xs text-muted-foreground">
             {request.description}
           </p>
@@ -212,9 +232,12 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
       </div>
 
       {/* 操作按钮 */}
+      {responseError?.requestId === request.requestId && (
+        <p role="alert" className="px-3 pb-2 text-xs text-destructive">{responseError.message}</p>
+      )}
       <div className="flex items-center justify-end gap-1.5 px-3 pb-2.5">
         <span className="text-[10px] text-muted-foreground/40 mr-auto">
-          Enter 允许
+          {isAdoption ? '仅批准本次采纳' : 'Enter 允许'}
         </span>
         <Button
           variant="ghost"
@@ -224,10 +247,10 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
           className="h-7 px-3 text-xs text-muted-foreground hover:text-destructive"
         >
           <X className="size-3 mr-1" />
-          拒绝
+          {isAdoption ? '暂不采纳' : '拒绝'}
         </Button>
 
-        {request.allowAlways !== false && <Button
+        {!isAdoption && request.allowAlways !== false && <Button
           variant="outline"
           size="sm"
           onClick={() => respond('allow', true)}
@@ -245,7 +268,7 @@ export function PermissionBanner({ sessionId, onStop }: PermissionBannerProps): 
           className="h-7 px-3 text-xs"
         >
           <Check className="size-3 mr-1" />
-          允许
+          {isAdoption ? '确认采纳' : '允许'}
         </Button>
       </div>
     </div>

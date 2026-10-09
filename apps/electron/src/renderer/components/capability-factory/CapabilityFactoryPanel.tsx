@@ -128,11 +128,19 @@ export function CapabilityFactoryPanel({ sessionId, workspaceLabel }: Capability
   const [runHistory, setRunHistory] = React.useState<CapabilityRun[] | null>(null)
   const [runHistoryError, setRunHistoryError] = React.useState<string | null>(null)
   const [historySelectionId, setHistorySelectionId] = React.useState<string | null>(null)
+  /** 顶层会话切换后丢弃旧列表，避免把另一工作区的场景显示回来。 */
+  const scope = React.useMemo(() => ({}), [sessionId])
+  const currentScope = React.useRef<object | null>(scope)
+  currentScope.current = scope
+  const refreshGeneration = React.useRef(0)
 
   /** 拉取场景列表；失败时把原因显示出来，不静默空着。选中项失效时回落到第一项。 */
   const refresh = React.useCallback(async () => {
+    if (currentScope.current !== scope) return
+    const ticket = ++refreshGeneration.current
     try {
       const list = await window.electronAPI.capabilityFactory.invoke('listScenes', { sessionId })
+      if (currentScope.current !== scope || ticket !== refreshGeneration.current) return
       setScenes(list)
       setSelectedSceneId((current) => {
         if (current && list.some((scene) => scene.id === current)) return current
@@ -140,24 +148,35 @@ export function CapabilityFactoryPanel({ sessionId, workspaceLabel }: Capability
       })
       setError(null)
     } catch (cause) {
+      if (currentScope.current !== scope || ticket !== refreshGeneration.current) return
       setError(errorText(cause))
       setScenes([])
     }
-  }, [sessionId])
+  }, [sessionId, scope])
 
-  React.useEffect(() => { void refresh() }, [refresh])
-
-  /**
-   * Agent 写草案走的是主进程里的 facade，**不经过这个面板**，所以这里没有推送可等。
-   * 面板是本地小文件读（无网络），用轮询兜底：窗口可见时每 3 秒重读一次索引。
-   * 否则「Agent 说改好了、面板里什么都没有」会一直复现（2026-09-28 的真实故障）。
-   */
   React.useEffect(() => {
+    currentScope.current = scope
+    void refresh()
+    return () => { currentScope.current = null; refreshGeneration.current += 1 }
+  }, [refresh, scope])
+
+  /** Agent 与 UI 的变更共用宿主事件；仅旧 preload 使用原有低频兼容刷新。 */
+  React.useEffect(() => {
+    if (window.electronAPI.capabilityFactory.onChanged) {
+      /** 批次的步骤进度合并刷新，避免重复读取场景列表。 */
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const unsubscribe = window.electronAPI.capabilityFactory.onChanged((event) => {
+        if (event.sessionId !== sessionId) return
+        if (timer !== undefined) clearTimeout(timer)
+        timer = setTimeout(() => { void refresh() }, 80)
+      })
+      return () => { if (timer !== undefined) clearTimeout(timer); unsubscribe() }
+    }
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') void refresh()
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [refresh])
+  }, [refresh, sessionId])
 
   /** 手动刷新：轮询之外再给一个明确的动作，人看到 Agent 的改动后不用等下一轮。 */
   const manualRefresh = React.useCallback(() => {

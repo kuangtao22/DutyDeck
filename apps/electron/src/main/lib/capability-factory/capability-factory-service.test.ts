@@ -1,10 +1,10 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, spyOn, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CapabilityRun, CapabilitySceneDefinition } from '@proma/shared'
 import { CapabilityFactoryStore } from './capability-factory-store'
-import { CapabilityFactoryService } from './capability-factory-service'
+import { CapabilityFactoryService, validateCapabilitySceneDraft } from './capability-factory-service'
 import { writeJsonFileAtomic } from '../safe-file'
 
 /** 每个用例独立的临时根目录 + 确定性时钟与 ID，避免互相污染。 */
@@ -36,6 +36,24 @@ function withDescription(definition: CapabilitySceneDefinition, description: str
 }
 
 describe('编排工厂服务', () => {
+  test('批量读取运行只扫描一次存储，按请求顺序保留重复 ID，空请求不触盘', () => {
+    const { store, service } = fixture()
+    const scene = service.createScene('批读运行')
+    const base: CapabilityRun = {
+      id: 'run-1', sceneId: scene.id, sceneVersion: 1, status: 'succeeded', valid: true,
+      input: {}, outputs: {}, steps: [], startedAt: 1, finishedAt: 2,
+    }
+    service.recordRun(base)
+    service.recordRun({ ...base, id: 'run-2', startedAt: 3, finishedAt: 4 })
+    const listRuns = spyOn(store, 'listRuns')
+
+    expect(service.getRunsByIds(scene.id, [])).toEqual([])
+    expect(listRuns).toHaveBeenCalledTimes(0)
+    expect(service.getRunsByIds(scene.id, ['run-2', 'missing', 'run-1', 'run-2']).map((run) => run.id))
+      .toEqual(['run-2', 'run-1', 'run-2'])
+    expect(listRuns).toHaveBeenCalledTimes(1)
+  })
+
   test('保存任务可跨服务实例读取，并按最近提交排序', () => {
     const { rootDir, service } = fixture()
     const scene = service.createScene('角色提取')
@@ -158,6 +176,41 @@ describe('编排工厂服务', () => {
     expect(adopted.draft).toBeNull()
     expect(version.source).toBe('agent')
     expect(service.listVersions(scene.id).map((item) => item.version)).toEqual([1, 2])
+  })
+
+  test('Given Agent 把能力字段写进步骤 When 保存草案 Then 在写盘前指出未知字段', () => {
+    const { service } = fixture()
+    const scene = service.createScene('账号查询')
+    const invalid = {
+      ...withStep(scene.definition, '回答用户问题'),
+      steps: [{
+        type: 'llm', id: 'answer', title: '生成回答', modelSlot: 'main', prompt: '回答用户问题',
+        name: '错误名称', outputSchema: [],
+      }],
+    } as unknown as CapabilitySceneDefinition
+
+    expect(() => service.saveDraft(scene.id, invalid, 'agent', '错误字段'))
+      .toThrow(/steps\[0\].*name, outputSchema/)
+    expect(service.getScene(scene.id)?.draft).toBeNull()
+  })
+
+  test('Given 空白编辑中草案 When 保存或采纳 Then 只校验结构，不把完整可运行当作编辑门槛', () => {
+    const { service } = fixture()
+    const scene = service.createScene('账号查询')
+
+    expect(() => validateCapabilitySceneDraft(scene.definition)).not.toThrow()
+    service.saveDraft(scene.id, scene.definition, 'human', '继续编辑')
+
+    expect(service.adoptDraft(scene.id).scene).toMatchObject({ currentVersion: 2, draft: null })
+  })
+
+  test('Agent 发起新建、重命名与回滚时，版本来源保持为 agent', () => {
+    const { service } = fixture()
+    const scene = service.createScene('账号查询', 'agent')
+    service.renameScene(scene.id, '账号状态查询', 'agent')
+    service.rollback(scene.id, 1, 'agent')
+
+    expect(service.listVersions(scene.id).map((item) => item.source)).toEqual(['agent', 'agent', 'agent'])
   })
 
   test('保存时场景版本与草案快照未变化则允许更新', () => {

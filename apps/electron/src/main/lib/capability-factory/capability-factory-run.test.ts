@@ -54,7 +54,13 @@ const channels: Channel[] = [{
 }]
 
 /** 造一个带场景与运行适配器的夹具。 */
-function fixture(options: { definition?: CapabilitySceneDefinition; modelText?: string } = {}) {
+function fixture(options: {
+  definition?: CapabilitySceneDefinition
+  modelText?: string
+  signal?: AbortSignal
+  assertCurrent?: () => void
+  onModelCall?: (stepId: string) => void
+} = {}) {
   const rootDir = mkdtempSync(join(tmpdir(), 'cap-factory-run-'))
   let tick = 0
   const service = new CapabilityFactoryService({
@@ -73,6 +79,7 @@ function fixture(options: { definition?: CapabilitySceneDefinition; modelText?: 
     resolveModels: (sceneDefinition) =>
       resolveCapabilityFactoryModels(sceneDefinition, channels, { channelId: 'ch-1', modelId: 'deepseek-v4-flash' }),
     callModel: async (invocation) => {
+      options.onModelCall?.(invocation.stepId)
       calls.push({
         prompt: invocation.prompt,
         model: invocation.model,
@@ -83,11 +90,46 @@ function fixture(options: { definition?: CapabilitySceneDefinition; modelText?: 
       return { text: options.modelText ?? '{"characters":[{"name":"阿明"}]}', model: 'deepseek-v4-flash' }
     },
     createId: () => `run-${calls.length + 1}`,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.assertCurrent === undefined ? {} : { assertCurrent: options.assertCurrent }),
   })
   return { service, runner, calls }
 }
 
 describe('运行：桩与轨迹', () => {
+  test('Given 执行完成后用户取消 When 准备自动评审 Then 保留执行证据且不再调用评审模型', async () => {
+    const controller = new AbortController()
+    const modelSteps: string[] = []
+    const { service, runner } = fixture({
+      signal: controller.signal,
+      onModelCall: (stepId) => {
+        modelSteps.push(stepId)
+        if (stepId === 'scan') controller.abort(new DOMException('用户停止', 'AbortError'))
+      },
+    })
+    service.setStub('corpus.build', { corpus: '正文' })
+
+    const run = await runner.run('scene-1', { chapterText: '正文' }, { saveTask: false })
+
+    expect(run.steps).toHaveLength(2)
+    expect(modelSteps).toEqual(['scan'])
+    expect(service.getRun('scene-1', run.id)?.steps).toHaveLength(2)
+  })
+
+  test('Given 会话归属在模型返回后失效 When 运行准备落盘 Then 抛错且不写迟到记录', async () => {
+    let checks = 0
+    const { service, runner } = fixture({
+      assertCurrent: () => {
+        checks += 1
+        if (checks >= 3) throw new Error('运行归属已失效')
+      },
+    })
+    service.setStub('corpus.build', { corpus: '正文' })
+
+    await expect(runner.run('scene-1', { chapterText: '正文' }, { saveTask: false }))
+      .rejects.toThrow(/归属已失效/)
+    expect(service.listRuns('scene-1')).toEqual([])
+  })
   test('整链提交在首次模型调用前保存为可复用任务', async () => {
     const { service, runner, calls } = fixture()
     service.setStub('corpus.build', { corpus: '正文' })

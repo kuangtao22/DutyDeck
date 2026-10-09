@@ -8,6 +8,37 @@ function parse(value: unknown) {
 }
 
 describe('编排工厂 IPC 命令解析', () => {
+  test('Given 局部采纳范围 When 解析 Then 保留精确块身份并拒绝无效范围及整份批次证据', () => {
+    const input = { sessionId: 's1', sceneId: 'scene' }
+    for (const scope of [{ kind: 'all' }, { kind: 'step', stepId: 'a' }, { kind: 'stepAcceptance', stepId: 'a' }]) {
+      expect(parse({ method: 'adoptDraft', input: { ...input, scope } })).toMatchObject({ input: { scope } })
+    }
+    for (const scope of [null, {}, { kind: 'step' }, { kind: 'step', stepId: '' }, { kind: 'all', stepId: 'a' }, { kind: 'unknown' }]) {
+      expect(() => parse({ method: 'adoptDraft', input: { ...input, scope } })).toThrow('CAPABILITY_FACTORY_INVALID')
+    }
+    expect(() => parse({ method: 'adoptDraft', input: { ...input, scope: { kind: 'step', stepId: 'a' }, testedBatchId: 'batch' } }))
+      .toThrow('局部采纳不能使用整份草案的测试证据')
+  })
+  test('Given 大数据集 When 选择有限用例 Then 保留 caseIds 并拒绝空集、重复或不带数据集的选择', () => {
+    const input = { sessionId: 's1', sceneId: 'scene', kind: 'evaluation', datasetId: 'dataset', caseIds: ['case-2'] }
+    expect(parse({ method: 'runBatch', input })).toMatchObject({ input: { caseIds: ['case-2'] } })
+    for (const caseIds of [[], ['same', 'same'], Array.from({ length: 11 }, (_, index) => `case-${index}`)]) {
+      expect(() => parse({ method: 'runBatch', input: { ...input, caseIds } })).toThrow('CAPABILITY_FACTORY_INVALID')
+    }
+    expect(() => parse({ method: 'runBatch', input: { ...input, kind: 'comparison', datasetId: undefined, taskIds: ['task'] } })).toThrow('CAPABILITY_FACTORY_INVALID')
+  })
+  test('Given 持久批次 When 解析运行读取取消 Then 只接受受控输入与十条任务', () => {
+    expect(parse({ method: 'runBatch', input: { sessionId: 's1', sceneId: 'scene', kind: 'comparison', taskIds: ['task-1'], expectedVersion: 2 } }))
+      .toMatchObject({ method: 'runBatch', input: { kind: 'comparison', taskIds: ['task-1'] } })
+    expect(parse({ method: 'getBatch', input: { sessionId: 's1', sceneId: 'scene', batchId: 'batch' } }).method).toBe('getBatch')
+    expect(parse({ method: 'cancelBatch', input: { sessionId: 's1', sceneId: 'scene', batchId: 'batch' } }).method).toBe('cancelBatch')
+    expect(parse({ method: 'listBatches', input: { sessionId: 's1', sceneId: 'scene' } }).method).toBe('listBatches')
+    for (const extra of [{ scopeId: 'forged' }, { taskIds: Array.from({ length: 11 }, (_, index) => `task-${index}`) }, { kind: 'arbitrary' }]) {
+      expect(() => parse({ method: 'runBatch', input: { sessionId: 's1', sceneId: 'scene', kind: 'comparison', taskIds: ['one'], ...extra } })).toThrow('CAPABILITY_FACTORY_INVALID')
+    }
+    expect(parse({ method: 'adoptDraft', input: { sessionId: 's1', sceneId: 'scene', testedBatchId: 'batch' } }))
+      .toMatchObject({ input: { testedBatchId: 'batch' } })
+  })
   test('Given 步骤标准 When 保存草案或提交临时定义 Then 保留合法结构并拒绝缺失字段', () => {
     const definition = { ...createEmptySceneDefinition('测试'), stepAcceptances: {
       scan: { criteria: ['有证据'], judgePrompt: '只评扫描', metrics: [] },
@@ -111,7 +142,7 @@ describe('编排工厂 IPC 命令解析', () => {
     } })).toThrow(/packageVersion/)
   })
 
-  test('界面侧包含采纳 / 回滚 / 导出 —— 这是人的动作，与 Agent 侧的方法集刻意不同', () => {
+  test('界面侧保留采纳 / 回滚 / 导出入口，与 Agent 共用业务服务', () => {
     const methods = ['adoptDraft', 'rollback', 'exportPackage'] as const
     for (const method of methods) {
       const input = method === 'rollback'

@@ -33,6 +33,8 @@ describe('步骤评审标准弹窗', () => {
     expect(html).toContain('只检查角色证据')
     expect(html).toContain('证据覆盖率')
     expect(html).toContain('保存')
+    expect(html).toContain('保存并采纳仅让当前评审标准生效')
+    expect(html).not.toContain('保存并采纳整份草案')
     expect(html).not.toContain('旧版全局标准')
   })
 

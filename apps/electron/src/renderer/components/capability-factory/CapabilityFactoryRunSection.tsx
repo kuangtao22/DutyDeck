@@ -129,12 +129,16 @@ export function CapabilityFactoryRunSection({ sessionId, scene, onSceneChanged, 
   const [stubError, setStubError] = React.useState<string | null>(null)
   /** 虚拟接入默认收起，需要测试外部能力时再展开。 */
   const [stubSectionOpen, setStubSectionOpen] = React.useState(false)
-  /** 长请求回来时复核场景，避免旧闭包覆盖新 scope。 */
-  const currentSceneIdRef = React.useRef(scene.id)
-  currentSceneIdRef.current = scene.id
+  /** 读取代次隔离迟到列表，组件卸载后不再接受任何回传。 */
+  const refreshGeneration = React.useRef(0)
+  const scope = React.useMemo(() => ({}), [sessionId, scene.id])
+  const currentScope = React.useRef<object | null>(scope)
+  currentScope.current = scope
 
   /** 拉取这个场景的运行历史与当前桩表；失败时把原因显示出来，不静默空着。 */
   const refresh = React.useCallback(async () => {
+    if (currentScope.current !== scope) return
+    const ticket = ++refreshGeneration.current
     try {
       const [history, stubList] = await Promise.all([
         /** 统一读取整链与单步记录，步骤弹窗不再承载历史入口。 */
@@ -143,21 +147,41 @@ export function CapabilityFactoryRunSection({ sessionId, scene, onSceneChanged, 
         }),
         window.electronAPI.capabilityFactory.invoke('listStubs', { sessionId }),
       ])
+      if (currentScope.current !== scope || ticket !== refreshGeneration.current) return
       /** 历史读取可能晚于本轮进度；迟到结果只补充，不覆盖。 */
-      setRuns((previous) => previous === null ? history : mergeCapabilityFactoryRuns(previous, history))
+      setRuns((previous) => previous === null ? history : runInFlightRef.current
+        ? mergeCapabilityFactoryRuns(previous, history)
+        : mergeCapabilityFactoryRuns(history, previous))
       setStubs(stubList)
       setSelectedRunId((current) => {
         if (current || runInFlightRef.current) return current
         return history[0]?.id ?? null
       })
     } catch (cause) {
+      if (currentScope.current !== scope || ticket !== refreshGeneration.current) return
       setError(errorText(cause))
       setRuns([])
       setStubs(null)
     }
-  }, [scene.id, sessionId])
+  }, [scene.id, sessionId, scope])
 
-  React.useEffect(() => { void refresh() }, [refresh])
+  React.useEffect(() => {
+    currentScope.current = scope
+    void refresh()
+    /** Agent 步骤事件合并刷新，保持用户当前选中的历史记录。 */
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const unsubscribe = window.electronAPI.capabilityFactory.onChanged?.((event) => {
+      if (event.sessionId !== sessionId || (event.sceneId && event.sceneId !== scene.id)) return
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(() => { void refresh() }, 80)
+    })
+    return () => {
+      currentScope.current = null
+      refreshGeneration.current += 1
+      if (timer !== undefined) clearTimeout(timer)
+      unsubscribe?.()
+    }
+  }, [refresh, scope, sessionId, scene.id])
 
   React.useEffect(() => {
     if (!historySelectionId) return
@@ -183,8 +207,7 @@ export function CapabilityFactoryRunSection({ sessionId, scene, onSceneChanged, 
     runInFlightRef.current = true
     /** 只移除本请求的临时快照，通信异常不伪造后端最终结果。 */
     let progressRunId: string | null = null
-    const targetSceneId = scene.id
-    const isCurrentScene = (): boolean => currentSceneIdRef.current === targetSceneId
+    const isCurrentScene = (): boolean => currentScope.current === scope
     setRunning(true)
     setError(null)
     /** 输入已经通过弹窗校验；先关闭弹窗，运行过程交给当前页展示。 */
@@ -215,10 +238,9 @@ export function CapabilityFactoryRunSection({ sessionId, scene, onSceneChanged, 
         setSelectedRunId(null)
       }
     } finally {
-      runInFlightRef.current = false
-      setRunning(false)
+      if (isCurrentScene()) { runInFlightRef.current = false; setRunning(false) }
     }
-  }, [scene.id, sessionId])
+  }, [scene.id, sessionId, scope])
 
   /** 保存 / 清空桩：桩是本地装置，改完立刻重拉（运行记录里能看到用的是哪份桩的回显）。 */
   const saveStub = React.useCallback(async (

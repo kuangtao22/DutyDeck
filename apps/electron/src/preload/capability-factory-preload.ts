@@ -11,7 +11,7 @@
 import { CAPABILITY_FACTORY_CHANNELS } from '@proma/shared'
 import type {
   CapabilityFactoryApi, CapabilityFactoryCommandInputs, CapabilityFactoryCommandMethod,
-  CapabilityFactoryCommandResults, CapabilityFactoryRunProgress,
+  CapabilityFactoryCommandResults, CapabilityFactoryRunProgress, CapabilityFactoryChanged,
 } from '@proma/shared'
 
 /** invoke 只依赖这一个能力，便于测试替身。 */
@@ -48,6 +48,15 @@ export function createCapabilityFactoryPreload(
       return response as CapabilityFactoryCommandResults[M]
     },
     ...(subscribe ? {
+      onChanged(callback: (event: CapabilityFactoryChanged) => void): () => void {
+        return subscribe(CAPABILITY_FACTORY_CHANNELS.CHANGED, (value) => {
+          if (typeof value !== 'object' || value === null || Array.isArray(value)) return
+          const event = value as { sessionId?: unknown; sceneId?: unknown }
+          if (typeof event.sessionId !== 'string' || !event.sessionId || event.sessionId.length > 128) return
+          if (event.sceneId !== undefined && (typeof event.sceneId !== 'string' || !event.sceneId || event.sceneId.length > 128)) return
+          callback({ sessionId: event.sessionId, ...(typeof event.sceneId === 'string' ? { sceneId: event.sceneId } : {}) })
+        })
+      },
       onRunProgress(callback: (event: CapabilityFactoryRunProgress) => void): () => void {
         return subscribe(CAPABILITY_FACTORY_CHANNELS.PROGRESS, (value) => {
           const event = parseRunProgress(value)

@@ -2,6 +2,9 @@ import { readAgentRunFileChanges } from './lib/agent-run-file-change-store'
 import { API_WORKBENCH_CHANNELS, apiWorkbenchManualDenialReason, isOrdinaryTopLevelAgentSession } from '@proma/shared'
 import { registerApiWorkbenchIpc } from './lib/api-workbench/api-ipc'
 import { registerCapabilityFactoryIpc } from './lib/capability-factory/capability-factory-ipc'
+import { CAPABILITY_FACTORY_CHANNELS } from '@proma/shared'
+import { createCapabilityFactorySessionRuntime } from './lib/capability-factory/capability-factory-session-runtime'
+import { setCapabilityFactoryChangeSink } from './lib/capability-factory/capability-factory-events'
 import { getCapabilityFactoryService, shutdownCapabilityFactory } from './lib/capability-factory/capability-factory-singleton'
 import { createCapabilityFactoryRunner } from './lib/capability-factory/capability-factory-run'
 import { createCapabilityFactoryEvaluator } from './lib/capability-factory/capability-factory-evaluate'
@@ -2423,6 +2426,11 @@ export function registerIpcHandlers(): void {
     }
   }
 
+  setCapabilityFactoryChangeSink((event) => {
+    for (const contents of listAuthorizedDesignWebContents()) {
+      if (!contents.isDestroyed()) contents.send(CAPABILITY_FACTORY_CHANNELS.CHANGED, event)
+    }
+  })
   registerCapabilityFactoryIpc({
     ipc: ipcMain,
     isAuthorizedSender: (event) => listAuthorizedDesignWebContents().some((contents) => contents.id === event.sender.id),
@@ -2432,6 +2440,7 @@ export function registerIpcHandlers(): void {
       if (!workspaceId || !getAgentWorkspace(workspaceId)) {
         throw new Error('CAPABILITY_FACTORY_ACCESS_DENIED: 当前会话没有可用项目')
       }
+      workspaceOperationGuard.assertWorkspaceWritable(workspaceId)
       return { id: session.id, workspaceId }
     },
     /** 存储根目录落在该工作区自己的目录下：<agent-workspaces>/<slug>/capability-factory/ */
@@ -2441,36 +2450,40 @@ export function registerIpcHandlers(): void {
       return join(getAgentWorkspacePath(workspace.slug), 'capability-factory')
     },
     getService: (rootDir) => getCapabilityFactoryService(rootDir),
+    getBatchRunner: ({ rootDir, sessionId, signal, assertCurrent, onProgress }) => createCapabilityFactorySessionRuntime({
+      rootDir, sessionId, service: getCapabilityFactoryService(rootDir), signal, assertCurrent,
+      getRunPorts: () => capabilityFactoryRunPorts(sessionId),
+    }).batches(signal, onProgress),
     /**
      * 运行接线：模型解析要读"本机渠道"与"这个会话正在用哪个模型"，
      * 两者都只有主进程知道；runner 本身是闭包，每次运行现建（不缓存，
      * 否则同一工作区的第二个会话会继承第一个会话的模型）。
      */
     /** 两种运行范围共用同一台 runner：整链（runScene）与单步试跑（runStep）。 */
-    runScene: async ({ rootDir, sessionId, sceneId, input, options, onProgress }) => {
+    runScene: async ({ rootDir, sessionId, sceneId, input, options, onProgress, assertCurrent }) => {
       const service = getCapabilityFactoryService(rootDir)
       return createCapabilityFactoryRunner({
-        service, ...capabilityFactoryRunPorts(sessionId),
+        service, ...capabilityFactoryRunPorts(sessionId), assertCurrent,
         ...(onProgress ? { onProgress } : {}),
       }).run(sceneId, input, options)
     },
-    runStep: async ({ rootDir, sessionId, sceneId, stepId, input, definition, onProgress }) => {
+    runStep: async ({ rootDir, sessionId, sceneId, stepId, input, definition, onProgress, assertCurrent }) => {
       const service = getCapabilityFactoryService(rootDir)
       return createCapabilityFactoryRunner({
-        service, ...capabilityFactoryRunPorts(sessionId),
+        service, ...capabilityFactoryRunPorts(sessionId), assertCurrent,
         ...(onProgress ? { onProgress } : {}),
       }).runStep(sceneId, stepId, input, definition)
     },
     /** 导出产物落在工厂根目录下的 deliveries/：直接交给系统文件管理器显示。 */
     revealDelivery: (absolutePath) => { shell.showItemInFolder(absolutePath) },
     /** 评测：对数据集的每条用例跑一次整链（与「运行」页共用同一个 runner）。 */
-    runEvaluation: async ({ rootDir, sessionId, sceneId, datasetId }) => {
+    runEvaluation: async ({ rootDir, sessionId, sceneId, datasetId, assertCurrent }) => {
       const service = getCapabilityFactoryService(rootDir)
       const runner = createCapabilityFactoryRunner({
-        service, ...capabilityFactoryRunPorts(sessionId),
+        service, ...capabilityFactoryRunPorts(sessionId), assertCurrent,
       })
       return createCapabilityFactoryEvaluator({
-        service,
+        service, assertCurrent,
         // 保留评测器传入的 saveTask 策略，批量用例不混入用户提交任务。
         run: runner.run,
       }).evaluate(sceneId, datasetId)

@@ -179,19 +179,22 @@ export function CapabilityFactoryAcceptanceForm({
       </section>
     </div>
     <div className="flex shrink-0 items-center justify-end border-t border-border/50 px-5 py-4">
-      <div className="flex items-center gap-2">
-        <Button type="button" variant="ghost" disabled={saving} onClick={onClose}>取消</Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button type="button" disabled={saving || stale}>
-              <Save className="size-3.5" aria-hidden="true" />{saving ? '保存中…' : '保存'}<ChevronDown aria-hidden="true" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="z-[110]">
-            <DropdownMenuItem onSelect={() => submit(false)}>保存为草案</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => submit(true)}>{scene.draft ? '保存并采纳整份草案' : '保存并采纳'}</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+      <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
+        <p className="text-[11px] text-muted-foreground">保存并采纳仅让当前评审标准生效。</p>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button type="button" variant="ghost" disabled={saving} onClick={onClose}>取消</Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" disabled={saving || stale}>
+                <Save className="size-3.5" aria-hidden="true" />{saving ? '保存中…' : '保存'}<ChevronDown aria-hidden="true" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="z-[110]">
+              <DropdownMenuItem onSelect={() => submit(false)}>保存为草案</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => submit(true)}>保存并采纳当前评审标准</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
     </div>
   </div>
@@ -248,6 +251,7 @@ function OpenedAcceptanceDialog({ open, sessionId, scene, stepId, onSceneChanged
       if (adopt && saved.draft) await window.electronAPI.capabilityFactory.invoke('adoptDraft', {
         sessionId, sceneId: saved.id, expectedVersion: saved.currentVersion,
         expectedDraftCreatedAt: saved.draft.createdAt, expectedDraftDefinition: saved.draft.definition,
+        scope: { kind: 'stepAcceptance', stepId },
       })
       if (targetRef.current !== target) return
       onSceneChanged()
@@ -268,7 +272,7 @@ function OpenedAcceptanceDialog({ open, sessionId, scene, stepId, onSceneChanged
       </DialogHeader>
       {snapshot.draft ? <div className="shrink-0 space-y-2 px-5 pb-3">
         <Tabs value={view} onValueChange={setView}><TabsList aria-label="评审标准版本"><TabsTrigger value="compare">版本对比</TabsTrigger><TabsTrigger value="edit" disabled={!step}>编辑草案</TabsTrigger></TabsList></Tabs>
-        <p className="text-[11px] text-muted-foreground">当前 v{snapshot.currentVersion} → 草案 v{snapshot.currentVersion + 1}{acceptanceEdits ? ' · 含未保存修改' : ' · 待采纳'}。采纳会应用整份场景草案。</p>
+        <p className="text-[11px] text-muted-foreground">当前 v{snapshot.currentVersion} → 草案 v{snapshot.currentVersion + 1}{acceptanceEdits ? ' · 含未保存修改' : ' · 待采纳'}。采纳后仅当前评审标准生效，其余草案改动继续保留。</p>
       </div> : null}
       {snapshot.draft && view === 'compare' ? <>
         {(stale || error) ? <p role="alert" className="px-5 pb-3 text-xs text-destructive">{stale ? '场景或草案已更新，请关闭后重新打开，核对新版本再保存。' : error}</p> : null}
@@ -279,7 +283,7 @@ function OpenedAcceptanceDialog({ open, sessionId, scene, stepId, onSceneChanged
         <div className="flex shrink-0 justify-end gap-2 border-t border-border/50 px-5 py-4">
           <Button size="sm" variant="ghost" disabled={saving} onClick={() => onOpenChange(false)}>关闭</Button>
           {acceptanceEdits ? <Button size="sm" variant="outline" onClick={() => setView('edit')}>返回编辑并保存</Button> : null}
-          <Button size="sm" disabled={saving || stale || Boolean(acceptanceEdits)} onClick={() => { void save(null, true) }}>采纳整份草案 v{snapshot.currentVersion + 1}</Button>
+          {change.acceptanceChanged ? <Button size="sm" disabled={saving || stale || Boolean(acceptanceEdits)} onClick={() => { void save(null, true) }}>采纳当前评审标准</Button> : null}
         </div>
       </> : null}
       <div className={snapshot.draft && view === 'compare' ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>

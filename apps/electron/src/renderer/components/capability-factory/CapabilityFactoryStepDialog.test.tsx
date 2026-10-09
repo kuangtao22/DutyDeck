@@ -30,7 +30,7 @@ function render(overrides: Partial<React.ComponentProps<typeof CapabilityFactory
 }
 
 describe('步骤定义编辑', () => {
-  test('Given 未采纳提示词草案 When 打开步骤 Then 默认显示版本对比及整份草案采纳范围', () => {
+  test('Given 未采纳提示词草案 When 打开步骤 Then 默认显示版本对比及当前步骤采纳范围', () => {
     /** 基线与候选都保留，不能把草案当成已经生效的提示词。 */
     const candidate = structuredClone(scene)
     candidate.draft = { source: 'agent', createdAt: 3, note: '改提示词', definition: {
@@ -41,8 +41,19 @@ describe('步骤定义编辑', () => {
     expect(html).toContain('编辑草案')
     expect(html).toContain('草案 v3')
     expect(html).toContain('当前运行 v2')
-    expect(html).toContain('采纳整份草案')
+    expect(html).toContain('仅当前步骤生效')
+    expect(html).toContain('采纳当前步骤')
+    expect(html).not.toContain('采纳整份草案')
     expect(html).not.toContain('<textarea')
+  })
+
+  test('Given 草案只修改其它步骤 When 打开当前步骤 Then 不显示当前步骤采纳按钮', () => {
+    const candidate = structuredClone(scene)
+    candidate.draft = { source: 'agent', createdAt: 3, note: '改其它步骤', definition: {
+      ...candidate.definition, steps: [{ ...toolStep, title: '新标题' }, extractStep],
+    } }
+    const html = render({ scene: candidate, onAdoptDraft: () => undefined })
+    expect(html).not.toContain('采纳当前步骤')
   })
 
   test('Given 模型步骤 When 打开 Then 只编辑提示词并保存，不包含另一套运行界面', () => {

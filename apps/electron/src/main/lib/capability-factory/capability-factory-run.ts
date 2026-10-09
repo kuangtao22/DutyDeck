@@ -51,6 +51,10 @@ export interface CapabilityFactoryRunDeps {
   reviewTimeoutMs?: number
   /** 执行过程的内存快照及已落盘的评测中记录；只发给对应请求的窗口。 */
   onProgress?: (run: CapabilityRun) => void
+  /** 当前 Agent 回合的停止信号；与单次运行超时共同传给模型端口。 */
+  signal?: AbortSignal
+  /** 会话、工作区与写权限归属复核；失败后禁止任何迟到写入。 */
+  assertCurrent?: () => void
 }
 
 /** 整链运行的内部选项；批量评测关闭任务保存，避免数据集污染用户提交历史。 */
@@ -86,6 +90,13 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
   const createId = deps.createId ?? (() => randomUUID())
   const timeoutMs = deps.timeoutMs ?? 5 * 60 * 1000
 
+  /** 所有持久化和外部调用边界都复核当前归属。 */
+  const assertCurrent = (): void => deps.assertCurrent?.()
+
+  /** 用户停止与超时都应打断模型请求；缺少外部信号时保留原超时语义。 */
+  const combineSignal = (localSignal: AbortSignal): AbortSignal =>
+    deps.signal === undefined ? localSignal : AbortSignal.any([localSignal, deps.signal])
+
   /** 执行结果先落盘，再自动评审；评审异常不丢输出，不改场景或版本。 */
   const finish = async (run: CapabilityRun, definition: CapabilitySceneDefinition): Promise<CapabilityRun> => {
     /** 同一步在并行组内可执行多次；按定义 ID 汇集全部轨迹，不能让最后一项覆盖前面的证据。 */
@@ -100,6 +111,15 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
       status: 'skipped', passed: null, summary: '', acceptance: snapshot,
       criteria: [], metrics: [], suggestions: [], startedAt: now(), finishedAt: now(),
     }
+    /** 执行已经产出的轨迹仍保存，但用户停止后不再启动任何评审请求。 */
+    if (deps.signal?.aborted) {
+      assertCurrent()
+      return deps.service.recordRun({
+        ...run,
+        status: 'cancelled',
+        review: { ...base, summary: '用户已停止运行；已完成的执行证据已保留。' },
+      })
+    }
     /** 优先复用当前步骤的执行模型，整链采用本轮已解析的第一个模型。 */
     const currentModel = run.kind === 'step' ? run.steps[0]?.model : undefined
     const binding = run.modelBindings?.find((item) => item.modelId === currentModel) ?? run.modelBindings?.[0]
@@ -108,8 +128,12 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
         : configured.length === 0
           ? '没有流程步骤评审标准，请为每个模型步骤补充后再运行。'
           : !binding ? '未找到可用评审模型，本轮输出已保留。' : null
-    if (reason || !binding) return deps.service.recordRun({ ...run, review: { ...base, summary: reason ?? '未找到评审模型' } })
+    if (reason || !binding) {
+      assertCurrent()
+      return deps.service.recordRun({ ...run, review: { ...base, summary: reason ?? '未找到评审模型' } })
+    }
 
+    assertCurrent()
     const pending = deps.service.recordRun({ ...run, review: {
       ...base, status: 'running', summary: '运行已完成，正在评测内容。', modelBinding: binding, finishedAt: null,
     } })
@@ -140,10 +164,22 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
       const stepRun: CapabilityRun = { ...pending, kind: 'step', stepId: step.id, steps: traces,
         outputs: { output: traces.map((trace) => trace.parsedOutput ?? trace.rawOutput) }, modelBindings: [stepBinding] }
       stepReviews[step.id] = await reviewCapabilityRun({
-        run: stepRun, acceptance: structuredClone(acceptance), binding: stepBinding, callModel: deps.callModel, now,
+        run: stepRun,
+        acceptance: structuredClone(acceptance),
+        binding: stepBinding,
+        callModel: async (invocation) => {
+          assertCurrent()
+          deps.signal?.throwIfAborted()
+          const response = await deps.callModel({ ...invocation, signal: combineSignal(invocation.signal) })
+          assertCurrent()
+          deps.signal?.throwIfAborted()
+          return response
+        },
+        now,
         timeoutMs: deps.reviewTimeoutMs,
       })
       publishReviewProgress(`已处理 ${Object.keys(stepReviews).length} / ${configured.length} 个步骤的评审。`)
+      if (deps.signal?.aborted) break
     }
     const results = Object.values(stepReviews)
     const reviewedStepIds = Object.keys(stepReviews)
@@ -172,6 +208,7 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
       modelBinding: binding, finishedAt: now(),
       ...(results.some((item) => item.error) ? { error: results.flatMap((item) => item.error ? [item.error] : []).join('；') } : {}),
     }
+    assertCurrent()
     return deps.service.finishRunReview(run.sceneId, run.id, aggregateReview, stepReviews)
   }
 
@@ -233,17 +270,20 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
       if (stub.source === 'placeholder') placeholders.push(declaration.id)
     }
 
-    const signal = AbortSignal.timeout(timeoutMs)
+    /** 每次准备独立建立超时，避免一个旧运行的计时器影响后续请求。 */
+    const signal = combineSignal(AbortSignal.timeout(timeoutMs))
     /**
      * runner 传给模型端口的只有**声明值**（`slot.model`），而声明值可能只是模板默认值。
      * 这里按 `resolveModels` 的结果把它翻成实际渠道 + 模型，端口才找得到东西。
      */
     const bindingByDeclared = new Map(resolution.bindings.map((binding) => [binding.declaredModel, binding]))
     const runner = createCapabilityRunner({
-      callModel: (request) => {
+      callModel: async (request) => {
         const binding = bindingByDeclared.get(request.model)
         if (!binding) throw new Error(`模型槽位声明的模型「${request.model}」没有被解析到任何渠道`)
-        return deps.callModel({
+        assertCurrent()
+        deps.signal?.throwIfAborted()
+        const response = await deps.callModel({
           stepId: request.stepId, model: request.model,
           channelId: binding.channelId, modelId: binding.modelId,
           ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
@@ -252,6 +292,9 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
           ...(request.formatInstruction === undefined ? {} : { formatInstruction: request.formatInstruction }),
           signal,
         })
+        assertCurrent()
+        deps.signal?.throwIfAborted()
+        return response
       },
       capabilities,
       ...(onStepProgress ? { onStepProgress } : {}),
@@ -274,6 +317,7 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
     ): Promise<CapabilityRun> {
       const runId = createId()
       const startedAt = now()
+      assertCurrent()
       const scene = deps.service.getScene(sceneId)
       if (!scene) throw new CapabilityFactoryError('SCENE_NOT_FOUND', `场景不存在：${sceneId}`)
       const target = options.target ?? 'current'
@@ -289,14 +333,26 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
         ...(options.comparisonId === undefined ? {} : { comparisonId: options.comparisonId }),
         ...(options.comparisonRole === undefined ? {} : { comparisonRole: options.comparisonRole }),
       } as const
-      /** 提交即保存；持久化失败时必须在解析模型或调用模型前停止，不能制造不可复现的运行。 */
-      if (taskSaved) deps.service.saveTask(sceneId, input)
       /** 失败也落盘：历史里能看到"这一次为什么没跑起来"。 */
-      const record = (partial: Omit<CapabilityRun, 'id' | 'sceneId' | 'sceneVersion' | 'startedAt'>): CapabilityRun =>
-        deps.service.recordRun({
+      const record = (partial: Omit<CapabilityRun, 'id' | 'sceneId' | 'sceneVersion' | 'startedAt'>): CapabilityRun => {
+        assertCurrent()
+        return deps.service.recordRun({
           id: runId, sceneId, sceneVersion: scene.currentVersion, kind: 'full',
           taskSaved, startedAt, ...identity, ...partial,
         })
+      }
+
+      if (deps.signal?.aborted) {
+        return record({
+          status: 'cancelled', valid: false, taskSaved: false,
+          input, outputs: null, steps: [], error: '用户已停止运行。', finishedAt: now(),
+        })
+      }
+      /** 提交即保存；持久化失败时必须在解析模型或调用模型前停止，不能制造不可复现的运行。 */
+      if (taskSaved) {
+        assertCurrent()
+        deps.service.saveTask(sceneId, input)
+      }
 
       if (options.expectedVersion !== undefined && options.expectedVersion !== scene.currentVersion) {
         return record({
@@ -407,8 +463,8 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error)
         return record({
-          status: 'failed', valid: false, input, outputs: null, steps: [],
-          error: `运行中止：${reason}`, finishedAt: now(),
+          status: deps.signal?.aborted ? 'cancelled' : 'failed', valid: false, input, outputs: null, steps: [],
+          error: deps.signal?.aborted ? '用户已停止运行。' : `运行中止：${reason}`, finishedAt: now(),
         })
       }
 
@@ -462,13 +518,23 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
     ): Promise<CapabilityRun> {
       const runId = createId()
       const startedAt = now()
+      assertCurrent()
       const scene = deps.service.getScene(sceneId)
       if (!scene) throw new CapabilityFactoryError('SCENE_NOT_FOUND', `场景不存在：${sceneId}`)
       const definition = structuredClone(definitionOverride ?? scene.definition)
-      const record = (partial: Omit<CapabilityRun, 'id' | 'sceneId' | 'sceneVersion' | 'startedAt'>): CapabilityRun =>
-        deps.service.recordRun({
+      const record = (partial: Omit<CapabilityRun, 'id' | 'sceneId' | 'sceneVersion' | 'startedAt'>): CapabilityRun => {
+        assertCurrent()
+        return deps.service.recordRun({
           id: runId, sceneId, sceneVersion: scene.currentVersion, kind: 'step', stepId, startedAt, ...partial,
         })
+      }
+
+      if (deps.signal?.aborted) {
+        return record({
+          status: 'cancelled', valid: false, input, outputs: null, steps: [],
+          error: '用户已停止运行。', finishedAt: now(),
+        })
+      }
 
       /** 单步训练也回传真实步骤进度，和整链运行保持同一观察协议。 */
       let progressBindings: CapabilityRunModelBinding[] = []
@@ -503,9 +569,9 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error)
         return record({
-          status: 'failed', valid: false, input, outputs: null, steps: [],
+          status: deps.signal?.aborted ? 'cancelled' : 'failed', valid: false, input, outputs: null, steps: [],
           ...(stepPrompt === undefined ? {} : { stepPrompt }),
-          error: `运行中止：${reason}`, finishedAt: now(),
+          error: deps.signal?.aborted ? '用户已停止运行。' : `运行中止：${reason}`, finishedAt: now(),
         })
       }
 

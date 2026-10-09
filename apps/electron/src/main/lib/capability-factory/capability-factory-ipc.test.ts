@@ -2,15 +2,16 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { CAPABILITY_FACTORY_CHANNELS } from '@proma/shared'
+import { CAPABILITY_FACTORY_CHANNELS, type CapabilityScene, type CapabilitySceneDefinition } from '@proma/shared'
 import { CapabilityFactoryStore } from './capability-factory-store'
 import { CapabilityFactoryService } from './capability-factory-service'
-import { registerCapabilityFactoryIpc, type CapabilityFactoryIpcEvent } from './capability-factory-ipc'
+import { registerCapabilityFactoryIpc, type CapabilityFactoryIpcEvent, type CapabilityFactoryIpcDependencies } from './capability-factory-ipc'
 import type { CapabilityFactoryRunOptions } from './capability-factory-run'
 
 /** 用替身 IPC 捕获 handler，直接调用它来验证四层契约的主进程一侧真的能分派。 */
 function fixture(options: {
   authorized?: boolean
+  getBatchRunner?: CapabilityFactoryIpcDependencies['getBatchRunner']
   runScene?: (input: {
     sceneId: string
     options?: CapabilityFactoryRunOptions
@@ -36,6 +37,7 @@ function fixture(options: {
       now: () => (tick += 10),
       createId: () => `ipc-${(seq += 1)}`,
     }),
+    ...(options.getBatchRunner ? { getBatchRunner: options.getBatchRunner } : {}),
     /** 运行在这里用替身：真实实现要读渠道、解密凭据、发模型请求，不属于契约测试的范围。 */
     runScene: options.runScene
       ? async (request) => options.runScene?.(request) as never
@@ -67,6 +69,39 @@ const definition = {
 }
 
 describe('编排工厂 IPC handler', () => {
+  test('Given 两步草案 When IPC 采纳单步 Then 只生效指定步骤并保留另一步待审', async () => {
+    const { call } = fixture()
+    const scene = await call({ method: 'createScene', input: { sessionId: 's1', name: '逐块' } }) as CapabilityScene
+    const initial: CapabilitySceneDefinition = { ...definition, steps: ['a', 'b'].map((id) => ({ type: 'llm' as const, id, title: id, modelSlot: 'main', prompt: 'old' })) }
+    await call({ method: 'saveDraft', input: { sessionId: 's1', sceneId: scene.id, definition: initial, note: '初始' } })
+    await call({ method: 'adoptDraft', input: { sessionId: 's1', sceneId: scene.id } })
+    const candidate = { ...initial, steps: initial.steps.map((step) => ({ ...step, prompt: 'new' })) }
+    const saved = await call({ method: 'saveDraft', input: { sessionId: 's1', sceneId: scene.id, definition: candidate, note: '两步' } }) as CapabilityScene
+    const result = await call({ method: 'adoptDraft', input: {
+      sessionId: 's1', sceneId: scene.id, scope: { kind: 'step', stepId: 'a' }, expectedVersion: saved.currentVersion,
+      expectedDraftCreatedAt: saved.draft!.createdAt, expectedDraftDefinition: saved.draft!.definition,
+    } }) as { scene: CapabilityScene }
+    expect(result.scene.definition.steps).toMatchObject([{ prompt: 'new' }, { prompt: 'old' }])
+    expect(result.scene.draft?.definition).toEqual(candidate)
+  })
+
+  test('Given 已测试采纳 When 批次证据不可用 Then 拒绝而不降级为普通采纳', async () => {
+    const { call } = fixture()
+    await expect(call({ method: 'adoptDraft', input: { sessionId: 's1', sceneId: 'scene', testedBatchId: 'batch' } }))
+      .rejects.toThrow('BATCH_UNAVAILABLE')
+  })
+
+  test('Given 批次执行期间项目变化 When 写入前复核 Then 阻断旧归属', async () => {
+    let workspaceId = 'w1'
+    const { call } = fixture({ requireSession: (sessionId) => ({ id: sessionId, workspaceId }),
+      getBatchRunner: ({ assertCurrent }) => ({
+        run: async () => { workspaceId = 'w2'; assertCurrent(); throw new Error('不应到达') },
+        list: () => [], get: () => null, assertAdoptable: () => { throw new Error('无证据') },
+      }),
+    })
+    await expect(call({ method: 'runBatch', input: { sessionId: 's1', sceneId: 'scene', kind: 'evaluation', datasetId: 'data' } }))
+      .rejects.toThrow('CAPABILITY_FACTORY_ACCESS_DENIED')
+  })
   test('未授权窗口一律拒绝', async () => {
     const { call } = fixture({ authorized: false })
     await expect(call({ method: 'listScenes', input: { sessionId: 's1' } }))

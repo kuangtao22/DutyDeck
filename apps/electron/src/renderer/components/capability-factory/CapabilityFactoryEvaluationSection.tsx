@@ -18,6 +18,11 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { CapabilityFactoryRunResult } from './CapabilityFactoryRunResult'
+import { useCapabilityFactoryBatches } from './useCapabilityFactoryBatches'
+import { CapabilityFactoryBatchHistory } from './CapabilityFactoryBatchHistory'
+import { describeReviewStatus } from './capability-factory-run-view'
 import {
   describeCompliance, describeEvaluationComparison, describeJudgeResult, describeQuality,
   suggestedDatasetName,
@@ -47,13 +52,27 @@ export function CapabilityFactoryEvaluationSection({
   const [evaluations, setEvaluations] = React.useState<CapabilityEvaluation[] | null>(null)
   const [lastRun, setLastRun] = React.useState<CapabilityRun | null>(null)
   const [selectedDatasetId, setSelectedDatasetId] = React.useState<string | null>(null)
+  /** 数据集容量不限，每批显式选择最多十条，避免大数据集只能删用例才能继续测试。 */
+  const [selectedCaseIds, setSelectedCaseIds] = React.useState<string[]>([])
+  const caseDataset = React.useRef<string | null>(null)
   const [newDatasetName, setNewDatasetName] = React.useState(() => suggestedDatasetName(scene.definition.name))
   const [busy, setBusy] = React.useState<'idle' | 'evaluating' | 'dataset'>('idle')
   const [error, setError] = React.useState<string | null>(null)
   const [latest, setLatest] = React.useState<CapabilityEvaluation | null>(null)
+  /** Agent 与界面共用持久批次；完整证据按需查看。 */
+  const batchState = useCapabilityFactoryBatches(sessionId, scene.id, 'evaluation')
+  const [inspected, setInspected] = React.useState<CapabilityRun | null>(null)
+  const controlsBusy = busy !== 'idle' || batchState.busy
+  /** 会话/场景切换与卸载都会使旧读取失效。 */
+  const scope = React.useMemo(() => ({}), [sessionId, scene.id])
+  const currentScope = React.useRef<object | null>(scope)
+  currentScope.current = scope
+  const refreshGeneration = React.useRef(0)
 
   /** 拉取数据集、评测历史与最近一次整链运行（回灌用）。 */
   const refresh = React.useCallback(async () => {
+    if (currentScope.current !== scope) return
+    const ticket = ++refreshGeneration.current
     try {
       const [datasetList, history, runs] = await Promise.all([
         window.electronAPI.capabilityFactory.invoke('listDatasets', { sessionId }),
@@ -62,6 +81,7 @@ export function CapabilityFactoryEvaluationSection({
           sessionId, sceneId: scene.id, kind: 'full', limit: 1,
         }),
       ])
+      if (currentScope.current !== scope || ticket !== refreshGeneration.current) return
       setDatasets(datasetList)
       setEvaluations(history)
       setLatest(history[0] ?? null)
@@ -71,20 +91,41 @@ export function CapabilityFactoryEvaluationSection({
         return datasetList[0]?.id ?? null
       })
     } catch (cause) {
+      if (currentScope.current !== scope || ticket !== refreshGeneration.current) return
       setError(errorText(cause))
       setDatasets([])
       setEvaluations([])
     }
-  }, [scene.id, sessionId])
+  }, [scene.id, sessionId, scope])
 
-  React.useEffect(() => { void refresh() }, [refresh])
+  React.useEffect(() => {
+    currentScope.current = scope
+    void refresh()
+    /** 同一运行的密集进度合并为一次数据读取。 */
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const unsubscribe = window.electronAPI.capabilityFactory.onChanged?.((event) => {
+      if (event.sessionId !== sessionId || (event.sceneId && event.sceneId !== scene.id)) return
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(() => { void refresh() }, 80)
+    })
+    return () => { currentScope.current = null; refreshGeneration.current += 1; if (timer !== undefined) clearTimeout(timer); unsubscribe?.() }
+  }, [refresh, sessionId, scene.id, scope])
 
   const selectedDataset = datasets?.find((dataset) => dataset.id === selectedDatasetId) ?? null
+  /** 用稳定的 ID 序列触发选择同步，后台评审事件不重置用户勾选。 */
+  const availableCaseIds = JSON.stringify(selectedDataset?.cases.map((item) => item.id) ?? [])
+  React.useEffect(() => {
+    const ids = JSON.parse(availableCaseIds) as string[]
+    const changedDataset = caseDataset.current !== selectedDatasetId
+    caseDataset.current = selectedDatasetId
+    setSelectedCaseIds((previous) => changedDataset
+      ? ids.slice(0, 10) : previous.filter((id) => ids.includes(id)))
+  }, [selectedDatasetId, availableCaseIds])
 
   /** 新建数据集：评测必须有地方放用例，所以第一步就是它。 */
   const createDataset = React.useCallback(async () => {
     const name = newDatasetName.trim()
-    if (name.length === 0 || busy !== 'idle') return
+    if (name.length === 0 || controlsBusy) return
     setBusy('dataset')
     try {
       const created = await window.electronAPI.capabilityFactory.invoke('createDataset', { sessionId, name })
@@ -96,11 +137,11 @@ export function CapabilityFactoryEvaluationSection({
     } finally {
       setBusy('idle')
     }
-  }, [busy, newDatasetName, refresh, sessionId])
+  }, [controlsBusy, newDatasetName, refresh, sessionId])
 
   /** 把最近一次真实运行的输入固化成用例 —— 这是"失败回灌"的最小形态。 */
   const addCaseFromLastRun = React.useCallback(async () => {
-    if (!selectedDataset || !lastRun || busy !== 'idle') return
+    if (!selectedDataset || !lastRun || controlsBusy) return
     setBusy('dataset')
     try {
       await window.electronAPI.capabilityFactory.invoke('addCase', {
@@ -115,10 +156,10 @@ export function CapabilityFactoryEvaluationSection({
     } finally {
       setBusy('idle')
     }
-  }, [busy, lastRun, refresh, selectedDataset, sessionId])
+  }, [controlsBusy, lastRun, refresh, selectedDataset, sessionId])
 
   const deleteCase = React.useCallback(async (caseId: string) => {
-    if (!selectedDataset || busy !== 'idle') return
+    if (!selectedDataset || controlsBusy) return
     setBusy('dataset')
     try {
       await window.electronAPI.capabilityFactory.invoke('deleteCase', {
@@ -131,25 +172,13 @@ export function CapabilityFactoryEvaluationSection({
     } finally {
       setBusy('idle')
     }
-  }, [busy, refresh, selectedDataset, sessionId])
+  }, [controlsBusy, refresh, selectedDataset, sessionId])
 
-  /** 跑评测：每条用例一次整链运行（会调模型，界面上写清条目数）。 */
-  const runEvaluation = React.useCallback(async () => {
-    if (!selectedDataset || busy !== 'idle') return
-    setBusy('evaluating')
-    try {
-      const result = await window.electronAPI.capabilityFactory.invoke('runEvaluation', {
-        sessionId, sceneId: scene.id, datasetId: selectedDataset.id,
-      })
-      setLatest(result)
-      setError(null)
-      await refresh()
-    } catch (cause) {
-      setError(errorText(cause))
-    } finally {
-      setBusy('idle')
-    }
-  }, [busy, refresh, scene.id, selectedDataset, sessionId])
+  /** 批测与 Agent 共用入口，每条运行和评审都进入可恢复批次。 */
+  const runEvaluation = async (): Promise<void> => {
+    if (!selectedDataset || selectedCaseIds.length === 0 || controlsBusy) return
+    await batchState.start({ datasetId: selectedDataset.id, caseIds: selectedCaseIds, expectedVersion: scene.currentVersion })
+  }
 
   /** 上一条同数据集的评测：对比只在同一份用例集上做。 */
   const previousSameDataset = (evaluations ?? []).find((item) =>
@@ -168,12 +197,12 @@ export function CapabilityFactoryEvaluationSection({
             </p>
             <div className="flex items-center gap-1.5">
               <Input
-                value={newDatasetName} disabled={busy !== 'idle'}
+                value={newDatasetName} disabled={controlsBusy}
                 aria-label="新数据集名称"
                 className="h-8 text-[11px]"
                 onChange={(event) => setNewDatasetName(event.target.value)}
               />
-              <Button type="button" size="sm" disabled={busy !== 'idle' || newDatasetName.trim().length === 0} onClick={() => { void createDataset() }}>
+              <Button type="button" size="sm" disabled={controlsBusy || newDatasetName.trim().length === 0} onClick={() => { void createDataset() }}>
                 <Plus className="size-3.5" aria-hidden="true" />
                 新建
               </Button>
@@ -196,7 +225,7 @@ export function CapabilityFactoryEvaluationSection({
               </select>
               <Button
                 type="button" size="sm" variant="outline"
-                disabled={busy !== 'idle' || !lastRun}
+                disabled={controlsBusy || !lastRun}
                 title={lastRun ? '把最近一次运行的输入固化成用例' : '还没有跑过整链运行'}
                 onClick={() => { void addCaseFromLastRun() }}
               >
@@ -213,6 +242,9 @@ export function CapabilityFactoryEvaluationSection({
                 ) : null}
                 {selectedDataset.cases.map((item) => (
                   <li key={item.id} className="flex items-center gap-2 rounded-sm border border-border/70 px-2 py-1.5">
+                    <input type="checkbox" aria-label={`测试用例：${item.name}`} checked={selectedCaseIds.includes(item.id)}
+                      disabled={controlsBusy || (!selectedCaseIds.includes(item.id) && selectedCaseIds.length >= 10)}
+                      onChange={(event) => setSelectedCaseIds((previous) => event.target.checked ? [...previous, item.id] : previous.filter((id) => id !== item.id))} />
                     <Badge variant="outline" className="text-[10px]">
                       {item.source === 'regression' ? '失败回灌' : item.source === 'agent' ? 'Agent 加' : '人工'}
                     </Badge>
@@ -220,7 +252,7 @@ export function CapabilityFactoryEvaluationSection({
                     <Button
                       type="button" size="sm" variant="ghost" className="h-6 px-2"
                       aria-label={`删除用例：${item.name}`}
-                      disabled={busy !== 'idle'}
+                      disabled={controlsBusy}
                       onClick={() => { void deleteCase(item.id) }}
                     >
                       <Trash2 className="size-3" aria-hidden="true" />
@@ -236,15 +268,15 @@ export function CapabilityFactoryEvaluationSection({
       <section className="space-y-2" aria-label="跑评测">
         <Button
           type="button" size="sm"
-          disabled={busy !== 'idle' || !selectedDataset || selectedDataset.cases.length === 0}
+          disabled={controlsBusy || !selectedDataset || selectedCaseIds.length === 0}
           onClick={() => { void runEvaluation() }}
         >
-          {busy === 'evaluating' ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" /> : <Play className="size-3.5" aria-hidden="true" />}
+          {batchState.busy ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" /> : <Play className="size-3.5" aria-hidden="true" />}
           跑评测
         </Button>
         {selectedDataset && selectedDataset.cases.length > 0 ? (
           <span className="ml-2 text-[11px] text-muted-foreground">
-            将对 {selectedDataset.cases.length} 条用例各跑一次完整流程（会调用模型）
+            已选 {selectedCaseIds.length} / {selectedDataset.cases.length} 条，每批最多 10 条（会调用模型）
           </span>
         ) : null}
         {error ? (
@@ -254,8 +286,24 @@ export function CapabilityFactoryEvaluationSection({
         ) : null}
       </section>
 
+      {batchState.error ? <p role="alert" className="text-xs text-destructive">{batchState.error}</p> : null}
+      <CapabilityFactoryBatchHistory batches={batchState.batches} selectedId={batchState.batch?.id} running={batchState.running} onSelect={batchState.select} onCancel={batchState.cancel} />
+      {batchState.batch ? <section className="space-y-2" aria-label="批次评测结果">
+        <p className="text-xs font-medium">内容通过 {batchState.batch.evaluation?.passedReview ?? 0} / {batchState.batch.items.length} · 格式有效 {batchState.batch.evaluation?.valid ?? 0} / {batchState.batch.items.length}</p>
+        {batchState.batch.error ? <p role="alert" className="text-xs text-destructive">{batchState.batch.error}</p> : null}
+        {batchState.runs.map((run) => <div key={run.id} className="space-y-1 rounded-sm border border-border/60 p-2 text-[11px]">
+          <div className="flex items-center justify-between gap-2"><span>{describeReviewStatus(run).label} · v{run.sceneVersion}</span><Button type="button" size="sm" variant="outline" onClick={() => setInspected(run)}>查看详情</Button></div>
+          <p className="text-muted-foreground">{run.error ?? run.review?.summary ?? '未完成内容评审'}</p>
+        </div>)}
+      </section> : null}
+      <Dialog open={inspected !== null} onOpenChange={(open) => { if (!open) setInspected(null) }}>
+        <DialogContent className="flex h-[min(820px,calc(100dvh-32px))] w-[calc(100vw-32px)] max-w-4xl min-w-0 flex-col" aria-describedby={undefined}>
+          <DialogHeader><DialogTitle>批量测试运行详情</DialogTitle></DialogHeader>
+          {inspected ? <CapabilityFactoryRunResult run={inspected} /> : null}
+        </DialogContent>
+      </Dialog>
       {latest ? (
-        <section className="space-y-1.5" aria-label="本次评测">
+        <section className="space-y-1.5" aria-label="此前评测记录">
           <div className="flex flex-wrap items-baseline gap-2">
             <span className="text-[11px] font-medium text-muted-foreground">内容质量</span>
             <Badge variant="outline" className="text-[10px]">{describeQuality(latest).status}</Badge>

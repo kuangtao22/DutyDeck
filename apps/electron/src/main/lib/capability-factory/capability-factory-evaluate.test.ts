@@ -30,6 +30,7 @@ function fixture(outcomes: (input: Record<string, unknown>) => {
   error?: string
   review?: CapabilityRunReview
   sceneVersion?: number
+  modelId?: string
   placeholderCapabilities?: string[]
   /** 证据质量独立于 JSON 格式轴，夹具允许注入确定性检查的问题。 */
   evidenceIssues?: string[]
@@ -47,7 +48,7 @@ function fixture(outcomes: (input: Record<string, unknown>) => {
   service.adoptDraft(scene.id)
 
   const runs: CapabilityRun[] = []
-  const runOptions: ({ saveTask?: boolean } | undefined)[] = []
+  const runOptions: ({ saveTask?: boolean; expectedVersion?: number } | undefined)[] = []
   const evaluator = createCapabilityFactoryEvaluator({
     service,
     run: async (sceneId, input, options) => {
@@ -66,6 +67,10 @@ function fixture(outcomes: (input: Record<string, unknown>) => {
           ? {}
           : { placeholderCapabilities: outcome.placeholderCapabilities }),
         ...(outcome.evidenceIssues === undefined ? {} : { evidenceIssues: outcome.evidenceIssues }),
+        modelBindings: [{
+          slotId: 'main', declaredModel: 'm', channelId: 'channel-1', channelName: '测试渠道',
+          modelId: outcome.modelId ?? 'model-1', substituted: false,
+        }],
         startedAt: runs.length * 10, finishedAt: runs.length * 10 + 5,
       }
       runs.push(run)
@@ -85,7 +90,95 @@ describe('评测：对一组固定输入跑当前版本', () => {
 
     await evaluator.evaluate(sceneId, dataset.id)
 
-    expect(runOptions).toEqual([{ saveTask: false }, { saveTask: false }])
+    expect(runOptions).toEqual([
+      { saveTask: false, expectedVersion: 2 },
+      { saveTask: false, expectedVersion: 2 },
+    ])
+  })
+
+  test('Given 数据集超过 10 条 When 评测 Then 在调用模型前拒绝', async () => {
+    const { service, evaluator, sceneId, runs } = fixture(() => ({ status: 'succeeded', valid: true }))
+    const dataset = service.createDataset('过大输入集')
+    for (let index = 0; index < 11; index += 1) service.addCase(dataset.id, { index })
+
+    const evaluation = await evaluator.evaluate(sceneId, dataset.id)
+
+    expect(evaluation.status).toBe('failed')
+    expect(evaluation.error).toContain('最多 10 条')
+    expect(runs).toHaveLength(0)
+  })
+
+  test('Given 单条运行抛出普通异常 When 评测 Then 保留失败项并继续后续用例', async () => {
+    let calls = 0
+    const { service, sceneId } = fixture(() => ({ status: 'succeeded', valid: true }))
+    const evaluator = createCapabilityFactoryEvaluator({
+      service,
+      run: async (_sceneId, input) => {
+        calls += 1
+        if (input['boom'] === true) throw new Error('渠道临时不可用')
+        return {
+          id: `run-${calls}`, sceneId, sceneVersion: 2, kind: 'full', status: 'succeeded', valid: true,
+          input, outputs: {}, steps: [], startedAt: calls, finishedAt: calls + 1,
+        }
+      },
+    })
+    const dataset = service.createDataset('异常隔离')
+    service.addCase(dataset.id, { boom: true })
+    service.addCase(dataset.id, { boom: false })
+
+    const evaluation = await evaluator.evaluate(sceneId, dataset.id)
+
+    expect(calls).toBe(2)
+    expect(evaluation.caseResults).toHaveLength(2)
+    expect(evaluation.caseResults?.[0]).toMatchObject({ runId: null, status: 'failed', valid: false })
+    expect(evaluation.caseResults?.[0]?.detail).toContain('渠道临时不可用')
+    expect(evaluation.validSamples).toBe(1)
+  })
+
+  test('Given 同一版本运行实际模型变化 When 评测 Then 停止并拒绝混合模型结果', async () => {
+    let calls = 0
+    const { service, evaluator, sceneId } = fixture(() => ({
+      status: 'succeeded', valid: true, modelId: ++calls === 1 ? 'model-a' : 'model-b',
+    }))
+    const dataset = service.createDataset('冻结模型集')
+    service.addCase(dataset.id, { text: '第一条' })
+    service.addCase(dataset.id, { text: '第二条' })
+    service.addCase(dataset.id, { text: '第三条' })
+
+    const evaluation = await evaluator.evaluate(sceneId, dataset.id)
+
+    expect(evaluation.status).toBe('failed')
+    expect(evaluation.error).toContain('模型绑定')
+    expect(evaluation.caseResults).toHaveLength(1)
+    expect(calls).toBe(2)
+  })
+
+  test('Given 外部在首条完成后取消 When 评测 Then 保留首条证据且不启动下一条', async () => {
+    const controller = new AbortController()
+    let calls = 0
+    const { service, sceneId } = fixture(() => ({ status: 'succeeded', valid: true }))
+    const evaluator = createCapabilityFactoryEvaluator({
+      service,
+      signal: controller.signal,
+      run: async (_sceneId, input) => {
+        calls += 1
+        controller.abort(new DOMException('用户停止', 'AbortError'))
+        return {
+          id: 'run-1', sceneId, sceneVersion: 2, kind: 'full', status: 'succeeded', valid: true,
+          input, outputs: {}, steps: [], startedAt: 1, finishedAt: 2,
+        }
+      },
+    })
+    const dataset = service.createDataset('可取消批次')
+    service.addCase(dataset.id, { text: '第一条' })
+    service.addCase(dataset.id, { text: '第二条' })
+
+    const evaluation = await evaluator.evaluate(sceneId, dataset.id)
+
+    expect(calls).toBe(1)
+    expect(evaluation.status).toBe('failed')
+    expect(evaluation.error).toContain('已取消')
+    expect(evaluation.caseResults).toHaveLength(1)
   })
 
   test('Given 3 条用例 2 条合法 When 评测 Then 合规率 2/3 并逐条给出结果', async () => {

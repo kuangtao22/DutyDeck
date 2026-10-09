@@ -106,6 +106,12 @@ export function isPromptOnlyOptimization(before: CapabilitySceneDefinition, afte
     && stableCapabilityValueKey(before) !== stableCapabilityValueKey(after)
 }
 
+/** 采纳范围：流程块和评审块分别批准；省略范围的旧调用仍采纳整份。 */
+export type CapabilityDraftAdoptionScope =
+  | { kind: 'all' }
+  | { kind: 'step'; stepId: string }
+  | { kind: 'stepAcceptance'; stepId: string }
+
 /** 待采纳草案的元信息。 */
 export interface CapabilitySceneDraft {
   definition: CapabilitySceneDefinition

@@ -9,15 +9,18 @@
  * **拒绝调用方自行声明 workspace**（workspace 由主进程按 session 反查）。
  */
 import type {
-  CapabilityDataset, CapabilityDelivery, CapabilityEvaluation, CapabilityPackage, CapabilityRun, CapabilitySavedTask,
+  CapabilityDataset, CapabilityDelivery, CapabilityDraftAdoptionScope, CapabilityEvaluation, CapabilityPackage, CapabilityRun, CapabilitySavedTask,
   CapabilityScene, CapabilitySceneDefinition, CapabilitySceneVersion, CapabilityStub, CapabilityStubSource,
 } from './capability-factory'
+import type { CapabilityFactoryBatch, CapabilityFactoryBatchRequest, CapabilityFactoryBatchSummary } from './capability-factory-batch'
 
 /** 单通道常量：命令与响应都走它，避免为每个方法开一条通道。 */
 export const CAPABILITY_FACTORY_CHANNELS = {
   INVOKE: 'capability-factory:invoke',
   /** 长运行的请求级进度；只回传给发起该 invoke 的窗口。 */
   PROGRESS: 'capability-factory:run-progress',
+  /** 仅携带变更身份，正文按当前会话归属重新读取。 */
+  CHANGED: 'capability-factory:changed',
 } as const
 
 /** 保存草案时看到的场景状态；用于阻止旧编辑器覆盖并发产生的新草案。 */
@@ -53,9 +56,13 @@ export interface CapabilityFactoryCommandInputs {
   adoptDraft: {
     sessionId: string
     sceneId: string
+    /** 块内入口必须指定范围；省略只用于兼容既有整份采纳入口。 */
+    scope?: CapabilityDraftAdoptionScope
     expectedVersion?: number
     expectedDraftCreatedAt?: number
     expectedDraftDefinition?: CapabilitySceneDefinition
+    /** 采纳已测试草案必须复核持久批次，不能仅信前端 passed 标记。 */
+    testedBatchId?: string
   }
   listVersions: { sessionId: string; sceneId: string }
   rollback: { sessionId: string; sceneId: string; targetVersion: number }
@@ -120,6 +127,11 @@ export interface CapabilityFactoryCommandInputs {
   deleteCase: { sessionId: string; datasetId: string; caseId: string }
   runEvaluation: { sessionId: string; sceneId: string; datasetId: string }
   listEvaluations: { sessionId: string; sceneId: string; limit?: number }
+  runBatch: CapabilityFactoryBatchRequest & { sessionId: string }
+  listBatches: { sessionId: string; sceneId: string }
+  getBatch: { sessionId: string; sceneId: string; batchId: string }
+  cancelBatch: { sessionId: string; sceneId: string; batchId: string }
+  getRun: { sessionId: string; sceneId: string; runId: string }
 }
 
 /** 命令返回值映射。 */
@@ -150,6 +162,11 @@ export interface CapabilityFactoryCommandResults {
   deleteCase: CapabilityDataset
   runEvaluation: CapabilityEvaluation
   listEvaluations: CapabilityEvaluation[]
+  runBatch: CapabilityFactoryBatch
+  listBatches: CapabilityFactoryBatchSummary[]
+  getBatch: CapabilityFactoryBatch | null
+  cancelBatch: { cancelled: boolean }
+  getRun: CapabilityRun | null
 }
 
 /** 严格分派所支持的方法。 */
@@ -166,6 +183,12 @@ export interface CapabilityFactoryRunProgress {
   run: CapabilityRun
 }
 
+/** 主进程发布的最小刷新信号；渲染层仅响应当前会话和当前场景。 */
+export interface CapabilityFactoryChanged {
+  sessionId: string
+  sceneId?: string
+}
+
 /** preload 暴露给渲染层的接口形状。 */
 export interface CapabilityFactoryApi {
   invoke<M extends CapabilityFactoryCommandMethod>(
@@ -174,11 +197,22 @@ export interface CapabilityFactoryApi {
   ): Promise<CapabilityFactoryCommandResults[M]>
   /** 旧 preload / 隔离预览可不实现；正式应用实现后返回取消订阅函数。 */
   onRunProgress?(callback: (event: CapabilityFactoryRunProgress) => void): () => void
+  onChanged?(callback: (event: CapabilityFactoryChanged) => void): () => void
 }
 
 /** 稳定错误：不回显不可信值。 */
 function bad(path: string): never {
   throw new Error('CAPABILITY_FACTORY_INVALID: ' + path)
+}
+
+/** 解析精确采纳范围，拒绝未知字段和缺失块身份，不能降级成整份采纳。 */
+function adoptionScope(value: unknown): CapabilityDraftAdoptionScope {
+  const scope = record(value, ['kind', 'stepId'], 'input.scope')
+  if (scope.kind === 'all' && scope.stepId === undefined) return { kind: 'all' }
+  if (scope.kind === 'step' || scope.kind === 'stepAcceptance') {
+    return { kind: scope.kind, stepId: str(scope.stepId, 'input.scope.stepId', 128) }
+  }
+  return bad('input.scope')
 }
 
 /** 有界非空字符串。 */
@@ -313,15 +347,48 @@ export function parseCapabilityFactoryCommand(value: unknown): CapabilityFactory
   const allowed = ['listScenes', 'getScene', 'createScene', 'renameScene', 'deleteScene', 'saveDraft',
     'discardDraft', 'adoptDraft', 'listVersions', 'rollback', 'exportPackage', 'listDeliveries',
     'listStubs', 'setStub', 'deleteStub', 'runScene', 'runStep', 'listRuns', 'listTasks', 'revealDelivery',
-    'listDatasets', 'createDataset', 'addCase', 'deleteCase', 'runEvaluation', 'listEvaluations']
+    'listDatasets', 'createDataset', 'addCase', 'deleteCase', 'runEvaluation', 'listEvaluations',
+    'runBatch', 'listBatches', 'getBatch', 'cancelBatch', 'getRun']
   if (typeof method !== 'string' || !allowed.includes(method)) return bad('method')
 
   switch (method) {
+    case 'runBatch': {
+      const input = record(root.input, ['sessionId', 'sceneId', 'kind', 'datasetId', 'taskIds', 'caseIds', 'expectedVersion', 'expectedDraftCreatedAt', 'expectedDraftDefinition'], 'input')
+      if (input.kind !== 'evaluation' && input.kind !== 'comparison') return bad('input.kind')
+      if ((input.datasetId === undefined) === (input.taskIds === undefined)) return bad('input.tasks')
+      if (input.kind === 'evaluation' && input.datasetId === undefined) return bad('input.datasetId')
+      if (input.taskIds !== undefined && (!Array.isArray(input.taskIds) || input.taskIds.length < 1 || input.taskIds.length > 10
+        || new Set(input.taskIds).size !== input.taskIds.length)) return bad('input.taskIds')
+      if (input.caseIds !== undefined && (input.datasetId === undefined || !Array.isArray(input.caseIds)
+        || input.caseIds.length < 1 || input.caseIds.length > 10 || new Set(input.caseIds).size !== input.caseIds.length)) return bad('input.caseIds')
+      if (input.expectedVersion !== undefined && (typeof input.expectedVersion !== 'number' || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1)) return bad('input.expectedVersion')
+      if (input.expectedDraftCreatedAt !== undefined && (typeof input.expectedDraftCreatedAt !== 'number' || !Number.isSafeInteger(input.expectedDraftCreatedAt) || input.expectedDraftCreatedAt < 0)) return bad('input.expectedDraftCreatedAt')
+      return { method, input: {
+        sessionId: str(input.sessionId, 'input.sessionId', 128), sceneId: str(input.sceneId, 'input.sceneId', 128), kind: input.kind,
+        ...(input.caseIds === undefined ? {} : { caseIds: (input.caseIds as unknown[]).map((id) => str(id, 'input.caseIds', 128)) }),
+        ...(input.datasetId === undefined ? {} : { datasetId: str(input.datasetId, 'input.datasetId', 128) }),
+        ...(input.taskIds === undefined ? {} : { taskIds: (input.taskIds as unknown[]).map((id) => str(id, 'input.taskIds', 128)) }),
+        ...(input.expectedVersion === undefined ? {} : { expectedVersion: input.expectedVersion as number }),
+        ...(input.expectedDraftCreatedAt === undefined ? {} : { expectedDraftCreatedAt: input.expectedDraftCreatedAt as number }),
+        ...(input.expectedDraftDefinition === undefined ? {} : { expectedDraftDefinition: looseDefinition(input.expectedDraftDefinition) }),
+      } }
+    }
+    case 'getRun':
+    case 'getBatch':
+    case 'cancelBatch': {
+      const key = method === 'getRun' ? 'runId' : 'batchId'
+      const input = record(root.input, ['sessionId', 'sceneId', key], 'input')
+      const identity = { sessionId: str(input.sessionId, 'input.sessionId', 128), sceneId: str(input.sceneId, 'input.sceneId', 128) }
+      return method === 'getRun'
+        ? { method, input: { ...identity, runId: str(input.runId, 'input.runId', 128) } }
+        : { method, input: { ...identity, batchId: str(input.batchId, 'input.batchId', 128) } }
+    }
     case 'listScenes': {
       const input = record(root.input, ['sessionId'], 'input')
       return { method, input: { sessionId: str(input.sessionId, 'input.sessionId', 128) } }
     }
     case 'getScene':
+    case 'listBatches':
     case 'deleteScene':
     case 'listVersions': {
       const input = record(root.input, ['sessionId', 'sceneId'], 'input')
@@ -340,8 +407,13 @@ export function parseCapabilityFactoryCommand(value: unknown): CapabilityFactory
     }
     case 'adoptDraft': {
       const input = record(root.input, [
-        'sessionId', 'sceneId', 'expectedVersion', 'expectedDraftCreatedAt', 'expectedDraftDefinition',
+        'sessionId', 'sceneId', 'scope', 'expectedVersion', 'expectedDraftCreatedAt', 'expectedDraftDefinition', 'testedBatchId',
       ], 'input')
+      /** 整份候选的批次不能认证局部混合版本，必须重新测试实际生效快照。 */
+      const scope = input.scope === undefined ? undefined : adoptionScope(input.scope)
+      if (scope && scope.kind !== 'all' && input.testedBatchId !== undefined) {
+        return bad('局部采纳不能使用整份草案的测试证据')
+      }
       const expectedVersion = input.expectedVersion
       if (expectedVersion !== undefined
         && (typeof expectedVersion !== 'number' || !Number.isSafeInteger(expectedVersion) || expectedVersion < 1)) {
@@ -356,6 +428,8 @@ export function parseCapabilityFactoryCommand(value: unknown): CapabilityFactory
       return { method, input: {
         sessionId: str(input.sessionId, 'input.sessionId', 128),
         sceneId: str(input.sceneId, 'input.sceneId', 128),
+        ...(scope === undefined ? {} : { scope }),
+        ...(input.testedBatchId === undefined ? {} : { testedBatchId: str(input.testedBatchId, 'input.testedBatchId', 128) }),
         ...(expectedVersion === undefined ? {} : { expectedVersion }),
         ...(expectedDraftCreatedAt === undefined ? {} : { expectedDraftCreatedAt }),
         ...(input.expectedDraftDefinition === undefined

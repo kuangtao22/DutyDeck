@@ -22,7 +22,7 @@ export interface CapabilityFactoryApprovalSnapshot {
   sceneName: string
   currentVersion: number
   changes: CapabilityFactoryApprovalChange[]
-  /** 常量 false：Agent 只能产出草案，采纳由人在工作台完成。 */
+  /** 草案保存不会直接推进生效版本。 */
   appliesImmediately: false
   note: string
 }
@@ -37,6 +37,47 @@ export interface CapabilityFactoryApprovalView {
   warnings: string[]
   /** 与接口工作台视图保持结构一致：工厂没有用例差异概念，恒为空。 */
   caseDiff: never[]
+  /** 采纳在 Agent 原有审批卡中显示具体改动和验证结果。 */
+  adoption?: CapabilityFactoryAdoptionView
+}
+
+/** 简短决策依据，与主进程采纳摘要保持同形，不引入主进程依赖。 */
+export interface CapabilityFactoryAdoptionView {
+  /** 宿主对当前版本与草案计算的实际差异。 */
+  changes: string[]
+  /** 草案作者填写的修改说明，不等同于实测收益。 */
+  rationale: string
+  /** Agent 的问题判断与预期收益单独标注，不参与验证结论。 */
+  proposal?: { problem: string; expectedBenefit: string; risk?: string }
+  benefits: string[]
+  currentProblems: string[]
+  remainingRisks: string[]
+  validation: string
+}
+
+/** 兼容旧快照；证据缺失只说明一次，不能拿空泛警告替代实际改动。 */
+function adoptionSummary(value: unknown): CapabilityFactoryAdoptionView {
+  const fallback: CapabilityFactoryAdoptionView = {
+    changes: [], rationale: '', benefits: [], currentProblems: [], remainingRisks: [],
+    validation: '未验证：此请求未附对比结果',
+  }
+  if (!isRecord(value) || typeof value.validation !== 'string' || !value.validation.trim()) return fallback
+  for (const field of ['benefits', 'currentProblems', 'remainingRisks'] as const) {
+    if (!Array.isArray(value[field]) || !value[field].every((line) => typeof line === 'string')) return fallback
+  }
+  /** 限制卡片长度，长证据保留在工厂运行详情中。 */
+  const lines = (field: 'benefits' | 'currentProblems' | 'remainingRisks'): string[] =>
+    (value[field] as string[]).map((line) => line.trim()).filter(Boolean).slice(0, 3).map((line) => line.slice(0, 240))
+  /** 新字段仅取宿主签发的快照，原始工具入参不能覆盖说明或实测结论。 */
+  const changes = Array.isArray(value.changes)
+    ? value.changes.filter((line): line is string => typeof line === 'string').slice(0, 6).map((line) => line.slice(0, 240)) : []
+  const proposal = isRecord(value.proposal) && typeof value.proposal.problem === 'string'
+    && typeof value.proposal.expectedBenefit === 'string'
+    ? { problem: value.proposal.problem.slice(0, 240), expectedBenefit: value.proposal.expectedBenefit.slice(0, 240),
+      ...(typeof value.proposal.risk === 'string' ? { risk: value.proposal.risk.slice(0, 240) } : {}) } : undefined
+  return { changes, rationale: typeof value.rationale === 'string' ? value.rationale.slice(0, 240) : '',
+    ...(proposal ? { proposal } : {}),
+    benefits: lines('benefits'), currentProblems: lines('currentProblems'), remainingRisks: lines('remainingRisks'), validation: value.validation.slice(0, 320) }
 }
 
 /** 判断未知值是否为普通对象。 */
@@ -74,6 +115,18 @@ export function describeCapabilityFactoryApproval(
   toolName: string,
   toolInput: Record<string, unknown>,
 ): CapabilityFactoryApprovalView | null {
+  if (toolName === 'factory_apply_operation') {
+    /** 仅展示宿主签发的操作摘要，不从模型原始入参推测影响。 */
+    const value = toolInput.approval
+    if (!isRecord(value) || value.kind !== 'operation' || typeof value.title !== 'string'
+      || !Array.isArray(value.lines) || !value.lines.every((line) => typeof line === 'string')
+      || typeof value.destructive !== 'boolean' || typeof value.appliesImmediately !== 'boolean') return null
+    return { kind: 'capability-factory-draft', title: value.title, lines: value.lines,
+      files: [], steps: [], caseDiff: [],
+      ...(value.operation === 'adoptDraft' ? { adoption: adoptionSummary(value.adoption) } : {}),
+      warnings: value.destructive ? ['此操作会删除或替换当前内容，请核对上方目标与影响。'] : [],
+    }
+  }
   if (toolName === 'factory_apply_stub') return describeStubApproval(toolInput)
   if (toolName !== 'factory_apply_draft') return null
   const snap = snapshot(toolInput.approval)
@@ -86,7 +139,7 @@ export function describeCapabilityFactoryApproval(
     ...snap.changes.map((item) => `· ${item.detail}`),
   ]
   // 这句必须常驻：审批卡是"批准写草案"，不是"批准生效"
-  lines.push('本次只写入草案，不会改变当前生效的定义；采纳需在工作台由人完成。')
+  lines.push('本次只写入草案，不会改变当前生效的定义；采纳是独立操作，可在工作台执行或委托 Agent 处理。')
 
   return {
     kind: 'capability-factory-draft',

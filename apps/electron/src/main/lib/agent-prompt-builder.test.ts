@@ -53,9 +53,14 @@ test('Given 编排工厂可用 When 构建系统提示词 Then 注入不变量�
   /** 详细流程交给 Skill：长文与例子不占用每次会话的固定成本。 */
   expect(prompt).toContain('capability-factory-scene-design')
   expect(prompt).toContain('先加载并遵循')
-  /** 权限边界：草案不生效，采纳是人做的事。 */
-  expect(prompt).toContain('你负责设计与改草案')
+  /** Agent 能代操作，修改仍需要通过宿主提供的快照与权限校验。 */
+  expect(prompt).toContain('代为操作')
+  expect(prompt).toContain('factory_prepare_operation')
+  expect(prompt).toContain('factory_run_batch')
   expect(prompt).toContain('草案不生效')
+  expect(prompt).toContain('采纳始终需要用户在 Agent 原有审批卡确认')
+  expect(prompt).toContain('bypassPermissions')
+  expect(prompt).toContain('不能放宽标准制造改善')
   /** 不要把桩当成为跑通而绑的东西。 */
   expect(prompt).toContain('不要为了"让整条链跑通"去绑虚拟接入')
   /** 常驻成本要低：详细流程（含反例）不在系统提示里重复一遍。 */

@@ -1,4 +1,4 @@
-/** 当前会话负责提出草案；工厂负责用同一批任务验证、对比，再由人采纳。 */
+/** 当前会话与工厂共享持久批次和可核验的采纳依据。 */
 import * as React from 'react'
 import { diffSceneDefinition } from '@proma/shared'
 import type { CapabilityRun, CapabilitySavedTask, CapabilityScene } from '@proma/shared'
@@ -7,7 +7,10 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { CapabilityFactoryRunResult } from './CapabilityFactoryRunResult'
 import { describeReviewStatus, formatDuration } from './capability-factory-run-view'
-import { canAdoptOptimization, compareOptimizationPair, groupOptimizationRuns, isAdoptableOptimizationBatch, isPromptOnlyOptimization, optimizationKey, runOptimizationBatch, sceneStandardsKey, type OptimizationPair } from './capability-factory-optimization'
+import { canAdoptOptimization, compareOptimizationPair, groupOptimizationRuns, isPromptOnlyOptimization, optimizationKey, sceneStandardsKey, type OptimizationPair } from './capability-factory-optimization'
+
+import { useCapabilityFactoryBatches } from './useCapabilityFactoryBatches'
+import { CapabilityFactoryBatchHistory } from './CapabilityFactoryBatchHistory'
 
 /** 任务摘要只用于选择，运行始终使用保存的原始内容。 */
 function taskLabel(task: Pick<CapabilitySavedTask, 'input'>): string {
@@ -23,7 +26,7 @@ function PairResult({ pair, onInspect }: { pair: OptimizationPair; onInspect: (r
     <section className="space-y-2 rounded-md border border-border/60 p-3" aria-label="任务对比结果">
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
         <span className="min-w-0 truncate text-muted-foreground">{new Date(baseline.startedAt).toLocaleString('zh-CN', { hour12: false })} · v{baseline.sceneVersion}</span>
-        <span className="shrink-0">{comparison?.comparable ? `修复 ${comparison.fixed.length} · 退化 ${comparison.regressed.length}` : candidate ? '暂不能判断' : '候选运行中'}</span>
+        <span className="shrink-0">{comparison?.comparable ? `修复 ${comparison.fixed.length} · 退化 ${comparison.regressed.length}` : candidate ? '暂不能判断' : '候选尚未完成'}</span>
       </div>
       <p className="break-words text-[11px] leading-5 text-muted-foreground">{taskLabel(baseline)}</p>
       <div className="grid grid-cols-2 gap-3 text-xs">
@@ -65,28 +68,50 @@ export function CapabilityFactoryOptimizationSection({ sessionId, scene, onScene
   const [tasks, setTasks] = React.useState<CapabilitySavedTask[] | null>(null)
   const [selected, setSelected] = React.useState<string[]>([])
   /** 显式配对记录可由历史恢复，不猜测两个任意运行的关联。 */
-  const [pairs, setPairs] = React.useState<OptimizationPair[]>([])
-  /** 只有当前页面完成的整批对比才可采纳，历史结果用于阅读而不自动背书。 */
-  const [completedBatchIds, setCompletedBatchIds] = React.useState<string[] | null>(null)
-  const [busy, setBusy] = React.useState(false)
+  const [legacyPairs, setLegacyPairs] = React.useState<OptimizationPair[]>([])
+  /** 已验证批次由主进程保存，Agent 发起的对比也能直接读取。 */
+  const batchState = useCapabilityFactoryBatches(sessionId, scene.id, 'comparison')
+  const pairs = batchState.batch ? groupOptimizationRuns(batchState.runs) : legacyPairs
+  const [adopting, setAdopting] = React.useState(false)
+  const busy = batchState.busy || adopting
   const [error, setError] = React.useState<string | null>(null)
   const [retry, setRetry] = React.useState(0)
   const [inspected, setInspected] = React.useState<CapabilityRun | null>(null)
-  /** 页面离开后不再排下一次模型调用，已发出的结果仍由后端保存。 */
+  /** 页面离开后丢弃 UI 回传，批次生命周期由后端管理。 */
   const active = React.useRef(true)
+  const scope = React.useMemo(() => ({}), [sessionId, scene.id])
+  const currentScope = React.useRef(scope)
+  currentScope.current = scope
   const operationLock = React.useRef(false)
   React.useEffect(() => {
     active.current = true
     /** 独立读请求取消标记，防重试后的旧回执覆盖新列表。 */
     let cancelled = false
-    void Promise.all([
-      window.electronAPI.capabilityFactory.invoke('listTasks', { sessionId, sceneId: scene.id }),
-      window.electronAPI.capabilityFactory.invoke('listRuns', { sessionId, sceneId: scene.id, kind: 'full', limit: 20 }),
-    ]).then(([saved, history]) => {
-      if (cancelled || !active.current) return
-      setTasks(saved); setSelected(saved[0] ? [saved[0].id] : []); setPairs(groupOptimizationRuns(history)); setCompletedBatchIds(null); setError(null)
-    }).catch((cause: unknown) => { if (!cancelled && active.current) { setTasks([]); setError(cause instanceof Error ? cause.message : String(cause)) } })
-    return () => { cancelled = true; active.current = false }
+    let generation = 0
+    /** 新任务通过事件进入选择列表；刷新保留用户已勾选的输入。 */
+    const refresh = async (initial = false): Promise<void> => {
+      const ticket = ++generation
+      try {
+        const [saved, history] = await Promise.all([
+          window.electronAPI.capabilityFactory.invoke('listTasks', { sessionId, sceneId: scene.id }),
+          window.electronAPI.capabilityFactory.invoke('listRuns', { sessionId, sceneId: scene.id, kind: 'full', limit: 20 }),
+        ])
+        if (cancelled || !active.current || ticket !== generation) return
+        setTasks(saved)
+        setSelected((previous) => initial ? (saved[0] ? [saved[0].id] : []) : previous.filter((id) => saved.some((task) => task.id === id)))
+        setLegacyPairs(groupOptimizationRuns(history)); setError(null)
+      } catch (cause) {
+        if (!cancelled && active.current && ticket === generation) { setTasks([]); setError(cause instanceof Error ? cause.message : String(cause)) }
+      }
+    }
+    void refresh(true)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const unsubscribe = window.electronAPI.capabilityFactory.onChanged?.((event) => {
+      if (event.sessionId !== sessionId || (event.sceneId && event.sceneId !== scene.id)) return
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(() => { void refresh() }, 80)
+    })
+    return () => { cancelled = true; active.current = false; if (timer !== undefined) clearTimeout(timer); unsubscribe?.() }
   }, [sessionId, scene.id, retry])
 
   /** 当前草案改动摘要；标准变化独立提示，不能靠更宽松口径获取提升。 */
@@ -97,49 +122,30 @@ export function CapabilityFactoryOptimizationSection({ sessionId, scene, onScene
   const modelsChanged = Boolean(draft && optimizationKey(scene.definition.modelSlots) !== optimizationKey(draft.definition.modelSlots))
   /** 结构变化需要走流程设计验证，不能混进提示词对比。 */
   const promptOnly = Boolean(draft && isPromptOnlyOptimization(scene.definition, draft.definition))
-  /** 只有当前页面刚完成的整批任务都通过，才提供就地采纳；一条好结果不能掩盖同批失败。 */
-  const completedPairs = completedBatchIds
-    ? pairs.filter((pair) => completedBatchIds.includes(pair.id))
-    : []
-  const batchComparisons = completedPairs.flatMap((pair) => pair.candidate
-    ? [compareOptimizationPair(pair.baseline, pair.candidate)] : [])
-  const batchCandidatesMatch = completedPairs.length > 0
-    && completedPairs.length === completedBatchIds?.length
-    && completedPairs.every((pair) => pair.candidate && canAdoptOptimization(pair.candidate, scene))
-  const adoptable = batchCandidatesMatch && isAdoptableOptimizationBatch(batchComparisons)
-    ? completedPairs.find((pair) => pair.candidate)?.candidate
-    : undefined
+  /** 持久证据仍需匹配当前草案；最终采纳时由主进程重新检查所有记录。 */
+  const adoptable = batchState.batch?.adoptable && batchState.batch.status === 'succeeded'
+    && pairs.length === batchState.batch.items.length
+    && pairs.every((pair) => pair.candidate && canAdoptOptimization(pair.candidate, scene))
 
-  /** 冻结点击时的版本及任务，按两版顺序试跑；不自动修改或采纳。 */
+  /** 冻结本次选择，后端顺序运行并保存批次，关闭页面不丢已完成记录。 */
   const start = async (): Promise<void> => {
-    if (operationLock.current) return
-    operationLock.current = true; setBusy(true); setError(null); setCompletedBatchIds(null)
-    const comparisonIds = new Set<string>()
-    try {
-      await runOptimizationBatch({ api: window.electronAPI.capabilityFactory, sessionId, scene,
-        tasks: (tasks ?? []).filter((task) => selected.includes(task.id)), isActive: () => active.current,
-        onPair: (pair) => {
-          comparisonIds.add(pair.id)
-          setPairs((previous) => [pair, ...previous.filter((item) => item.id !== pair.id)])
-        },
-      })
-      if (active.current) setCompletedBatchIds([...comparisonIds])
-    } catch (cause) { if (active.current) setError(cause instanceof Error ? cause.message : String(cause)) }
-    finally { operationLock.current = false; if (active.current) setBusy(false) }
+    if (!draft || busy) return
+    await batchState.start({ taskIds: selected, expectedVersion: scene.currentVersion,
+      expectedDraftCreatedAt: draft.createdAt, expectedDraftDefinition: draft.definition })
   }
 
   /** 采纳仅由点击发起；将被测试快照送后端复核，防新草案冒用旧结果。 */
   const adopt = async (): Promise<void> => {
-    if (!adoptable || operationLock.current) return
-    operationLock.current = true; setBusy(true); setError(null)
+    if (!adoptable || !batchState.batch || operationLock.current) return
+    operationLock.current = true; setAdopting(true); setError(null)
     try {
       await window.electronAPI.capabilityFactory.invoke('adoptDraft', { sessionId, sceneId: scene.id,
-        expectedVersion: scene.currentVersion, expectedDraftCreatedAt: adoptable.draftCreatedAt,
-        expectedDraftDefinition: adoptable.definitionSnapshot,
+        expectedVersion: scene.currentVersion, expectedDraftCreatedAt: batchState.batch.snapshot.draftCreatedAt,
+        expectedDraftDefinition: batchState.batch.snapshot.draftDefinition, testedBatchId: batchState.batch.id,
       })
-      if (active.current) await onSceneChanged?.()
-    } catch (cause) { if (active.current) setError(cause instanceof Error ? cause.message : String(cause)) }
-    finally { operationLock.current = false; if (active.current) setBusy(false) }
+      if (active.current && currentScope.current === scope) await onSceneChanged?.()
+    } catch (cause) { if (active.current && currentScope.current === scope) setError(cause instanceof Error ? cause.message : String(cause)) }
+    finally { if (active.current && currentScope.current === scope) { operationLock.current = false; setAdopting(false) } }
   }
 
   return (
@@ -157,6 +163,7 @@ export function CapabilityFactoryOptimizationSection({ sessionId, scene, onScene
           {draft && !promptOnly && !standardsChanged && !modelsChanged ? <p role="alert" className="text-xs leading-6 text-amber-600 dark:text-amber-400">草案修改了流程或输入输出契约，不能作为提示词优化比较；请先完成流程设计验证。</p> : null}
         </section>
       ) : <section className="rounded-md border border-dashed border-border/70 px-3 py-4" aria-label="暂无候选草案"><p className="text-xs font-medium">还没有候选草案</p><p className="mt-1 text-[11px] leading-5 text-muted-foreground">在当前会话让 Agent 根据这轮结果提出提示词草案，保存后会出现在这里。</p></section>}
+      {batchState.error ? <p role="alert" className="text-xs text-destructive">{batchState.error}</p> : null}
       {error ? <div role="alert" className="space-y-2 text-xs text-destructive"><p>{error}</p><Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setRetry((value) => value + 1)}>重新读取</Button></div> : null}
       {tasks === null ? <p className="text-xs text-muted-foreground">正在读取保存任务…</p> : tasks.length === 0 ? <p className="text-xs text-muted-foreground">暂无保存任务，先在本轮提交一份测试内容。</p> : (
         <section className="space-y-2 rounded-md border border-border/60 p-3" aria-label="对比任务">
@@ -165,7 +172,6 @@ export function CapabilityFactoryOptimizationSection({ sessionId, scene, onScene
           <div className="max-h-36 space-y-1 overflow-y-auto">
             {tasks.map((task) => <label key={task.id} className="flex items-start gap-2 rounded-sm px-1 py-1.5 text-[11px] leading-5 hover:bg-muted/40">
               <input type="checkbox" className="mt-1 accent-primary" checked={selected.includes(task.id)} disabled={busy || (!selected.includes(task.id) && selected.length >= 10)} onChange={(event) => {
-                setCompletedBatchIds(null)
                 setSelected((previous) => event.target.checked ? [...previous, task.id] : previous.filter((id) => id !== task.id))
               }} />
               <span className="min-w-0 break-words">{taskLabel(task)}</span>
@@ -174,9 +180,11 @@ export function CapabilityFactoryOptimizationSection({ sessionId, scene, onScene
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2"><span className="text-[10px] leading-4 text-muted-foreground">最多 10 条，会调用模型并自动评审。</span><Button type="button" size="sm" disabled={busy || !draft || standardsChanged || modelsChanged || !promptOnly || !selected.length} onClick={() => { void start() }}>{busy ? '对比中…' : '开始对比'}</Button></div>
         </section>
       )}
+      <CapabilityFactoryBatchHistory batches={batchState.batches} selectedId={batchState.batch?.id} running={batchState.running} onSelect={batchState.select} onCancel={batchState.cancel} />
+      {batchState.batch?.error ? <p role="alert" className="text-xs text-destructive">{batchState.batch.error}</p> : null}
       <section className="space-y-2" aria-label="对比结果">
         <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-medium">对比结果</p>{adoptable ? <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => { void adopt() }}>采纳已测试草案</Button> : null}</div>
-        {adoptable ? <p className="text-[11px] leading-5 text-muted-foreground">当前草案已通过选定任务的对比；采纳前仍请检查各条结果。</p> : null}
+        {adoptable ? <p className="text-[11px] leading-5 text-muted-foreground">当前草案已通过本批全部任务的对比；采纳前仍请检查各条结果。</p> : null}
         {pairs.length ? <div className="space-y-2">{pairs.map((pair) => <PairResult key={pair.id} pair={pair} onInspect={setInspected} />)}</div> : <p className="rounded-md border border-dashed border-border/70 px-3 py-4 text-[11px] text-muted-foreground">尚无对比结果。选择测试输入后开始对比。</p>}
       </section>
       <Dialog open={inspected !== null} onOpenChange={(open) => { if (!open) setInspected(null) }}>

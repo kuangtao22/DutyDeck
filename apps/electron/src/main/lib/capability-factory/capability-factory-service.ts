@@ -8,7 +8,7 @@
  * 设计约束（对应 data-model 文档）：
  * - **改动必须显式生效**：保存草案不改当前定义；只有 `adoptDraft` 才推进版本。
  * - **回滚不删历史**：旧版本永远留在 versions 里，可反复回滚。
- * - **导出是人工动作**：本服务不判断调用者是谁，权限由上层（IPC / Agent facade）把关。
+ * - **导出是独立操作**：本服务不判断调用者是谁，权限由上层（IPC / Agent facade）把关。
  */
 import { randomUUID } from 'node:crypto'
 import {
@@ -21,6 +21,7 @@ import {
   type CapabilityDelivery,
   type CapabilityDataset,
   type CapabilityDraftExpectedState,
+  type CapabilityDraftAdoptionScope,
   type CapabilityEvaluation,
   type CapabilityPackage,
   type CapabilityRun,
@@ -33,6 +34,7 @@ import {
   type CapabilityStubSource,
 } from '@proma/shared'
 import { CapabilityFactoryStore } from './capability-factory-store'
+import { resolveCapabilityDraftAdoption } from './capability-factory-draft-adoption'
 
 /** 保留既有服务导出，所有调用方共享同一比较规则。 */
 export { stableCapabilityValueKey } from '@proma/shared'
@@ -42,6 +44,8 @@ export type CapabilitySceneChangeSource = 'agent' | 'human'
 
 /** 采纳乐观锁：用户只能采纳刚刚评测并确认的那份草案。 */
 export interface AdoptCapabilityDraftOptions {
+  /** 明确本次审核的块；省略时兼容整份采纳。 */
+  scope?: CapabilityDraftAdoptionScope
   expectedVersion?: number
   expectedDraftCreatedAt?: number
   expectedDraftDefinition?: CapabilitySceneDefinition
@@ -59,6 +63,141 @@ export class CapabilityFactoryError extends Error {
   constructor(readonly code: string, message: string) {
     super(message)
     this.name = 'CapabilityFactoryError'
+  }
+}
+
+/** 草案结构白名单；完整可运行性仍由 runner / 导出器的严格 parser 判断。 */
+const DRAFT_DEFINITION_KEYS = [
+  'name', 'description', 'inputs', 'outputs', 'steps', 'capabilities', 'modelSlots', 'acceptance', 'stepAcceptances',
+] as const
+
+/** 不同步骤类型允许的字段，保持与 capability-runner 的严格 parser 一致。 */
+const DRAFT_STEP_KEYS = {
+  llm: ['type', 'id', 'title', 'prompt', 'modelSlot', 'inputs', 'maxAttempts'],
+  extract: ['type', 'id', 'title', 'prompt', 'modelSlot', 'inputs', 'maxAttempts', 'judgeFields', 'strictness'],
+  tool: ['type', 'id', 'title', 'capabilityId', 'bindings', 'maxAttempts'],
+  map: ['type', 'id', 'title', 'over', 'body', 'failurePolicy', 'concurrency', 'inputs', 'maxAttempts'],
+} as const
+
+/** 将运行时输入收窄为对象；错误路径直接面向草案编辑者。 */
+function draftRecord(value: unknown, where: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new CapabilityFactoryError('DRAFT_STRUCTURE_INVALID', `草案结构不合法：${where} 必须是对象`)
+  }
+  return value as Record<string, unknown>
+}
+
+/** 拒绝白名单以外的字段，避免 Agent 的拼写错误直到运行时才暴露。 */
+function assertDraftKeys(value: Record<string, unknown>, where: string, allowed: readonly string[]): void {
+  const unknownKeys = Object.keys(value).filter((key) => !allowed.includes(key))
+  if (unknownKeys.length > 0) {
+    throw new CapabilityFactoryError(
+      'DRAFT_STRUCTURE_INVALID',
+      `草案结构不合法：${where} 含未知字段：${unknownKeys.join(', ')}`,
+    )
+  }
+}
+
+/** 校验字段契约的递归结构；允许编辑中的空值，禁止未知语义。 */
+function validateDraftField(value: unknown, where: string): void {
+  const field = draftRecord(value, where)
+  assertDraftKeys(field, where, ['name', 'type', 'description', 'required', 'nullable', 'enum', 'items', 'fields'])
+  if (field.items !== undefined) validateDraftField(field.items, `${where}.items`)
+  if (field.fields !== undefined) validateDraftArray(field.fields, `${where}.fields`, validateDraftField)
+}
+
+/** 校验数组及其条目，防止对象被误当成列表后静默写盘。 */
+function validateDraftArray(
+  value: unknown,
+  where: string,
+  validateItem: (item: unknown, itemWhere: string) => void,
+): void {
+  if (!Array.isArray(value)) {
+    throw new CapabilityFactoryError('DRAFT_STRUCTURE_INVALID', `草案结构不合法：${where} 必须是数组`)
+  }
+  value.forEach((item, index) => validateItem(item, `${where}[${index}]`))
+}
+
+/** 校验步骤输入来源结构。 */
+function validateDraftInputSource(value: unknown, where: string): void {
+  const source = draftRecord(value, where)
+  const sourceType = source.from
+  const allowed = sourceType === 'workflow-input' ? ['from', 'field']
+    : sourceType === 'step-output' ? ['from', 'stepId', 'path']
+      : sourceType === 'literal' ? ['from', 'value'] : ['from']
+  assertDraftKeys(source, where, allowed)
+}
+
+/** 校验动态输入绑定表中的每个来源。 */
+function validateDraftInputs(value: unknown, where: string): void {
+  const inputs = draftRecord(value, where)
+  for (const [name, source] of Object.entries(inputs)) validateDraftInputSource(source, `${where}.${name}`)
+}
+
+/** 校验步骤及 map 内嵌步骤的字段白名单。 */
+function validateDraftStep(value: unknown, where: string): void {
+  const step = draftRecord(value, where)
+  const type = step.type
+  if (type !== 'llm' && type !== 'extract' && type !== 'tool' && type !== 'map') {
+    throw new CapabilityFactoryError('DRAFT_STRUCTURE_INVALID', `草案结构不合法：${where}.type 必须是 llm / extract / tool / map`)
+  }
+  assertDraftKeys(step, where, DRAFT_STEP_KEYS[type])
+  if (step.inputs !== undefined) validateDraftInputs(step.inputs, `${where}.inputs`)
+  if (step.bindings !== undefined) validateDraftInputs(step.bindings, `${where}.bindings`)
+  if (step.over !== undefined) validateDraftInputSource(step.over, `${where}.over`)
+  if (step.judgeFields !== undefined) validateDraftArray(step.judgeFields, `${where}.judgeFields`, validateDraftField)
+  if (step.body !== undefined) validateDraftArray(step.body, `${where}.body`, validateDraftStep)
+}
+
+/** 校验一组评审配置的已知字段。 */
+function validateDraftAcceptance(value: unknown, where: string): void {
+  const acceptance = draftRecord(value, where)
+  assertDraftKeys(acceptance, where, ['criteria', 'judgePrompt', 'metrics'])
+  if (acceptance.criteria !== undefined) validateDraftArray(acceptance.criteria, `${where}.criteria`, () => {})
+  if (acceptance.metrics !== undefined) {
+    validateDraftArray(acceptance.metrics, `${where}.metrics`, (item, itemWhere) => {
+      assertDraftKeys(draftRecord(item, itemWhere), itemWhere, ['name', 'weight', 'direction'])
+    })
+  }
+}
+
+/**
+ * 保存前的草案结构预检。
+ *
+ * 只拒绝未知字段和错误容器类型，允许空步骤、空判据等编辑中状态；运行与导出继续使用严格 parser。
+ */
+export function validateCapabilitySceneDraft(definition: unknown): void {
+  const draft = draftRecord(definition, 'definition')
+  assertDraftKeys(draft, 'definition', DRAFT_DEFINITION_KEYS)
+  if (draft.inputs !== undefined) validateDraftArray(draft.inputs, 'inputs', validateDraftField)
+  if (draft.outputs !== undefined) {
+    validateDraftArray(draft.outputs, 'outputs', (item, where) => {
+      const output = draftRecord(item, where)
+      assertDraftKeys(output, where, ['name', 'from', 'shape', 'fields', 'description'])
+      if (output.from !== undefined) assertDraftKeys(draftRecord(output.from, `${where}.from`), `${where}.from`, ['stepId', 'path'])
+      if (output.fields !== undefined) validateDraftArray(output.fields, `${where}.fields`, validateDraftField)
+    })
+  }
+  if (draft.steps !== undefined) validateDraftArray(draft.steps, 'steps', validateDraftStep)
+  if (draft.capabilities !== undefined) {
+    validateDraftArray(draft.capabilities, 'capabilities', (item, where) => {
+      const capability = draftRecord(item, where)
+      assertDraftKeys(capability, where, ['id', 'description', 'inputSchema', 'outputSchema', 'sideEffect'])
+      if (capability.inputSchema !== undefined) validateDraftArray(capability.inputSchema, `${where}.inputSchema`, validateDraftField)
+      if (capability.outputSchema !== undefined) validateDraftArray(capability.outputSchema, `${where}.outputSchema`, validateDraftField)
+    })
+  }
+  if (draft.modelSlots !== undefined) {
+    validateDraftArray(draft.modelSlots, 'modelSlots', (item, where) => {
+      assertDraftKeys(draftRecord(item, where), where, ['id', 'model', 'temperature', 'maxTokens', 'description'])
+    })
+  }
+  if (draft.acceptance !== undefined) validateDraftAcceptance(draft.acceptance, 'acceptance')
+  if (draft.stepAcceptances !== undefined) {
+    const stepAcceptances = draftRecord(draft.stepAcceptances, 'stepAcceptances')
+    for (const [stepId, acceptance] of Object.entries(stepAcceptances)) {
+      validateDraftAcceptance(acceptance, `stepAcceptances.${stepId}`)
+    }
   }
 }
 
@@ -102,7 +241,7 @@ export class CapabilityFactoryService {
   }
 
   /** 新建场景：建立 v1，定义是空白模板。 */
-  createScene(name: string): CapabilityScene {
+  createScene(name: string, source: CapabilitySceneChangeSource = 'human'): CapabilityScene {
     const trimmed = name.trim()
     if (trimmed.length === 0) {
       throw new CapabilityFactoryError('SCENE_NAME_REQUIRED', '场景名称不能为空')
@@ -120,7 +259,7 @@ export class CapabilityFactoryService {
     // 首个版本也要进历史，否则"回滚到 v1"没有目标
     this.store.appendVersion({
       sceneId: scene.id, version: 1, definition: scene.definition,
-      source: 'human', note: '新建场景', createdAt: timestamp,
+      source, note: '新建场景', createdAt: timestamp,
     })
     return scene
   }
@@ -142,6 +281,7 @@ export class CapabilityFactoryService {
     if (index < 0) throw new CapabilityFactoryError('SCENE_NOT_FOUND', `场景不存在：${sceneId}`)
     const scene = scenes[index] as CapabilityScene
     this.assertDraftExpectedState(scene, expectedState)
+    validateCapabilitySceneDraft(definition)
     const updated: CapabilityScene = {
       ...scene,
       draft: { definition, source, note, createdAt: this.now() },
@@ -166,7 +306,7 @@ export class CapabilityFactoryService {
   }
 
   /**
-   * 采纳草案：推进版本号、把当前定义换成草案内容、清空草案。
+   * 采纳草案：只合入已审核范围并推进完整版本，其余改动继续作为草案。
    * 这是**唯一会改变当前生效定义的入口**（回滚除外）。
    */
   adoptDraft(
@@ -189,17 +329,23 @@ export class CapabilityFactoryService {
       && stableCapabilityValueKey(options.expectedDraftDefinition) !== stableCapabilityValueKey(scene.draft.definition)) {
       throw new CapabilityFactoryError('DRAFT_CHANGED', '候选草案已变化，请重新运行优化对比后再采纳')
     }
-
+    validateCapabilitySceneDraft(scene.draft.definition)
+    /** 预览与 Agent 审批共用同一合并规则，确保批准内容就是落盘内容。 */
+    const adoption = resolveCapabilityDraftAdoption(scene, options.scope)
     const timestamp = this.now()
     const version: CapabilitySceneVersion = {
-      sceneId, version: scene.currentVersion + 1, definition: scene.draft.definition,
-      source: scene.draft.source, note: scene.draft.note, createdAt: timestamp,
+      sceneId, version: scene.currentVersion + 1, definition: adoption.definition,
+      source: scene.draft.source, note: adoption.note, createdAt: timestamp,
     }
     const updated: CapabilityScene = {
       ...scene,
       definition: version.definition,
       currentVersion: version.version,
-      draft: null,
+      draft: adoption.remainingDefinition === null ? null : {
+        ...scene.draft, definition: adoption.remainingDefinition,
+        /** 即使同毫秒连续采纳，旧审批与整份候选证据也必须失效。 */
+        createdAt: Math.max(timestamp, scene.draft.createdAt + 1),
+      },
       updatedAt: timestamp,
     }
     scenes[index] = updated
@@ -317,6 +463,22 @@ export class CapabilityFactoryService {
   }
 
   /**
+   * 按请求顺序批量读取运行；同一场景只扫描一次 JSONL。
+   * 重复 ID 会重复返回同一条首次匹配记录，与逐次调用 getRun 的语义一致。
+   */
+  getRunsByIds(sceneId: string, runIds: readonly string[]): CapabilityRun[] {
+    if (runIds.length === 0) return []
+    const firstById = new Map<string, CapabilityRun>()
+    for (const run of this.store.listRuns(sceneId)) {
+      if (!firstById.has(run.id)) firstById.set(run.id, run)
+    }
+    return runIds.flatMap((runId) => {
+      const run = firstById.get(runId)
+      return run ? [run] : []
+    })
+  }
+
+  /**
    * 保存一次整链提交输入；相同内容只保留一条，并把最近提交时间向前更新。
    * 单步试跑与批量评测不调用这里，因为它们的输入不是用户下次要直接执行的整链任务。
    */
@@ -371,7 +533,11 @@ export class CapabilityFactoryService {
    * 如果只改当前定义不发版本，就会出现"同一个 v4 对应两个不同的名称"——版本号不再唯一指向一份定义。
    * 代价是重命名会占用一个版本号（历史里会看到一条「重命名」记录），这个代价我选择接受。
    */
-  renameScene(sceneId: string, name: string): { scene: CapabilityScene; version: CapabilitySceneVersion | null } {
+  renameScene(
+    sceneId: string,
+    name: string,
+    source: CapabilitySceneChangeSource = 'human',
+  ): { scene: CapabilityScene; version: CapabilitySceneVersion | null } {
     const trimmed = name.trim()
     if (trimmed.length === 0) {
       throw new CapabilityFactoryError('SCENE_NAME_REQUIRED', '场景名称不能为空')
@@ -387,7 +553,7 @@ export class CapabilityFactoryService {
     const definition: CapabilitySceneDefinition = { ...scene.definition, name: trimmed }
     const version: CapabilitySceneVersion = {
       sceneId, version: scene.currentVersion + 1, definition,
-      source: 'human', note: `重命名：${scene.definition.name} → ${trimmed}`, createdAt: timestamp,
+      source, note: `重命名：${scene.definition.name} → ${trimmed}`, createdAt: timestamp,
     }
     const updated: CapabilityScene = {
       ...scene, definition, currentVersion: version.version, updatedAt: timestamp,
@@ -418,7 +584,11 @@ export class CapabilityFactoryService {
    * 回滚到指定版本：把该版本的快照重新提升为当前，并**追加**一个新版本号。
    * 刻意不把 currentVersion 改回旧号 —— 版本号只增不减，否则"v3"会指向两份不同的定义。
    */
-  rollback(sceneId: string, targetVersion: number): { scene: CapabilityScene; version: CapabilitySceneVersion } {
+  rollback(
+    sceneId: string,
+    targetVersion: number,
+    source: CapabilitySceneChangeSource = 'human',
+  ): { scene: CapabilityScene; version: CapabilitySceneVersion } {
     const scenes = this.store.listScenes()
     const index = scenes.findIndex((scene) => scene.id === sceneId)
     if (index < 0) throw new CapabilityFactoryError('SCENE_NOT_FOUND', `场景不存在：${sceneId}`)
@@ -429,7 +599,7 @@ export class CapabilityFactoryService {
     const timestamp = this.now()
     const version: CapabilitySceneVersion = {
       sceneId, version: scene.currentVersion + 1, definition: target.definition,
-      source: 'human', note: `回滚到 v${targetVersion}`, createdAt: timestamp,
+      source, note: `回滚到 v${targetVersion}`, createdAt: timestamp,
     }
     const updated: CapabilityScene = {
       ...scene, definition: target.definition, currentVersion: version.version,
