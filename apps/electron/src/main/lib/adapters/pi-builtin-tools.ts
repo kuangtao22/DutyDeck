@@ -1659,9 +1659,9 @@ export function buildServerOpsTools(sdk: PiSdk, facade: ServerOpsAgentFacade): T
   const tools = [
     sdk.defineTool({
       name: 'server_list',
-      label: '列出已授权服务器',
-      description: 'List the single server currently authorized for this Agent session, including public SSH identity and connection phase.',
-      promptSnippet: 'server_list: inspect the one server explicitly authorized by the user for this session.',
+      label: '列出已连接服务器',
+      description: 'List saved servers connected when this Agent run began, including public SSH identity and connection phase.',
+      promptSnippet: 'server_list: inspect available saved servers with active connections.',
       parameters: Type.Object({}),
       async execute() {
         return jsonToolResult({ hosts: facade.list() })
@@ -1670,8 +1670,8 @@ export function buildServerOpsTools(sdk: PiSdk, facade: ServerOpsAgentFacade): T
     sdk.defineTool({
       name: 'server_status',
       label: '查看服务器连接状态',
-      description: 'Read the public SSH connection state for the currently authorized server.',
-      promptSnippet: 'server_status: inspect the authorized server connection state without exposing connection secrets.',
+      description: 'Read the public SSH connection state for an already connected saved server.',
+      promptSnippet: 'server_status: inspect the saved server connection state without exposing connection secrets.',
       parameters: Type.Object({ hostId: Type.String({ description: 'Server ID returned by server_list.' }) }),
       async execute(_toolCallId, params) {
         const args = params as { hostId: string }
@@ -1680,9 +1680,9 @@ export function buildServerOpsTools(sdk: PiSdk, facade: ServerOpsAgentFacade): T
     }),
     sdk.defineTool({
       name: 'server_connect',
-      label: '连接服务器',
-      description: 'Connect to the currently authorized server using credentials already saved by DutyDeck. Unknown host keys must be confirmed by the user in the Server Ops UI.',
-      promptSnippet: 'server_connect: connect using saved credentials; ask the user to confirm an unknown fingerprint in Server Ops UI.',
+      label: '检查服务器连接',
+      description: 'Verify an existing saved server connection. This tool does not establish or reconnect SSH; connect and confirm host keys in the Server Ops UI first.',
+      promptSnippet: 'server_connect: inspect an existing connection; establish SSH connections in the Server Ops UI.',
       parameters: Type.Object({ hostId: Type.String({ description: 'Server ID returned by server_list.' }) }),
       async execute(_toolCallId, params) {
         const args = params as { hostId: string }
@@ -1692,7 +1692,7 @@ export function buildServerOpsTools(sdk: PiSdk, facade: ServerOpsAgentFacade): T
     sdk.defineTool({
       name: 'server_exec',
       label: '执行服务器命令',
-      description: 'Execute one bounded non-interactive command on the connected authorized server. Read-only diagnostics may run automatically; all other commands require per-use approval.',
+      description: 'Execute one bounded non-interactive command on the connected saved server. Read-only diagnostics may run automatically; all other commands require per-use approval.',
       promptSnippet: 'server_exec: prefer narrow read-only diagnostics; mutating or unknown commands require explicit per-use approval.',
       parameters: Type.Object({
         hostId: Type.String({ description: 'Server ID returned by server_list.' }),
@@ -1707,8 +1707,8 @@ export function buildServerOpsTools(sdk: PiSdk, facade: ServerOpsAgentFacade): T
     sdk.defineTool({
       name: 'server_disconnect',
       label: '断开服务器',
-      description: 'Disconnect the currently authorized server and immediately revoke this Agent session authorization.',
-      promptSnippet: 'server_disconnect: disconnect the authorized server and release the session authorization.',
+      description: 'Disconnect an existing saved server connection after per-use confirmation. The current run can no longer use that connection.',
+      promptSnippet: 'server_disconnect: disconnect the saved server after per-use confirmation.',
       parameters: Type.Object({ hostId: Type.String({ description: 'Server ID returned by server_list.' }) }),
       async execute(_toolCallId, params) {
         const args = params as { hostId: string }
@@ -1718,7 +1718,7 @@ export function buildServerOpsTools(sdk: PiSdk, facade: ServerOpsAgentFacade): T
   ] as ToolDefinition[]
   if (facade.dockerResources) tools.push(sdk.defineTool({
     name: 'server_docker_resources', label: '查看 Docker 资源',
-    description: 'Read bounded containers, images, networks and volumes on the authorized SSH server local Docker daemon.',
+    description: 'Read bounded containers, images, networks and volumes on the connected saved SSH server local Docker daemon.',
     parameters: Type.Object({ hostId: Type.String() }),
     async execute(_id, params) { return jsonToolResult(await facade.dockerResources!(params as { hostId: string })) },
   }) as ToolDefinition)
@@ -1736,7 +1736,7 @@ export function buildServerOpsTools(sdk: PiSdk, facade: ServerOpsAgentFacade): T
   }) as ToolDefinition)
   if (facade.filesList) tools.push(sdk.defineTool({
     name: 'server_files_list', label: '浏览远程目录',
-    description: 'Read one bounded directory page on the authorized server. Results are limited to 64 KiB; a truncated result is not a complete directory listing.',
+    description: 'Read one bounded directory page on the connected saved server. Results are limited to 64 KiB; a truncated result is not a complete directory listing.',
     parameters: Type.Object({ hostId: Type.String(), path: Type.String({ minLength: 1, maxLength: 4096 }) }),
     async execute(_id, params) { return jsonToolResult(await facade.filesList!(params as { hostId: string; path: string })) },
   }) as ToolDefinition)
@@ -1773,13 +1773,18 @@ export async function buildPiBuiltinTools(
   ctx: PiBuiltinToolsContext,
 ): Promise<PiBuiltinToolsResult> {
   if (ctx.toolMode === 'server-ops-read' || ctx.toolMode === 'server-ops-write') {
-    /** 无授权时不构建空壳受限运行；须重新授权并发起新一轮。 */
+    /** 无有效会话服务时不构建空壳受限运行。 */
     if (!ctx.serverOpsReadFacade || (ctx.triggeredBy !== undefined && ctx.triggeredBy !== 'user')) {
-      throw new Error('运维只读模式需要当前用户会话的有效授权')
+      throw new Error('运维模式需要当前普通用户会话')
     }
     const tools = ctx.toolMode === 'server-ops-write'
       ? buildServerOpsReadWriteTools(sdk, ctx.serverOpsReadFacade)
       : buildServerOpsReadTools(sdk, ctx.serverOpsReadFacade)
+    if (ctx.toolMode === 'server-ops-write') {
+      /** 兼容运维模式复用同一会话 Facade，服务器工具不会获得额外凭据或 Shell 能力。 */
+      if (!ctx.serverOpsFacade) throw new Error('运维模式缺少服务器服务')
+      tools.push(...buildServerOpsTools(sdk, ctx.serverOpsFacade))
+    }
     return { tools, collaborationAvailable: false }
   }
   browserController.configureSession(ctx.sessionId, {
@@ -1810,7 +1815,10 @@ export async function buildPiBuiltinTools(
     }
   }
   if (ctx.serverOpsReadFacade && serverOpsSourceAllowed) {
-    tools.push(...buildServerOpsReadTools(sdk, ctx.serverOpsReadFacade))
+    // 普通用户会话也可申请数据库写入；执行确认由宿主统一处理，不依赖服务器授权。
+    tools.push(...((ctx.serverOpsReadFacade.databaseWrite || ctx.serverOpsReadFacade.redisWrite)
+      ? buildServerOpsReadWriteTools(sdk, ctx.serverOpsReadFacade)
+      : buildServerOpsReadTools(sdk, ctx.serverOpsReadFacade)))
   }
 
   if (isWebSearchEnabledForAgent()) {

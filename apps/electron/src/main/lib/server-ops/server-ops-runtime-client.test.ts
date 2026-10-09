@@ -1010,3 +1010,49 @@ describe('服务器运维 runtime client 数据写生命周期', () => {
     expect((Reflect.get(fixture.client, 'pendingDataWrites') as Map<string, unknown>).size).toBe(0)
   })
 })
+
+describe('Redis 独立消息生命周期', () => {
+  test('Given 已连接 SSH When 取消写入后收到成功回执 Then 保留成功事实并只发一次命令', async () => {
+    const fixture = createFixture()
+    await connectFixture(fixture)
+    const controller = new AbortController()
+    const pending = fixture.client.dataRedis({ sourceId: 'redis-1', hostId: 'host-1', connectionId: 'connection-1',
+      transport: 'ssh', address: '127.0.0.1', port: 6379, tlsMode: 'disabled', timeoutMs: 1_000, command: 'SET', args: ['key', 'value'] }, controller.signal)
+    await flushRuntimeClient()
+    controller.abort()
+    const dispatched = fixture.port.messages.filter((message) => message.type === 'server-ops.redis')
+    expect(dispatched).toHaveLength(1)
+    expect(fixture.port.messages.filter((message) => message.type === 'server-ops.redis-cancel')).toHaveLength(1)
+    const command = dispatched[0]!
+    if (command.type !== 'server-ops.redis') throw new Error('UNREACHABLE')
+    fixture.port.emit({ type: 'server-ops.redis-result', requestId: command.input.requestId, hostId: 'host-1', connectionId: 'connection-1',
+      result: { command: 'SET', outcome: 'completed', value: 'OK', truncated: false, durationMs: 1 } })
+    expect(await pending).toMatchObject({ outcome: 'completed' })
+    fixture.client.stop()
+  })
+  test('Given Redis 请求已分派 When utility 退出 Then unknown 且没有重发', async () => {
+    const fixture = createFixture()
+    await connectFixture(fixture)
+    const pending = fixture.client.dataRedis({ sourceId: 'redis-1', hostId: 'host-1', connectionId: 'connection-1',
+      transport: 'ssh', address: '127.0.0.1', port: 6379, tlsMode: 'disabled', timeoutMs: 1_000, command: 'INCR', args: ['key'] })
+    await flushRuntimeClient()
+    fixture.runtimeProcess.emit('exit')
+    await expect(pending).rejects.toMatchObject({ code: 'SERVER_OPS_REDIS_OUTCOME_UNKNOWN' })
+    expect(fixture.port.messages.filter((message) => message.type === 'server-ops.redis')).toHaveLength(1)
+  })
+  test('Given Redis 请求等待 When 伪造连接回执 Then 忽略直到正确连接返回', async () => {
+    const fixture = createFixture()
+    await connectFixture(fixture)
+    const pending = fixture.client.dataRedis({ sourceId: 'redis-1', hostId: 'host-1', connectionId: 'connection-1',
+      transport: 'ssh', address: '127.0.0.1', port: 6379, tlsMode: 'disabled', timeoutMs: 1_000, command: 'GET', args: ['key'] })
+    await flushRuntimeClient()
+    const command = fixture.port.messages.find((message) => message.type === 'server-ops.redis')!
+    if (command.type !== 'server-ops.redis') throw new Error('UNREACHABLE')
+    const response = { type: 'server-ops.redis-result' as const, requestId: command.input.requestId, hostId: 'host-1', connectionId: 'wrong',
+      result: { command: 'GET', outcome: 'completed' as const, value: 'wrong', truncated: false, durationMs: 1 } }
+    fixture.port.emit(response)
+    fixture.port.emit({ ...response, connectionId: 'connection-1', result: { ...response.result, value: 'right' } })
+    expect(await pending).toMatchObject({ value: 'right' })
+    fixture.client.stop()
+  })
+})

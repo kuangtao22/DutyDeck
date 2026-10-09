@@ -129,19 +129,28 @@ describe('Pi Server Ops 工具合同', () => {
     expect(first.collaborationAvailable).toBe(false)
     expect(first.tools[0]).not.toBe(resumed.tools[0])
     await expect(buildPiBuiltinTools(sdk, { sessionId: 'session-1', channelId: 'channel-1', toolMode: 'server-ops-read' }))
-      .rejects.toThrow('需要当前用户会话的有效授权')
+      .rejects.toThrow('需要当前普通用户会话')
     await expect(buildPiBuiltinTools(sdk, { ...context, triggeredBy: 'automation' }))
-      .rejects.toThrow('需要当前用户会话的有效授权')
+      .rejects.toThrow('需要当前普通用户会话')
   })
 
-  test('Given 会话选择运维读写模式 When 重建工具 Then 注册数据库写入且不注册普通工具', async () => {
+  test('Given 会话获得统一运维授权 When 重建工具 Then 注册数据库与服务器运维工具且不注册普通工具', async () => {
     const facade = { databaseWrite: async () => ({}) } as unknown as ServerOpsAgentReadFacade
+    /** 注册期使用完整窄服务器 Facade，验证可选 Docker 与文件能力也进入统一模式。 */
+    const serverFacade = {
+      list: () => [], status: () => ({}), connect: async () => ({}), exec: async () => ({}), disconnect: async () => ({}),
+      dockerResources: async () => ({}), dockerDetail: async () => ({}), dockerAction: async () => ({}),
+      filesList: async () => ({}), filesRead: async () => ({}), filesMutate: async () => ({}),
+    } as unknown as ServerOpsAgentFacade
     const result = await buildPiBuiltinTools(sdk, {
       sessionId: 'session-1', channelId: 'channel-1', toolMode: 'server-ops-write', serverOpsReadFacade: facade,
-      serverOpsFacade: {} as ServerOpsAgentFacade,
+      serverOpsFacade: serverFacade,
     })
     expect(result.tools.map((tool) => tool.name)).toContain('ops_database_write')
-    expect(result.tools.some((tool) => tool.name === 'bash' || tool.name === 'read' || tool.name === 'server_exec')).toBe(false)
+    expect(result.tools.map((tool) => tool.name)).toContain('server_exec')
+    expect(result.tools.map((tool) => tool.name)).toContain('server_docker_action')
+    expect(result.tools.map((tool) => tool.name)).toContain('server_files_mutate')
+    expect(result.tools.some((tool) => tool.name === 'bash' || tool.name === 'read')).toBe(false)
     expect(result.collaborationAvailable).toBe(false)
   })
 
@@ -170,6 +179,19 @@ describe('Pi Server Ops 工具合同', () => {
     })
     expect(internal.tools.some((tool) => tool.name.startsWith('server_'))).toBe(false)
   })
+
+  test('Given 普通用户会话已有数据库读取 Facade When 构建工具 Then 数据库写入工具无需服务器 Agent 授权即可注册', async () => {
+    /** 数据库写入沿用已保存数据源与数据库策略，不需要板块授权。 */
+    const databaseFacade = { databaseWrite: async () => ({}) } as unknown as ServerOpsAgentReadFacade
+    const result = await buildPiBuiltinTools(sdk, {
+      sessionId: 'session-1', channelId: 'channel-1',
+      serverOpsReadFacade: databaseFacade,
+      productivityTools: { todosEnabled: false, calendarEnabled: false, obsidianEnabled: false },
+    })
+
+    expect(result.tools.map((tool) => tool.name)).toContain('ops_database_write')
+  })
+
   test('Given 已初始化 facade When 构建工具 Then 只注册五个无 sessionId/credentialRef 输入的工具', () => {
     const facade = {} as ServerOpsAgentFacade
     const tools = buildServerOpsTools(sdk, facade)
@@ -192,7 +214,7 @@ describe('Pi Server Ops 工具合同', () => {
       channelId: 'channel-1',
       triggeredBy,
       serverOpsFacade: {} as ServerOpsAgentFacade,
-      serverOpsReadFacade: {} as ServerOpsAgentReadFacade,
+      serverOpsReadFacade: { databaseWrite: async () => ({}), redisRead: async () => ({}), redisWrite: async () => ({}) } as unknown as ServerOpsAgentReadFacade,
       productivityTools: { todosEnabled: false, calendarEnabled: false, obsidianEnabled: false },
     })
     const registeredNames = result.tools.map((tool) => tool.name)
@@ -201,6 +223,9 @@ describe('Pi Server Ops 工具合同', () => {
     expect(registeredNames.includes('ops_resources')).toBe(expected)
     expect(registeredNames.includes('ops_database_rows')).toBe(expected)
     expect(registeredNames.includes('ops_database_query')).toBe(expected)
+    expect(registeredNames.includes('ops_database_write')).toBe(expected)
+    expect(registeredNames.includes('ops_redis_read')).toBe(expected)
+    expect(registeredNames.includes('ops_redis_write')).toBe(expected)
   })
 })
 

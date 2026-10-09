@@ -70,7 +70,8 @@ function dependencies(options: {
     captureBindings: (resources) => resources.map((resource) => bindings.get(resource.kind === 'ssh' ? `ssh:${resource.hostId}` : `data:${resource.sourceId}`)!).filter(Boolean),
     services: {
       credentials: { getVersion: () => 'host-credential-version' },
-      hosts: { get: (hostId) => hostId === 'host-1' ? host() : undefined },
+      hosts: { get: (hostId) => hostId === 'host-1' ? host() : undefined, list: () => [host()] },
+      connections: { getState: (hostId) => ({ hostId, phase: 'connected', connectionId: 'connection-1' }), onState: () => () => {} },
       access: {
         getReadAccess: () => access,
         getReadBinding: (_sessionId, key) => bindings.get(key),
@@ -128,6 +129,107 @@ function dependencies(options: {
 }
 
 describe('Server Ops Agent 多资源只读 Facade', () => {
+  test('Given 未连接服务器 When 请求目录或读取 Then 不暴露目标且不执行远程服务', async () => {
+    /** 连接前提来自主进程，不受旧授权记录影响。 */
+    const deps = dependencies()
+    deps.services.connections!.getState = (hostId) => ({ hostId, phase: 'disconnected' })
+    const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps })!
+    expect(facade.resources().resources.some((resource) => resource.kind === 'ssh')).toBe(false)
+    await expect(facade.serverOverview({ hostId: 'host-1' })).rejects.toThrow('SERVER_OPS_AGENT_CONNECTION_REQUIRED')
+  })
+
+  test('Given Redis 已保存无板块授权 When 读取及批准后的写入 Then 使用保存目标并留下无正文审计', async () => {
+    /** Redis 使用短连接；这里只替换末端请求，不触碰真实服务。 */
+    const deps = dependencies()
+    const records: ServerOpsAuditRecord[] = []
+    const writes: unknown[] = []
+    deps.services.access.getReadAccess = () => { throw new Error('旧授权不可读取') }
+    deps.services.data!.listSources = () => ({ sources: [source({ engine: 'redis', port: 6379, database: '0' })] })
+    deps.services.data!.redisSource = async (request, _signal, context) => {
+      context?.check?.()
+      writes.push(request)
+      return { command: request.command, outcome: 'completed', value: 'value-secret', truncated: false, durationMs: 1 }
+    }
+    deps.services.audit.append = (entry) => {
+      const record = { id: 'audit-1', timestamp: 1, ...entry }
+      records.push(record)
+      expect(isServerOpsAuditRecord(record)).toBe(true)
+      return record
+    }
+    const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps, allowDatabaseWrite: true })!
+    expect(facade.resources().resources).toContainEqual(expect.objectContaining({ kind: 'redis', sourceId: 'source-1' }))
+    await expect(facade.redisRead!({ sourceId: 'source-1', command: 'GET', args: ['key-secret'] })).resolves.toMatchObject({ outcome: 'completed' })
+    await expect(facade.redisRead!({ sourceId: 'source-1', command: 'SET', args: ['key-secret', 'value-secret'] })).rejects.toThrow('SERVER_OPS_REDIS_COMMAND_FORBIDDEN')
+    await expect(facade.redisWrite!({ sourceId: 'source-1', command: 'SET', args: ['key-secret', 'value-secret'] })).resolves.toMatchObject({ outcome: 'completed' })
+    expect(writes).toHaveLength(2)
+    expect(records.map((record) => record.operation)).toEqual(['agent-read', 'agent-read', 'data-write', 'data-write'])
+    expect(JSON.stringify(records)).not.toMatch(/key-secret|value-secret/)
+    expect(createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps })!.redisWrite).toBeUndefined()
+  })
+
+  test('Given Redis 审批等待期间凭据变更 When 执行已批准请求 Then 不访问新身份', async () => {
+    /** 生产指纹捕获同时绑定保存配置和不可逆凭据版本。 */
+    const deps = dependencies()
+    let version = 'version-1'
+    let calls = 0
+    deps.captureBindings = undefined
+    deps.services.data!.listSources = () => ({ sources: [source({ engine: 'redis', port: 6379, database: '0' })] })
+    deps.services.data!.getReadCredentialVersion = () => version
+    deps.services.data!.redisSource = async () => { calls++; throw new Error('不应执行') }
+    const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps, allowDatabaseWrite: true })!
+    version = 'version-2'
+    await expect(facade.redisWrite!({ sourceId: 'source-1', command: 'DEL', args: ['key'] })).rejects.toThrow('SERVER_OPS_AGENT_RESOURCE_CHANGED')
+    expect(calls).toBe(0)
+  })
+
+  test('Given Redis 审计不可写 When 执行修改 Then 远程副作用为零', async () => {
+    const deps = dependencies({ prepareAudit: async () => { throw new Error('disk') } })
+    /** 记录真实写入次数，审计准备失败必须阻断修改。 */
+    let calls = 0
+    deps.services.data!.listSources = () => ({ sources: [source({ engine: 'redis', port: 6379, database: '0' })] })
+    deps.services.data!.redisSource = async () => { calls++; throw new Error('不应执行') }
+    const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps, allowDatabaseWrite: true })!
+    await expect(facade.redisWrite!({ sourceId: 'source-1', command: 'DEL', args: ['key'] })).rejects.toThrow('SERVER_OPS_AUDIT_START_WRITE_FAILED')
+    expect(calls).toBe(0)
+  })
+
+  test('Given Redis 写入超时或结果审计失败 When 返回 Then 保留未知事实且不重试', async () => {
+    const deps = dependencies()
+    /** 返回结构化未知结果，模拟命令已发出但应答未取得。 */
+    let calls = 0
+    deps.services.data!.listSources = () => ({ sources: [source({ engine: 'redis', port: 6379, database: '0' })] })
+    deps.services.data!.redisSource = async (request) => {
+      calls++
+      return { command: request.command, outcome: 'unknown', value: null, truncated: false, durationMs: 10, errorCode: 'SERVER_OPS_REDIS_TIMEOUT' }
+    }
+    deps.services.audit.append = (entry) => {
+      if (entry.phase === 'result') { expect(entry.outcome).toBe('unknown'); throw new Error('private-path') }
+      return { id: 'audit-1', timestamp: 1, ...entry }
+    }
+    const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps, allowDatabaseWrite: true })!
+    await expect(facade.redisWrite!({ sourceId: 'source-1', command: 'INCR', args: ['counter'] })).resolves.toMatchObject({ outcome: 'unknown', warnings: ['SERVER_OPS_AUDIT_RESULT_WRITE_FAILED'] })
+    expect(calls).toBe(1)
+  })
+
+  test('Given Redis 返回大量转义字符 When 序列化给模型 Then 结果仍有界并标明截断', async () => {
+    const deps = dependencies()
+    deps.services.data!.listSources = () => ({ sources: [source({ engine: 'redis', port: 6379, database: '0' })] })
+    deps.services.data!.redisSource = async (request) => ({ command: request.command, outcome: 'completed', value: '\u0001'.repeat(16_384), truncated: false, durationMs: 1 })
+    const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps })!
+    /** 预算按模型实际看到的漂亮 JSON，而非原始字符串字节计算。 */
+    const result = await facade.redisRead!({ sourceId: 'source-1', command: 'GET', args: ['key'] })
+    expect(result.truncated).toBe(true)
+    expect(Buffer.byteLength(JSON.stringify(result, null, 2))).toBeLessThanOrEqual(32_768)
+  })
+
+  test('Given 已保存已连接 SSH 无板块授权 When 读取概览和日志 Then 直接使用连接且不查询授权', async () => {
+    /** 旧授权入口故意抛错，证明读取链路不再依赖板块授权。 */
+    const deps = dependencies()
+    deps.services.access.getReadAccess = () => { throw new Error('不应读取旧授权') }
+    const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps })!
+    await expect(facade.serverOverview({ hostId: 'host-1' })).resolves.toMatchObject({ hostId: 'host-1' })
+  })
+
   test('Given PostgreSQL 默认只读与跨 schema 禁用表 When 浏览、读结构和查询 Then canonical 身份精确隔离', async () => {
     const deps = dependencies()
     const publicOrders = formatServerOpsPostgresTable('public', 'orders')
@@ -372,7 +474,7 @@ describe('Server Ops Agent 多资源只读 Facade', () => {
     }
     const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps })
     if (!facade) throw new Error('SQLite 测试会话未创建 Facade')
-    expect(facade.resources().resources[0]).toMatchObject({ kind: 'sqlite', instance: false })
+    expect(facade.resources().resources).toContainEqual(expect.objectContaining({ kind: 'sqlite', instance: false }))
     expect((await facade.databaseTables({ sourceId: 'source-1', database: 'main' })).tables).toEqual([{ name: 'users' }])
     expect((await facade.databaseRows({ sourceId: 'source-1', database: 'main', table: 'users', offset: 0, limit: 50 })).rows[0]).toEqual(['1', '[MASKED]'])
     await expect(facade.databaseQuery({ sourceId: 'source-1', database: 'main', sql: 'SELECT "id" FROM "users"', maxRows: 10 })).resolves.toMatchObject({ rowCount: 1 })
@@ -543,7 +645,7 @@ describe('Server Ops Agent 多资源只读 Facade', () => {
     const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: dependencies() })!
     const result = facade.resources()
     expect(result.resources).toEqual([
-      { kind: 'ssh', hostId: 'host-1', projectId: 'project-1', name: '生产机' },
+      { kind: 'ssh', hostId: 'host-1', projectId: 'project-1', name: '生产机', readLogs: true },
       {
         kind: 'mysql', sourceId: 'source-1', projectId: 'project-1', name: '订单库', instance: false,
         databases: [{ database: 'app', tables: null, excludedTables: [], readRows: true, query: true }],
@@ -566,7 +668,7 @@ describe('Server Ops Agent 多资源只读 Facade', () => {
     }
     const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: dependencies({ access }) })!
     const result = facade.resources()
-    expect(result.resources).toHaveLength(1)
+    expect(result.resources.filter((resource) => resource.kind !== 'ssh')).toHaveLength(1)
     expect(Buffer.byteLength(JSON.stringify(result, null, 2), 'utf8')).toBeLessThanOrEqual(32_768)
   })
 
@@ -581,7 +683,7 @@ describe('Server Ops Agent 多资源只读 Facade', () => {
     }
     const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: dependencies({ access }) })!
     const result = facade.resources()
-    expect(result.resources).toHaveLength(1)
+    expect(result.resources.filter((resource) => resource.kind !== 'ssh')).toHaveLength(1)
     expect(Buffer.byteLength(JSON.stringify(result, null, 2), 'utf8')).toBeLessThanOrEqual(32_768)
     for (const resource of result.resources) {
       if (resource.kind === 'mysql') for (const scope of resource.databases) expect(scope.excludedTables).toEqual([])
@@ -677,16 +779,17 @@ describe('Server Ops Agent 多资源只读 Facade', () => {
     expect(calls).toBe(0)
   })
 
-  test('Given 读取期间撤销或重新授权 When 迟到结果返回 Then 不发布旧数据', async () => {
+  test('Given 读取期间重新连接 When 迟到结果返回 Then 不发布旧连接数据', async () => {
     const deps = dependencies()
-    let current = deps.services.access.getReadAccess('session-1')
-    deps.services.access.getReadAccess = () => current
+    /** 模拟用户在工具执行中重新连接同一服务器。 */
+    let connectionId = 'connection-1'
+    deps.services.connections!.getState = (hostId) => ({ hostId, phase: 'connected', connectionId })
     deps.services.overview.getOverview = async ({ hostId }) => {
-      current = current ? { ...current, revision: current.revision + 1 } : undefined
+      connectionId = 'connection-2'
       return { hostId, capturedAt: 1, sampleWindowMs: 1, filesystems: [], processes: [], warnings: [] }
     }
     const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps })!
-    await expect(facade.serverOverview({ hostId: 'host-1' })).rejects.toThrow('SERVER_OPS_AGENT_ACCESS_CHANGED')
+    await expect(facade.serverOverview({ hostId: 'host-1' })).rejects.toThrow('SERVER_OPS_CONNECTION_NOT_ACTIVE')
   })
 
   test('Given 配置身份改变 When 读取 Then 失效资源且不调用服务', async () => {
@@ -734,16 +837,18 @@ describe('Server Ops Agent 多资源只读 Facade', () => {
     }
   })
 
-  test('Given 结果审计写入时撤权 When 即将返回 Then 最后一次复核阻止发布结果', async () => {
+  test('Given 结果审计写入时断开 When 即将返回 Then 最后一次复核阻止发布结果', async () => {
     const deps = dependencies()
-    let current = deps.services.access.getReadAccess('session-1')
-    deps.services.access.getReadAccess = () => current
+    /** 审计回调触发真实连接状态变化，验证最终返回前仍会复核。 */
+    let connected = true
+    deps.services.connections!.getState = (hostId) => connected
+      ? { hostId, phase: 'connected', connectionId: 'connection-1' } : { hostId, phase: 'disconnected' }
     deps.services.audit.append = (input) => {
-      if (input.phase === 'result') current = undefined
+      if (input.phase === 'result') connected = false
       return { id: 'audit-1', timestamp: 1, ...input }
     }
     const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps })!
-    await expect(facade.serverOverview({ hostId: 'host-1' })).rejects.toThrow('SERVER_OPS_AGENT_ACCESS_CHANGED')
+    await expect(facade.serverOverview({ hostId: 'host-1' })).rejects.toThrow('SERVER_OPS_CONNECTION_NOT_ACTIVE')
   })
 
   test('Given 服务返回污染字段或错目标 When Facade 投影 Then 拒绝而不复制未知字段', async () => {
@@ -818,22 +923,19 @@ describe('Server Ops Agent 多资源只读 Facade', () => {
     expect(JSON.stringify(result)).not.toContain('secret-volume')
   })
 
-  test('Given 旧 SSH 授权 When 要求日志 Then 不调用日志服务；新授权可调用并审计', async () => {
+  test('Given 已连接 SSH 无日志授权 When 要求日志 Then 直接读取并审计', async () => {
     const deps = dependencies()
+    /** 记录读取次数和审计动作，确保无需单独勾选日志权限。 */
     let reads = 0
     const actions: string[] = []
+    deps.services.access.getReadAccess = () => undefined
     deps.services.logs = { snapshot: async ({ hostId }) => { reads++; return { hostId, lines: ['[MASKED]'], truncated: false, warnings: [] } } }
     deps.services.audit.append = (entry) => { actions.push(entry.readAction ?? ''); return { id: 'audit-1', timestamp: 1, ...entry } }
-    const old = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps })!
+    const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps })!
     const request = { hostId: 'host-1', source: { kind: 'system' } as const, since: '15m' as const, priority: 'warning' as const, tailLines: 20 }
-    await expect(old.serverLogs(request)).rejects.toThrow('SERVER_OPS_AGENT_SCOPE_REQUIRED')
-    expect(reads).toBe(0)
-    const current = deps.services.access.getReadAccess('session-1')!
-    deps.services.access.getReadAccess = () => ({ ...current, revision: 8, resources: current.resources.map((resource) => resource.kind === 'ssh' ? { ...resource, readLogs: true } : resource) })
-    const fresh = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps })!
-    expect((await fresh.serverLogs(request)).lines).toEqual(['[MASKED]'])
+    expect((await facade.serverLogs(request)).lines).toEqual(['[MASKED]'])
+    expect(reads).toBe(1)
     expect(actions).toEqual(['server-logs', 'server-logs'])
-    await expect(old.serverLogs(request)).rejects.toThrow('SERVER_OPS_AGENT_ACCESS_CHANGED')
   })
 
   test('Given 注入的日志来源 When 解析输入 Then 在远程调用前拒绝', async () => {
@@ -842,20 +944,20 @@ describe('Server Ops Agent 多资源只读 Facade', () => {
     const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps })!
     await expect(facade.serverLogs({ hostId: 'host-1', source: { kind: 'unit', unitId: "ssh.service'; echo leak" }, since: '1h', priority: 'info', tailLines: 20 })).rejects.toThrow('SERVER_OPS_AGENT_READ_INPUT_INVALID')
   })
-  test('Given 日志在途 When 取消、撤权或重授 Then 不返回旧日志', async () => {
+  test('Given 日志在途 When 本轮取消 Then 不返回旧日志', async () => {
     const deps = dependencies()
-    let access = { ...deps.services.access.getReadAccess('session-1')!, resources: [{ kind: 'ssh' as const, hostId: 'host-1', readLogs: true }] }
-    deps.services.access.getReadAccess = () => access
+    /** 本轮取消信号，模拟用户停止 Agent。 */
+    const controller = new AbortController()
     const entered = Promise.withResolvers<void>()
     const gate = Promise.withResolvers<void>()
     deps.services.logs = { snapshot: async ({ hostId }) => { entered.resolve(); await gate.promise; return { hostId, lines: ['private'], truncated: false, warnings: [] } } }
     const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps })!
     const request = { hostId: 'host-1', source: { kind: 'system' } as const, since: '15m' as const, priority: 'info' as const, tailLines: 10 }
-    const result = facade.serverLogs(request)
+    const result = facade.serverLogs(request, controller.signal)
     await entered.promise
-    access = { ...access, revision: 8 }
+    controller.abort()
     gate.resolve()
-    await expect(result).rejects.toThrow('SERVER_OPS_AGENT_ACCESS_CHANGED')
+    await expect(result).rejects.toThrow('SERVER_OPS_AGENT_READ_CANCELLED')
   })
 
   test('Given 会话选择运维读写 When Agent 执行数据库写入 Then 复用写入服务、真实取消信号与 Agent 审计身份', async () => {
@@ -884,6 +986,69 @@ describe('Server Ops Agent 多资源只读 Facade', () => {
     expect(records.map((record) => [record.actor, record.operation, record.phase, record.outcome])).toEqual([
       ['agent', 'data-write', 'start', 'pending'], ['agent', 'data-write', 'result', 'success'],
     ])
+  })
+
+  test('Given 持久禁用表 When Agent 写目标或 SELECT 来源命中 Then 在写服务前拒绝', async () => {
+    const deps = dependencies()
+    deps.services.databasePolicy!.get = () => ({
+      revision: 3,
+      exclusions: [{ sourceId: 'source-1', database: 'app', excludedTables: ['payments'] }],
+    })
+    let writes = 0
+    deps.services.data!.writeSource = async () => {
+      writes += 1
+      throw new Error('must-not-run')
+    }
+    const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps, allowDatabaseWrite: true })!
+
+    await expect(facade.databaseWrite!({ sourceId: 'source-1', database: 'app', sql: 'UPDATE payments SET state = 1' }))
+      .rejects.toThrow('SERVER_OPS_AGENT_SCOPE_REQUIRED')
+    await expect(facade.databaseWrite!({
+      sourceId: 'source-1', database: 'app',
+      sql: 'INSERT INTO payment_archive (id) SELECT id FROM payments',
+    })).rejects.toThrow('SERVER_OPS_AGENT_SCOPE_REQUIRED')
+    expect(writes).toBe(0)
+  })
+
+  test('Given Agent 写入跨库或作用域无法判定 When 执行 Then 在写服务前拒绝', async () => {
+    const deps = dependencies()
+    let writes = 0
+    deps.services.data!.writeSource = async () => {
+      writes += 1
+      throw new Error('must-not-run')
+    }
+    const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps, allowDatabaseWrite: true })!
+
+    for (const sql of [
+      'UPDATE other.users SET state = 1',
+      'INSERT INTO users (id) SELECT id FROM other.users',
+      'WITH rows AS (SELECT id FROM users) UPDATE users SET state = 1',
+    ]) {
+      await expect(facade.databaseWrite!({ sourceId: 'source-1', database: 'app', sql }))
+        .rejects.toThrow('SERVER_OPS_AGENT_WRITE_INPUT_INVALID')
+    }
+    expect(writes).toBe(0)
+  })
+
+  test('Given 审批等待期间数据源身份变化 When Agent 随后写入 Then 冻结绑定拒绝新目标', async () => {
+    const deps = dependencies()
+    let fingerprint = 'before-approval'
+    deps.captureBindings = (resources) => resources.map((resource) => ({
+      key: resource.kind === 'ssh' ? `ssh:${resource.hostId}` : `data:${resource.sourceId}`,
+      fingerprint,
+      ...(resource.kind === 'ssh' ? { hostId: resource.hostId } : {}),
+    }))
+    let writes = 0
+    deps.services.data!.writeSource = async () => {
+      writes += 1
+      throw new Error('must-not-run')
+    }
+    const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps, allowDatabaseWrite: true })!
+    fingerprint = 'after-approval'
+
+    await expect(facade.databaseWrite!({ sourceId: 'source-1', database: 'app', sql: 'UPDATE users SET state = 1' }))
+      .rejects.toThrow('SERVER_OPS_AGENT_RESOURCE_CHANGED')
+    expect(writes).toBe(0)
   })
 
   test('Given 只读模式或非直连/非支持引擎 When Agent 请求写入 Then 在执行前拒绝', async () => {

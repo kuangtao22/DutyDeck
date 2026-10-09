@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  analyzeServerOpsSqlQuery, getServerOpsSqlStatementHead, planServerOpsSqlWrite, splitServerOpsSqlStatements,
+  analyzeServerOpsSqlQuery, analyzeServerOpsSqlWriteScope, getServerOpsSqlStatementHead, planServerOpsSqlWrite,
+  splitServerOpsSqlStatements,
 } from './server-ops-sql-parser'
 
 describe('写脚本语句切分', () => {
@@ -110,5 +111,28 @@ describe('写脚本计划', () => {
     const plan = planServerOpsSqlWrite('WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x', 'postgresql')
     expect(plan.statements[0]?.head).toBe('WITH')
     expect(plan.statements[0]?.mutating).toBe(true)
+  })
+
+  test('Given 可判定目标与 SELECT 来源 When 分析 Agent 写范围 Then 返回全部基础表', () => {
+    expect(analyzeServerOpsSqlWriteScope(
+      'INSERT INTO archive_users (id) SELECT id FROM users; UPDATE counters SET value = value + 1',
+      'app',
+      'mysql',
+    )).toEqual({ tables: ['archive_users', 'users', 'counters'] })
+    expect(analyzeServerOpsSqlWriteScope('CREATE TABLE archive AS SELECT id FROM users', 'main', 'sqlite'))
+      .toEqual({ tables: ['archive', 'users'] })
+  })
+
+  test('Given 跨库或无法判定作用域的写语句 When 分析 Agent 写范围 Then 拒绝', () => {
+    for (const sql of [
+      'UPDATE other.users SET active = 0',
+      'INSERT INTO users SELECT id FROM other.users',
+      'WITH rows AS (SELECT id FROM users) UPDATE archive SET id = 1',
+      'GRANT SELECT ON app.users TO reader',
+      'CREATE TABLE archive LIKE users',
+      'ALTER TABLE users RENAME TO archived_users',
+    ]) {
+      expect(() => analyzeServerOpsSqlWriteScope(sql, 'app', 'mysql')).toThrow()
+    }
   })
 })

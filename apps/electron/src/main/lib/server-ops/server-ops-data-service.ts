@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto'
+import { isServerOpsRedisWriteCommand, parseServerOpsRedisCommandInput, parseServerOpsRedisCommandResult } from '@proma/shared'
+import type { ServerOpsRedisCommandInput, ServerOpsRedisCommandResult } from '@proma/shared'
+import type { ServerOpsRuntimeRedisRequest } from '../../../utility/server-ops/server-ops-runtime-protocol'
 import { isDeepStrictEqual } from 'node:util'
 import { inspectServerOpsLocalSqliteFile } from '../../../utility/server-ops/server-ops-local-sqlite-file'
 import type {
@@ -100,6 +103,8 @@ interface ServerOpsDataConnectionContract {
 
 /** 数据服务依赖的 SSH runtime 能力。 */
 interface ServerOpsDataRuntimeContract {
+  /** 可选 Redis 能力供旧只读测试和能力受限 runtime 兼容，缺失时明确拒绝。 */
+  dataRedis?(input: Omit<ServerOpsRuntimeRedisRequest, 'requestId'>, signal?: AbortSignal): Promise<ServerOpsRedisCommandResult>
   dataRead(input: Omit<ServerOpsRuntimeDataReadRequest, 'requestId'>, signal?: AbortSignal): Promise<ServerOpsRuntimeDataReadResult>
   /** 手工写库；与读取分开的生命周期，但共用同一套身份与调度约束。 */
   dataWrite(input: Omit<ServerOpsRuntimeDataWriteRequest, 'requestId'>, signal?: AbortSignal): Promise<ServerOpsDataWriteResult>
@@ -844,6 +849,63 @@ export class ServerOpsDataService {
       return parsedResult
     } catch (error) {
       return createServerOpsWriteFailureResult(parsedInput, error, dispatched, this.now() - startedAt)
+    }
+  }
+
+  /**
+   * 执行已保存 Redis 来源上的单键命令；Agent 的审批由 facade 在调用前完成。
+   * 输入没有目标覆盖字段，队列执行前复核来源、凭据版本与 SSH 连接代次。
+   */
+  async redisSource(input: ServerOpsRedisCommandInput, signal?: AbortSignal, context?: ServerOpsReadContext): Promise<ServerOpsRedisCommandResult> {
+    const parsed = parseServerOpsRedisCommandInput(input)
+    const write = isServerOpsRedisWriteCommand(parsed.command)
+    const startedAt = this.now()
+    let dispatched = false
+    try {
+      this.assertUsable()
+      this.checkReadCaller(signal, context)
+      if (write && context?.ownerSessionId !== undefined && context.actor !== 'agent') throw new Error('SERVER_OPS_REDIS_WRITE_AGENT_FORBIDDEN')
+      const source = this.requireSource(parsed.sourceId)
+      if (source.engine !== 'redis') throw new Error('SERVER_OPS_REDIS_ENGINE_REQUIRED')
+      this.assertDirectTransportIsSafe(source)
+      const password = source.credentialRef === undefined ? undefined : this.dependencies.credentials.resolveSecret(source.credentialRef)
+      const version = source.credentialRef === undefined ? undefined : this.dependencies.credentials.getSecretVersion?.(source.credentialRef)
+      const identity = source.transport === 'ssh' ? this.dependencies.connection.getActiveIdentity(source.hostId ?? '') : undefined
+      const validate = (): void => {
+        this.assertUsable()
+        const current = this.requireSource(source.id)
+        if (!sameDataReadIdentity(source, current)) throw new Error('SERVER_OPS_DATA_SOURCE_CHANGED')
+        const currentPassword = current.credentialRef === undefined ? undefined : this.dependencies.credentials.resolveSecret(current.credentialRef)
+        const currentVersion = current.credentialRef === undefined ? undefined : this.dependencies.credentials.getSecretVersion?.(current.credentialRef)
+        if (currentPassword !== password || currentVersion !== version) throw new Error('SERVER_OPS_DATA_SOURCE_CHANGED')
+        if (identity !== undefined) {
+          const currentIdentity = this.dependencies.connection.getActiveIdentity(identity.hostId)
+          if (currentIdentity.connectionId !== identity.connectionId || currentIdentity.generation !== identity.generation) throw new Error('SERVER_OPS_DATA_SOURCE_CHANGED')
+        }
+      }
+      const runtime = this.dependencies.runtime.dataRedis?.bind(this.dependencies.runtime)
+      if (runtime === undefined) throw new Error('SERVER_OPS_REDIS_UNAVAILABLE')
+      const result = await this.scheduler.run(source.id, async () => {
+        validate()
+        dispatched = true
+        return await runtime({ ...parsed, hostId: identity?.hostId ?? SERVER_OPS_DATA_DIRECT_HOST_ID,
+          connectionId: identity?.connectionId ?? this.uuid(), transport: source.transport,
+          address: source.address!, port: source.port!,
+          ...(source.database === undefined ? {} : { database: source.database }),
+          ...(source.username === undefined ? {} : { username: source.username }),
+          ...(password === undefined ? {} : { password }),
+          tlsMode: source.tlsMode, ...(source.tlsServerName === undefined ? {} : { tlsServerName: source.tlsServerName }),
+          timeoutMs: SERVER_OPS_DATA_READ_TIMEOUT_MS }, signal)
+      }, { signal, ownerSessionId: context?.ownerSessionId, check: context?.check, validate, preserveExecutionOutcome: write })
+      const receipt = parseServerOpsRedisCommandResult(result)
+      if (receipt.command !== parsed.command) throw new Error('SERVER_OPS_REDIS_RESULT_INVALID')
+      return receipt
+    } catch (error) {
+      /** 队列尚未执行与命令已发送必须区分；错误仅允许稳定码，不回传驱动正文。 */
+      const rawCode = error instanceof Error ? error.message : ''
+      return { command: parsed.command, outcome: dispatched && write ? 'unknown' : 'not-started', value: null, truncated: false,
+        durationMs: Math.max(0, this.now() - startedAt),
+        errorCode: /^SERVER_OPS_[A-Z_]{1,100}$/u.test(rawCode) ? rawCode : dispatched && write ? 'SERVER_OPS_REDIS_OUTCOME_UNKNOWN' : 'SERVER_OPS_REDIS_COMMAND_FAILED' }
     }
   }
 

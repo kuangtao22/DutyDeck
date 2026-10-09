@@ -1414,7 +1414,7 @@ function toTimestampMs(value: unknown): number | undefined {
 }
 
 /** 构造只在当前读取期间存活的 ioredis 连接器类。 */
-function createRedisTunnelConnector(
+export function createRedisTunnelConnector(
   createChannel: ServerOpsDataChannelFactory,
   input: Pick<ServerOpsDataRuntimeInput, 'tlsMode' | 'tlsServerName' | 'address'>,
   onStream: (stream: Duplex & { encrypted?: boolean }) => void,
@@ -1432,8 +1432,8 @@ function createRedisTunnelConnector(
       const tunnel = await createChannel()
       if (input.tlsMode === 'disabled') {
         /**
-         * ioredis 只使用 Duplex 的读写与事件语义，不会访问 net.Socket 专有字段，
-         * 因此这里把 ssh2 转发通道按 ioredis 的流类型标注。
+         * 调用方已禁用 ioredis 的 noDelay/keepAlive，故这里只需要 Duplex 读写事件语义，
+         * 不会在 ssh2 转发通道上调用 net.Socket 专有方法。
          */
         this.stream = tunnel as unknown as TLSSocket
         onStream(tunnel)
@@ -1479,12 +1479,16 @@ async function readRedis(
     commandTimeout: dependencies.timeoutMs,
     enableOfflineQueue: false,
     enableReadyCheck: false,
+    /** 自定义 SSH Duplex 没有 net.Socket 的 setNoDelay/setKeepAlive。 */
+    noDelay: false,
     lazyConnect: true,
     protocol: 2,
     disableClientInfo: true,
     retryStrategy: () => null,
     maxRetriesPerRequest: 1,
   })
+  /** 构造器会补默认 keepAlive，因此在 lazyConnect 前显式禁用 Socket 专属调用。 */
+  redis.options.keepAlive = undefined
   /** 建连和命令读取期间都响应撤销，并保持禁止自动重连。 */
   const releaseAbortBinding = bindServerOpsSqlQueryAbort(dependencies.signal, () => { redis.disconnect() })
   try {

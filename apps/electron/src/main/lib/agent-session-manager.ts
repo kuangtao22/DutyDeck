@@ -50,7 +50,7 @@ import type {
   AgentActiveWorktree,
   SessionWorkbenchLayout,
 } from '@proma/shared'
-import { migratePermissionMode, mergeSkillActivations, findBestSearchMatch, insertTopSearchResult, isAgentToolMode } from '@proma/shared'
+import { migratePermissionMode, mergeSkillActivations, findBestSearchMatch, insertTopSearchResult, isAgentToolMode, isOrdinaryTopLevelAgentSession } from '@proma/shared'
 import { getConversationMessages } from './conversation-manager'
 // 旧格式 → SDKMessage 的转换逻辑下沉到 @proma/session-core 作为唯一真源，避免主进程与渲染层各存一份。
 import { convertLegacyMessage } from '@proma/session-core'
@@ -72,6 +72,8 @@ interface AgentSessionsIndex {
   sessions: AgentSessionMeta[]
   /** 是否已将旧版默认关闭的 OpenAI 推理会话升级为默认开启。 */
   openAIThinkingDefaultEnabledMigrationCompleted?: boolean
+  /** 是否已将板块授权遗留的普通运维会话恢复到标准工具集合。 */
+  serverOpsModuleAuthorizationMigrationCompleted?: boolean
 }
 
 /** 当前索引版本：v2 将 Claude runtime 退役为 Pi-only。 */
@@ -187,6 +189,22 @@ function migrateLegacyPermissionMode(index: AgentSessionsIndex): boolean {
   return changed
 }
 
+/** 仅迁移历史普通会话；旧只读意图由计划模式保留，后台与子会话不扩权。 */
+function migrateServerOpsModuleAuthorization(index: AgentSessionsIndex): boolean {
+  if (index.serverOpsModuleAuthorizationMigrationCompleted) return false
+  for (const session of index.sessions) {
+    if (!isOrdinaryTopLevelAgentSession(session)) continue
+    if (session.toolMode === 'server-ops-read') {
+      session.toolMode = 'standard'
+      session.permissionMode = 'plan'
+    } else if (session.toolMode === 'server-ops-write') {
+      session.toolMode = 'standard'
+    }
+  }
+  index.serverOpsModuleAuthorizationMigrationCompleted = true
+  return true
+}
+
 /**
  * 在此版本前，所有新建 OpenAI Agent 会话都会写入 off，无法与用户主动关闭区分。
  * 因此仅执行一次历史升级；之后用户手动关闭会保留 off。
@@ -279,7 +297,8 @@ function readIndex(): AgentSessionsIndex {
     const permissionModeMigrated = migrateLegacyPermissionMode(data)
     const thinkingDefaultMigrated = migrateLegacyOpenAIThinkingDefault(data)
     const retiredClaudeRuntimeMigrated = migrateRetiredClaudeRuntime(data)
-    if (permissionModeMigrated || thinkingDefaultMigrated || retiredClaudeRuntimeMigrated || data.version < INDEX_VERSION) {
+    const serverOpsModeMigrated = migrateServerOpsModuleAuthorization(data)
+    if (permissionModeMigrated || thinkingDefaultMigrated || retiredClaudeRuntimeMigrated || serverOpsModeMigrated || data.version < INDEX_VERSION) {
       data.version = INDEX_VERSION
       // writeIndex 会按写入后的文件状态刷新缓存。
       writeIndex(data)
@@ -301,6 +320,7 @@ function readIndex(): AgentSessionsIndex {
     version: INDEX_VERSION,
     sessions: [],
     openAIThinkingDefaultEnabledMigrationCompleted: true,
+    serverOpsModuleAuthorizationMigrationCompleted: true,
   }
 }
 

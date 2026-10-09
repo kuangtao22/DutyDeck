@@ -8,7 +8,7 @@ import { DataRootLocator } from './data-root-locator'
 /** 当前测试创建的临时目录，测试结束后统一清理。 */
 const temporaryDirs: string[] = []
 
-test('Given 运维工具可用 When 构建提示词 Then 数据库修改只交付脚本且明确代码证据要求', () => {
+test('Given 运维工具可用 When 构建提示词 Then 数据库写入使用原生审批且仍明确代码证据要求', () => {
   /** 纯提示词依赖不会读取真实用户配置或项目文件。 */
   const context = {
     sessionId: 'ops-session', permissionMode: 'bypassPermissions' as const,
@@ -22,13 +22,19 @@ test('Given 运维工具可用 When 构建提示词 Then 数据库修改只交�
   expect(prompt).toContain('不承诺事务回滚')
   expect(prompt).toContain('不得把生产事务回滚当作无副作用测试')
   expect(prompt).toContain('未读取程序时明确标记缺失')
-  /** 写模式必须写进提示词：否则用户说「我开了写模式」时模型不知道那是什么意思。 */
-  expect(prompt).toContain('写库由用户手工执行')
-  expect(prompt).toContain('可直接粘贴的 SQL')
-  expect(prompt).toContain('不提供给你任何写工具')
-  expect(prompt).toContain('当前手工写入仅支持直连 MySQL 和本地 SQLite')
+  /** 数据库写入改为普通会话可见，但真实执行前必须弹出 Agent 原生确认卡。 */
+  expect(prompt).toContain('ops_database_write')
+  expect(prompt).toContain('Agent 原生确认弹窗')
+  expect(prompt).toContain('不需要额外的服务器 Agent 授权')
+  expect(prompt).toContain('写入仅支持直连 MySQL 和本地 SQLite')
+  expect(prompt).not.toContain('写库由用户手工执行，不提供给你任何写工具')
+  expect(prompt).toContain('只有当前工具集中提供 `ops_database_write` 时')
   expect(prompt).toContain('断线、超时或取消可能返回「结果未知」')
   expect(prompt).not.toContain('失败自动回滚')
+  expect(prompt).toContain('SSH、Redis 和日志不需要额外的板块授权')
+  const operationsPrompt = buildSystemPrompt({ ...context, serverOpsAvailable: true, serverOpsWriteAvailable: true })
+  expect(operationsPrompt).toContain('ops_redis_read / ops_redis_write')
+  expect(operationsPrompt).toContain('完全自动模式不能跳过或永久授权')
   expect(buildSystemPrompt(context)).not.toContain('ops_database_change_context')
 })
 

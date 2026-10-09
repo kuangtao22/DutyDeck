@@ -112,6 +112,8 @@ function writeAgentSessionsIndex(sessions: Array<{
   forkSourceSdkSessionId?: string
   resumeAtMessageUuid?: string
   archived?: boolean
+  toolMode?: 'standard' | 'server-ops-read' | 'server-ops-write'
+  permissionMode?: 'plan' | 'bypassPermissions'
   sourceDesignProjectId?: string
   sourceDesignJobId?: string
   sourceCanvasProjectId?: string
@@ -514,6 +516,23 @@ describe('Agent 会话 JSONL 读取', () => {
 })
 
 describe('Agent 会话 runtime 元数据', () => {
+  test('Given 旧板块授权留下运维模式 When 读取索引 Then 普通会话恢复工具且只读意图与内部隔离保留', () => {
+    /** 迁移只对升级前的索引执行一次；保留原有内部会话边界。 */
+    writeAgentSessionsIndex([
+      { id: 'old-write', title: '读写', workspaceId: 'workspace-a', createdAt: 1, updatedAt: 1, toolMode: 'server-ops-write', permissionMode: 'bypassPermissions' },
+      { id: 'old-read', title: '只读', workspaceId: 'workspace-a', createdAt: 1, updatedAt: 1, toolMode: 'server-ops-read' },
+      { id: 'background', title: '自动化', workspaceId: 'workspace-a', createdAt: 1, updatedAt: 1, toolMode: 'server-ops-write', sourceAutomationId: 'auto-1' },
+      { id: 'child', title: '委派', workspaceId: 'workspace-a', createdAt: 1, updatedAt: 1, toolMode: 'server-ops-read', parentSessionId: 'old-write' },
+    ])
+    expect(manager.getAgentSessionMeta('old-write')).toMatchObject({ toolMode: 'standard', permissionMode: 'bypassPermissions' })
+    expect(manager.getAgentSessionMeta('old-read')).toMatchObject({ toolMode: 'standard', permissionMode: 'plan' })
+    expect(manager.getAgentSessionMeta('background')?.toolMode).toBe('server-ops-write')
+    expect(manager.getAgentSessionMeta('child')?.toolMode).toBe('server-ops-read')
+    /** 用户升级后主动设置的兼容受限模式不被反复覆盖。 */
+    manager.updateAgentSessionMeta('old-write', { toolMode: 'server-ops-read' })
+    expect(manager.getAgentSessionMeta('old-write')?.toolMode).toBe('server-ops-read')
+  })
+
   test('Given 历史会话无工具模式 When 保存运维只读并重读 Then 保留模式且拒绝非法值', () => {
     writeAgentSessionsIndex([{
       id: 'session-tool-mode', title: '运维会话', workspaceId: 'workspace-a',

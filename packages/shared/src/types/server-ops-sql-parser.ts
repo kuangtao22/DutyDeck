@@ -1362,6 +1362,11 @@ export interface ServerOpsSqlWritePlan {
   statements: ServerOpsSqlWriteStatement[]
 }
 
+/** Agent 写入在执行前解析出的完整基础表范围。 */
+export interface ServerOpsSqlWriteScope {
+  tables: string[]
+}
+
 /**
  * 把写脚本编译成可逐条执行的计划。
  *
@@ -1381,6 +1386,172 @@ export function planServerOpsSqlWrite(sql: string, dialect: ServerOpsSqlDialect)
   })
   if (!statements.some((statement) => statement.mutating)) fail('SERVER_OPS_SQL_WRITE_REQUIRED', 0, sql.length)
   return { statements }
+}
+
+/** 判断 token 是否为指定关键字。 */
+function isWriteScopeWord(token: Token | undefined, value: string): boolean {
+  return token?.kind === 'word' && token.value.toUpperCase() === value
+}
+
+/** 判断 token 是否为可用表标识符。 */
+function isWriteScopeIdentifier(token: Token | undefined): boolean {
+  return token?.kind === 'word' || token?.kind === 'quoted-identifier'
+}
+
+/**
+ * 解析 Agent 写语句中的单个基础表，并拒绝显式跨库目标。
+ *
+ * @param tokens 当前单条语句的 token
+ * @param start 表标识符起始下标
+ * @param database 用户明确选择的数据库
+ * @param dialect SQL 方言
+ * @returns 基础表名与下一个未消费 token 下标
+ */
+function parseWriteScopeTable(
+  tokens: Token[],
+  start: number,
+  database: string,
+  dialect: ServerOpsSqlDialect,
+): { table: string; next: number } {
+  const first = tokens[start]
+  const firstFrom = first?.from ?? 0
+  const firstTo = first?.to ?? 0
+  if (!isWriteScopeIdentifier(first)) fail('SERVER_OPS_SQL_MISSING_TABLE', firstFrom, firstTo)
+  const firstToken = first!
+  const dot = tokens[start + 1]
+  if (dot?.kind !== 'punctuation' || dot.value !== '.') return { table: firstToken.value, next: start + 1 }
+  const table = tokens[start + 2]
+  if (!isWriteScopeIdentifier(table)) fail('SERVER_OPS_SQL_MISSING_TABLE', dot.from, dot.to)
+  const tableToken = table!
+  const sameDatabase = dialect === 'mysql'
+    ? firstToken.value.toLowerCase() === database.toLowerCase()
+    : firstToken.value === database
+  if (!sameDatabase) fail('SERVER_OPS_SQL_CROSS_DATABASE', firstToken.from, tableToken.to)
+  return { table: tableToken.value, next: start + 3 }
+}
+
+/** 查找指定关键字；若语句含 SELECT，仅允许调用方从该位置交给完整只读解析器。 */
+function findWriteScopeWord(tokens: Token[], value: string, start = 0): number {
+  return tokens.findIndex((token, index) => index >= start && isWriteScopeWord(token, value))
+}
+
+/**
+ * 分析 Agent 写脚本会触达的全部目标表和 SELECT 来源表。
+ *
+ * 该合同刻意比人工 SQL 工作台更保守：只有能明确定位作用域的常见 DML/DDL 才能由 Agent 执行；
+ * 未识别语法、子查询和 CTE 都拒绝，避免禁用表通过解析盲区参与写入。
+ * 人工工作台仍使用 {@link planServerOpsSqlWrite}，不受此额外限制。
+ *
+ * @param sql Agent 请求执行的完整脚本
+ * @param database 用户明确选择的数据库
+ * @param dialect SQL 方言
+ * @returns 去重后的基础表范围
+ */
+export function analyzeServerOpsSqlWriteScope(
+  sql: string,
+  database: string,
+  dialect: ServerOpsSqlDialect,
+): ServerOpsSqlWriteScope {
+  const plan = planServerOpsSqlWrite(sql, dialect)
+  const tables: string[] = []
+  const tableKeys = new Set<string>()
+  /** MySQL 表匹配沿用权限层的大小写不敏感规则；SQLite 保留精确身份。 */
+  const appendTable = (table: string): void => {
+    const key = dialect === 'mysql' ? table.toLowerCase() : table
+    if (!tableKeys.has(key)) {
+      tableKeys.add(key)
+      tables.push(table)
+    }
+  }
+
+  for (const statement of plan.statements) {
+    const tokens = tokenize(statement.text, dialect, { comments: 'skip' })
+    const head = statement.head
+    let targetStart = 1
+    const selectAt = findWriteScopeWord(tokens, 'SELECT', 1)
+
+    if (head === 'INSERT' || head === 'REPLACE') {
+      if (isWriteScopeWord(tokens[targetStart], 'INTO')) targetStart += 1
+      const target = parseWriteScopeTable(tokens, targetStart, database, dialect)
+      appendTable(target.table)
+      if (selectAt >= 0) {
+        const source = analyzeServerOpsSqlQuery(statement.text.slice(tokens[selectAt]!.from), database, dialect)
+        source.tables.forEach(appendTable)
+      }
+      continue
+    }
+
+    if (head === 'UPDATE') {
+      const target = parseWriteScopeTable(tokens, targetStart, database, dialect)
+      appendTable(target.table)
+      if (selectAt >= 0 || findWriteScopeWord(tokens, 'JOIN', target.next) >= 0 || findWriteScopeWord(tokens, 'FROM', target.next) >= 0) {
+        fail('SERVER_OPS_SQL_UNSUPPORTED', tokens[target.next]?.from ?? 0, tokens[target.next]?.to ?? 0)
+      }
+      continue
+    }
+
+    if (head === 'DELETE') {
+      if (!isWriteScopeWord(tokens[targetStart], 'FROM')) fail('SERVER_OPS_SQL_UNSUPPORTED', tokens[targetStart]?.from ?? 0, tokens[targetStart]?.to ?? 0)
+      const target = parseWriteScopeTable(tokens, targetStart + 1, database, dialect)
+      appendTable(target.table)
+      if (selectAt >= 0 || findWriteScopeWord(tokens, 'JOIN', target.next) >= 0 || findWriteScopeWord(tokens, 'USING', target.next) >= 0) {
+        fail('SERVER_OPS_SQL_UNSUPPORTED', tokens[target.next]?.from ?? 0, tokens[target.next]?.to ?? 0)
+      }
+      continue
+    }
+
+    if (head === 'ALTER' || head === 'TRUNCATE') {
+      if (isWriteScopeWord(tokens[targetStart], 'TABLE')) targetStart += 1
+      const target = parseWriteScopeTable(tokens, targetStart, database, dialect)
+      appendTable(target.table)
+      const indirectAt = ['SELECT', 'REFERENCES', 'RENAME']
+        .map((word) => findWriteScopeWord(tokens, word, target.next))
+        .find((index) => index >= 0)
+      if (indirectAt !== undefined) fail('SERVER_OPS_SQL_UNSUPPORTED', tokens[indirectAt]!.from, tokens[indirectAt]!.to)
+      continue
+    }
+
+    if (head === 'CREATE') {
+      if (!isWriteScopeWord(tokens[targetStart], 'TABLE')) fail('SERVER_OPS_SQL_UNSUPPORTED', tokens[targetStart]?.from ?? 0, tokens[targetStart]?.to ?? 0)
+      targetStart += 1
+      if (isWriteScopeWord(tokens[targetStart], 'IF') && isWriteScopeWord(tokens[targetStart + 1], 'NOT')
+        && isWriteScopeWord(tokens[targetStart + 2], 'EXISTS')) targetStart += 3
+      const target = parseWriteScopeTable(tokens, targetStart, database, dialect)
+      appendTable(target.table)
+      const likeAt = findWriteScopeWord(tokens, 'LIKE', target.next)
+      const referencesAt = findWriteScopeWord(tokens, 'REFERENCES', target.next)
+      if (likeAt >= 0 || referencesAt >= 0) {
+        const unsupportedAt = likeAt >= 0 ? likeAt : referencesAt
+        fail('SERVER_OPS_SQL_UNSUPPORTED', tokens[unsupportedAt]!.from, tokens[unsupportedAt]!.to)
+      }
+      if (selectAt >= 0) {
+        const previous = tokens[selectAt - 1]
+        if (!isWriteScopeWord(previous, 'AS')) fail('SERVER_OPS_SQL_UNSUPPORTED', tokens[selectAt]!.from, tokens[selectAt]!.to)
+        const source = analyzeServerOpsSqlQuery(statement.text.slice(tokens[selectAt]!.from), database, dialect)
+        source.tables.forEach(appendTable)
+      }
+      continue
+    }
+
+    if (head === 'DROP') {
+      if (!isWriteScopeWord(tokens[targetStart], 'TABLE')) fail('SERVER_OPS_SQL_UNSUPPORTED', tokens[targetStart]?.from ?? 0, tokens[targetStart]?.to ?? 0)
+      targetStart += 1
+      if (isWriteScopeWord(tokens[targetStart], 'IF') && isWriteScopeWord(tokens[targetStart + 1], 'EXISTS')) targetStart += 2
+      while (true) {
+        const target = parseWriteScopeTable(tokens, targetStart, database, dialect)
+        appendTable(target.table)
+        const next = tokens[target.next]
+        if (next?.kind === 'eof') break
+        if (next?.kind !== 'punctuation' || next.value !== ',') fail('SERVER_OPS_SQL_UNSUPPORTED', next?.from ?? 0, next?.to ?? 0)
+        targetStart = target.next + 1
+      }
+      continue
+    }
+
+    /** 未覆盖语法不会因“找不到表”而得到放行。 */
+    fail('SERVER_OPS_SQL_UNSUPPORTED', tokens[0]?.from ?? 0, tokens[0]?.to ?? 0)
+  }
+  return { tables }
 }
 
 /**

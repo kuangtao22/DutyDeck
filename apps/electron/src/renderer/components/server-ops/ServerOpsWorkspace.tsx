@@ -17,7 +17,6 @@ import {
   RefreshCw,
   Server,
   Settings2,
-  Shield,
   ShieldCheck,
   SquareTerminal,
   Trash2,
@@ -25,11 +24,6 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type {
-  AgentSessionMeta,
-  ServerOpsAgentAccess,
-  ServerOpsAgentAccessImpact,
-  ServerOpsAgentAccessChanged,
-  ServerOpsAgentAccessTarget,
   ServerOpsConnectionState,
   ServerOpsConnectionDraft,
   ServerOpsCredentialInput,
@@ -43,10 +37,8 @@ import type {
   ServerOpsAuditListResult,
   ServerOpsAuditRecord,
 } from '@proma/shared'
-import { isOrdinaryTopLevelAgentSession } from '@proma/shared'
-import { agentSessionsAtom, currentAgentSessionIdAtom } from '@/atoms/agent-atoms'
+import { currentAgentSessionIdAtom } from '@/atoms/agent-atoms'
 import {
-  serverOpsAgentAccessProjectionAtom,
   serverOpsConnectionStatesAtom,
   serverOpsDataSourcesAtom,
   serverOpsDataSourcesErrorAtom,
@@ -58,7 +50,7 @@ import {
   serverOpsProjectsErrorAtom,
   serverOpsProjectsStatusAtom,
 } from '@/atoms/server-ops-atoms'
-import type { ServerOpsAgentAccessProjection, ServerOpsAgentAccessStatus, ServerOpsHostsStatus } from '@/atoms/server-ops-atoms'
+import type { ServerOpsHostsStatus } from '@/atoms/server-ops-atoms'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -252,11 +244,6 @@ export interface ServerOpsWorkspaceViewProps {
   selectedHost: ServerOpsHost | null
   activeSection: ServerOpsSection
   connectionState?: ServerOpsConnectionState
-  agentAccessAvailable?: boolean
-  agentAccessGranted?: boolean
-  agentAccessStatus?: ServerOpsAgentAccessStatus
-  agentAccessError?: string | null
-  agentAccessDisabledReason?: string
   terminalContent?: React.ReactNode
   auditStatus?: 'idle' | 'loading' | 'ready' | 'error'
   auditError?: string | null
@@ -285,7 +272,6 @@ export interface ServerOpsWorkspaceViewProps {
   onSectionChange: (section: ServerOpsSection) => void
   onConnect?: () => void
   onDisconnect?: () => void
-  onToggleAgentAccess?: () => void
   onManageTrust?: () => void
   onRefresh?: () => void
   onAuditHostFilterChange?: (filter: 'current' | 'all') => void
@@ -491,11 +477,6 @@ export function ServerOpsWorkspaceView({
   selectedHost,
   activeSection,
   connectionState,
-  agentAccessAvailable = false,
-  agentAccessGranted = false,
-  agentAccessStatus = 'idle',
-  agentAccessError,
-  agentAccessDisabledReason,
   terminalContent,
   auditStatus = 'idle',
   auditError,
@@ -517,7 +498,6 @@ export function ServerOpsWorkspaceView({
   onSectionChange,
   onConnect,
   onDisconnect,
-  onToggleAgentAccess,
   onManageTrust,
   onRefresh,
   onAuditHostFilterChange,
@@ -531,18 +511,6 @@ export function ServerOpsWorkspaceView({
   const connectionPhase = connectionState?.phase ?? 'disconnected'
   /** 当前主机是否已建立真实 SSH 连接。 */
   const connected = connectionPhase === 'connected'
-  /** 授权按钮当前描述的下一步动作。 */
-  const agentAccessActionLabel = agentAccessDisabledReason ?? (agentAccessGranted
-    ? '撤销当前 Agent 的服务器权限'
-    : '允许当前 Agent 使用此服务器')
-  /** 同步阶段仍保留动作语义，并明确当前正在等待主进程事实。 */
-  const agentAccessTooltip = agentAccessStatus === 'loading'
-    ? `${agentAccessActionLabel}（正在同步当前 Agent 的服务器权限）`
-    : agentAccessError
-      ? `${agentAccessActionLabel}（上次同步失败：${agentAccessError}）`
-      : agentAccessActionLabel
-  /** 原生 disabled 按钮无法触发 Tooltip，禁用时由外层承担聚焦。 */
-  const agentAccessDisabled = !agentAccessAvailable || agentAccessStatus === 'loading'
   /** 标题栏显示的连接状态。 */
   const connectionLabel = connectionPhase === 'connecting' ? '正在连接'
     : connectionPhase === 'disconnecting' ? '正在断开'
@@ -591,43 +559,6 @@ export function ServerOpsWorkspaceView({
           {selectedHost && <div className="truncate font-mono text-[11px] text-muted-foreground">{selectedHost.username}@{selectedHost.address}:{selectedHost.port}</div>}
         </div>
         {selectedHost && <Badge variant="outline" className={cn('shrink-0 px-2 py-0 text-[10px] font-normal', connected ? 'border-emerald-500/40 text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')} data-server-ops-connection-badge>{connectionLabel}</Badge>}
-        <TooltipProvider delayDuration={200}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span
-                className="inline-flex"
-                data-server-ops-agent-access-tooltip-trigger
-                tabIndex={agentAccessDisabled ? 0 : undefined}
-                aria-label={agentAccessDisabled ? agentAccessTooltip : undefined}
-              >
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  data-server-ops-agent-access
-                  disabled={agentAccessDisabled}
-                  aria-label={agentAccessActionLabel}
-                  aria-pressed={agentAccessGranted}
-                  aria-busy={agentAccessStatus === 'loading' ? true : undefined}
-                  onClick={onToggleAgentAccess}
-                >
-                  {agentAccessStatus === 'loading'
-                    ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
-                    : agentAccessGranted
-                      ? <ShieldCheck className="size-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
-                      : <Shield className="size-3.5" aria-hidden="true" />}
-                </Button>
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">{agentAccessTooltip}</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-        {agentAccessStatus === 'loading' && (
-          <span className="sr-only" role="status">正在同步当前 Agent 的服务器权限</span>
-        )}
-        {agentAccessStatus === 'error' && agentAccessError && (
-          <span className="sr-only" role="status">当前 Agent 的服务器权限同步失败：{agentAccessError}</span>
-        )}
         {selectedHost && (
           <>
             {connected ? (
@@ -919,293 +850,6 @@ export function createServerOpsAuditController(options: ServerOpsAuditController
   }
 }
 
-/** 授权控制器依赖的最小 IPC 合同，便于独立验证异步竞态。 */
-interface ServerOpsAgentAccessControllerOptions {
-  getAccess: (target: ServerOpsAgentAccessTarget) => Promise<ServerOpsAgentAccess | null>
-  setAccess: (access: ServerOpsAgentAccess, impactToken?: string) => Promise<ServerOpsAgentAccess | null>
-  publish: (projection: ServerOpsAgentAccessProjection) => void
-  reportError: (message: string) => void
-}
-
-/** Renderer 授权投影的身份切换与异步代次控制器。 */
-export interface ServerOpsAgentAccessController {
-  activate: () => void
-  dispose: () => void
-  select: (target: ServerOpsAgentAccessTarget | null) => Promise<void>
-  toggle: (impactToken?: string) => Promise<boolean>
-  handleChanged: (event: ServerOpsAgentAccessChanged) => void
-  resetAfterDisconnect: (target: ServerOpsAgentAccessTarget) => void
-}
-
-/** 判断两个授权目标是否是同一个精确 sessionId + hostId 组合。 */
-function isSameAgentAccessTarget(
-  left: ServerOpsAgentAccessTarget | null,
-  right: ServerOpsAgentAccessTarget | null,
-): boolean {
-  return left?.sessionId === right?.sessionId && left?.hostId === right?.hostId
-}
-
-/** 组件绑定层输入，身份缺失时用于生成明确禁用原因。 */
-interface ServerOpsAgentAccessViewStateInput {
-  projection: ServerOpsAgentAccessProjection
-  sessionId: string | null
-  hostId: string | null
-  /** 会话存在但不可用于授权时的稳定原因；缺省表示确实没有会话。 */
-  sessionUnavailableReason?: string
-}
-
-/** 授权目标解析结果；`sessionId` 为 null 时不会发起任何主进程请求。 */
-export interface ServerOpsAgentAccessSessionResolution {
-  sessionId: string | null
-  unavailableReason?: string
-}
-
-/**
- * 解析可用于服务器授权的会话身份。
- *
- * 主进程只允许普通顶层交互式 Agent 获得服务器授权，定时任务、子会话与画布派生会话都会被拒绝。
- * 这里提前用同一份 `@proma/shared` 规则判断，把按钮置灰并给出原因，避免点下去才报错；
- * 真正的主进程守卫保持不变，渲染层判断只影响交互提示。
- *
- * @param sessions Renderer 已加载的会话元数据
- * @param sessionId 当前会话 ID
- * @returns 可授权时返回原 ID，不可授权时返回 null 与稳定原因
- */
-export function resolveServerOpsAgentAccessSession(
-  sessions: readonly AgentSessionMeta[],
-  sessionId: string | null,
-): ServerOpsAgentAccessSessionResolution {
-  if (!sessionId) return { sessionId: null }
-  /** 当前会话元数据；尚未加载时保持原行为，由主进程兜底。 */
-  const session = sessions.find((entry) => entry.id === sessionId)
-  if (!session) return { sessionId }
-  if (isOrdinaryTopLevelAgentSession(session)) return { sessionId }
-  return {
-    sessionId: null,
-    unavailableReason: '当前会话不是普通 Agent 会话（定时任务或子会话），请切换会话后再授权',
-  }
-}
-
-/** 授权身份依据全局连接选择解析，项目只控制连接列表的展示归属。 */
-interface ServerOpsAgentAccessTargetInput {
-  sessionId: string | null
-  projectViewActive: boolean
-  selectedConnectionId: string | null
-  connections: readonly ServerOpsConnection[]
-}
-
-/**
- * 移动主机时保留精确授权身份；显式进入项目、选择数据连接或删除主机仍解除绑定。
- * @param input 普通会话、显式导航状态、选中 ID 与全局连接事实
- * @returns 精确 sessionId + hostId 组合；没有有效 SSH 选择时返回 null
- */
-export function resolveServerOpsAgentAccessTarget(input: ServerOpsAgentAccessTargetInput): ServerOpsAgentAccessTarget | null {
-  if (!input.sessionId || input.projectViewActive) return null
-  /** 通过全局连接事实精确命中，不能从 ID 字符串推测已删除或不存在的主机。 */
-  const connection = input.connections.find((entry) => entry.id === input.selectedConnectionId)
-  return connection?.kind === 'ssh' && connection.hostId
-    ? { sessionId: input.sessionId, hostId: connection.hostId }
-    : null
-}
-
-/** 组件绑定层输出，属性名可直接传给纯展示组件。 */
-export interface ServerOpsAgentAccessViewState {
-  agentAccessAvailable: boolean
-  agentAccessGranted: boolean
-  agentAccessStatus: ServerOpsAgentAccessStatus
-  agentAccessError: string | null
-  agentAccessDisabledReason?: string
-}
-
-/** 在 effect 执行前同步隔离旧目标投影，避免按钮操作控制器旧身份。 */
-export function resolveServerOpsAgentAccessViewState({
-  projection,
-  sessionId,
-  hostId,
-  sessionUnavailableReason,
-}: ServerOpsAgentAccessViewStateInput): ServerOpsAgentAccessViewState {
-  if (!hostId) {
-    return {
-      agentAccessAvailable: false,
-      agentAccessGranted: false,
-      agentAccessStatus: 'idle',
-      agentAccessError: null,
-      agentAccessDisabledReason: '请先选择服务器',
-    }
-  }
-  if (!sessionId) {
-    return {
-      agentAccessAvailable: false,
-      agentAccessGranted: false,
-      agentAccessStatus: 'idle',
-      agentAccessError: null,
-      agentAccessDisabledReason: sessionUnavailableReason ?? '请先打开普通 Agent 会话',
-    }
-  }
-  /** 当前 render 对应的精确授权目标。 */
-  const target = { sessionId, hostId }
-  /** 旧投影不得短暂影响新目标；effect 随后会读取主进程事实。 */
-  if (!isSameAgentAccessTarget(projection.target, target)) {
-    return {
-      agentAccessAvailable: true,
-      agentAccessGranted: false,
-      agentAccessStatus: 'loading',
-      agentAccessError: null,
-    }
-  }
-  return {
-    agentAccessAvailable: true,
-    agentAccessGranted: isAgentAccessForTarget(projection.access, target) && projection.access.granted,
-    agentAccessStatus: projection.status,
-    agentAccessError: projection.error,
-  }
-}
-
-/** 判断授权事实是否属于指定的精确组合。 */
-function isAgentAccessForTarget(
-  access: ServerOpsAgentAccess | null,
-  target: ServerOpsAgentAccessTarget | null,
-): access is ServerOpsAgentAccess {
-  return Boolean(access && target && access.sessionId === target.sessionId && access.hostId === target.hostId)
-}
-
-/** 创建以主进程为权威、可抵御迟到 Promise 的授权投影控制器。 */
-export function createServerOpsAgentAccessController(
-  options: ServerOpsAgentAccessControllerOptions,
-): ServerOpsAgentAccessController {
-  /** 控制器当前负责的精确身份。 */
-  let target: ServerOpsAgentAccessTarget | null = null
-  /** 当前已发布投影，用于切换时保持既有权威事实。 */
-  let projection: ServerOpsAgentAccessProjection = { target: null, access: null, status: 'idle', error: null }
-  /** 每次身份、操作或相关事件变化都会递增，阻止旧 Promise 回写。 */
-  let revision = 0
-  /** 只有当前挂载 owner 可以发布投影或用户错误。 */
-  let active = false
-
-  /** 发布不可变投影，并同步控制器内部快照。 */
-  const publish = (next: ServerOpsAgentAccessProjection): void => {
-    if (!active) return
-    projection = next
-    options.publish(next)
-  }
-  /** 检查异步操作是否仍属于当前身份与代次。 */
-  const isCurrent = (expectedRevision: number, expectedTarget: ServerOpsAgentAccessTarget): boolean => (
-    active && revision === expectedRevision && isSameAgentAccessTarget(target, expectedTarget)
-  )
-  /** 把主进程返回的全局单槽事实投影到当前精确组合。 */
-  const projectAccess = (
-    current: ServerOpsAgentAccess | null,
-    expectedTarget: ServerOpsAgentAccessTarget,
-  ): ServerOpsAgentAccess | null => (
-    isAgentAccessForTarget(current, expectedTarget) && current.granted ? current : null
-  )
-
-  return {
-    activate: () => {
-      if (active) return
-      active = true
-      ++revision
-    },
-    dispose: () => {
-      active = false
-      ++revision
-      target = null
-      projection = { target: null, access: null, status: 'idle', error: null }
-    },
-    select: async (nextTarget) => {
-      if (!active) return
-      if (isSameAgentAccessTarget(target, nextTarget)) return
-      /** 身份切换前的组合必须先主动撤销。 */
-      const previousTarget = target
-      target = nextTarget
-      const operationRevision = ++revision
-      publish({
-        target: nextTarget,
-        access: null,
-        status: nextTarget ? 'loading' : 'idle',
-        error: null,
-      })
-
-      /** 旧组合撤销失败不阻断读取新组合，但会保留可见错误。 */
-      let revokeError: string | null = null
-      if (previousTarget) {
-        try {
-          await options.setAccess({ ...previousTarget, granted: false })
-        } catch (error) {
-          if (!active || revision !== operationRevision || !isSameAgentAccessTarget(target, nextTarget)) return
-          revokeError = getErrorMessage(error)
-          options.reportError(revokeError)
-        }
-      }
-      if (!nextTarget || !isCurrent(operationRevision, nextTarget)) return
-
-      try {
-        /** 身份切换完成后读取该组合的主进程权威事实。 */
-        const current = await options.getAccess(nextTarget)
-        if (!isCurrent(operationRevision, nextTarget)) return
-        publish({
-          target: nextTarget,
-          access: projectAccess(current, nextTarget),
-          status: revokeError ? 'error' : 'ready',
-          error: revokeError,
-        })
-      } catch (error) {
-        if (!isCurrent(operationRevision, nextTarget)) return
-        /** 查询失败不能沿用旧身份事实或伪造未授权成功。 */
-        const message = getErrorMessage(error)
-        publish({ target: nextTarget, access: null, status: 'error', error: message })
-        options.reportError(message)
-      }
-    },
-    toggle: async (impactToken) => {
-      if (!active || !target) return false
-      /** 捕获点击时的稳定身份，切换期间不得跟随外部选择漂移。 */
-      const operationTarget = target
-      const operationRevision = ++revision
-      /** 仅精确匹配的权威投影可以决定下一步是授权还是撤销。 */
-      const currentlyGranted = isAgentAccessForTarget(projection.access, operationTarget) && projection.access.granted
-      publish({ ...projection, target: operationTarget, status: 'loading', error: null })
-      try {
-        const current = await options.setAccess({ ...operationTarget, granted: !currentlyGranted }, impactToken)
-        if (!isCurrent(operationRevision, operationTarget)) return false
-        publish({
-          target: operationTarget,
-          access: projectAccess(current, operationTarget),
-          status: 'ready',
-          error: null,
-        })
-        return true
-      } catch (error) {
-        if (!isCurrent(operationRevision, operationTarget)) return false
-        /** 失败时保留操作前事实，绝不做乐观授权。 */
-        const message = getErrorMessage(error)
-        publish({ ...projection, target: operationTarget, status: 'error', error: message })
-        options.reportError(message)
-        return false
-      }
-    },
-    handleChanged: (event) => {
-      if (!active || !target) return
-      /** 当前组合成为全局槽位时接管新事实。 */
-      if (isAgentAccessForTarget(event.current, target)) {
-        ++revision
-        publish({ target, access: event.current.granted ? event.current : null, status: 'ready', error: null })
-        return
-      }
-      /** 当前组合离开全局槽位时立即撤销本地投影。 */
-      if (isAgentAccessForTarget(event.previous, target)) {
-        ++revision
-        publish({ target, access: null, status: 'ready', error: null })
-      }
-    },
-    resetAfterDisconnect: (disconnectedTarget) => {
-      if (!active || !isSameAgentAccessTarget(target, disconnectedTarget)) return
-      ++revision
-      publish({ target, access: null, status: 'ready', error: null })
-    },
-  }
-}
-
 /** 需要用户补录或替换 SSH 凭据的稳定错误码。 */
 const SERVER_OPS_CREDENTIAL_RECOVERY_CODES = new Set([
   'SERVER_OPS_CREDENTIAL_REQUIRED',
@@ -1256,8 +900,6 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
   React.useEffect(() => {
     setDraftProjectId(null)
   }, [currentAgentSessionId])
-  /** Renderer 已加载的会话元数据，用于提前判断会话是否支持服务器授权。 */
-  const [agentSessions] = useAtom(agentSessionsAtom)
   React.useEffect(() => {
     const api = window.electronAPI
     if (!currentAgentSessionId || !paneActive || !api.listServerOpsConnectionDrafts || !api.onServerOpsConnectionDraftChanged) {
@@ -1359,7 +1001,7 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
   /**
    * 单组件生命周期内稳定的项目控制器。
    *
-   * 项目是连接与 Agent 授权的顶层分组，因此它的加载与其它领域一样带 owner 代次；
+   * 项目是连接的顶层分组，因此它的加载与其它领域一样带 owner 代次；
    * 这里只负责把投影写进 atoms，选择器与侧栏在后续步骤消费这些 atoms。
    */
   const [projectController] = React.useState(() => createServerOpsProjectController({
@@ -1408,24 +1050,14 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
     dataSourceController.activate()
     return () => dataSourceController.dispose()
   }, [dataSourceController])
-  /** 当前精确组合的主进程授权事实投影。 */
-  const [agentAccessProjection, setAgentAccessProjection] = useAtom(serverOpsAgentAccessProjectionAtom)
-  /** 多资源只读授权桥接保持引用稳定，避免每次工作区渲染重新读取或重置弹窗。 */
-  const agentReadApi = React.useMemo(() => typeof window.electronAPI.getServerOpsAgentReadAccess === 'function' && typeof window.electronAPI.setServerOpsAgentReadAccess === 'function' ? {
-    get: window.electronAPI.getServerOpsAgentReadAccess,
-    set: window.electronAPI.setServerOpsAgentReadAccess,
-    impact: window.electronAPI.getServerOpsAgentAccessImpact,
-    onChanged: window.electronAPI.onServerOpsAgentReadAccessChanged,
-    listServerOpsDataSchemaTables: window.electronAPI.listServerOpsDataSchemaTables,
-  } : undefined, [])
-  /** 数据库持久禁用策略和会话租约分别使用独立桥接。 */
+  /** 数据库持久禁用策略独立于服务器和 Redis 连接状态。 */
   const databaseAgentPolicyApi = React.useMemo(() => typeof window.electronAPI.getServerOpsDatabaseAgentPolicy === 'function' && typeof window.electronAPI.setServerOpsDatabaseAgentPolicy === 'function' ? {
     get: window.electronAPI.getServerOpsDatabaseAgentPolicy,
     set: window.electronAPI.setServerOpsDatabaseAgentPolicy,
     onChanged: window.electronAPI.onServerOpsDatabaseAgentPolicyChanged,
   } : undefined, [])
-  /** 卡片只记录当前编辑目标；一个弹窗按需挂载，避免每张卡片订阅和读取授权。 */
-  const readAccessTargetAtom = React.useMemo(() => atom<{ connectionId: string; projectId: string; sessionId: string | null } | null>(null), [])
+  /** 卡片只记录当前数据库目标；一个弹窗按需挂载，避免每张卡片读取策略。 */
+  const readAccessTargetAtom = React.useMemo(() => atom<{ connectionId: string; projectId: string } | null>(null), [])
   const [readAccessTarget, setReadAccessTarget] = useAtom(readAccessTargetAtom)
   /** 弹窗关闭后恢复到发起操作的卡片按钮。 */
   const readAccessTriggerRef = React.useRef<HTMLElement | null>(null)
@@ -1512,16 +1144,6 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
       setAuditError(projection.error)
     },
   }))
-  /** 单组件生命周期内稳定的授权代次控制器，StrictMode effect 演练不会重建。 */
-  const [agentAccessController] = React.useState(() => createServerOpsAgentAccessController({
-    getAccess: (target) => window.electronAPI.getServerOpsAgentAccess(target),
-    setAccess: (access, impactToken) => window.electronAPI.setServerOpsAgentAccess(access, impactToken),
-    publish: setAgentAccessProjection,
-    reportError: (message) => toast.error('服务器授权同步失败', { description: message }),
-  }))
-  /** 旧 SSH 授权覆盖只读租约前展示的权威影响与原始 token。 */
-  const [pendingLegacyImpact, setPendingLegacyImpact] = React.useState<{ impact: ServerOpsAgentAccessImpact; target: ServerOpsAgentAccessTarget; error: string | null } | null>(null)
-
   /** 当前生效的项目；选择失效时回落到列表第一项，界面不停留在已删除项目上。 */
   const currentProjectId = resolveServerOpsCurrentProjectId(projects, selectedProjectId)
   /** 本地文件异步回执只允许影响仍处于同一项目的原 Pane。 */
@@ -1788,66 +1410,6 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
   }
   /** 当前选中主机的公开连接状态。 */
   const selectedConnectionState = selectedHost ? connectionStates[selectedHost.id] : undefined
-  /** 当前会话能否作为服务器授权目标；定时任务与子会话会被提前排除。 */
-  const agentAccessSession = resolveServerOpsAgentAccessSession(agentSessions, currentAgentSessionId)
-  /** 移动仅改变列表归属；按全局稳定身份保持授权，展示仍由当前项目 selectedHost 决定。 */
-  const agentAccessTarget = resolveServerOpsAgentAccessTarget({
-    sessionId: agentAccessSession.sessionId,
-    projectViewActive,
-    selectedConnectionId,
-    connections,
-  })
-  /** 异步影响读取完成时核对最新渲染目标，拒绝旧连接迟到回执。 */
-  const latestAgentAccessTarget = React.useRef(agentAccessTarget)
-  latestAgentAccessTarget.current = agentAccessTarget
-  /** render 同步门禁早于 effect，旧目标投影不会产生可点击窗口。 */
-  const agentAccessViewState = resolveServerOpsAgentAccessViewState({
-    projection: agentAccessProjection,
-    sessionId: agentAccessSession.sessionId,
-    hostId: selectedHost?.id ?? null,
-    ...(agentAccessSession.unavailableReason === undefined ? {} : { sessionUnavailableReason: agentAccessSession.unavailableReason }),
-  })
-  /** 旧授权入口先展示跨会话撤权影响，确认时只提交所见快照的 token。 */
-  const handleToggleAgentAccess = async (): Promise<void> => {
-    if (!agentAccessTarget) return
-    if (agentAccessViewState.agentAccessGranted) { await agentAccessController.toggle(); return }
-    try {
-      const impact = await window.electronAPI.getServerOpsAgentAccessImpact()
-      if (!isSameAgentAccessTarget(agentAccessTarget, latestAgentAccessTarget.current)) return
-      if (impact.legacy || impact.reads.length > 0) {
-        setPendingLegacyImpact({ impact, target: agentAccessTarget, error: null })
-      } else {
-        await agentAccessController.toggle(impact.token)
-      }
-    } catch (error) {
-      toast.error('读取授权影响失败', { description: getErrorMessage(error) })
-    }
-  }
-  /** CAS 冲突仍停留在确认对话框，刷新影响供重新审阅。 */
-  const confirmLegacyImpact = async (): Promise<void> => {
-    const pending = pendingLegacyImpact
-    if (!pending || !isSameAgentAccessTarget(pending.target, latestAgentAccessTarget.current)) { setPendingLegacyImpact(null); return }
-    const saved = await agentAccessController.toggle(pending.impact.token)
-    if (!isSameAgentAccessTarget(pending.target, latestAgentAccessTarget.current)) { setPendingLegacyImpact(null); return }
-    if (saved) { setPendingLegacyImpact(null); return }
-    try {
-      const impact = await window.electronAPI.getServerOpsAgentAccessImpact()
-      if (!isSameAgentAccessTarget(pending.target, latestAgentAccessTarget.current)) { setPendingLegacyImpact(null); return }
-      setPendingLegacyImpact({ ...pending, impact, error: '授权影响已变化，请核对后再次确认' })
-    } catch (error) {
-      setPendingLegacyImpact({ ...pending, error: getErrorMessage(error) })
-    }
-  }
-
-  React.useEffect(() => {
-    /** 每次真实挂载或 StrictMode setup 重放都建立新的 Renderer owner 代次。 */
-    agentAccessController.activate()
-    return () => {
-      /** 卸载只失效 Renderer 回调，绝不撤销主进程授权。 */
-      agentAccessController.dispose()
-    }
-  }, [agentAccessController])
-
   React.useEffect(() => {
     /** 每次真实挂载或 StrictMode setup 重放都建立新的审计 owner 代次。 */
     auditController.activate()
@@ -1861,18 +1423,6 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
     })
     return disposeState
   }, [setConnectionStates])
-
-  React.useEffect(() => {
-    /** 主进程全局单槽变化时只同步当前精确组合。 */
-    return window.electronAPI.onServerOpsAgentAccessChanged((event) => {
-      agentAccessController.handleChanged(event)
-    })
-  }, [agentAccessController])
-
-  React.useEffect(() => {
-    /** 控制器自行比较身份，StrictMode 重复 effect 不会撤销同一组合。 */
-    void agentAccessController.select(agentAccessTarget)
-  }, [agentAccessController, agentAccessTarget?.hostId, agentAccessTarget?.sessionId])
 
   /** 从主进程重新读取服务器资产。 */
   const loadHosts = React.useCallback(async (): Promise<void> => {
@@ -2068,12 +1618,9 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
   /** 断开当前主机并释放远程 PTY。 */
   const handleDisconnect = async (): Promise<void> => {
     if (!selectedHost) return
-    /** 断开开始时捕获精确身份，避免返回时错误清理新选择。 */
-    const disconnectedTarget = agentAccessTarget
     /** 主进程确认资源释放后的公开状态。 */
     const state = await window.electronAPI.disconnectServerOpsHost(selectedHost.id)
     setConnectionStates((current) => ({ ...current, [state.hostId]: state }))
-    if (disconnectedTarget) agentAccessController.resetAfterDisconnect(disconnectedTarget)
   }
 
   /** 原子保存主机，并在成功后更新全局选择。 */
@@ -2147,10 +1694,11 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
   const draftedHostId = requestedDraftHostId && projectDataSourceHosts.hostOptions.some((host) => host.id === requestedDraftHostId)
     ? requestedDraftHostId : undefined
   const draftedHost = projectDataSourceHosts.hostOptions.find((host) => host.id === draftedHostId)
-  /** 卡片和连接详情都显式绑定连接，不从项目级入口猜测目标。 */
-  const openReadAccess = (connection: ServerOpsConnection): void => {
+  /** 数据库卡片和详情都显式绑定连接，不从项目级入口猜测目标。 */
+  const openDatabasePolicy = (connection: ServerOpsConnection): void => {
+    if (connection.kind !== 'database') return
     readAccessTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    setReadAccessTarget({ connectionId: connection.id, projectId: currentProjectId ?? '', sessionId: currentAgentSessionId })
+    setReadAccessTarget({ connectionId: connection.id, projectId: currentProjectId ?? '' })
   }
   /** 关闭只丢弃编辑器，既有授权与持久禁用项保持原样。 */
   const closeReadAccess = (): void => {
@@ -2158,7 +1706,7 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
     if (readAccessTriggerRef.current?.isConnected) readAccessTriggerRef.current.focus()
   }
   /** 项目、会话或连接失效时不展示旧目标弹窗。 */
-  const readAccessConnection = readAccessTarget?.projectId === currentProjectId && readAccessTarget.sessionId === currentAgentSessionId
+  const readAccessConnection = readAccessTarget?.projectId === currentProjectId
     ? projectConnections.find((connection) => connection.id === readAccessTarget.connectionId) : undefined
   React.useEffect(() => {
     // 身份切走后清除旧目标，切回项目或会话时不能自动重开上次的弹窗。
@@ -2166,25 +1714,21 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
   }, [readAccessTarget, readAccessConnection, setReadAccessTarget])
   /** 全部卡片共用一个实际编辑器，只在用户点击后读取权限事实。 */
   const readAccessEditor = currentProject && readAccessConnection ? <ServerOpsAgentReadAccess
-    key={JSON.stringify([currentProject.id, currentAgentSessionId, readAccessConnection.id])}
+    key={JSON.stringify([currentProject.id, readAccessConnection.id])}
     dialogOnly
     connectionId={readAccessConnection.id}
     onClosed={closeReadAccess}
-    sessionId={agentAccessSession.sessionId}
-    unavailableReason={agentAccessSession.unavailableReason}
     projectId={currentProject.id}
-    projects={projects}
-    connections={projectConnections}
     allConnections={connections}
     dataSources={dataSources}
     viewScope={viewScope}
     activeSourceId={!projectViewActive && selectedDataSource !== null && selectedDataSource.id === readAccessConnection.sourceId ? selectedDataSource.id : undefined}
-    api={agentReadApi}
+    catalogApi={typeof window.electronAPI.listServerOpsDataSchemaTables === 'function' ? { listServerOpsDataSchemaTables: window.electronAPI.listServerOpsDataSchemaTables } : undefined}
     policyApi={databaseAgentPolicyApi}
   /> : undefined
-  /** 详情页保留当前服务的快捷入口，项目外层不再放授权按钮。 */
-  const readAccessControl = selectedConnection ? <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 text-xs"
-    aria-label={`Agent 只读授权：${selectedConnection.label}`} onClick={() => openReadAccess(selectedConnection)}><ShieldCheck className="size-3.5" />Agent 只读授权</Button> : undefined
+  /** 数据库保留禁用表入口；SSH 与 Redis 不再展示板块 Agent 授权。 */
+  const readAccessControl = selectedConnection?.kind === 'database' ? <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 text-xs"
+    aria-label={`管理禁用表：${selectedConnection.label}`} onClick={() => openDatabasePolicy(selectedConnection)}><ShieldCheck className="size-3.5" />管理禁用表</Button> : undefined
   /** 顶部导航只组合现有状态；数据库工作台展开时由其内部调用，避免导航被遮住。 */
   const renderWorkspaceToolbar = (content: ServerOpsWorkspaceToolbarContent = {}): React.ReactNode => (
     <ServerOpsWorkspaceToolbar projects={projects} projectId={currentProjectId} onSelectProject={handleSelectProject} onManageProjects={() => setDrawerOpen(true)} {...content} actions={readAccessControl} />
@@ -2224,7 +1768,7 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
       onFilterKindChange={(kind) => setProjectBrowseState({ ...projectBrowse, kind })}
       onSearchQueryChange={(query) => setProjectBrowseState({ ...projectBrowse, query })}
       onMoveConnection={projectsStatus === 'ready' ? handleMoveConnection : undefined}
-      onAgentReadAccess={openReadAccess}
+      onManageDatabasePolicy={openDatabasePolicy}
     />
   )
 
@@ -2250,7 +1794,6 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
           containerConsole={containerConsole}
           onContainerLogChange={setContainerLog}
           onContainerConsoleChange={setContainerConsole}
-          {...agentAccessViewState}
           terminalContent={selectedConnectionState?.phase === 'connected' && selectedConnectionState.connectionId
             ? <ServerOpsRemoteTerminal hostId={selectedHost.id} connectionId={selectedConnectionState.connectionId} />
             : undefined}
@@ -2269,7 +1812,6 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
           onSectionChange={setActiveSection}
           onConnect={handleOpenConnect}
           onDisconnect={() => { void handleDisconnect() }}
-          onToggleAgentAccess={() => { void handleToggleAgentAccess() }}
           onManageTrust={() => setTrustDialogOpen(true)}
           onRefresh={() => void loadHosts()}
           onAuditHostFilterChange={setAuditHostFilter}
@@ -2315,15 +1857,6 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
         {connectionPane}
       </div> : projectPane}
       {readAccessEditor}
-      <AlertDialog open={pendingLegacyImpact !== null} onOpenChange={(open) => { if (!open) setPendingLegacyImpact(null) }}>
-        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>替换现有运维授权？</AlertDialogTitle>
-          <AlertDialogDescription>授权当前服务器操作权限将撤销 {pendingLegacyImpact?.impact.reads.length ?? 0} 个会话的只读授权{pendingLegacyImpact?.impact.legacy ? `，并替换会话 ${pendingLegacyImpact.impact.legacy.sessionId} 的旧操作权限` : ''}。</AlertDialogDescription>
-        </AlertDialogHeader>
-          {pendingLegacyImpact?.impact.reads.length ? <ul className="max-h-36 overflow-auto text-xs text-muted-foreground">{pendingLegacyImpact.impact.reads.map((read) => <li key={read.sessionId}>{read.sessionId} · {read.resources.length} 项</li>)}</ul> : null}
-          {pendingLegacyImpact?.error ? <p role="alert" className="text-xs text-destructive">{pendingLegacyImpact.error}</p> : null}
-          <AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction onClick={(event) => { event.preventDefault(); void confirmLegacyImpact() }}>确认替换授权</AlertDialogAction></AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
       <ServerOpsProjectDrawer
         open={drawerOpen}
         projects={projects}

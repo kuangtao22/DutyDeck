@@ -1261,16 +1261,17 @@ export class AgentOrchestrator {
       const piSdk = await import('@earendil-works/pi-coding-agent')
       checkpoint()
       /** 仅已初始化 Server Ops 上下文与普通交互来源会得到非空会话级 Facade。 */
-      const serverOpsFacade = runToolMode === 'standard' ? createServerOpsAgentFacade({
+      const serverOpsFacade = runToolMode === 'standard' || runToolMode === 'server-ops-write' ? createServerOpsAgentFacade({
         sessionId,
         triggeredBy: input.triggeredBy,
         getSession: getAgentSessionMeta,
+        runSignal: runIdentity.signal, assertRunActive: runIdentity.assertActive,
       }) : undefined
-      /** 只读多资源能力复用同一真实运行身份，内部/自动化来源不继承用户临时授权。 */
+      /** 数据库能力复用真实运行身份；普通会话写入另走单次审批，内部来源不继承权限。 */
       const serverOpsReadFacade = createServerOpsAgentReadFacade({
         sessionId, triggeredBy: input.triggeredBy, getSession: getAgentSessionMeta,
         runSignal: runIdentity.signal, assertRunActive: runIdentity.assertActive,
-        allowDatabaseWrite: runToolMode === 'server-ops-write',
+        allowDatabaseWrite: runToolMode === 'standard' || runToolMode === 'server-ops-write',
       })
       /** 连接建议独立于已有主机授权，只在当前普通用户运行中生成待审阅草稿。 */
       const serverOpsConnectionDrafts = createServerOpsConnectionDraftAgent({
@@ -1696,6 +1697,46 @@ export class AgentOrchestrator {
           }
         }
 
+        // 远程命令使用独立窄只读语法。未知或高风险命令在 plan 中拒绝，其他模式也必须逐次审批。
+        if (toolName === 'server_exec' || toolName === 'server_docker_action' || toolName === 'server_files_mutate' || toolName === 'server_disconnect') {
+          if (!serverOpsFacade) return { behavior: 'deny' as const, message: '当前运行不具备服务器操作能力。' }
+          const command = typeof input.command === 'string' ? input.command : ''
+          if (toolName === 'server_exec' && isServerOpsReadOnlyCommand(command)) return { behavior: 'allow' as const, updatedInput: input }
+          if (currentMode === 'plan') {
+            return { behavior: 'deny' as const, message: '计划模式下仅允许只读服务器探测命令，请在计划获批后执行高风险操作。' }
+          }
+          const result = await permissionService.requestSingleApproval(
+            sessionId,
+            toolName,
+            input,
+            options,
+            (request) => {
+              if (denyStaleToolRun()) return
+              this.eventBus.emit(sessionId, { kind: 'proma_event', event: { type: 'permission_request', request } })
+            },
+          )
+          return revalidateSingleApprovalResult(result, denyStaleToolRun, getPermissionMode)
+        }
+
+        // 数据库写入始终使用 Agent 原生单次确认，优先于扩展自动审批与 bypass 分支。
+        if (toolName === 'ops_database_write' || toolName === 'ops_redis_write') {
+          if (currentMode === 'plan') {
+            return { behavior: 'deny' as const, message: '计划模式下不能修改数据库或 Redis，请在计划获批后执行。' }
+          }
+          if (toolName === 'ops_database_write' ? !serverOpsReadFacade?.databaseWrite : !serverOpsReadFacade?.redisWrite) {
+            return { behavior: 'deny' as const, message: '当前运行不具备该数据源写入能力。' }
+          }
+          /** 本次审批只批准当前数据修改调用，不能加入永久或会话白名单。 */
+          const result = await permissionService.requestSingleApproval(
+            sessionId, toolName, input, options,
+            (request) => {
+              if (denyStaleToolRun()) return
+              this.eventBus.emit(sessionId, { kind: 'proma_event', event: { type: 'permission_request', request } })
+            },
+          )
+          return revalidateSingleApprovalResult(result, denyStaleToolRun, getPermissionMode)
+        }
+
         /** 付费或高影响工具按可信运行策略决定逐次确认或自动执行，plan 与中止始终优先拒绝。 */
         if (extensions.singleApprovalToolNames?.includes(toolName)) {
           if (currentMode === 'plan') {
@@ -1806,29 +1847,9 @@ export class AgentOrchestrator {
           return { behavior: 'allow' as const, updatedInput: input }
         }
 
-        // 服务器元数据、连接和断开均由 Facade 再次校验当前会话与单槽授权，可直接放行。
-        if (['server_list', 'server_status', 'server_connect', 'server_disconnect', 'server_docker_resources', 'server_docker_detail', 'server_files_list', 'server_files_read'].includes(toolName)) {
+        // 服务器读取由 Facade 复核当前会话与本轮已连接身份；断开另走单次确认。
+        if (['server_list', 'server_status', 'server_connect', 'server_docker_resources', 'server_docker_detail', 'server_files_list', 'server_files_read'].includes(toolName)) {
           return { behavior: 'allow' as const, updatedInput: input }
-        }
-
-        // 远程命令使用独立窄只读语法。未知或高风险命令在 plan 中拒绝，其他模式也必须逐次审批。
-        if (toolName === 'server_exec' || toolName === 'server_docker_action' || toolName === 'server_files_mutate') {
-          const command = typeof input.command === 'string' ? input.command : ''
-          if (toolName === 'server_exec' && isServerOpsReadOnlyCommand(command)) return { behavior: 'allow' as const, updatedInput: input }
-          if (currentMode === 'plan') {
-            return { behavior: 'deny' as const, message: '计划模式下仅允许只读服务器探测命令，请在计划获批后执行高风险操作。' }
-          }
-          const result = await permissionService.requestSingleApproval(
-            sessionId,
-            toolName,
-            input,
-            options,
-            (request) => {
-              if (denyStaleToolRun()) return
-              this.eventBus.emit(sessionId, { kind: 'proma_event', event: { type: 'permission_request', request } })
-            },
-          )
-          return revalidateSingleApprovalResult(result, denyStaleToolRun, getPermissionMode)
         }
 
         // 视觉助手由用户在全局设置中显式启用并选择外发渠道；在正常会话中直接放行，
@@ -2015,7 +2036,7 @@ export class AgentOrchestrator {
         permissionMode: initialPermissionMode,
         collaborationAvailable,
         serverOpsAvailable: Boolean(serverOpsReadFacade || serverOpsFacade || serverOpsConnectionDrafts),
-        serverOpsWriteAvailable: runToolMode === 'server-ops-write',
+        serverOpsWriteAvailable: Boolean(serverOpsFacade),
         /** 工厂是工作区级能力：能建 facade 就说明这个会话能用它，注入场景设计方法论。 */
         capabilityFactoryAvailable: capabilityFactoryFacade !== null,
         currentModelId: selectedModelId,

@@ -22,28 +22,22 @@ function host(overrides: Partial<ServerOpsHost> = {}): ServerOpsHost {
 }
 
 function dependencies(options: {
-  access?: { sessionId: string; hostId: string }
   session?: Partial<AgentSessionMeta>
   state?: ServerOpsConnectionState
   auditAppend?: (input: ServerOpsAuditAppendInput) => ServerOpsAuditRecord | void
   prepareAudit?: () => Promise<void>
 } = {}): ServerOpsAgentFacadeDependencies {
   const savedHost = host()
-  const access = options.access ?? { sessionId: 'session-1', hostId: savedHost.id }
   return {
     getSession: () => ({ id: 'session-1', title: '普通会话', createdAt: 1, updatedAt: 1, ...options.session } as AgentSessionMeta),
     services: {
-      hosts: { get: (hostId) => hostId === savedHost.id ? savedHost : undefined },
-      access: {
-        getCurrent: () => ({ ...access, granted: true }),
-        get: (sessionId, hostId) => sessionId === access.sessionId && hostId === access.hostId
-          ? { ...access, granted: true }
-          : undefined,
-        revoke: () => true,
+      hosts: {
+        list: () => [savedHost],
+        get: (hostId) => hostId === savedHost.id ? savedHost : undefined,
       },
+      credentials: { getVersion: () => 'credential-version-1' },
       connections: {
-        getState: () => options.state ?? { hostId: savedHost.id, phase: 'disconnected' },
-        connect: async () => ({ hostId: savedHost.id, phase: 'connected', connectionId: 'connection-secret' }),
+        getState: () => options.state ?? { hostId: savedHost.id, phase: 'connected', connectionId: 'connection-secret' },
         exec: async () => ({ stdout: 'Linux\n', stderr: '', exitCode: 0, truncated: false }),
         disconnect: () => ({ hostId: savedHost.id, phase: 'disconnected' }),
       },
@@ -85,20 +79,19 @@ describe('Server Ops Agent Facade 安全边界', () => {
     expect(released).toHaveLength(1)
   })
 
-  test('Given 文件读取期间撤权 When 内容到达 Then 拒绝内容并释放本次读取 owner', async () => {
-    /** 模拟授权在远程读取期间失效。 */
+  test('Given 文件读取期间连接被替换 When 内容到达 Then 拒绝内容并释放本次读取 owner', async () => {
     const deps = dependencies()
-    let authorized = true
+    let connectionId = 'connection-secret'
     const released: string[] = []
-    deps.services.access.get = () => authorized ? { hostId: 'host-1', sessionId: 'session-1', granted: true } : undefined
+    deps.services.connections.getState = () => ({ hostId: 'host-1', phase: 'connected', connectionId })
     deps.services.files = {
       list: async () => { throw new Error('unused') },
-      preview: async () => { authorized = false; return { hostId: 'host-1', path: '/large', kind: 'too-large', bytesRead: 0, stat: { size: 2_000_000, mode: 33188, mtime: 1 } } },
+      preview: async () => { connectionId = 'connection-replaced'; return { hostId: 'host-1', path: '/large', kind: 'too-large', bytesRead: 0, stat: { size: 2_000_000, mode: 33188, mtime: 1 } } },
       mutateForAgent: async () => { throw new Error('unused') },
       releaseReader: (ownerKey) => { released.push(ownerKey) },
     }
     const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps })!
-    await expect(facade.filesRead!({ hostId: 'host-1', path: '/large' })).rejects.toThrow('SERVER_OPS_AGENT_ACCESS_REQUIRED')
+    await expect(facade.filesRead!({ hostId: 'host-1', path: '/large' })).rejects.toThrow('SERVER_OPS_CONNECTION_CHANGED')
     expect(released).toHaveLength(1)
     expect(released[0]).toStartWith('agent-read:session-1:')
   })
@@ -114,74 +107,160 @@ describe('Server Ops Agent Facade 安全边界', () => {
     const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps })!
     await expect(facade.filesList!({ hostId: 'host-1', path: '/' })).resolves.toEqual({ hostId: 'host-1', path: '/', entries: [], truncatedReason: 'item-limit' })
     expect(released).toHaveLength(1)
-    await expect(facade.filesList!({ hostId: 'host-2', path: '/' })).rejects.toThrow('SERVER_OPS_AGENT_ACCESS_REQUIRED')
+    await expect(facade.filesList!({ hostId: 'host-2', path: '/' })).rejects.toThrow('SERVER_OPS_CONNECTION_NOT_ACTIVE')
     expect(released).toHaveLength(1)
   })
-  test('Given Docker 查询期间授权撤销 When 回复到达 Then 不向 Agent 返回服务器数据', async () => {
+  test('Given Docker 查询期间连接被替换 When 回复到达 Then 不向 Agent 返回服务器数据', async () => {
     const deps = dependencies()
-    let authorized = true
-    deps.services.access.get = () => authorized ? { hostId: 'host-1', sessionId: 'session-1', granted: true } : undefined
+    let connectionId = 'connection-secret'
+    deps.services.connections.getState = () => ({ hostId: 'host-1', phase: 'connected', connectionId })
     deps.services.docker = {
-      listResources: async () => { authorized = false; return { hostId: 'host-1', capability: 'available', containers: [], images: [], networks: [], volumes: [], warnings: [] } },
+      listResources: async () => { connectionId = 'connection-replaced'; return { hostId: 'host-1', capability: 'available', containers: [], images: [], networks: [], volumes: [], warnings: [] } },
       getContainerDetail: async () => { throw new Error('unused') },
       runAgentAction: async () => { throw new Error('unused') },
     }
     const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps })!
-    await expect(facade.dockerResources!({ hostId: 'host-1' })).rejects.toThrow('SERVER_OPS_AGENT_ACCESS_REQUIRED')
+    await expect(facade.dockerResources!({ hostId: 'host-1' })).rejects.toThrow('SERVER_OPS_CONNECTION_CHANGED')
   })
-  test.each(['connect', 'exec', 'disconnect'] as const)(
-    'Given 审计 schema guard 等待期间授权被撤销 When Agent %s Then 不执行远程副作用',
+  test.each(['exec', 'disconnect'] as const)(
+    'Given 审计 schema guard 等待期间连接被替换 When Agent %s Then 不执行远程副作用',
     async (operation) => {
       let resolvePrepare!: () => void
       const preparePromise = new Promise<void>((resolve) => { resolvePrepare = resolve })
-      let authorized = true
+      let connectionId = 'connection-secret'
       let remoteCalls = 0
       const deps = dependencies({
         state: { hostId: 'host-1', phase: 'connected', connectionId: 'connection-secret' },
         prepareAudit: () => preparePromise,
       })
-      deps.services.access.get = () => authorized
-        ? { sessionId: 'session-1', hostId: 'host-1', granted: true }
-        : undefined
-      deps.services.connections.connect = async () => { remoteCalls += 1; return { hostId: 'host-1', phase: 'connected' } }
+      deps.services.connections.getState = () => ({ hostId: 'host-1', phase: 'connected', connectionId })
       deps.services.connections.exec = async () => { remoteCalls += 1; return { stdout: '', stderr: '', exitCode: 0, truncated: false } }
       deps.services.connections.disconnect = () => { remoteCalls += 1; return { hostId: 'host-1', phase: 'disconnected' } }
       const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps })!
 
-      const pending = operation === 'connect'
-        ? facade.connect({ hostId: 'host-1' })
-        : operation === 'exec'
-          ? facade.exec({ hostId: 'host-1', command: 'true' })
-          : facade.disconnect({ hostId: 'host-1' })
-      authorized = false
+      const pending = operation === 'exec'
+        ? facade.exec({ hostId: 'host-1', command: 'true' })
+        : facade.disconnect({ hostId: 'host-1' })
+      connectionId = 'connection-replaced'
       resolvePrepare()
 
-      await expect(Promise.resolve(pending)).rejects.toThrow('SERVER_OPS_AGENT_ACCESS_REQUIRED')
+      await expect(Promise.resolve(pending)).rejects.toThrow('SERVER_OPS_CONNECTION_CHANGED')
       expect(remoteCalls).toBe(0)
     },
   )
 
-  test('Given 普通会话已授权 When 列出服务器 Then 只返回唯一主机公开字段与状态', () => {
+  test('Given 普通会话创建时已有连接 When 列出服务器 Then 只返回唯一主机公开字段与状态', () => {
     const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: dependencies() })
 
     expect(facade?.list()).toEqual([{
       id: 'host-1', name: '生产机', address: '10.0.0.1', port: 22,
-      username: 'deploy', authMethod: 'password', tags: ['prod'], phase: 'disconnected',
+      username: 'deploy', authMethod: 'password', tags: ['prod'], phase: 'connected',
     }])
     expect(JSON.stringify(facade?.list())).not.toContain('credentialRef')
   })
 
-  test('Given 授权缺失或目标不匹配 When 调用工具 Then 稳定拒绝且不泄漏资产存在性', () => {
-    const facade = createServerOpsAgentFacade({
-      sessionId: 'session-1',
-      dependencies: dependencies({ access: { sessionId: 'other-session', hostId: 'host-1' } }),
-    })
+  test('Given 主机在本轮创建后重连 When 列目录或执行 Then 旧闭包不继承新 connectionId', async () => {
+    const deps = dependencies()
+    let connectionId = 'connection-secret'
+    deps.services.connections.getState = () => ({ hostId: 'host-1', phase: 'connected', connectionId })
+    const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps })!
+    connectionId = 'connection-replaced'
 
-    expect(() => facade?.list()).toThrow('SERVER_OPS_AGENT_ACCESS_REQUIRED')
-    expect(() => facade?.status({ hostId: 'host-2' })).toThrow('SERVER_OPS_AGENT_ACCESS_REQUIRED')
+    expect(facade.list()).toEqual([])
+    await expect(facade.exec({ hostId: 'host-1', command: 'true' })).rejects.toThrow('SERVER_OPS_CONNECTION_CHANGED')
   })
 
-  test('Given Host Key 等待确认 When 查询状态 Then 返回指纹提示但省略 candidateId 与 connectionId', () => {
+  test('Given 一个已保存主机身份损坏 When 创建本轮 Then 其它已连接主机仍可列出', () => {
+    const good = host()
+    const broken = host({ id: 'host-2', address: '10.0.0.2', credentialRef: 'broken-ref' })
+    const deps = dependencies()
+    deps.services.hosts = {
+      list: () => [broken, good],
+      get: (hostId) => hostId === broken.id ? broken : hostId === good.id ? good : undefined,
+    }
+    deps.services.credentials = {
+      getVersion: (hostId) => {
+        if (hostId === broken.id) throw new Error('broken credential metadata')
+        return 'credential-version-1'
+      },
+    }
+    deps.services.connections.getState = (hostId) => ({ hostId, phase: 'connected', connectionId: `connection-${hostId}` })
+    const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps })!
+
+    expect(facade.list().map(entry => entry.id)).toEqual(['host-1'])
+  })
+
+  test('Given 命令发出后连接身份变化 When 返回 Then 审计 unknown 且不发布旧结果', async () => {
+    const records: ServerOpsAuditAppendInput[] = []
+    const deps = dependencies({ auditAppend: input => { records.push(input) } })
+    let connectionId = 'connection-secret'
+    deps.services.connections.getState = () => ({ hostId: 'host-1', phase: 'connected', connectionId })
+    deps.services.connections.exec = async () => {
+      connectionId = 'connection-replaced'
+      return { stdout: 'stale output', stderr: '', exitCode: 0, truncated: false }
+    }
+    const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps })!
+
+    await expect(facade.exec({ hostId: 'host-1', command: 'touch /srv/app/restart' }))
+      .rejects.toThrow('SERVER_OPS_REMOTE_OUTCOME_UNKNOWN')
+    expect(records.at(-1)).toMatchObject({ operation: 'exec', phase: 'result', outcome: 'unknown', errorCode: 'SERVER_OPS_REMOTE_OUTCOME_UNKNOWN' })
+    expect(JSON.stringify(records)).not.toContain('stale output')
+  })
+
+  test('Given 本轮取消、代次失效或会话归档 When 再次调用 Then 旧闭包立即拒绝', () => {
+    const controller = new AbortController()
+    let active = true
+    let archived = false
+    const deps = dependencies()
+    deps.getSession = () => ({
+      id: 'session-1', title: '普通会话', createdAt: 1, updatedAt: 1,
+      ...(archived ? { archived: true } : {}),
+    } as AgentSessionMeta)
+    const facade = createServerOpsAgentFacade({
+      sessionId: 'session-1', dependencies: deps, runSignal: controller.signal,
+      assertRunActive: () => { if (!active) throw new Error('SERVER_OPS_AGENT_RUN_STALE') },
+    })!
+
+    active = false
+    expect(() => facade.status({ hostId: 'host-1' })).toThrow('SERVER_OPS_AGENT_RUN_STALE')
+    active = true
+    archived = true
+    expect(() => facade.status({ hostId: 'host-1' })).toThrow('SERVER_OPS_AGENT_SESSION_NOT_ALLOWED')
+    archived = false
+    controller.abort()
+    expect(() => facade.status({ hostId: 'host-1' })).toThrow('SERVER_OPS_AGENT_RUN_CANCELLED')
+  })
+
+  test('Given 没有 Agent 授权但主机已保存并连接 When 调用服务器工具 Then 直接使用本轮连接快照', async () => {
+    const deps = dependencies({ state: { hostId: 'host-1', phase: 'connected', connectionId: 'connection-secret' } })
+    const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps })!
+
+    expect(facade.list().map((entry) => entry.id)).toEqual(['host-1'])
+    await expect(facade.exec({ hostId: 'host-1', command: 'uname -a' })).resolves.toMatchObject({ exitCode: 0 })
+  })
+
+  test('Given SSH 配置或凭据身份在本轮中变化 When Agent 操作 Then 旧闭包拒绝访问', () => {
+    const deps = dependencies()
+    let credentialVersion = 'credential-version-1'
+    deps.services.credentials = { getVersion: () => credentialVersion }
+    const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps })!
+    credentialVersion = 'credential-version-2'
+
+    expect(() => facade.status({ hostId: 'host-1' })).toThrow('SERVER_OPS_AGENT_RESOURCE_CHANGED')
+  })
+
+  test('Given 创建本轮时未连接或目标不在快照 When 调用工具 Then 稳定拒绝且不建立连接', async () => {
+    const facade = createServerOpsAgentFacade({
+      sessionId: 'session-1',
+      dependencies: dependencies({ state: { hostId: 'host-1', phase: 'disconnected' } }),
+    })!
+
+    expect(facade.list()).toEqual([])
+    expect(() => facade.status({ hostId: 'host-2' })).toThrow('SERVER_OPS_CONNECTION_NOT_ACTIVE')
+    await expect(facade.connect({ hostId: 'host-1' })).rejects.toThrow('SERVER_OPS_CONNECTION_NOT_ACTIVE')
+  })
+
+  test('Given Host Key 仍待确认 When 查询状态 Then 不把未连接目标暴露给 Agent', () => {
     const facade = createServerOpsAgentFacade({
       sessionId: 'session-1',
       dependencies: dependencies({
@@ -192,14 +271,10 @@ describe('Server Ops Agent Facade 安全边界', () => {
       }),
     })
 
-    expect(facade?.status({ hostId: 'host-1' })).toEqual({
-      hostId: 'host-1', phase: 'host-key-required',
-      hostKey: { algorithm: 'ssh-ed25519', fingerprint: 'SHA256:abc' },
-      message: '请在服务器运维界面确认服务器指纹后重新连接。',
-    })
+    expect(() => facade?.status({ hostId: 'host-1' })).toThrow('SERVER_OPS_CONNECTION_NOT_ACTIVE')
   })
 
-  test('Given 会话在授权后变为内部会话 When 再次调用 Then fresh 校验拒绝执行', async () => {
+  test('Given 会话在本轮创建后变为内部会话 When 再次调用 Then fresh 校验拒绝执行', async () => {
     let currentSession: Partial<AgentSessionMeta> = { id: 'session-1', title: '普通会话' }
     const deps = dependencies()
     deps.getSession = () => ({ createdAt: 1, updatedAt: 1, ...currentSession } as AgentSessionMeta)
@@ -240,16 +315,16 @@ describe('Server Ops Agent Facade 安全边界', () => {
     },
   )
 
-  test('Given 已连接授权主机 When 执行命令并断开 Then 使用内部 connectionId 且立即撤销授权', async () => {
+  test('Given 已连接主机 When 执行命令并断开 Then 使用本轮冻结的内部 connectionId', async () => {
     const calls: unknown[] = []
     const deps = dependencies({ state: { hostId: 'host-1', phase: 'connected', connectionId: 'connection-secret' } })
     deps.services.connections.exec = async (...args) => {
       calls.push(args)
       return { stdout: 'ok', stderr: '', exitCode: 0, truncated: false }
     }
-    deps.services.access.revoke = (...args) => {
-      calls.push(['revoke', ...args])
-      return true
+    deps.services.connections.disconnect = () => {
+      calls.push(['disconnect', 'host-1'])
+      return { hostId: 'host-1', phase: 'disconnected' }
     }
     const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps })!
 
@@ -258,10 +333,10 @@ describe('Server Ops Agent Facade 安全边界', () => {
     })
     expect(calls[0]).toEqual(['host-1', 'connection-secret', 'uname -a', 30000])
     expect(await facade.disconnect({ hostId: 'host-1' })).toEqual({ hostId: 'host-1', phase: 'disconnected' })
-    expect(calls[1]).toEqual(['revoke', 'session-1', 'host-1'])
+    expect(calls[1]).toEqual(['disconnect', 'host-1'])
   })
 
-  test('Given 底层断开抛错 When Agent 断开服务器 Then 仍撤销授权并向上抛原错误', async () => {
+  test('Given 底层断开抛错 When Agent 断开服务器 Then 向上抛原错误且不依赖授权清理', async () => {
     const calls: string[] = []
     const disconnectError = new Error('SSH_DISCONNECT_FAILED')
     const deps = dependencies()
@@ -269,17 +344,13 @@ describe('Server Ops Agent Facade 安全边界', () => {
       calls.push('disconnect')
       throw disconnectError
     }
-    deps.services.access.revoke = () => {
-      calls.push('revoke')
-      return true
-    }
     const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps })!
 
     await expect(facade.disconnect({ hostId: 'host-1' })).rejects.toBe(disconnectError)
-    expect(calls).toEqual(['disconnect', 'revoke'])
+    expect(calls).toEqual(['disconnect'])
   })
 
-  test('Given connect、exec 与 disconnect 成功 When Agent 操作 Then 每次远程动作前后写 start/result 且不记录输出和内部标识', async () => {
+  test('Given exec 与 disconnect 成功 When Agent 操作 Then 每次远程动作前后写 start/result 且不记录输出和内部标识', async () => {
     /** 捕获 Facade 交给 Store 的公开审计输入。 */
     const auditCalls: ServerOpsAuditAppendInput[] = []
     const deps = dependencies({
@@ -293,27 +364,24 @@ describe('Server Ops Agent Facade 安全边界', () => {
     await facade.disconnect({ hostId: 'host-1' })
 
     expect(auditCalls.map(({ actor, operation, phase, outcome }) => ({ actor, operation, phase, outcome }))).toEqual([
-      { actor: 'agent', operation: 'connect', phase: 'start', outcome: 'pending' },
-      { actor: 'agent', operation: 'connect', phase: 'result', outcome: 'success' },
       { actor: 'agent', operation: 'exec', phase: 'start', outcome: 'pending' },
       { actor: 'agent', operation: 'exec', phase: 'result', outcome: 'success' },
       { actor: 'agent', operation: 'disconnect', phase: 'start', outcome: 'pending' },
       { actor: 'agent', operation: 'disconnect', phase: 'result', outcome: 'success' },
     ])
     /** 每次操作的开始与结果共享身份，不同操作之间身份必须隔离。 */
-    const [connectStart, connectResult, execStart, execResult, disconnectStart, disconnectResult] = auditCalls
-    if (!connectStart || !connectResult || !execStart || !execResult || !disconnectStart || !disconnectResult) {
+    const [execStart, execResult, disconnectStart, disconnectResult] = auditCalls
+    if (!execStart || !execResult || !disconnectStart || !disconnectResult) {
       throw new Error('审计记录数量不完整')
     }
-    expect(connectStart.operationId).toBe(connectResult.operationId)
     expect(execStart.operationId).toBe(execResult.operationId)
     expect(disconnectStart.operationId).toBe(disconnectResult.operationId)
-    expect(new Set([connectStart.operationId, execStart.operationId, disconnectStart.operationId]).size).toBe(3)
+    expect(new Set([execStart.operationId, disconnectStart.operationId]).size).toBe(2)
     expect(auditCalls.every((record) => record.sessionId === 'session-1' && record.windowId === undefined)).toBe(true)
     expect(JSON.stringify(auditCalls)).not.toMatch(/Linux|connection-secret|credentialRef|stdout|stderr/)
-    expect(auditCalls[3]).toMatchObject({ operation: 'exec', phase: 'result', outcome: 'success', exitCode: 0 })
+    expect(auditCalls[1]).toMatchObject({ operation: 'exec', phase: 'result', outcome: 'success', exitCode: 0 })
     expect(auditCalls[1]).not.toHaveProperty('resultCode')
-    expect(auditCalls[5]).not.toHaveProperty('resultCode')
+    expect(auditCalls[3]).not.toHaveProperty('resultCode')
   })
 
   test.each([
@@ -369,16 +437,16 @@ describe('Server Ops Agent Facade 安全边界', () => {
     expect(remoteCalls).toBe(0)
   })
 
-  test('Given start 审计写入失败 When Agent 连接 Then 稳定 fail closed 且远程方法零调用', async () => {
+  test('Given start 审计写入失败 When Agent 执行命令 Then 稳定 fail closed 且远程方法零调用', async () => {
     let remoteCalls = 0
     const deps = dependencies({ auditAppend: () => { throw new Error('disk secret') } })
-    deps.services.connections.connect = async () => {
+    deps.services.connections.exec = async () => {
       remoteCalls += 1
-      return { hostId: 'host-1', phase: 'connected' }
+      return { stdout: '', stderr: '', exitCode: 0, truncated: false }
     }
     const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps })!
 
-    await expect(facade.connect({ hostId: 'host-1' })).rejects.toThrow('SERVER_OPS_AUDIT_START_WRITE_FAILED')
+    await expect(facade.exec({ hostId: 'host-1', command: 'true' })).rejects.toThrow('SERVER_OPS_AUDIT_START_WRITE_FAILED')
     expect(remoteCalls).toBe(0)
   })
 
@@ -399,7 +467,7 @@ describe('Server Ops Agent Facade 安全边界', () => {
     })
   })
 
-  test.each(['connect', 'exec', 'disconnect'] as const)(
+  test.each(['exec', 'disconnect'] as const)(
     'Given %s 远程失败且 result 审计也失败 When 返回 Then 保留远程错误并附公开 warning',
     async (operation) => {
       const remoteError = Object.assign(new Error(`REMOTE_${operation.toUpperCase()}_FAILED`), {
@@ -413,14 +481,12 @@ describe('Server Ops Agent Facade 安全边界', () => {
           if (appendCount === 2) throw new Error('AUDIT_RESULT_FAILED')
         },
       })
-      if (operation === 'connect') deps.services.connections.connect = async () => { throw remoteError }
       if (operation === 'exec') deps.services.connections.exec = async () => { throw remoteError }
       if (operation === 'disconnect') deps.services.connections.disconnect = () => { throw remoteError }
       const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps })!
 
       /** 统一调用不同返回类型的 Facade 方法，便于检查其公开错误。 */
       const invoke = async (): Promise<unknown> => {
-        if (operation === 'connect') return facade.connect({ hostId: 'host-1' })
         if (operation === 'exec') return facade.exec({ hostId: 'host-1', command: 'false' })
         return facade.disconnect({ hostId: 'host-1' })
       }

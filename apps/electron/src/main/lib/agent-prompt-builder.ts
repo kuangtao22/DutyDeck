@@ -34,7 +34,7 @@ interface SystemPromptContext {
   collaborationAvailable?: boolean
   /** 本轮具备运维能力时注入数据库脚本交付约束，不增加任何执行权限。 */
   serverOpsAvailable?: boolean
-  /** 本轮显式选择运维读写模式时，说明 Agent 可以调用受控数据库写工具。 */
+  /** 本轮可使用已保存运维连接时，说明服务器与数据库受控工具边界。 */
   serverOpsWriteAvailable?: boolean
   /** 本轮具备编排工厂能力时注入"场景该怎么设计"的方法论，不增加任何执行权限。 */
   capabilityFactoryAvailable?: boolean
@@ -207,10 +207,10 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 - 一项操作确定需要可见终端时，**优先复用而非新开 Tab**：先用 \`TerminalList\` 查看本会话终端，选择 cwd 一致、仍在运行且你已观察到上一条命令结束的终端，并在 \`TerminalExecute\` 中传入 \`terminalId\`。仅在没有这种安全候选、cwd 或 shell 必须改变、或需要让用户独立观察并行会话时，才新开终端。交互式、长驻或忙碌状态不明的终端不可复用；需要确认完成状态或命令结果时使用 \`TerminalRead\`。`,
     WORKFLOW_PROMPT,
     ctx.serverOpsAvailable && !ctx.serverOpsWriteAvailable
-      ? `## 服务器运维与数据库变更\n- 新增连接使用 \`ops_connection_prepare\` 生成草稿；在运维面板选择项目、填写凭据、测试并保存，草稿成功不代表已保存或已连接。不要索取聊天中的密码或私钥。\n- 已保存的 MySQL/PostgreSQL/SQLite 连接默认允许只读访问未禁用的业务表；可在运维面板设置持久禁用表，MySQL 系统库与 PostgreSQL 系统 schema 不可访问。PostgreSQL 表必须使用目录返回的 canonical \`"schema"."table"\` 身份，未限定 schema 的 SQL 固定解析到 public。库名未知时用 \`ops_database_tables\` 按需发现，不猜测目标。SSH、Redis 和日志仍须分别在运维面板授权；发现服务不会自动建立或授权连接。\n- **写库由用户手工执行，不提供给你任何写工具**：当前手工写入仅支持直连 MySQL 和本地 SQLite；PostgreSQL 和 SSH 隧道尚不支持。用户可以在数据库工作台「SQL 查询」页开启「写模式」，粘贴语句、确认后执行；你只能**产出可直接粘贴的 SQL**，不能代为执行、也不能声称自己执行了。用户说「我开了写模式」「帮我写一条更新语句」时，按这个含义理解：给他一段能直接用的 SQL，并写清目标库、预期影响行数、是否可回滚（MySQL 的建表改表会隐式提交、无法回滚；SQLite 整段包在一个事务里，只有收到可靠回执才可确认回滚），以及建议的预检查（先 SELECT 核对范围）。断线、超时或取消可能返回「结果未知」，必须先核对实际数据，不能承诺已回滚或建议直接重跑。不要输出「我无法写数据库」这类推给用户自己想办法的话。\n- 数据库的数据、字段、索引、备注等变更只交付可审查脚本或程序。先使用 \`ops_database_change_context\` 取得允许读取的结构证据。\n${SERVER_OPS_DATABASE_CHANGE_WORKFLOW.map((step) => `- ${step}`).join('\n')}\n- 运维只读模式没有项目文件读写能力时，明确缺少程序上下文，并以代码块交付待完善草稿；不能切换工具或自动扩大权限。`
+      ? `## 服务器运维与数据库变更\n- 新增连接使用 \`ops_connection_prepare\` 生成草稿；在运维面板选择项目、填写凭据、测试并保存，草稿成功不代表已保存或已连接。不要索取聊天中的密码或私钥。\n- 已保存的 MySQL/PostgreSQL/SQLite 连接默认允许只读访问未禁用的业务表；可在运维面板设置持久禁用表，MySQL 系统库与 PostgreSQL 系统 schema 不可访问。PostgreSQL 表必须使用目录返回的 canonical \`"schema"."table"\` 身份，未限定 schema 的 SQL 固定解析到 public。库名未知时用 \`ops_database_tables\` 按需发现，不猜测目标。SSH、Redis 和日志不需要额外的板块授权。服务器保存并连接后可直接使用，Redis 使用已保存配置按请求连接；SSH 隧道须已连接。发现服务不会自动建立 SSH 连接。\n- 用户要求实际修改数据库时，使用当前可用的 \`ops_database_write\` 发起写入：不需要额外的服务器 Agent 授权，每次执行都由 Agent 原生确认弹窗逐次批准，完全自动模式也不能跳过，不先追加一轮文字确认。写入仅支持直连 MySQL 和本地 SQLite；PostgreSQL 与 SSH 隧道尚不支持。先核对目标库和数据范围，说明预期影响及恢复方式；MySQL DDL 不承诺事务回滚。只要求生成 SQL 时交付可审查脚本；运维只读/计划模式不可写，不能自动切换或扩大权限。用户也可在数据库工作台「SQL 查询」页开启「写模式」手工确认执行。断线、超时或取消可能返回「结果未知」；结果为 \`partial\` 或 \`unknown\` 时必须先核对实际数据，不能承诺已回滚或直接重试。\n- 数据库的数据、字段、索引、备注等变更先准备可审查脚本或程序，再按当前工具能力和逐次审批执行。先使用 \`ops_database_change_context\` 取得允许读取的结构证据。\n${SERVER_OPS_DATABASE_CHANGE_WORKFLOW.map((step) => `- ${step}`).join('\n')}\n- 运维只读模式没有项目文件读写能力时，明确缺少程序上下文，并以代码块交付待完善草稿；不能切换工具或自动扩大权限。`
       : undefined,
     ctx.serverOpsWriteAvailable
-      ? '## 服务器运维读写模式\n- 当前会话可调用 `ops_database_write` 执行受控数据库写脚本，仅支持直连 MySQL 与本地 SQLite；写入目标受已保存数据源、非系统库和当前会话运行身份约束。先用只读工具核对目标库、表和影响范围，写入结果必须按 `committed`、`rolled-back`、`partial` 或 `unknown` 处理；`partial`/`unknown` 先核对实际数据，绝不直接重试。PostgreSQL 与 SSH 隧道不可写。'
+      ? '## 服务器与 Redis 运维\n- 当前会话可调用受控服务器、Docker、远程文件和数据库工具。服务器修改命令、容器动作、文件变更、断开连接及数据库/Redis 写入都要先核对目标并经过 Agent 原生单次确认，完全自动模式不能跳过或永久授权；只读操作直接执行，不先追加文字确认。结果必须写入审计；不得索取或输出凭据。Redis 使用 ops_redis_read / ops_redis_write 执行有界单键操作，不支持脚本、管理命令或跨逻辑库；unknown 结果必须先核对实际状态，不能直接重试。\n- `ops_database_write` 仅支持直连 MySQL 与本地 SQLite，目标受已保存数据源、非系统库、禁用表和当前会话身份约束。写入结果按 `committed`、`rolled-back`、`partial` 或 `unknown` 处理；`partial`/`unknown` 先核对实际数据，绝不直接重试。PostgreSQL 与 SSH 隧道不可写。'
       : undefined,
     planningPrompt,
     ctx.collaborationAvailable

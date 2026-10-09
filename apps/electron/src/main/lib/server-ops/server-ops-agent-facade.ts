@@ -26,6 +26,8 @@ import { isOrdinaryTopLevelAgentSession } from '../agent-session-visibility'
 import { getServerOpsServiceContext } from './server-ops-service-context'
 import type { ServerOpsRuntimeExecResult } from '../../../utility/server-ops/server-ops-runtime-protocol'
 import { getServerOpsAuditErrorCode } from './server-ops-audit-store'
+import { captureServerOpsReadBindings } from './server-ops-agent-read-identity'
+import type { ServerOpsAgentReadBinding } from './server-ops-agent-access-store'
 
 /** Agent 可见的审计降级警告。 */
 export type ServerOpsAgentWarning = 'SERVER_OPS_AUDIT_RESULT_WRITE_FAILED'
@@ -67,9 +69,10 @@ interface ServerOpsAgentOperationError extends Error {
 
 /** Facade 使用的最小服务边界，防止意外取得凭据或 Host Key 确认能力。 */
 export interface ServerOpsAgentFacadeServices {
-  hosts: Pick<import('./server-ops-ipc').ServerOpsHostStoreContract, 'get'>
-  access: Pick<import('./server-ops-agent-access-store').ServerOpsAgentAccessStore, 'get' | 'getCurrent' | 'revoke'>
-  connections: Pick<import('./server-ops-ipc').ServerOpsConnectionContract, 'getState' | 'connect' | 'exec' | 'disconnect'>
+  hosts: Pick<import('./server-ops-ipc').ServerOpsHostStoreContract, 'list' | 'get'>
+  /** 只读取不可逆凭据版本，用于每次操作确认仍绑定同一连接身份。 */
+  credentials?: { getVersion?: (hostId: string, credentialRef?: string) => string | null }
+  connections: Pick<import('./server-ops-ipc').ServerOpsConnectionContract, 'getState' | 'exec' | 'disconnect'>
   audit: Pick<import('./server-ops-audit-store').ServerOpsAuditStore, 'append'>
     & { prepareForWrites?: () => Promise<void> }
   docker?: Pick<import('./server-ops-docker-service').ServerOpsDockerService, 'listResources' | 'getContainerDetail' | 'runAgentAction'>
@@ -97,6 +100,17 @@ export interface CreateServerOpsAgentFacadeInput {
   /** Orchestrator 提供的权威会话读取器；避免 Facade 隐式发现运行上下文。 */
   getSession?: (sessionId: string) => AgentSessionMeta | undefined
   dependencies?: ServerOpsAgentFacadeDependencies
+  /** 由编排器提供的本轮取消，不改变已保存服务器和连接。 */
+  runSignal?: AbortSignal
+  /** 主进程复核运行代次；旧工具闭包不能跨运行继续使用。 */
+  assertRunActive?: () => void
+}
+
+/** Facade 创建时冻结的已保存主机、配置指纹与活跃连接。 */
+interface ServerOpsAgentConnectedHostSnapshot {
+  hostId: string
+  connectionId: string
+  binding: ServerOpsAgentReadBinding
 }
 
 /** 模型可调用的服务器运维能力。 */
@@ -158,7 +172,7 @@ function attachAuditResultWarning(error: unknown): ServerOpsAgentOperationError 
   return wrapped
 }
 
-/** 创建仅持有公开主机、连接和内存授权能力的会话级 Facade。 */
+/** 创建仅持有公开主机、已连接快照与受控操作能力的会话级 Facade。 */
 export function createServerOpsAgentFacade(input: CreateServerOpsAgentFacadeInput): ServerOpsAgentFacade | null {
   if (!isInteractiveRunSource(input.triggeredBy)) return null
   /** 未显式注入时只读取已初始化的全局上下文，不创建 fallback。 */
@@ -167,7 +181,7 @@ export function createServerOpsAgentFacade(input: CreateServerOpsAgentFacadeInpu
     getSession: input.getSession,
     services: {
       hosts: context.hosts,
-      access: context.access,
+      credentials: context.credentials,
       connections: context.connections,
       audit: context.audit,
       docker: context.docker,
@@ -176,18 +190,61 @@ export function createServerOpsAgentFacade(input: CreateServerOpsAgentFacadeInpu
   } : null)
   if (!dependencies) return null
 
-  /** 每次调用都 fresh-read 普通会话与精确授权，撤销后立即生效。 */
-  const requireAuthorizedHost = (hostId: string): ServerOpsHost => {
+  /** 普通未归档顶层会话与运行闭包每次调用都重新核验。 */
+  const requireRunActive = (): void => {
+    if (input.runSignal?.aborted) throw new Error('SERVER_OPS_AGENT_RUN_CANCELLED')
+    input.assertRunActive?.()
+    if (context && getServerOpsServiceContext() !== context) throw new Error('SERVER_OPS_AGENT_CONTEXT_CHANGED')
     if (!isInteractiveRunSource(input.triggeredBy)
-      || !isOrdinaryTopLevelAgentSession(dependencies.getSession(input.sessionId))) {
+      || !isOrdinaryTopLevelAgentSession(dependencies.getSession(input.sessionId))
+      || dependencies.getSession(input.sessionId)?.archived) {
       throw new Error('SERVER_OPS_AGENT_SESSION_NOT_ALLOWED')
     }
-    const normalizedHostId = requireHostId(hostId)
-    if (!dependencies.services.access.get(input.sessionId, normalizedHostId)) {
-      throw new Error('SERVER_OPS_AGENT_ACCESS_REQUIRED')
+  }
+
+  /** 本轮仅冻结创建时已经连接的已保存主机；未连接资源不能靠 Agent connect 扩权。 */
+  const connectedHosts = new Map<string, ServerOpsAgentConnectedHostSnapshot>()
+  try {
+    requireRunActive()
+    for (const host of dependencies.services.hosts.list()) {
+      try {
+        const state = dependencies.services.connections.getState(host.id)
+        if (state.phase !== 'connected' || !state.connectionId) continue
+        const binding = captureServerOpsReadBindings([{ kind: 'ssh', hostId: host.id }], {
+          hosts: dependencies.services.hosts,
+          credentials: dependencies.services.credentials,
+        })[0]
+        if (binding) connectedHosts.set(host.id, { hostId: host.id, connectionId: state.connectionId, binding })
+      } catch { /* 单条损坏配置不应隐藏其它已连接且身份完整的资源。 */ }
     }
+  } catch {
+    connectedHosts.clear()
+  }
+
+  /** 每次调用 fresh-check 配置、凭据与原 connectionId，变化后旧闭包立即失效。 */
+  const requireAvailableHost = (hostId: string): ServerOpsHost => {
+    requireRunActive()
+    const normalizedHostId = requireHostId(hostId)
+    const snapshot = connectedHosts.get(normalizedHostId)
+    if (!snapshot) throw new Error('SERVER_OPS_CONNECTION_NOT_ACTIVE')
     const host = dependencies.services.hosts.get(normalizedHostId)
-    if (!host) throw new Error('SERVER_OPS_HOST_NOT_FOUND')
+    if (!host) throw new Error('SERVER_OPS_AGENT_RESOURCE_CHANGED')
+    let currentBinding: ServerOpsAgentReadBinding | undefined
+    try {
+      currentBinding = captureServerOpsReadBindings([{ kind: 'ssh', hostId: normalizedHostId }], {
+        hosts: dependencies.services.hosts,
+        credentials: dependencies.services.credentials,
+      })[0]
+    } catch { throw new Error('SERVER_OPS_AGENT_RESOURCE_CHANGED') }
+    if (!currentBinding || currentBinding.key !== snapshot.binding.key
+      || currentBinding.hostId !== snapshot.binding.hostId
+      || currentBinding.fingerprint !== snapshot.binding.fingerprint) {
+      throw new Error('SERVER_OPS_AGENT_RESOURCE_CHANGED')
+    }
+    const state = dependencies.services.connections.getState(normalizedHostId)
+    if (state.phase !== 'connected' || state.connectionId !== snapshot.connectionId) {
+      throw new Error('SERVER_OPS_CONNECTION_CHANGED')
+    }
     return host
   }
 
@@ -222,7 +279,7 @@ export function createServerOpsAgentFacade(input: CreateServerOpsAgentFacadeInpu
     operation: ServerOpsAuditOperation,
     hostId: string,
     context: ServerOpsAgentAuditContext,
-    outcome: 'success' | 'error',
+    outcome: 'success' | 'error' | 'unknown',
     options: Pick<ServerOpsAuditAppendInput, 'command' | 'exitCode' | 'signal' | 'errorCode'> = {},
   ): boolean => {
     try {
@@ -253,106 +310,86 @@ export function createServerOpsAgentFacade(input: CreateServerOpsAgentFacadeInpu
     ...(dependencies.services.files ? {
       async filesList(raw: ServerOpsFilePreviewInput) {
         const parsed = parseServerOpsFilePreviewInput(raw)
-        requireAuthorizedHost(parsed.hostId)
+        requireAvailableHost(parsed.hostId)
         /** 单次读取独占 owner，结束后不留下不可再使用的分页句柄。 */
         const ownerKey = `agent-read:${input.sessionId}:${randomUUID()}`
         try {
           const result = await dependencies.services.files!.list(ownerKey, parsed)
-          requireAuthorizedHost(parsed.hostId)
+          requireAvailableHost(parsed.hostId)
           const { cursor, ...page } = result
           return boundedResult({ ...page, ...(cursor && !page.truncatedReason ? { truncatedReason: 'item-limit' as const } : {}) })
         } finally { dependencies.services.files!.releaseReader(ownerKey) }
       },
       async filesRead(raw: ServerOpsFilePreviewInput) {
         const parsed = parseServerOpsFilePreviewInput(raw)
-        requireAuthorizedHost(parsed.hostId)
+        requireAvailableHost(parsed.hostId)
         const ownerKey = `agent-read:${input.sessionId}:${randomUUID()}`
         try {
           const result = await dependencies.services.files!.preview(ownerKey, parsed)
-          requireAuthorizedHost(parsed.hostId)
+          requireAvailableHost(parsed.hostId)
           return boundedResult(result)
         } finally { dependencies.services.files!.releaseReader(ownerKey) }
       },
       async filesMutate(raw: ServerOpsFileMutationInput) {
         const parsed = parseServerOpsFileMutationInput(raw)
-        requireAuthorizedHost(parsed.hostId)
-        const result = await dependencies.services.files!.mutateForAgent(input.sessionId, parsed, () => { requireAuthorizedHost(parsed.hostId) })
-        requireAuthorizedHost(parsed.hostId)
+        requireAvailableHost(parsed.hostId)
+        const result = await dependencies.services.files!.mutateForAgent(input.sessionId, parsed, () => { requireAvailableHost(parsed.hostId) })
+        requireAvailableHost(parsed.hostId)
         return boundedResult(result)
       },
     } : {}),
     ...(dependencies.services.docker ? {
       async dockerResources(raw: ServerOpsDockerResourcesInput) {
         const parsed = parseServerOpsDockerResourcesInput(raw)
-        requireAuthorizedHost(parsed.hostId)
+        requireAvailableHost(parsed.hostId)
         const result = await dependencies.services.docker!.listResources(parsed)
-        requireAuthorizedHost(parsed.hostId)
+        requireAvailableHost(parsed.hostId)
         return boundedResult(result)
       },
       async dockerDetail(raw: ServerOpsDockerContainerDetailInput) {
         const parsed = parseServerOpsDockerContainerDetailInput(raw)
-        requireAuthorizedHost(parsed.hostId)
+        requireAvailableHost(parsed.hostId)
         const result = await dependencies.services.docker!.getContainerDetail(parsed)
-        requireAuthorizedHost(parsed.hostId)
+        requireAvailableHost(parsed.hostId)
         return boundedResult(result)
       },
       async dockerAction(raw: ServerOpsDockerActionPrepareInput) {
         const parsed = parseServerOpsDockerActionPrepareInput(raw)
-        requireAuthorizedHost(parsed.hostId)
-        const result = await dependencies.services.docker!.runAgentAction(input.sessionId, parsed, () => { requireAuthorizedHost(parsed.hostId) })
-        requireAuthorizedHost(parsed.hostId)
+        requireAvailableHost(parsed.hostId)
+        const result = await dependencies.services.docker!.runAgentAction(input.sessionId, parsed, () => { requireAvailableHost(parsed.hostId) })
+        requireAvailableHost(parsed.hostId)
         return boundedResult(result)
       },
     } : {}),
     list() {
-      if (!isInteractiveRunSource(input.triggeredBy)
-        || !isOrdinaryTopLevelAgentSession(dependencies.getSession(input.sessionId))) {
-        throw new Error('SERVER_OPS_AGENT_SESSION_NOT_ALLOWED')
-      }
-      /** 单槽快照只暴露当前授权目标，不枚举其他资产。 */
-      const current = dependencies.services.access.getCurrent()
-      if (!current || current.sessionId !== input.sessionId
-        || !dependencies.services.access.get(input.sessionId, current.hostId)) {
-        throw new Error('SERVER_OPS_AGENT_ACCESS_REQUIRED')
-      }
-      const host = requireAuthorizedHost(current.hostId)
-      return [{
-        id: host.id,
-        name: host.name,
-        address: host.address,
-        port: host.port,
-        username: host.username,
-        authMethod: host.authMethod,
-        tags: [...host.tags],
-        phase: dependencies.services.connections.getState(host.id).phase,
-      }]
+      requireRunActive()
+      return [...connectedHosts.keys()].flatMap((hostId) => {
+        try {
+          const host = requireAvailableHost(hostId)
+          return [{
+            id: host.id,
+            name: host.name,
+            address: host.address,
+            port: host.port,
+            username: host.username,
+            authMethod: host.authMethod,
+            tags: [...host.tags],
+            phase: dependencies.services.connections.getState(host.id).phase,
+          }]
+        } catch { return [] }
+      })
     },
     status({ hostId }) {
-      const host = requireAuthorizedHost(hostId)
+      const host = requireAvailableHost(hostId)
       return publicStatus(dependencies.services.connections.getState(host.id))
     },
     async connect({ hostId }) {
-      const initialHost = requireAuthorizedHost(hostId)
-      if (dependencies.services.audit.prepareForWrites) await dependencies.services.audit.prepareForWrites()
-      /** schema guard 等待后重新验证会话、授权与资产事实。 */
-      const host = requireAuthorizedHost(initialHost.id)
-      const auditContext = appendAuditStart('connect', host.id)
-      try {
-        /** 底层只返回公开状态，但仍移除 connectionId 等内部字段。 */
-        const state = await dependencies.services.connections.connect({ hostId: host.id, cols: 120, rows: 32 })
-        const outcome = state.phase === 'error' || state.phase === 'blocked' ? 'error' : 'success'
-        const warning = appendAuditResult('connect', host.id, auditContext, outcome, {
-          ...(state.errorCode ? { errorCode: getServerOpsAuditErrorCode({ code: state.errorCode }) } : {}),
-        })
-        return { ...publicStatus(state), ...(warning ? { warnings: ['SERVER_OPS_AUDIT_RESULT_WRITE_FAILED'] } : {}) }
-      } catch (error) {
-        const warning = appendAuditResult('connect', host.id, auditContext, 'error', { errorCode: getServerOpsAuditErrorCode(error) })
-        if (warning) throw attachAuditResultWarning(error)
-        throw error
-      }
+      /** Agent 不建立新连接；仅回显创建本轮时已经连接且身份未变化的状态。 */
+      const host = requireAvailableHost(hostId)
+      return publicStatus(dependencies.services.connections.getState(host.id))
     },
     async exec({ hostId, command, timeoutMs = 30_000 }) {
-      const initialHost = requireAuthorizedHost(hostId)
+      const initialHost = requireAvailableHost(hostId)
       if (typeof command !== 'string' || command.length < 1 || command.length > 8192 || command.includes('\0')) {
         throw new Error('SERVER_OPS_EXEC_COMMAND_INVALID')
       }
@@ -360,39 +397,55 @@ export function createServerOpsAgentFacade(input: CreateServerOpsAgentFacadeInpu
         throw new Error('SERVER_OPS_EXEC_TIMEOUT_INVALID')
       }
       if (dependencies.services.audit.prepareForWrites) await dependencies.services.audit.prepareForWrites()
-      /** schema guard 等待后重新验证授权，并从 fresh 状态取得连接身份。 */
-      const host = requireAuthorizedHost(initialHost.id)
+      /** schema guard 等待后重新验证运行、配置与原连接身份。 */
+      const host = requireAvailableHost(initialHost.id)
       const state = dependencies.services.connections.getState(host.id)
       if (state.phase !== 'connected' || !state.connectionId) throw new Error('SERVER_OPS_CONNECTION_NOT_ACTIVE')
       const auditContext = appendAuditStart('exec', host.id, command)
+      /** 开始审计回调可能同步改变运行或连接事实；发出远程命令前最后复核一次。 */
+      requireAvailableHost(host.id)
+      let result: ServerOpsRuntimeExecResult
       try {
-        const result = await dependencies.services.connections.exec(host.id, state.connectionId, command, timeoutMs)
-        /** 非零退出码或 signal 都代表远程命令失败，但真实输出仍原样返回给 Agent。 */
-        const outcome = result.signal !== undefined || (result.exitCode !== undefined && result.exitCode !== 0) ? 'error' : 'success'
-        const warning = appendAuditResult('exec', host.id, auditContext, outcome, {
-          command,
-          ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
-          ...(result.signal === undefined ? {} : { signal: result.signal }),
-        })
-        return {
-          stdout: result.stdout,
-          stderr: result.stderr,
-          ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
-          ...(result.signal === undefined ? {} : { signal: result.signal }),
-          truncated: result.truncated,
-          ...(warning ? { warnings: ['SERVER_OPS_AUDIT_RESULT_WRITE_FAILED'] } : {}),
-        }
+        result = await dependencies.services.connections.exec(host.id, state.connectionId, command, timeoutMs)
       } catch (error) {
         const warning = appendAuditResult('exec', host.id, auditContext, 'error', { command, errorCode: getServerOpsAuditErrorCode(error) })
         if (warning) throw attachAuditResultWarning(error)
         throw error
       }
+      try {
+        requireAvailableHost(host.id)
+      } catch {
+        /** 命令已经发出但运行身份失效，不能把远端事实误报成普通失败或自动重试。 */
+        const outcomeError = new Error('SERVER_OPS_REMOTE_OUTCOME_UNKNOWN')
+        const warning = appendAuditResult('exec', host.id, auditContext, 'unknown', {
+          command, errorCode: 'SERVER_OPS_REMOTE_OUTCOME_UNKNOWN',
+        })
+        if (warning) throw attachAuditResultWarning(outcomeError)
+        throw outcomeError
+      }
+      /** 非零退出码或 signal 都代表远程命令失败，但真实输出仍原样返回给 Agent。 */
+      const outcome = result.signal !== undefined || (result.exitCode !== undefined && result.exitCode !== 0) ? 'error' : 'success'
+      const warning = appendAuditResult('exec', host.id, auditContext, outcome, {
+        command,
+        ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
+        ...(result.signal === undefined ? {} : { signal: result.signal }),
+      })
+      /** 结果审计回调也可能同步结束运行；旧结果不能在失效后发布。 */
+      requireAvailableHost(host.id)
+      return {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
+        ...(result.signal === undefined ? {} : { signal: result.signal }),
+        truncated: result.truncated,
+        ...(warning ? { warnings: ['SERVER_OPS_AUDIT_RESULT_WRITE_FAILED'] } : {}),
+      }
     },
     async disconnect({ hostId }) {
-      const initialHost = requireAuthorizedHost(hostId)
+      const initialHost = requireAvailableHost(hostId)
       if (dependencies.services.audit.prepareForWrites) await dependencies.services.audit.prepareForWrites()
-      /** schema guard 等待后重新验证授权，避免断开已经不再授权的目标。 */
-      const host = requireAuthorizedHost(initialHost.id)
+      /** schema guard 等待后重新验证运行、配置与原连接身份。 */
+      const host = requireAvailableHost(initialHost.id)
       const auditContext = appendAuditStart('disconnect', host.id)
       try {
         const state = dependencies.services.connections.disconnect(host.id)
@@ -402,9 +455,6 @@ export function createServerOpsAgentFacade(input: CreateServerOpsAgentFacadeInpu
         const warning = appendAuditResult('disconnect', host.id, auditContext, 'error', { errorCode: getServerOpsAuditErrorCode(error) })
         if (warning) throw attachAuditResultWarning(error)
         throw error
-      } finally {
-        /** 底层断开异常也必须撤销授权，同时由 finally 保留原始错误向上抛出。 */
-        dependencies.services.access.revoke(input.sessionId, host.id)
       }
     },
   }

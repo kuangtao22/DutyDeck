@@ -9,6 +9,8 @@ import { isServerOpsDataCapability, isServerOpsDataEngine, isServerOpsDataTlsMod
   parseServerOpsDataSourceTableResult, parseServerOpsDataSourceTablesResult, parseServerOpsDataQueryResult, parseServerOpsDataRowFilters,
   parseServerOpsDataSourceCellResult, parseServerOpsPostgresTable } from '@proma/shared'
 import { parseServerOpsDataWriteResult, SERVER_OPS_DATA_WRITE_MAX_TIMEOUT_MS, SERVER_OPS_DATA_WRITE_STATEMENT_LIMIT } from '@proma/shared'
+import { parseServerOpsRedisCommandInput, parseServerOpsRedisCommandResult } from '@proma/shared'
+import type { ServerOpsRedisCommandInput, ServerOpsRedisCommandResult } from '@proma/shared'
 import type { ServerOpsConsoleIdentity, ServerOpsDataCapability, ServerOpsDataEngine, ServerOpsDataMetric, ServerOpsDataTable, ServerOpsDataTlsMode, ServerOpsDataTlsStatus } from '@proma/shared'
 import type { ServerOpsDataDiagnosticSection, ServerOpsDataParameter, ServerOpsDataQueryResult, ServerOpsDataSchemaCell, ServerOpsDataRowFilters } from '@proma/shared'
 import type { ServerOpsConsoleRuntimeStart } from './server-ops-console-runtime'
@@ -199,6 +201,22 @@ export interface ServerOpsRuntimeDataWriteRequest {
   statements: { text: string; head: string }[]
 }
 
+/** 单键 Redis 命令使用独立通道，不允许写入混入数据库只读协议。 */
+export interface ServerOpsRuntimeRedisRequest extends ServerOpsRedisCommandInput {
+  requestId: string
+  hostId: string
+  connectionId: string
+  transport: 'ssh' | 'direct'
+  address: string
+  port: number
+  database?: string
+  username?: string
+  password?: string
+  tlsMode: ServerOpsDataTlsMode
+  tlsServerName?: string
+  timeoutMs: number
+}
+
 /** utility process 内部启动独立日志 channel 的请求。 */
 export interface ServerOpsRuntimeLogStartRequest {
   streamId: string
@@ -222,6 +240,8 @@ export type ServerOpsRuntimeRequest =
   | { type: 'server-ops.exec-cancel'; requestId: string; hostId: string; connectionId: string }
   | { type: 'server-ops.data-read'; input: ServerOpsRuntimeDataReadRequest }
   | { type: 'server-ops.data-write'; input: ServerOpsRuntimeDataWriteRequest }
+  | { type: 'server-ops.redis'; input: ServerOpsRuntimeRedisRequest }
+  | { type: 'server-ops.redis-cancel'; requestId: string; hostId: string; connectionId: string }
   | { type: 'server-ops.data-cancel'; requestId: string; hostId: string; connectionId: string }
   | { type: 'server-ops.data-write-cancel'; requestId: string; hostId: string; connectionId: string }
   | { type: 'server-ops.disconnect'; hostId: string; connectionId: string }
@@ -248,6 +268,7 @@ export type ServerOpsRuntimeMessage =
   | { type: 'server-ops.data-read-result'; requestId: string; hostId: string; connectionId: string; result: ServerOpsRuntimeDataReadResult }
   | { type: 'server-ops.data-read-cancelled'; requestId: string; hostId: string; connectionId: string }
   | { type: 'server-ops.data-write-result'; requestId: string; hostId: string; connectionId: string; result: import('@proma/shared').ServerOpsDataWriteResult }
+  | { type: 'server-ops.redis-result'; requestId: string; hostId: string; connectionId: string; result: ServerOpsRedisCommandResult }
   | { type: 'server-ops.data-write-cancelled'; requestId: string; hostId: string; connectionId: string }
   | { type: 'server-ops.error'; requestId?: string; hostId: string; connectionId: string; code: string; message: string }
   | { type: 'server-ops.terminal-output'; event: ServerOpsTerminalOutputEvent }
@@ -672,6 +693,23 @@ function parseDataWriteRequest(value: unknown): ServerOpsRuntimeDataWriteRequest
   }
 }
 
+/** Redis 独立请求复用连接字段校验，命令正文另由白名单解析器验证。 */
+function parseRedisRequest(value: unknown): ServerOpsRuntimeRedisRequest {
+  if (!isRecord(value)) throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
+  const keys = ['requestId', 'hostId', 'connectionId', 'transport', 'address', 'port', 'tlsMode', 'timeoutMs', 'sourceId', 'command', 'args',
+    ...['database', 'username', 'password', 'tlsServerName'].filter((key) => value[key] !== undefined)]
+  if (!hasExactKeys(value, keys)) throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
+  const command = parseServerOpsRedisCommandInput({ sourceId: value.sourceId, command: value.command, args: value.args })
+  const { sourceId: _sourceId, command: _command, args: _args, ...fields } = value
+  const connection = parseDataReadRequest({ ...fields, engine: 'redis', mode: 'probe' })
+  return { ...command, requestId: connection.requestId, hostId: connection.hostId, connectionId: connection.connectionId,
+    transport: connection.transport, address: connection.address!, port: connection.port!, tlsMode: connection.tlsMode, timeoutMs: connection.timeoutMs,
+    ...(connection.database === undefined ? {} : { database: connection.database }),
+    ...(connection.username === undefined ? {} : { username: connection.username }),
+    ...(connection.password === undefined ? {} : { password: connection.password }),
+    ...(connection.tlsServerName === undefined ? {} : { tlsServerName: connection.tlsServerName }) }
+}
+
 /** 严格解析主进程发往 SSH utility process 的内部请求。 */
 export function parseServerOpsRuntimeRequest(value: unknown): ServerOpsRuntimeRequest {
   try {
@@ -691,8 +729,11 @@ export function parseServerOpsRuntimeRequest(value: unknown): ServerOpsRuntimeRe
     if (value.type === 'server-ops.data-write' && hasExactKeys(value, ['type', 'input'])) {
       return { type: value.type, input: parseDataWriteRequest(value.input) }
     }
+    if (value.type === 'server-ops.redis' && hasExactKeys(value, ['type', 'input'])) {
+      return { type: value.type, input: parseRedisRequest(value.input) }
+    }
     if ((value.type === 'server-ops.data-cancel' || value.type === 'server-ops.data-write-cancel'
-      || value.type === 'server-ops.exec-cancel')
+      || value.type === 'server-ops.redis-cancel' || value.type === 'server-ops.exec-cancel')
       && hasExactKeys(value, ['type', 'requestId', 'hostId', 'connectionId'])
       && isRuntimeId(value.requestId) && isRuntimeId(value.hostId) && isRuntimeId(value.connectionId)) {
       return { type: value.type, requestId: value.requestId, hostId: value.hostId, connectionId: value.connectionId }
@@ -987,11 +1028,12 @@ export function parseServerOpsRuntimeMessage(value: unknown): ServerOpsRuntimeMe
       return { type: value.type, pid: value.pid }
     }
     if ((value.type === 'server-ops.connect-result' || value.type === 'server-ops.exec-result'
-      || value.type === 'server-ops.data-read-result' || value.type === 'server-ops.data-write-result')
+      || value.type === 'server-ops.data-read-result' || value.type === 'server-ops.data-write-result' || value.type === 'server-ops.redis-result')
       && hasExactKeys(value, ['type', 'requestId', 'hostId', 'connectionId', 'result'])
       && isRuntimeId(value.requestId) && isRuntimeId(value.hostId) && isRuntimeId(value.connectionId)) {
       if (value.type === 'server-ops.connect-result') return { type: value.type, requestId: value.requestId, hostId: value.hostId, connectionId: value.connectionId, result: parseConnectResult(value.result) }
       if (value.type === 'server-ops.exec-result') return { type: value.type, requestId: value.requestId, hostId: value.hostId, connectionId: value.connectionId, result: parseExecResult(value.result) }
+      if (value.type === 'server-ops.redis-result') return { type: value.type, requestId: value.requestId, hostId: value.hostId, connectionId: value.connectionId, result: parseServerOpsRedisCommandResult(value.result) }
       /** 写结果直接复用共享合同的严格解析器，避免协议层再维护一份形状。 */
       if (value.type === 'server-ops.data-write-result') {
         return { type: value.type, requestId: value.requestId, hostId: value.hostId, connectionId: value.connectionId,

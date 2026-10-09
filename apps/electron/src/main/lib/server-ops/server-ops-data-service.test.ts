@@ -279,6 +279,8 @@ const availableResult: ServerOpsRuntimeDataReadResult = {
 function createService(options: {
   /** 写路径独立替身，只供终态回归使用。 */
   write?: ServerOpsDataServiceDependencies['runtime']['dataWrite']
+  /** Redis 单键请求替身，用于验证来源与排队身份。 */
+  redis?: ServerOpsDataServiceDependencies['runtime']['dataRedis']
   /** 是否模拟 SSH 已连接。 */
   connected?: boolean
   /** 可替换的服务时间源。 */
@@ -309,7 +311,7 @@ function createService(options: {
         return { hostId, connectionId: `connection-${connectionGeneration}`, generation: connectionGeneration }
       },
     },
-    runtime: options.write ? { ...runtime, dataWrite: options.write } : runtime,
+    runtime: { ...runtime, ...(options.write ? { dataWrite: options.write } : {}), ...(options.redis ? { dataRedis: options.redis } : {}) },
     now: options.now ?? (() => 5_000),
     ...(injectedSchemaCache === undefined ? {} : { schemaCache: injectedSchemaCache }),
   })
@@ -1473,5 +1475,53 @@ describe('服务器运维数据服务编排', () => {
       databasesTruncated: true, warnings: ['库 hidden_db 不存在或当前账号不可见'],
     })
     await expect(pending).rejects.toThrow('库 hidden_db 不存在或当前账号不可见')
+  })
+})
+
+describe('Redis 保存来源执行边界', () => {
+  test('Given 保存来源 When 执行单键写 Then 使用原逻辑库与密码且不要求板块授权', async () => {
+    /** 只记录 runtime 收到的目标，测试不会建立外部连接。 */
+    const requests: Array<{ database?: string; password?: string; command: string }> = []
+    const { service } = createService({ redis: async (input) => {
+      requests.push(input)
+      return { command: input.command, outcome: 'completed', value: 'OK', truncated: false, durationMs: 1 }
+    } })
+    const source = service.upsertSource(createInput({ transport: 'direct', hostId: undefined, engine: 'redis', port: 6379, database: '2', password: 'test-secret' })).source
+    expect(await service.redisSource({ sourceId: source.id, command: 'SET', args: ['key', 'value'] }, undefined,
+      { ownerSessionId: 'session-1', actor: 'agent' })).toMatchObject({ outcome: 'completed' })
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({ database: '2', password: 'test-secret', command: 'SET' })
+  })
+  test('Given 未连接 SSH 或不匹配引擎 When 请求 Then 不调用 runtime', async () => {
+    let calls = 0
+    const { service } = createService({ connected: false, redis: async () => { calls += 1; throw new Error('UNREACHABLE') } })
+    const source = service.upsertSource(createInput({ engine: 'redis', port: 6379 })).source
+    expect(await service.redisSource({ sourceId: source.id, command: 'GET', args: ['key'] })).toMatchObject({ outcome: 'not-started', errorCode: 'SERVER_OPS_CONNECTION_NOT_ACTIVE' })
+    expect(calls).toBe(0)
+  })
+  test('Given 同源排队时凭据更改 When 轮到写命令 Then 旧目标请求不会执行', async () => {
+    /** 第一条读取占住队列，第二条写等待时替换保存的凭据。 */
+    let finish!: () => void
+    let calls = 0
+    const fixture = createService({ redis: async (input) => {
+      calls += 1
+      await new Promise<void>((resolve) => { finish = resolve })
+      return { command: input.command, outcome: 'completed', value: 'value', truncated: false, durationMs: 1 }
+    } })
+    const source = fixture.service.upsertSource(createInput({ engine: 'redis', port: 6379, password: 'old' })).source
+    const first = fixture.service.redisSource({ sourceId: source.id, command: 'GET', args: ['key'] })
+    const second = fixture.service.redisSource({ sourceId: source.id, command: 'SET', args: ['key', 'new'] })
+    fixture.credentials.setSecret('host-1', source.id, 'changed')
+    finish()
+    await first
+    expect(await second).toMatchObject({ outcome: 'not-started', errorCode: 'SERVER_OPS_DATA_SOURCE_CHANGED' })
+    expect(calls).toBe(1)
+  })
+  test('Given 写请求已发出 When runtime 崩溃 Then 保留 unknown 且不重试', async () => {
+    let calls = 0
+    const { service } = createService({ redis: async () => { calls += 1; throw new Error('SERVER_OPS_RUNTIME_EXITED') } })
+    const source = service.upsertSource(createInput({ engine: 'redis', port: 6379 })).source
+    expect(await service.redisSource({ sourceId: source.id, command: 'INCR', args: ['key'] })).toMatchObject({ outcome: 'unknown' })
+    expect(calls).toBe(1)
   })
 })

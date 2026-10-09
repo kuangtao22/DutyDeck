@@ -14,12 +14,15 @@ describe('运维受限运行模式', () => {
     }
   })
 
-  test('Given 运维读写模式 When 注册与分派 Then 只增加数据库写入且仍拒绝系统工具', () => {
+  test('Given 统一运维授权模式 When 注册与分派 Then 同时允许服务器运维工具且仍拒绝系统工具', () => {
     const names = resolveAgentModeToolNames('server-ops-write')
     expect(names).toContain('ops_database_write')
-    expect(names).toHaveLength(13)
+    expect(names).toContain('server_exec')
+    expect(names).toContain('server_docker_action')
+    expect(names).toContain('server_files_mutate')
+    expect(names).toHaveLength(26)
     for (const name of names!) expect(denyToolOutsideAgentMode(name, 'server-ops-write')).toBeUndefined()
-    for (const name of ['Bash', 'PowerShell', 'read', 'Write', 'Edit', 'BrowserNavigate', 'mcp__other__tool', 'server_exec', 'server_files_mutate', 'Task', 'ops_connection_prepare', 'ops_database_apply']) {
+    for (const name of ['Bash', 'PowerShell', 'read', 'Write', 'Edit', 'BrowserNavigate', 'mcp__other__tool', 'Task', 'ops_connection_prepare', 'ops_database_apply']) {
       expect(denyToolOutsideAgentMode(name, 'server-ops-write')?.behavior).toBe('deny')
     }
     expect(denyToolOutsideAgentMode('ops_database_write', 'server-ops-read')?.behavior).toBe('deny')
@@ -32,7 +35,7 @@ describe('运维受限运行模式', () => {
       'ops_server_discover', 'ops_server_logs',
       'ops_data_test', 'ops_data_diagnose', 'ops_database_tables',
       'ops_database_describe', 'ops_database_rows', 'ops_database_query',
-      'ops_database_change_context',
+      'ops_database_change_context', 'ops_redis_read',
     ])
     for (const name of names!) expect(denyToolOutsideAgentMode(name, 'server-ops-read')).toBeUndefined()
     for (const name of ['Bash', 'PowerShell', 'read', 'Write', 'Edit', 'BrowserNavigate', 'mcp__other__tool', 'server_exec', 'server_list', 'Task', 'ops_connection_prepare', 'ops_database_write', 'ops_database_apply']) {

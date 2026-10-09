@@ -4,6 +4,8 @@ import { connect as connectTcp } from 'node:net'
 import { ServerOpsSftpRuntime, ServerOpsSftpRuntimeError } from './server-ops/server-ops-sftp-runtime'
 import type { ServerOpsSftpRequest } from './server-ops/server-ops-sftp-runtime'
 import { runServerOpsDataRead } from './server-ops/server-ops-data-runtime'
+import { runServerOpsRedisCommand } from './server-ops/server-ops-redis-runtime'
+import type { ServerOpsRuntimeRedisRequest } from './server-ops/server-ops-runtime-protocol'
 import { runServerOpsSqliteRead, getServerOpsSqlitePublicError } from './server-ops/server-ops-sqlite-runtime'
 import type { ServerOpsSqliteChannelFactory } from './server-ops/server-ops-sqlite-runtime'
 import { runServerOpsLocalSqliteRead } from './server-ops/server-ops-local-sqlite-runtime'
@@ -106,6 +108,9 @@ const activeDataWrites = new Map<string, {
   fail: (code: string, message: string) => void
 }>()
 
+/** Redis 独立请求只持有自己的取消句柄，生命周期随 SSH 或 utility 结束。 */
+const activeRedisCommands = new Map<string, { hostId: string; connectionId: string; controller: AbortController }>()
+
 
 if (!parentPort) {
   console.error('[ServerOpsRuntime] Electron parentPort 不可用')
@@ -159,6 +164,14 @@ function handleRequest(raw: unknown): void {
     case 'server-ops.data-write':
       dataWrite(request.input)
       return
+    case 'server-ops.redis':
+      redisCommand(request.input)
+      return
+    case 'server-ops.redis-cancel': {
+      const active = activeRedisCommands.get(request.requestId)
+      if (active?.hostId === request.hostId && active.connectionId === request.connectionId) active.controller.abort()
+      return
+    }
     case 'server-ops.data-cancel': {
       const active = activeDataReads.get(request.requestId)
       if (!active || active.hostId !== request.hostId || active.connectionId !== request.connectionId) return
@@ -248,6 +261,8 @@ function handleRequest(raw: unknown): void {
       activeDataReads.clear()
       for (const active of activeDataWrites.values()) { active.controller.abort(); active.cancelTransport() }
       activeDataWrites.clear()
+      for (const active of activeRedisCommands.values()) active.controller.abort()
+      activeRedisCommands.clear()
       for (const connectionId of [...connections.keys()]) disconnect(connectionId, '应用正在退出')
       for (const connectionId of [...pendingClients.keys()]) disconnect(connectionId, '应用正在退出', false)
       post({ type: 'server-ops.stopped' })
@@ -497,6 +512,49 @@ function exec(input: import('./server-ops/server-ops-runtime-protocol').ServerOp
 /** 建立直连数据库的原始 TCP socket；MySQL 与 Redis 各自由协议适配器完成 TLS 升级。 */
 function createDirectSocket(address: string, port: number): ReturnType<typeof connectTcp> {
   return connectTcp({ host: address, port })
+}
+
+/** 执行单键 Redis 请求，SSH 转发通道与原连接绑定；结果由驱动统一分类。 */
+function redisCommand(input: ServerOpsRuntimeRedisRequest): void {
+  const connection = input.transport === 'ssh' ? connections.get(input.connectionId) : undefined
+  if (input.transport === 'ssh' && (!connection || connection.hostId !== input.hostId)) {
+    post({ type: 'server-ops.error', requestId: input.requestId, hostId: input.hostId, connectionId: input.connectionId,
+      code: 'SERVER_OPS_CONNECTION_NOT_ACTIVE', message: 'SSH 连接未激活' })
+    return
+  }
+  const controller = new AbortController()
+  activeRedisCommands.set(input.requestId, { hostId: input.hostId, connectionId: input.connectionId, controller })
+  /** 转发回调迟到时必须销毁通道，不能在取消后发认证。 */
+  const createChannel = (signal: AbortSignal): Promise<Duplex> => new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(new Error('SERVER_OPS_REDIS_CANCELLED')); return }
+    if (input.transport === 'direct') {
+      const socket = createDirectSocket(input.address, input.port)
+      const onAbort = (): void => { socket.destroy(); reject(new Error('SERVER_OPS_REDIS_CANCELLED')) }
+      signal.addEventListener('abort', onAbort, { once: true })
+      socket.once('close', () => { signal.removeEventListener('abort', onAbort); reject(new Error('SERVER_OPS_REDIS_CONNECTION_CLOSED')) })
+      socket.once('error', reject)
+      socket.once('connect', () => {
+        if (signal.aborted) onAbort()
+        else resolve(socket)
+      })
+    } else {
+      connection!.client.forwardOut('127.0.0.1', 0, input.address, input.port, (error, channel) => {
+        if (error) { reject(error); return }
+        if (signal.aborted || connections.get(input.connectionId) !== connection) {
+          channel.destroy(); reject(new Error('SERVER_OPS_REDIS_CANCELLED')); return
+        }
+        connection!.dataChannels.add(channel)
+        channel.once('close', () => { connection!.dataChannels.delete(channel) })
+        resolve(channel)
+      })
+    }
+  })
+  void runServerOpsRedisCommand(input, createChannel, controller.signal).then((result) => {
+    post({ type: 'server-ops.redis-result', requestId: input.requestId, hostId: input.hostId, connectionId: input.connectionId, result })
+  }).catch(() => {
+    post({ type: 'server-ops.error', requestId: input.requestId, hostId: input.hostId, connectionId: input.connectionId,
+      code: 'SERVER_OPS_REDIS_OUTCOME_UNKNOWN', message: 'Redis 结果需要核对，不能自动重试' })
+  }).finally(() => { activeRedisCommands.delete(input.requestId) })
 }
 
 function dataRead(input: ServerOpsRuntimeDataReadRequest): void {
@@ -947,6 +1005,9 @@ function emitExitWhenDrained(connection: ManagedSshConnection): void {
 
 /** 让指定 SSH 连接上的数据库读取退出 await，并保留“连接关闭”终态分类。 */
 function failDataReadsForConnection(connection: ManagedSshConnection, message: string): void {
+  for (const active of activeRedisCommands.values()) {
+    if (active.hostId === connection.hostId && active.connectionId === connection.connectionId) active.controller.abort()
+  }
   for (const active of activeDataReads.values()) {
     if (active.hostId === connection.hostId && active.connectionId === connection.connectionId) {
       active.fail('SERVER_OPS_CONNECTION_CLOSED', message)

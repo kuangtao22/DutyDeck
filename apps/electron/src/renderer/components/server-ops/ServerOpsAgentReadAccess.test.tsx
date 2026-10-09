@@ -1,14 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import * as React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { ServerOpsDataSource, ServerOpsProject } from '@proma/shared'
+import type { ServerOpsDataSource } from '@proma/shared'
 import { ServerOpsAgentReadAccess } from './ServerOpsAgentReadAccess'
 import type { ServerOpsConnection } from './server-ops-connections'
 
-const projects: readonly ServerOpsProject[] = [
-  { id: 'project-1', name: '生产', createdAt: 1, updatedAt: 1 },
-  { id: 'project-2', name: '测试', createdAt: 2, updatedAt: 2 },
-]
 const connections: readonly ServerOpsConnection[] = [
   { id: 'ssh:host-1', kind: 'ssh', projectId: 'project-1', label: '生产服务器', detail: 'root@10.0.0.1:22', hostId: 'host-1', connected: true },
   { id: 'data:mysql-1', kind: 'database', projectId: 'project-1', label: '业务库', detail: '127.0.0.1:3306', sourceId: 'mysql-1' },
@@ -20,20 +16,28 @@ const dataSources: readonly ServerOpsDataSource[] = [
 ]
 
 describe('ServerOpsAgentReadAccess', () => {
-  test('Given 运维工具栏 When 渲染 Then 保留单个只读授权入口，不拆分数据库和服务器按钮', () => {
-    const html = renderToStaticMarkup(<ServerOpsAgentReadAccess sessionId="session-1" projectId="project-1" projects={projects} connections={connections} allConnections={connections} dataSources={dataSources} />)
-    expect(html).toContain('aria-label="Agent 只读授权"')
+  test('Given 数据库工具栏 When 渲染 Then 只显示禁用表入口且不展示板块授权', () => {
+    const html = renderToStaticMarkup(<ServerOpsAgentReadAccess projectId="project-1" connectionId="data:mysql-1" allConnections={connections} dataSources={dataSources} policyApi={{ get: async () => ({ revision: 0, exclusions: [] }), set: async () => ({ revision: 1, exclusions: [] }) }} />)
+    expect(html).toContain('aria-label="管理禁用表"')
     expect(html.match(/<button\b/g)?.length).toBe(1)
-    expect(html).not.toContain('aria-label="Agent 禁用表"')
-    expect(html).not.toContain('aria-label="Agent 服务器授权"')
-    expect(html).not.toContain('结构/行/SQL 未启用')
-    expect(html).not.toContain('无租约')
+    expect(html).not.toContain('Agent 授权')
+    expect(html).not.toContain('当前会话工具模式')
   })
 
-  test('Given 无会话但持久规则可用 When 渲染 Then 同一个入口仍可管理禁用表', () => {
-    const html = renderToStaticMarkup(<ServerOpsAgentReadAccess sessionId={null} projectId="project-1" projects={projects} connections={connections} allConnections={connections} dataSources={dataSources}
+  test('Given 无 Agent 会话但持久规则可用 When 渲染 Then 仍可管理禁用表', () => {
+    const html = renderToStaticMarkup(<ServerOpsAgentReadAccess projectId="project-1" connectionId="data:mysql-1" allConnections={connections} dataSources={dataSources}
       policyApi={{ get: async () => ({ revision: 0, exclusions: [] }), set: async () => ({ revision: 1, exclusions: [] }) }} />)
-    expect(html).toContain('aria-label="Agent 只读授权"')
-    expect(html).not.toMatch(/aria-label="Agent 只读授权"[^>]*disabled=""/)
+    expect(html).toContain('aria-label="管理禁用表"')
+    expect(html).not.toMatch(/aria-label="管理禁用表"[^>]*disabled=""/)
+  })
+
+  test('Given 从数据库连接进入禁用表编辑 When 渲染 Then 不显示会话授权控件或授权保存文案', () => {
+    /** 数据库只维护持久禁用表；不应再出现服务器 Agent 授权模式切换。 */
+    const html = renderToStaticMarkup(<ServerOpsAgentReadAccess projectId="project-1" connectionId="data:mysql-1"
+      allConnections={connections} dataSources={dataSources} />)
+    expect(html).toContain('aria-label="管理禁用表"')
+    expect(html).not.toContain('当前会话工具模式')
+    expect(html).not.toContain('运维读写')
+    expect(html).not.toContain('保存授权')
   })
 })

@@ -13,12 +13,14 @@ import {
   serverOpsReadResourceKey,
   isServerOpsAgentTableAllowed,
   analyzeServerOpsSqlQuery,
+  analyzeServerOpsSqlWriteScope,
   parseServerOpsDataQueryInput,
   parseServerOpsDataQueryResult,
   parseServerOpsDataWriteInput,
   parseServerOpsDataWriteResult,
   parseServerOpsPostgresTable,
-  planServerOpsSqlWrite,
+  parseServerOpsRedisCommandInput,
+  parseServerOpsRedisCommandResult,
 } from '@proma/shared'
 import type {
   AgentSessionMeta,
@@ -44,6 +46,8 @@ import type {
   ServerOpsAgentLogsInput,
   ServerOpsAgentLogsResult,
   ServerOpsDatabaseAgentPolicy,
+  ServerOpsRedisCommandInput,
+  ServerOpsRedisCommandResult,
 } from '@proma/shared'
 import { isOrdinaryTopLevelAgentSession } from '../agent-session-visibility'
 import { getServerOpsServiceContext } from './server-ops-service-context'
@@ -79,7 +83,9 @@ type ServerOpsDatabaseResource = Extract<ServerOpsAgentReadResource, { kind: Ser
 
 /** Facade 服务边界不包含密码读取、任意命令或连接建立能力。 */
 export interface ServerOpsAgentReadFacadeServices {
-  hosts: Pick<ServerOpsHostStoreContract, 'get'>
+  hosts: Pick<ServerOpsHostStoreContract, 'get'> & Partial<Pick<ServerOpsHostStoreContract, 'list'>>
+  /** 已建立连接的权威身份，断开或重连都会使本轮工具失效。 */
+  connections?: Pick<import('./server-ops-ipc').ServerOpsConnectionContract, 'getState' | 'onState'>
   /** 仅允许读取不可逆凭据版本，禁止 Facade 解密。 */
   credentials?: { getVersion?: (hostId: string, credentialRef?: string) => string | null }
   access: {
@@ -97,7 +103,7 @@ export interface ServerOpsAgentReadFacadeServices {
   docker?: Pick<ServerOpsDockerService, 'listContainers'>
   logs?: Pick<ServerOpsLogService, 'snapshot'>
   data?: Pick<ServerOpsDataService, 'listSources' | 'probeSource' | 'diagnoseSource' | 'listSchemaTables' | 'describeSchemaTable' | 'readSchemaRows'>
-    & Partial<Pick<ServerOpsDataService, 'querySource' | 'getReadCredentialVersion' | 'writeSource'>>
+    & Partial<Pick<ServerOpsDataService, 'querySource' | 'getReadCredentialVersion' | 'writeSource' | 'redisSource'>>
   audit: Pick<ServerOpsAuditStore, 'append'> & { prepareForWrites?: () => Promise<void> }
 }
 
@@ -120,11 +126,11 @@ export interface CreateServerOpsAgentReadFacadeInput {
   runSignal?: AbortSignal
   /** 主进程复核运行代次；模型与 Renderer 无法提交该闭包。 */
   assertRunActive?: () => void
-  /** 仅运维读写模式注册数据库写工具；只读模式不会暴露写方法。 */
+  /** 普通用户或兼容读写模式注册数据库与 Redis 写工具；只读模式不暴露写方法。 */
   allowDatabaseWrite?: boolean
 }
 
-/** Agent 可见的授权目录，不公开端点、用户、凭据状态或内部配置摘要。 */
+/** Agent 可见的连接目录，不公开端点、用户、凭据状态或内部配置摘要。 */
 export type ServerOpsAgentReadResourceSummary =
   | { kind: 'ssh'; hostId: string; projectId?: string; name: string; readLogs?: boolean }
   | {
@@ -148,7 +154,7 @@ export interface ServerOpsAgentRowsResult extends ServerOpsDataSourceRowsResult 
   continuation?: { nextOffset: number; recommendedLimit: 1 }
 }
 
-/** 模型可调用的只读运维能力。 */
+/** 模型可调用的运维数据能力。 */
 export interface ServerOpsAgentReadFacade {
   resources(): { resources: ServerOpsAgentReadResourceSummary[]; revision: number; expiresAt?: number; status?: string; nextStep?: string; truncated?: boolean }
   /** 内部组合工具精确校验全部目标；不向模型暴露授权快照。 */
@@ -167,9 +173,13 @@ export interface ServerOpsAgentReadFacade {
   databaseTables(input: { sourceId: string; database?: string }, signal?: AbortSignal): Promise<ServerOpsDataSourceTablesResult & { truncated?: boolean }>
   databaseDescribe(input: { sourceId: string; database: string; table: string }, signal?: AbortSignal): Promise<ServerOpsDataSourceTableResult & { truncated?: boolean }>
   databaseRows(input: { sourceId: string; database: string; table: string; offset: number; limit: number }, signal?: AbortSignal): Promise<ServerOpsAgentRowsResult>
+  /** Redis 读取只接受固定只读命令，连接配置来自已保存资源。 */
+  redisRead?: (input: ServerOpsRedisCommandInput, signal?: AbortSignal) => Promise<ServerOpsRedisCommandResult>
+  /** Redis 修改仅在本轮允许写入时暴露，原生审批在宿主执行前完成。 */
+  redisWrite?: (input: ServerOpsRedisCommandInput, signal?: AbortSignal) => Promise<ServerOpsRedisCommandResult>
   /** SQL 查询没有模型可控会话或查询 ID，取消来自本次真实工具调用。 */
   databaseQuery(input: Omit<ServerOpsDataQueryInput, 'queryId'>, signal?: AbortSignal): Promise<ServerOpsDataQueryResult>
-  /** 受控 SQL 写入；只在运维读写模式暴露，结果可能为 unknown/partial。 */
+  /** 受控 SQL 写入；只在允许逐次审批写入的运行中暴露，结果可能为 unknown/partial。 */
   databaseWrite?: (input: { sourceId: string; database: string; sql: string; timeoutMs?: number }, signal?: AbortSignal) => Promise<ServerOpsDataWriteResult>
 }
 
@@ -356,6 +366,18 @@ function boundRows(value: ServerOpsAgentRowsResult): ServerOpsAgentRowsResult {
   return output
 }
 
+/** Redis 标量按最终 JSON 字节裁剪，控制字符转义也计入模型结果预算。 */
+function boundRedisResult(value: ServerOpsRedisCommandResult, command: string): ServerOpsRedisCommandResult {
+  const output = parseServerOpsRedisCommandResult(value)
+  if (output.command !== command) throw new Error('SERVER_OPS_REDIS_RESULT_INVALID')
+  while (resultBytes(output) > SERVER_OPS_AGENT_READ_PROJECTED_BYTES && typeof output.value === 'string' && output.value.length > 0) {
+    output.value = output.value.slice(0, Math.floor(output.value.length / 2))
+    output.truncated = true
+  }
+  if (resultBytes(output) > SERVER_OPS_AGENT_READ_PROJECTED_BYTES) throw new Error('SERVER_OPS_AGENT_RESULT_TOO_LARGE')
+  return output
+}
+
 /** 创建多资源只读 Facade；没有服务上下文时不注册半成品能力。 */
 export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFacadeInput): ServerOpsAgentReadFacade | null {
   if (!isInteractiveSource(input.triggeredBy)) return null
@@ -364,6 +386,7 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
     getSession: input.getSession,
     services: {
       hosts: context.hosts,
+      connections: context.connections,
       credentials: context.credentials,
       access: context.access,
       databasePolicy: context.databasePolicy,
@@ -382,8 +405,23 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
   const captureBindings = dependencies.captureBindings ?? ((resources: ServerOpsAgentReadResource[]) =>
     captureServerOpsReadBindings(resources, dependencies.services))
 
-  /** 本轮只能使用创建时的租约代次；重授后需要用户发起新一轮。 */
-  const runRevision = dependencies.services.access.getReadAccess(input.sessionId)?.revision
+  /** 已连接服务器和已保存 Redis 的本轮快照；不读取历史 Agent 授权。 */
+  const connectedResources = new Map<string, { resource: ServerOpsAgentReadResource; binding: ServerOpsAgentReadBinding; connectionId?: string }>()
+  /** 单个失效配置不阻断其它资源；短连接 Redis 在实际请求时建立连接。 */
+  const candidates: ServerOpsAgentReadResource[] = [
+    ...(dependencies.services.hosts.list?.() ?? []).map((host): ServerOpsAgentReadResource => ({ kind: 'ssh', hostId: host.id, readLogs: true })),
+    ...(dependencies.services.data?.listSources().sources ?? []).filter((source) => source.engine === 'redis')
+      .map((source): ServerOpsAgentReadResource => ({ kind: 'redis', sourceId: source.id })),
+  ]
+  for (const resource of candidates) {
+    try {
+      const binding = captureBindings([resource])[0]
+      if (!binding) continue
+      const state = binding.hostId ? dependencies.services.connections?.getState(binding.hostId) : undefined
+      if (binding.hostId && (state?.phase !== 'connected' || !state.connectionId)) continue
+      connectedResources.set(binding.key, { resource, binding, connectionId: state?.connectionId })
+    } catch { /* 缺失或不可验证的连接不向本轮 Agent 暴露。 */ }
+  }
   /** 每轮一次性冻结数据库策略与现有数据源身份，新连接需要新一轮才能暴露给 Agent。 */
   let databasePolicy: ServerOpsDatabaseAgentPolicy | undefined
   let databaseBindings = new Map<string, ServerOpsAgentReadBinding>()
@@ -401,11 +439,6 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
   const checkRun = (): void => {
     if (input.runSignal?.aborted) throw new Error('SERVER_OPS_AGENT_RUN_CANCELLED')
     input.assertRunActive?.()
-  }
-
-  /** 配置身份变化时立即撤销对应资源，避免后续调用误把旧授权用于新目标。 */
-  const invalidateResource = (resource: ServerOpsAgentReadResource, revision: number): void => {
-    dependencies.services.access.revokeReadResource?.(input.sessionId, serverOpsReadResourceKey(resource), revision)
   }
 
   /** 数据库资源独立于会话租约；逐次复核持久策略与本轮冻结的连接身份。 */
@@ -435,7 +468,7 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
     return { revision: current.revision, resource }
   }
 
-  /** 每个异步边界前后都复核会话、授权代次、资源范围和配置身份。 */
+  /** 每个异步边界前后都复核会话、授权代次、连接范围和配置身份。 */
   const requireAuthorized = (
     kind: ServerOpsAgentReadResource['kind'],
     id: string,
@@ -448,29 +481,22 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
       || !isOrdinaryTopLevelAgentSession(dependencies.getSession(input.sessionId)) || dependencies.getSession(input.sessionId)?.archived) {
       throw new Error('SERVER_OPS_AGENT_SESSION_NOT_ALLOWED')
     }
-    const access = dependencies.services.access.getReadAccess(input.sessionId)
-    if (!access || access.sessionId !== input.sessionId) {
-      throw new Error(expectedRevision === undefined ? 'SERVER_OPS_AGENT_ACCESS_REQUIRED' : 'SERVER_OPS_AGENT_ACCESS_CHANGED')
-    }
-    if (runRevision === undefined) throw new Error('SERVER_OPS_AGENT_ACCESS_REQUIRED')
-    if (access.revision !== runRevision) throw new Error('SERVER_OPS_AGENT_ACCESS_CHANGED')
-    if (expectedRevision !== undefined && access.revision !== expectedRevision) throw new Error('SERVER_OPS_AGENT_ACCESS_CHANGED')
-    const resource = access.resources.find((entry) => entry.kind === kind
-      && (entry.kind === 'ssh' ? entry.hostId : entry.sourceId) === id)
-    if (!resource) throw new Error(expectedRevision === undefined ? 'SERVER_OPS_AGENT_ACCESS_REQUIRED' : 'SERVER_OPS_AGENT_ACCESS_CHANGED')
-    const key = serverOpsReadResourceKey(resource)
-    const storedBinding = dependencies.services.access.getReadBinding(input.sessionId, key)
-    let currentBinding: ServerOpsAgentReadBinding | undefined
-    try { currentBinding = captureBindings([resource])[0] } catch {
-      invalidateResource(resource, access.revision)
+    /** 资源身份来自运行开始时的配置快照，审批后不得换用新端点或新连接。 */
+    const key = kind === 'ssh' ? `ssh:${id}` : `data:${id}`
+    const original = connectedResources.get(key)
+    if (!original || original.resource.kind !== kind) throw new Error('SERVER_OPS_AGENT_CONNECTION_REQUIRED')
+    let actual: ServerOpsAgentReadBinding | undefined
+    try { actual = captureBindings([original.resource])[0] } catch { throw new Error('SERVER_OPS_AGENT_RESOURCE_CHANGED') }
+    if (!actual || original.binding.fingerprint !== actual.fingerprint || original.binding.hostId !== actual.hostId || actual.key !== key) {
       throw new Error('SERVER_OPS_AGENT_RESOURCE_CHANGED')
     }
-    if (!storedBinding || !currentBinding || storedBinding.key !== currentBinding.key
-      || storedBinding.fingerprint !== currentBinding.fingerprint || storedBinding.hostId !== currentBinding.hostId) {
-      invalidateResource(resource, access.revision)
-      throw new Error('SERVER_OPS_AGENT_RESOURCE_CHANGED')
+    if (original.binding.hostId) {
+      const state = dependencies.services.connections?.getState(original.binding.hostId)
+      if (state?.phase !== 'connected' || !state.connectionId || state.connectionId !== original.connectionId) {
+        throw new Error('SERVER_OPS_CONNECTION_NOT_ACTIVE')
+      }
     }
-    return { revision: access.revision, resource }
+    return { revision: 0, resource: original.resource }
   }
 
   /** 写入读取审计；开始阶段失败会阻断真实服务，结果阶段失败只返回固定 warning。 */
@@ -478,7 +504,7 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
     try { return dependencies.services.audit.append(entry).timestamp } catch { return undefined }
   }
 
-  /** 汇合工具/运行取消与该会话撤权，返回检查及清理函数；不订阅其它会话的状态。 */
+  /** 汇合工具/运行取消与连接变化，返回检查及清理函数；不订阅其它会话的状态。 */
   const readLifetime = (kind: ServerOpsAgentReadResource['kind'], id: string, revision: number, signal?: AbortSignal, sql = false) => {
     /** 真实服务只接收这一条合并后的取消信号。 */
     const controller = new AbortController()
@@ -489,10 +515,9 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
       entry.addEventListener('abort', abort, { once: true })
       if (entry.aborted) abort()
     }
-    const unsubscribe = (kind === 'mysql' || kind === 'postgresql' || kind === 'sqlite' ? undefined : dependencies.services.access.onReadChanged?.((event) => {
-      if ((event.previous?.sessionId ?? event.current?.sessionId) !== input.sessionId) return
+    const unsubscribe = dependencies.services.connections?.onState(() => {
       try { requireAuthorized(kind, id, revision) } catch { abort() }
-    }))
+    })
     const unsubscribePolicy = (kind === 'mysql' || kind === 'postgresql' || kind === 'sqlite') ? dependencies.services.databasePolicy?.onChanged?.(() => {
       try { requireAuthorized(kind, id, revision) } catch { abort() }
     }) : undefined
@@ -704,11 +729,26 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
         const authorized = requireDatabaseAuthorized(sourceId)
         const resource = authorized.resource as ServerOpsDatabaseResource
         if (resource.kind !== 'mysql' && resource.kind !== 'sqlite') throw new Error('SERVER_OPS_DATA_WRITE_ENGINE_UNSUPPORTED')
-        let plan: ReturnType<typeof planServerOpsSqlWrite>
-        try { plan = planServerOpsSqlWrite(sql, resource.kind) } catch { throw new Error('SERVER_OPS_AGENT_WRITE_INPUT_INVALID') }
-        /** 写脚本规划器负责语句类型与会话控制；写通道以数据库级运维读写模式授权。 */
+        let scope: ReturnType<typeof analyzeServerOpsSqlWriteScope>
+        try { scope = analyzeServerOpsSqlWriteScope(sql, database, resource.kind) } catch { throw new Error('SERVER_OPS_AGENT_WRITE_INPUT_INVALID') }
+        /** Agent 写入逐表复用持久禁用规则；解析器无法完整确定作用域时已按输入无效拒绝。 */
         requireDatabaseScope(resource, database)
+        for (const table of scope.tables) requireDatabaseScope(resource, database, table)
         const { data, source } = requireDataSource(sourceId, resource.kind)
+        /** 视图可能由触发器或定义间接触达其它表；目录明确标记为 view 时保守拒绝 Agent 写入。 */
+        let schema: Awaited<ReturnType<NonNullable<ServerOpsAgentReadFacadeServices['data']>['listSchemaTables']>>
+        try {
+          schema = await data.listSchemaTables({ sourceId, database })
+        } catch {
+          /** 无法确认视图/表身份时拒绝写入，避免元数据盲区绕过禁用策略。 */
+          throw new Error('SERVER_OPS_AGENT_SCOPE_REQUIRED')
+        }
+        const isSameTable = (left: string, right: string): boolean => resource.kind === 'mysql'
+          ? left.toLowerCase() === right.toLowerCase()
+          : left === right
+        if (scope.tables.some((table) => schema.tables.some((entry) => entry.type === 'view' && isSameTable(entry.name, table)))) {
+          throw new Error('SERVER_OPS_AGENT_SCOPE_REQUIRED')
+        }
         /** Agent 写入只走当前已保存的直连来源；SSH 隧道需要独立的写入生命周期与取消合同。 */
         if (source.transport !== 'direct') throw new Error('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED')
         if (!data.writeSource) throw new Error('SERVER_OPS_DATA_UNAVAILABLE')
@@ -733,26 +773,73 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
       },
     } : {}),
 
+    ...(dependencies.services.data?.redisSource ? {
+      async redisRead(raw: ServerOpsRedisCommandInput, signal?: AbortSignal) {
+        /** 固定读取白名单，不能把写命令藏入只读入口。 */
+        const request = parseServerOpsRedisCommandInput(raw, 'read')
+        return executeRead({ kind: 'redis', id: request.sourceId, readAction: 'redis-read', signal,
+          read: async (readSignal, readContext) => boundRedisResult(await dependencies.services.data!.redisSource!(request, readSignal, readContext), request.command),
+        })
+      },
+      ...(input.allowDatabaseWrite ? {
+        async redisWrite(raw: ServerOpsRedisCommandInput, signal?: AbortSignal) {
+          /** 请求只携带资源 ID、命令和有界参数；不接受临时地址或密码。 */
+          const request = parseServerOpsRedisCommandInput(raw, 'write')
+          const authorized = requireAuthorized('redis', request.sourceId)
+          const lifetime = readLifetime('redis', request.sourceId, authorized.revision, signal)
+          /** Redis 是数据源写入；审计只记录目标逻辑库，不保存键名、参数或值。 */
+          const saved = dependencies.services.data!.listSources().sources.find((source) => source.id === request.sourceId)!
+          const common = { actor: 'agent' as const, sessionId: input.sessionId, sourceId: saved.id,
+            database: saved.database ?? '0', operation: 'data-write' as const, resourceType: 'data-write' as const,
+            operationId: (dependencies.uuid ?? randomUUID)() }
+          const startedAt = (dependencies.now ?? Date.now)()
+          try {
+            lifetime.check()
+            try { await dependencies.services.audit.prepareForWrites?.() } catch { throw new Error('SERVER_OPS_AUDIT_START_WRITE_FAILED') }
+            lifetime.check()
+            if (appendAudit({ ...common, phase: 'start', outcome: 'pending' }) === undefined) throw new Error('SERVER_OPS_AUDIT_START_WRITE_FAILED')
+            let result: ServerOpsRedisCommandResult
+            try {
+              lifetime.check()
+              result = boundRedisResult(await dependencies.services.data!.redisSource!(request, lifetime.signal, {
+                ownerSessionId: input.sessionId, actor: 'agent', check: lifetime.check,
+              }), request.command)
+            } catch (error) {
+              /** 发出后没有回执不能断言未写入；不重试且保留结果未知的审计。 */
+              const errorCode = stableErrorCode(error)
+              appendAudit({ ...common, phase: 'result', outcome: 'unknown', errorCode })
+              throw new Error(errorCode)
+            }
+            /** 已执行的写入事实不能被迟到取消覆盖；过期时仅丢弃可能敏感的返回值。 */
+            try { lifetime.check() } catch { if (result.value !== null) result = { ...result, value: null, truncated: true } }
+            const recorded = appendAudit({ ...common, phase: 'result',
+              outcome: result.outcome === 'completed' ? 'success' : result.outcome === 'unknown' ? 'unknown' : 'error',
+              ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+              durationMs: Math.min(86_400_000, Math.max(0, (dependencies.now ?? Date.now)() - startedAt)),
+            })
+            return recorded === undefined ? { ...result, warnings: ['SERVER_OPS_AUDIT_RESULT_WRITE_FAILED'] } : result
+          } finally { lifetime.dispose() }
+        },
+      } : {}),
+    } : {}),
+
     resources() {
       checkRun()
-      const current = dependencies.services.access.getReadAccess(input.sessionId)
-      if (!databasePolicy && (!current || runRevision === undefined)) return { resources: [], revision: 0, status: 'SERVER_OPS_AGENT_ACCESS_REQUIRED', nextStep: '请在服务器运维模块检查数据库读取设置；SSH 和 Redis 需要单独授权。' }
-      /** 每个目录项都 fresh-check，避免仅列目录时保留已经换目标的权限。 */
-      const lease = current && current.revision === runRevision ? current : undefined
-      const summaries = (lease?.resources.filter((resource) => resource.kind === 'ssh' || resource.kind === 'redis') ?? []).map((resource): ServerOpsAgentReadResourceSummary => {
-        requireAuthorized(resource.kind, resource.kind === 'ssh' ? resource.hostId : resource.sourceId, lease!.revision)
+      if (!isOrdinaryTopLevelAgentSession(dependencies.getSession(input.sessionId)) || dependencies.getSession(input.sessionId)?.archived) {
+        throw new Error('SERVER_OPS_AGENT_SESSION_NOT_ALLOWED')
+      }
+      /** 目录只投影仍有效的资源，一个断连不影响其它可用目标。 */
+      const summaries: ServerOpsAgentReadResourceSummary[] = []
+      for (const { resource } of connectedResources.values()) {
+        try { requireAuthorized(resource.kind, resource.kind === 'ssh' ? resource.hostId : resource.sourceId) } catch { continue }
         if (resource.kind === 'ssh') {
-          const saved = dependencies.services.hosts.get(resource.hostId)
-          if (!saved) throw new Error('SERVER_OPS_AGENT_RESOURCE_CHANGED')
-          return { kind: 'ssh', hostId: resource.hostId, ...(saved.projectId ? { projectId: saved.projectId } : {}), name: saved.name, ...(resource.readLogs === true ? { readLogs: true } : {}) }
+          const saved = dependencies.services.hosts.get(resource.hostId)!
+          summaries.push({ kind: 'ssh', hostId: saved.id, ...(saved.projectId ? { projectId: saved.projectId } : {}), name: saved.name, readLogs: true })
+        } else if (resource.kind === 'redis') {
+          const saved = dependencies.services.data!.listSources().sources.find((entry) => entry.id === resource.sourceId)!
+          summaries.push({ kind: 'redis', sourceId: saved.id, ...(saved.projectId ? { projectId: saved.projectId } : {}), name: saved.label })
         }
-        const saved = dependencies.services.data?.listSources().sources.find((entry) => entry.id === resource.sourceId)
-        if (!saved || saved.engine !== resource.kind) throw new Error('SERVER_OPS_AGENT_RESOURCE_CHANGED')
-        if (resource.kind === 'redis') {
-          return { kind: 'redis', sourceId: resource.sourceId, ...(saved.projectId ? { projectId: saved.projectId } : {}), name: saved.label }
-        }
-        throw new Error('SERVER_OPS_AGENT_READ_RESULT_INVALID')
-      })
+      }
       if (databasePolicy) {
         const sources = dependencies.services.data?.listSources().sources ?? []
         for (const saved of sources) {
@@ -767,7 +854,7 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
             name: saved.label, instance: false, databases })
         }
       }
-      return boundResourceDirectory({ resources: summaries, revision: databasePolicy?.revision ?? current?.revision ?? 0 })
+      return boundResourceDirectory({ resources: summaries, revision: databasePolicy?.revision ?? 0 })
     },
 
     async serverOverview(raw, signal) {
@@ -809,8 +896,7 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
     async serverLogs(raw, signal) {
       let request: ServerOpsAgentLogsInput
       try { request = parseServerOpsAgentLogsInput(raw) } catch { throw new Error('SERVER_OPS_AGENT_READ_INPUT_INVALID') }
-      const resource = requireAuthorized('ssh', request.hostId).resource
-      if (resource.kind !== 'ssh' || resource.readLogs !== true) throw new Error('SERVER_OPS_AGENT_SCOPE_REQUIRED')
+      requireAuthorized('ssh', request.hostId)
       const logs = dependencies.services.logs
       if (!logs) throw new Error('SERVER_OPS_AGENT_LOGS_UNAVAILABLE')
       return executeRead({ signal, kind: 'ssh', id: request.hostId, readAction: 'server-logs',
@@ -821,16 +907,11 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
     async dataProbe(raw, signal) {
       const record = exactRecord(raw, ['sourceId'])
       const sourceId = readId(record.sourceId)
-      /** 数据库按持久规则，Redis 仍按当前会话授权。 */
+      /** 资源按已保存配置发现，Redis 无额外会话授权。 */
       const saved = dependencies.services.data?.listSources().sources.find((entry) => entry.id === sourceId)
-      const current = dependencies.services.access.getReadAccess(input.sessionId)
-      const resource = saved?.engine === 'mysql' || saved?.engine === 'postgresql' || saved?.engine === 'sqlite'
-        ? requireDatabaseAuthorized(sourceId).resource
-        : current?.sessionId === input.sessionId
-        ? current.resources.find((entry): entry is Extract<ServerOpsAgentReadResource, { kind: ServerOpsDatabaseEngine | 'redis' }> =>
-          entry.kind !== 'ssh' && entry.sourceId === sourceId)
-        : undefined
-      if (!resource) throw new Error('SERVER_OPS_AGENT_ACCESS_REQUIRED')
+      if (!saved) throw new Error('SERVER_OPS_DATA_SOURCE_NOT_FOUND')
+      const resource = requireAuthorized(saved.engine, sourceId).resource
+      if (resource.kind === 'ssh') throw new Error('SERVER_OPS_AGENT_READ_INPUT_INVALID')
       const kind = resource.kind
       requireAuthorized(kind, sourceId)
       const { data } = requireDataSource(sourceId, kind)
@@ -856,13 +937,9 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
         throw new Error('SERVER_OPS_AGENT_READ_INPUT_INVALID')
       }
       const saved = dependencies.services.data?.listSources().sources.find((entry) => entry.id === sourceId)
-      const access = dependencies.services.access.getReadAccess(input.sessionId)
-      const resource = saved?.engine === 'mysql' || saved?.engine === 'postgresql' || saved?.engine === 'sqlite'
-        ? requireDatabaseAuthorized(sourceId).resource
-        : access?.sessionId === input.sessionId
-        ? access.resources.find((entry) => entry.kind !== 'ssh' && entry.sourceId === sourceId)
-        : undefined
-      if (!resource || resource.kind === 'ssh') throw new Error('SERVER_OPS_AGENT_ACCESS_REQUIRED')
+      if (!saved) throw new Error('SERVER_OPS_DATA_SOURCE_NOT_FOUND')
+      const resource = requireAuthorized(saved.engine, sourceId).resource
+      if (resource.kind === 'ssh') throw new Error('SERVER_OPS_AGENT_READ_INPUT_INVALID')
       const { data } = requireDataSource(sourceId, resource.kind)
       if (resource.kind === 'redis') {
         if (scope !== 'instance' || database !== undefined || section !== undefined) throw new Error('SERVER_OPS_AGENT_READ_INPUT_INVALID')

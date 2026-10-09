@@ -48,6 +48,7 @@ export * from './server-ops-project'
 export * from './server-ops-connection-move'
 export * from './server-ops-script'
 export * from './server-ops-data-write'
+export * from './server-ops-redis'
 
 // 环境检测相关类型
 export * from './environment'

@@ -9,8 +9,9 @@ import type { ServerOpsDataSource } from './server-ops-data'
  * （解析只认单条 SELECT、引擎会话只读、Agent 合同禁止）在写链上一律不适用，
  * 因此写链自带独立的分句、拒绝规则、事务语义与审计。
  *
- * Renderer IPC 仍只接受用户窗口；Agent 读写模式通过主进程 Facade 复用同一执行合同，
- * 不直接获得该 IPC 通道。`ops_database_query` 的只读合同也不因本文件改变。
+ * Renderer IPC 仍只接受用户窗口；普通用户会话中的 Agent 通过主进程 Facade 复用同一执行合同，
+ * 每次写入先经过 Agent 原生单次确认；运维读写会话同样沿用该确认，不直接获得该 IPC 通道。
+ * `ops_database_query` 的只读合同也不因本文件改变。
  */
 export const SERVER_OPS_DATA_WRITE_CHANNELS = {
   /** 执行一次写脚本；用户窗口或明确选择运维读写模式的 Agent 才能触发。 */

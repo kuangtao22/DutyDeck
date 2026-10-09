@@ -7,11 +7,17 @@ const SERVER_OPS_READ_TOOL_NAMES = [
   'ops_server_discover', 'ops_server_logs',
   'ops_data_test', 'ops_data_diagnose', 'ops_database_tables',
   'ops_database_describe', 'ops_database_rows', 'ops_database_query',
-  'ops_database_change_context',
+  'ops_database_change_context', 'ops_redis_read',
 ] as const
 const SERVER_OPS_READ_TOOL_SET = new Set<string>(SERVER_OPS_READ_TOOL_NAMES)
-/** 读写模式在只读工具之外仅增加数据库写入入口，不开放 Shell、文件、MCP 或浏览器。 */
-const SERVER_OPS_WRITE_TOOL_NAMES = [...SERVER_OPS_READ_TOOL_NAMES, 'ops_database_write'] as const
+/** 统一运维模式同时开放服务器、Docker 与远程文件工具；每个敏感动作仍由 Facade 单独审批。 */
+const SERVER_OPS_WRITE_TOOL_NAMES = [
+  ...SERVER_OPS_READ_TOOL_NAMES,
+  'ops_database_write', 'ops_redis_write',
+  'server_list', 'server_status', 'server_connect', 'server_exec', 'server_disconnect',
+  'server_docker_resources', 'server_docker_detail', 'server_docker_action',
+  'server_files_list', 'server_files_read', 'server_files_mutate',
+] as const
 const SERVER_OPS_WRITE_TOOL_SET = new Set<string>(SERVER_OPS_WRITE_TOOL_NAMES)
 
 /** 判断工具是否属于具有独立 Facade 授权检查的只读集合，供宿主统一准入。 */
@@ -31,7 +37,7 @@ export function denyToolOutsideAgentMode(toolName: string, mode: AgentToolMode):
   if (mode === 'standard') return undefined
   if (mode === 'server-ops-read' && SERVER_OPS_READ_TOOL_SET.has(toolName)) return undefined
   if (mode === 'server-ops-write' && SERVER_OPS_WRITE_TOOL_SET.has(toolName)) return undefined
-  return { behavior: 'deny', message: `${mode === 'server-ops-write' ? '运维读写' : '运维只读'}模式不允许使用工具: ${toolName}` }
+  return { behavior: 'deny', message: `${mode === 'server-ops-write' ? '运维授权' : '运维只读'}模式不允许使用工具: ${toolName}` }
 }
 
 /** Proma 对外工具名到 Pi runtime 注册名的稳定映射。 */

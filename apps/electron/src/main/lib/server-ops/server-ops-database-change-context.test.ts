@@ -31,7 +31,7 @@ function fixture() {
 }
 
 describe('数据库变更脚本上下文', () => {
-  test('Given 仅表结构授权 When 请求变更依据 Then 只读指定结构并要求核对程序与人工执行', async () => {
+  test('Given 仅表结构授权 When 请求变更依据 Then 只读指定结构且写入必须另走原生审批工具', async () => {
     /** 无任何真实连接的授权依赖。 */
     const state = fixture()
     /** 两张相关表组成一次有界结构快照。 */
@@ -44,6 +44,8 @@ describe('数据库变更脚本上下文', () => {
     expect(result.workflow.join('\n')).toContain('业务校验')
     expect(result.workflow.join('\n')).toContain('预检查')
     expect(result.workflow.join('\n')).toContain('不得执行')
+    expect(result.workflow.join('\n')).toContain('只有当前工具集中提供 `ops_database_write` 时')
+    expect(result.workflow.join('\n')).toContain('Agent 原生确认弹窗')
     expect(result.warnings.join('\n')).toContain('外键')
     expect(result.tables.map((table) => table.name)).toEqual(['users', 'orders'])
   })

@@ -74,6 +74,7 @@ export type ServerOpsAuditReadAction =
   | 'schema-list'
   | 'schema-describe'
   | 'rows-read'
+  | 'redis-read'
 
 /** Agent 数据诊断的显式实例或数据库范围。 */
 export type ServerOpsAuditReadScope = 'instance' | 'database'
@@ -620,7 +621,7 @@ function isServerOpsAuditOperation(value: unknown): value is ServerOpsAuditOpera
 function isServerOpsAuditReadAction(value: unknown): value is ServerOpsAuditReadAction {
   return value === 'server-overview' || value === 'server-services' || value === 'server-discover' || value === 'server-logs'
     || value === 'data-probe' || value === 'data-diagnose'
-    || value === 'schema-list' || value === 'schema-describe' || value === 'rows-read'
+    || value === 'schema-list' || value === 'schema-describe' || value === 'rows-read' || value === 'redis-read'
 }
 
 /** 判断审计主体与操作是否符合权限矩阵。 */
@@ -729,7 +730,7 @@ export function isServerOpsAuditRecord(value: unknown): value is ServerOpsAuditR
     if (isServerRead && (value.database !== undefined || value.table !== undefined || value.scope !== undefined)) return false
     if (value.scope !== undefined && value.scope !== 'instance' && value.scope !== 'database') return false
     /** 数据源动作必须精确对应实例、数据库或数据表层级，避免审计记录丢失或夸大真实读取范围。 */
-    if (value.readAction === 'data-probe') {
+    if (value.readAction === 'data-probe' || value.readAction === 'redis-read') {
       if (value.scope !== undefined || value.database !== undefined || value.table !== undefined) return false
     } else if (value.readAction === 'data-diagnose') {
       if (value.scope === 'instance') {

@@ -135,7 +135,7 @@ describe('Agent sendMessage 准入顺序合同', () => {
     expect(body).toContain('...(workspaceSlug && runWorkspaceSkillsEnabled ? {')
     expect(body).toContain('...(runWorkspaceSkillsEnabled && mentionedSkills?.length ? { skillMentions: mentionedSkills } : {})')
     expect(body).toContain('...(runWorkspaceSkillsEnabled ? { onSkillActivated: recordSkillActivation } : {})')
-    expect(body).toContain("activeToolNames: runToolMode === 'server-ops-read' ? resolveAgentModeToolNames(runToolMode) : resolvePiActiveToolNames(")
+    expect(body).toContain("activeToolNames: runToolMode === 'server-ops-read' || runToolMode === 'server-ops-write' ? resolveAgentModeToolNames(runToolMode) : resolvePiActiveToolNames(")
   })
 
   test('Given sendMessage 实现 When 检查迁移拒绝分支 Then 它早于 active、retry 删除、消息落盘和首次 await', () => {
@@ -406,26 +406,45 @@ describe('Agent sendMessage 准入顺序合同', () => {
     const end = source.indexOf('// 13. 构建 Adapter 查询选项', start)
     const body = source.slice(start, end)
     const policyIndex = body.indexOf("extensions.toolApprovalPolicy?.getMode(toolName, input) === 'automatic'")
-    const serverOpsIndex = body.indexOf("if (toolName === 'server_exec' || toolName === 'server_docker_action' || toolName === 'server_files_mutate')")
+    const serverOpsIndex = body.indexOf("if (toolName === 'server_exec' || toolName === 'server_docker_action' || toolName === 'server_files_mutate' || toolName === 'server_disconnect')")
 
     expect(policyIndex).toBeGreaterThan(body.indexOf('extensions.singleApprovalToolNames?.includes(toolName)'))
-    expect(policyIndex).toBeLessThan(serverOpsIndex)
-    expect(body.slice(serverOpsIndex, body.indexOf('// 视觉助手', serverOpsIndex)))
+    expect(policyIndex).toBeGreaterThan(serverOpsIndex)
+    expect(body.slice(serverOpsIndex, body.indexOf('// 数据库写入始终', serverOpsIndex)))
       .not.toContain('toolApprovalPolicy')
   })
 
   test('Given bypass 模式的文件和容器变更 When 进入权限边界 Then 先逐次审批并复核当前运行代次', () => {
     /** 真实编排路径必须在全局 bypass 分支之前处理高权限运维动作。 */
     const source = readFileSync(join(import.meta.dir, 'agent-orchestrator.ts'), 'utf8')
-    const start = source.indexOf("if (toolName === 'server_exec' || toolName === 'server_docker_action' || toolName === 'server_files_mutate')")
+    const start = source.indexOf("if (toolName === 'server_exec' || toolName === 'server_docker_action' || toolName === 'server_files_mutate' || toolName === 'server_disconnect')")
     const bypass = source.indexOf("case 'bypassPermissions':", start)
     expect(start).toBeGreaterThan(0)
     expect(bypass).toBeGreaterThan(start)
-    const body = source.slice(start, source.indexOf('// 视觉助手', start))
+    const body = source.slice(start, source.indexOf('// 数据库写入始终', start))
     expect(body).toContain("toolName === 'server_exec' && isServerOpsReadOnlyCommand(command)")
     expect(body).toContain("currentMode === 'plan'")
     expect(body).toContain('await permissionService.requestSingleApproval(')
     expect(body).toContain('revalidateSingleApprovalResult(result, denyStaleToolRun, getPermissionMode)')
+  })
+
+  test('Given bypass 模式的数据库写入 When 进入权限边界 Then 先走 Agent 原生单次审批再执行', () => {
+    /** 数据库写入不再依赖额外 Agent 运维授权，但不能绕过原生确认卡。 */
+    const source = readFileSync(join(import.meta.dir, 'agent-orchestrator.ts'), 'utf8')
+    const start = source.indexOf("if (toolName === 'ops_database_write' || toolName === 'ops_redis_write')")
+    const bypass = source.indexOf("case 'bypassPermissions':", start)
+    expect(start).toBeGreaterThan(0)
+    expect(bypass).toBeGreaterThan(start)
+    /** 数据库分支必须先于可自动批准的扩展策略，不能被媒体类策略放行。 */
+    const extensionApproval = source.indexOf('if (extensions.singleApprovalToolNames?.includes(toolName))', start)
+    expect(extensionApproval).toBeGreaterThan(start)
+    const body = source.slice(start, extensionApproval)
+    expect(body).toContain('await permissionService.requestSingleApproval(')
+    expect(body).toContain('revalidateSingleApprovalResult(result, denyStaleToolRun, getPermissionMode)')
+    expect(body).toContain("currentMode === 'plan'")
+    expect(body).not.toContain('toolApprovalPolicy')
+    expect(body).toContain('!serverOpsReadFacade?.databaseWrite')
+    expect(source).toContain("allowDatabaseWrite: runToolMode === 'standard' || runToolMode === 'server-ops-write'")
   })
 
   test('Given 单次审批等待期间权限模式变化 When 审批返回 Then 既有工具、接口工作台与编排工厂统一复核状态', () => {
@@ -435,10 +454,10 @@ describe('Agent sendMessage 准入顺序合同', () => {
     const start = source.indexOf('const canUseTool = async')
     const end = source.indexOf('// 13. 构建 Adapter 查询选项', start)
     const body = source.slice(start, end)
-    /** 既有五条审批分支各复核一次；接口工作台与编排工厂分别在审批返回和最终放行前复核两次。 */
+    /** 六条独立审批分支各复核一次；接口工作台与编排工厂分别在审批返回和最终放行前复核两次。 */
     const revalidationCalls = body.match(/revalidateSingleApprovalResult\(/g)?.length ?? 0
 
-    expect(revalidationCalls).toBe(9)
+    expect(revalidationCalls).toBe(10)
     expect(body).not.toContain('return permissionService.requestSingleApproval(sessionId, toolName, input, options')
   })
 

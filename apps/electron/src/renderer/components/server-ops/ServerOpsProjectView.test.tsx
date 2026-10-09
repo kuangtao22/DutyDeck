@@ -81,23 +81,22 @@ function findDataElement(
 }
 
 describe('项目视图', () => {
-  test('Given 三类连接 When 显示卡片授权入口 Then 每张卡片独立绑定目标且不会打开连接', () => {
-    /** 授权点击与卡片导航分别记录，防止点击盾牌同时进入工作台。 */
-    const authorized: string[] = []
+  test('Given 三类连接 When 显示卡片操作 Then 只有数据库显示禁用表按钮', () => {
+    /** 策略点击与卡片导航分别记录，防止点击盾牌同时进入工作台。 */
+    const managed: string[] = []
     const opened: string[] = []
     const props = { project, connections, selectedConnectionId: null, onSelectConnection: (connection: ServerOpsConnection) => { opened.push(connection.id) },
       onOpenDrawer: () => undefined, onAddConnection: () => undefined,
-      onAgentReadAccess: (connection: ServerOpsConnection) => { authorized.push(connection.id) } }
+      onManageDatabasePolicy: (connection: ServerOpsConnection) => { managed.push(connection.id) } }
     const html = renderView(props)
-    expect(html.match(/data-server-ops-agent-access=/g)).toHaveLength(3)
+    expect(html.match(/data-server-ops-database-policy=/g)).toHaveLength(1)
     const tree = ServerOpsProjectView(props)
-    for (const connection of connections) {
-      expect(html).toContain(`aria-label="Agent 只读授权：${connection.label}"`)
-      const action = findDataElement(tree, 'data-server-ops-agent-access', connection.id) as React.ReactElement<{ onClick: () => void }> | null
-      expect(action).not.toBeNull()
-      action?.props.onClick()
-    }
-    expect(authorized).toEqual(connections.map((connection) => connection.id))
+    expect(html).toContain('aria-label="管理禁用表：业务主库"')
+    expect(html).not.toContain('Agent 授权')
+    const action = findDataElement(tree, 'data-server-ops-database-policy', 'data:source-1') as React.ReactElement<{ onClick: () => void }> | null
+    expect(action).not.toBeNull()
+    action?.props.onClick()
+    expect(managed).toEqual(['data:source-1'])
     expect(opened).toEqual([])
   })
   test('Given 当前会话有 Agent 连接草稿 When 查看项目 Then 提示位于连接列表之前', () => {

@@ -20,6 +20,8 @@ import type { ServerOpsConsoleAck, ServerOpsConsoleExitEvent, ServerOpsConsoleId
   ServerOpsTerminalOutputEvent } from '@proma/shared'
 import type { ServerOpsConsoleRuntimeStart } from '../../../utility/server-ops/server-ops-console-runtime'
 import type { ServerOpsDataWriteResult } from '@proma/shared'
+import type { ServerOpsRedisCommandResult } from '@proma/shared'
+import type { ServerOpsRuntimeRedisRequest } from '../../../utility/server-ops/server-ops-runtime-protocol'
 import {
   parseServerOpsRuntimeMessage,
   type ServerOpsRuntimeConnectRequest,
@@ -109,6 +111,11 @@ interface PendingDataWrite {
   timeout: ReturnType<typeof setTimeout>
   cancelRequested: boolean
   removeAbortListener: () => void
+}
+
+/** Redis 回执与 SQL 写分开登记，取消后仍以 utility 的真实结果为准。 */
+interface PendingRedisCommand extends Omit<PendingDataWrite, 'resolve'> {
+  resolve: (result: ServerOpsRedisCommandResult) => void
 }
 
 /** 尚未收到 utility started 确认的日志启动。 */
@@ -233,6 +240,8 @@ export class ServerOpsRuntimeClient {
   private readonly pendingDataReads = new Map<string, PendingDataRead>()
   /** 在途写请求；与读取分开登记，取消同样按完整身份匹配。 */
   private readonly pendingDataWrites = new Map<string, PendingDataWrite>()
+  /** 活跃 Redis 单键命令，不在断线后自动重发。 */
+  private readonly pendingRedisCommands = new Map<string, PendingRedisCommand>()
   /** SFTP 在途请求最多 64 个，窗口资源归属单独保留至显式关闭。 */
   private readonly pendingSftp = new Map<string, PendingSftp>()
   private readonly sftpOwners = new Map<string, Map<string, string>>()
@@ -321,6 +330,7 @@ export class ServerOpsRuntimeClient {
   /** 主动断开精确连接。 */
   disconnect(hostId: string, connectionId: string): void {
     if (this.hasConflictingConnectionOwner(hostId, connectionId)) return
+    this.rejectPendingRedisCommands((pending) => pending.hostId === hostId && pending.connectionId === connectionId)
     this.rejectSftp('SERVER_OPS_CONNECTION_CLOSED', (request) => request.hostId === hostId && request.connectionId === connectionId)
     this.forgetSftpConnection(connectionId)
     this.rejectPendingLogStartsForConnection(hostId, connectionId, new ServerOpsRuntimeError('SERVER_OPS_CONNECTION_CLOSED', 'SSH 连接已断开'))
@@ -626,6 +636,42 @@ export class ServerOpsRuntimeClient {
     })
   }
 
+  /** 下发单键 Redis 命令；等待精确身份的回执或取消，不在失败后重发。 */
+  async dataRedis(input: Omit<ServerOpsRuntimeRedisRequest, 'requestId'>, signal?: AbortSignal): Promise<ServerOpsRedisCommandResult> {
+    if (input.transport === 'ssh' && this.activeConnections.get(input.connectionId) !== input.hostId) {
+      throw new ServerOpsRuntimeError('SERVER_OPS_CONNECTION_NOT_ACTIVE', 'SSH 连接未激活')
+    }
+    await this.start()
+    if (signal?.aborted) throw new ServerOpsRuntimeError('SERVER_OPS_REDIS_CANCELLED', 'Redis 命令已取消')
+    if (input.transport === 'ssh' && this.activeConnections.get(input.connectionId) !== input.hostId) {
+      throw new ServerOpsRuntimeError('SERVER_OPS_CONNECTION_NOT_ACTIVE', 'SSH 连接未激活')
+    }
+    const requestId = this.dependencies.uuid()
+    return await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingRedisCommands.has(requestId)) return
+        this.stop()
+      }, input.timeoutMs + 1_000)
+      const onAbort = (): void => {
+        const pending = this.pendingRedisCommands.get(requestId)
+        if (!pending || pending.cancelRequested) return
+        pending.cancelRequested = true
+        try { this.port?.postMessage({ type: 'server-ops.redis-cancel', requestId, hostId: input.hostId, connectionId: input.connectionId }) }
+        catch { this.stop() }
+      }
+      const pending: PendingRedisCommand = { hostId: input.hostId, connectionId: input.connectionId, resolve, reject, timeout,
+        cancelRequested: false, removeAbortListener: () => signal?.removeEventListener('abort', onAbort) }
+      this.pendingRedisCommands.set(requestId, pending)
+      signal?.addEventListener('abort', onAbort, { once: true })
+      try { this.port?.postMessage({ type: 'server-ops.redis', input: { ...input, requestId } }) }
+      catch {
+        clearTimeout(timeout); this.pendingRedisCommands.delete(requestId); pending.removeAbortListener()
+        reject(new ServerOpsRuntimeError('SERVER_OPS_DATA_DISPATCH_FAILED', 'Redis 请求下发失败'))
+      }
+      if (signal?.aborted) onAbort()
+    })
+  }
+
   /** 向精确远程 PTY 写入用户输入。 */
   input(hostId: string, connectionId: string, data: string): void {
     this.port?.postMessage({ type: 'server-ops.terminal-input', hostId, connectionId, data })
@@ -707,6 +753,7 @@ export class ServerOpsRuntimeClient {
     this.rejectPendingExec(new ServerOpsRuntimeError('SERVER_OPS_RUNTIME_STOPPED', 'SSH 运行时已停止'))
     this.rejectPendingDataReads(new ServerOpsRuntimeError('SERVER_OPS_RUNTIME_STOPPED', 'SSH 运行时已停止'))
     this.rejectPendingDataWrites(new ServerOpsRuntimeError('SERVER_OPS_DATA_WRITE_OUTCOME_UNKNOWN', '数据库写入结果无法确认，请先核对数据'))
+    this.rejectPendingRedisCommands()
     this.rejectPendingLogStarts(new ServerOpsRuntimeError('SERVER_OPS_RUNTIME_STOPPED', 'SSH 运行时已停止'))
     this.finishAllLogStreams('error', 'SERVER_OPS_RUNTIME_STOPPED')
     this.finishAllConsoles(new ServerOpsRuntimeError('SERVER_OPS_RUNTIME_STOPPED', 'SSH 运行时已停止'))
@@ -844,6 +891,13 @@ export class ServerOpsRuntimeClient {
       pending.reject(new ServerOpsRuntimeError('SERVER_OPS_DATA_CANCELLED', '数据库读取已取消'))
       return
     }
+    if (message.type === 'server-ops.redis-result') {
+      const pending = this.pendingRedisCommands.get(message.requestId)
+      if (!pending || pending.hostId !== message.hostId || pending.connectionId !== message.connectionId) return
+      clearTimeout(pending.timeout); this.pendingRedisCommands.delete(message.requestId); pending.removeAbortListener()
+      pending.resolve(message.result)
+      return
+    }
     if (message.type === 'server-ops.data-write-result') {
       const pending = this.pendingDataWrites.get(message.requestId)
       if (!pending || pending.hostId !== message.hostId || pending.connectionId !== message.connectionId) return
@@ -865,6 +919,11 @@ export class ServerOpsRuntimeClient {
       return
     }
     if (message.type === 'server-ops.error' && message.requestId) {
+      const redis = this.pendingRedisCommands.get(message.requestId)
+      if (redis && redis.hostId === message.hostId && redis.connectionId === message.connectionId) {
+        clearTimeout(redis.timeout); this.pendingRedisCommands.delete(message.requestId); redis.removeAbortListener()
+        redis.reject(new ServerOpsRuntimeError(message.code, message.message))
+      }
       /** 对应 requestId 的待处理连接。 */
       const pending = this.pendingConnects.get(message.requestId)
       if (pending && pending.hostId === message.hostId && pending.connectionId === message.connectionId) { clearTimeout(pending.timeout); this.pendingConnects.delete(message.requestId); pending.reject(new ServerOpsRuntimeError(message.code, message.message)) }
@@ -967,6 +1026,7 @@ export class ServerOpsRuntimeClient {
     }
     if (message.type === 'server-ops.terminal-exit') {
       if (this.activeConnections.get(message.event.connectionId) !== message.event.hostId) return
+      this.rejectPendingRedisCommands((pending) => pending.hostId === message.event.hostId && pending.connectionId === message.event.connectionId)
       this.rejectSftp('SERVER_OPS_CONNECTION_CLOSED', (request) => request.connectionId === message.event.connectionId)
       this.forgetSftpConnection(message.event.connectionId)
       this.rejectPendingLogStartsForConnection(message.event.hostId, message.event.connectionId, new ServerOpsRuntimeError('SERVER_OPS_CONNECTION_CLOSED', 'SSH 连接已断开'))
@@ -1025,6 +1085,7 @@ export class ServerOpsRuntimeClient {
     this.rejectPendingExec(error)
     this.rejectPendingDataReads(error)
     this.rejectPendingDataWrites(new ServerOpsRuntimeError('SERVER_OPS_DATA_WRITE_OUTCOME_UNKNOWN', '数据库写入结果无法确认，请先核对数据'))
+    this.rejectPendingRedisCommands()
     this.rejectPendingLogStarts(error)
     this.finishAllLogStreams('error', error.code)
     this.finishAllConsoles(error)
@@ -1132,6 +1193,15 @@ export class ServerOpsRuntimeClient {
     this.pendingDataWrites.clear()
   }
 
+  /** 连接或 utility 失效后，Redis 已分派命令不能被宣称未执行。 */
+  private rejectPendingRedisCommands(matches: (pending: PendingRedisCommand) => boolean = () => true): void {
+    for (const [requestId, pending] of this.pendingRedisCommands) {
+      if (!matches(pending)) continue
+      clearTimeout(pending.timeout); this.pendingRedisCommands.delete(requestId); pending.removeAbortListener()
+      pending.reject(new ServerOpsRuntimeError('SERVER_OPS_REDIS_OUTCOME_UNKNOWN', 'Redis 结果需要核对，不能自动重试'))
+    }
+  }
+
   /** 拒绝并清理全部待启动日志流。 */
   private rejectPendingLogStarts(error: ServerOpsRuntimeError): void {
     for (const pending of this.pendingLogStarts.values()) {
@@ -1153,6 +1223,9 @@ export class ServerOpsRuntimeClient {
 
   /** 判断 connectionId 是否已被另一 host 的 active/pending 工作占用。 */
   private hasConflictingConnectionOwner(hostId: string, connectionId: string): boolean {
+    for (const pending of this.pendingRedisCommands.values()) {
+      if (pending.connectionId === connectionId && pending.hostId !== hostId) return true
+    }
     const activeHostId = this.activeConnections.get(connectionId)
     if (activeHostId !== undefined && activeHostId !== hostId) return true
     for (const pending of this.pendingConnects.values()) {

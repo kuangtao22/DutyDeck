@@ -22,8 +22,8 @@ const SERVER_OPS_PROJECT_KINDS: readonly { kind: ServerOpsConnectionKind; label:
 export interface ServerOpsProjectViewProps {
   /** 顶部直接切换项目的入口；抽屉继续负责项目管理。 */
   projectSelector?: React.ReactNode
-  /** 卡片内管理当前连接的 Agent 只读授权，不触发连接导航。 */
-  onAgentReadAccess?: (connection: ServerOpsConnection) => void
+  /** 数据库卡片内打开禁用表编辑器，不触发连接导航。 */
+  onManageDatabasePolicy?: (connection: ServerOpsConnection) => void
   /** 当前会话 Agent 生成的待审核连接草稿；项目归属由用户在这里确定。 */
   pendingDrafts?: React.ReactNode
   /** 当前项目；为空表示项目列表尚未就绪。 */
@@ -117,7 +117,7 @@ export function ServerOpsProjectView({
   searchQuery = '',
   onFilterKindChange,
   onSearchQueryChange,
-  onAgentReadAccess,
+  onManageDatabasePolicy,
   pendingDrafts,
   projectSelector,
 }: ServerOpsProjectViewProps): React.ReactElement {
@@ -170,7 +170,7 @@ export function ServerOpsProjectView({
     <div className="server-ops-project-container flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto bg-content-area scrollbar-thin" data-server-ops-project-view={project.id}>
       <div className="mx-auto w-full max-w-6xl px-4 pb-5">
         <ProjectViewToolbar title={project.name} onOpenDrawer={onOpenDrawer} projectSelector={projectSelector} />
-        <AgentActionHint action="查看已授权的服务器状态、分析数据库或查询数据" className="mb-3" />
+        <AgentActionHint action="查看已连接的服务器状态、分析数据库或查询数据" className="mb-3" />
         {pendingDrafts}
         <div className="titlebar-no-drag mb-4 flex min-w-0 flex-wrap items-center gap-2" data-server-ops-project-actions>
           <label className="relative block min-w-0 flex-1 basis-52" data-server-ops-project-search>
@@ -234,11 +234,13 @@ export function ServerOpsProjectView({
                         const caption = connection.kind === 'database' ? `${entry.caption} · ${protocol}` : entry.caption
                         /** 补充说明保留连接状态与明文提示，键盘聚焦卡片时同样可感知。 */
                         const accessibleDescription = [connection.metadata, connection.kind === 'ssh' ? connection.connected === true ? '已连接' : '未连接' : undefined, connection.plaintextDirect === true ? '内网明文' : undefined].filter(Boolean).join('，')
+                        /** 服务器与 Redis 保存并连接后直接可用，只有数据库保留禁用表策略入口。 */
+                        const canManageDatabasePolicy = connection.kind === 'database' && onManageDatabasePolicy !== undefined
                         return (
                           <li key={connection.id} className={cn('group/card relative flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-content-area p-4 transition-colors hover:border-border hover:bg-muted/20', connection.id === selectedConnectionId && 'border-border bg-muted/30')}>
                             <button type="button" className="absolute inset-0 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50" aria-label={`打开连接：${connection.label}，${caption}，${connection.endpoint ?? connection.detail}`} aria-description={accessibleDescription || undefined} title={`${connection.label} · ${connection.detail}`}
                               aria-current={connection.id === selectedConnectionId ? 'true' : undefined} data-server-ops-connection={connection.id} onClick={() => onSelectConnection(connection)} />
-                            <div className={cn('pointer-events-none flex min-w-0 items-start gap-3', onAgentReadAccess ? 'pr-12' : 'pr-5')}>
+                            <div className={cn('pointer-events-none flex min-w-0 items-start gap-3', canManageDatabasePolicy ? 'pr-12' : 'pr-5')}>
                               <span className={cn('flex size-9 shrink-0 items-center justify-center rounded-xl shadow-sm', connection.kind === 'ssh' ? 'bg-blue-500/10 text-blue-500' : connection.kind === 'database' ? 'bg-amber-500/10 text-amber-500' : 'bg-rose-500/10 text-rose-500')}><GroupIcon kind={connection.kind} className="size-[18px]" /></span>
                               <div className="min-w-0 flex-1">
                                 <h4 className="truncate text-sm font-medium">{connection.label}</h4>
@@ -253,9 +255,9 @@ export function ServerOpsProjectView({
                               <ArrowUpRight className="ml-auto size-3.5 text-foreground/30 transition-colors group-hover/card:text-foreground/60" aria-hidden="true" />
                             </div>
                             <div className="absolute right-2 top-3 flex items-center gap-0.5">
-                            {onAgentReadAccess ? <Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-md text-muted-foreground focus-visible:ring-2"
-                              aria-label={`Agent 只读授权：${connection.label}`} title="Agent 只读授权" data-server-ops-agent-access={connection.id}
-                              onClick={() => onAgentReadAccess(connection)}><ShieldCheck className="size-3.5" aria-hidden="true" /></Button> : null}
+                            {canManageDatabasePolicy ? <Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-md text-muted-foreground focus-visible:ring-2"
+                              aria-label={`管理禁用表：${connection.label}`} title="管理禁用表" data-server-ops-database-policy={connection.id}
+                              onClick={() => { onManageDatabasePolicy?.(connection) }}><ShieldCheck className="size-3.5" aria-hidden="true" /></Button> : null}
                             {onMoveConnection ? (
                               <DropdownMenu modal={false}>
                                 <DropdownMenuTrigger asChild>

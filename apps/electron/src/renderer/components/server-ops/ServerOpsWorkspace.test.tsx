@@ -5,8 +5,6 @@ import { createRoot } from 'react-dom/client'
 import { Provider, createStore } from 'jotai'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type {
-  ServerOpsAgentAccess,
-  ServerOpsAgentAccessChanged,
   ServerOpsAuditRecord,
   ServerOpsConnectionState,
   ServerOpsHost,
@@ -15,41 +13,20 @@ import type {
   ServerOpsLogStartResult,
   ServerOpsOverviewResult,
 } from '@proma/shared'
-
-test('Given 旧SSH授权覆盖只读租约 When 用户已确认影响 Then 提交原影响token', async () => {
-  const calls: Array<{ token?: string; granted: boolean }> = []
-  const controller = createServerOpsAgentAccessController({
-    getAccess: async () => null,
-    setAccess: async (access, token) => { calls.push({ token, granted: access.granted }); return access },
-    publish: () => undefined,
-    reportError: () => undefined,
-  })
-  controller.activate()
-  await controller.select({ sessionId: 'session-1', hostId: 'host-1' })
-  await controller.toggle('captured-impact-token')
-  expect(calls).toEqual([{ token: 'captured-impact-token', granted: true }])
-  controller.dispose()
-})
 import {
   createServerOpsAuditController,
-  createServerOpsAgentAccessController,
   isServerOpsCredentialRecoveryState,
-  resolveServerOpsAgentAccessSession,
-  resolveServerOpsAgentAccessTarget,
-  resolveServerOpsAgentAccessViewState,
   resolveServerOpsProjectDataSourceHosts,
   shouldPromptForServerOpsCredential,
   ServerOpsWorkspaceView,
   serverOpsDataApi,
 } from './ServerOpsWorkspace'
 import { useServerOpsTransferLeave } from './useServerOpsTransferLeave'
-import type { ServerOpsAgentAccessProjection } from '@/atoms/server-ops-atoms'
 import { createServerOpsOverviewController, ServerOpsOverviewPanel } from './ServerOpsOverviewPanel'
 import type { ServerOpsOverviewProjection } from './ServerOpsOverviewPanel'
 import { ServerOpsServicesPanel } from './ServerOpsServicesPanel'
 import { createServerOpsLogsController, ServerOpsLogsPanel } from './ServerOpsLogsPanel'
 import type { ServerOpsLogsController, ServerOpsLogsProjection } from './ServerOpsLogsPanel'
-import { buildServerOpsConnections, resolveServerOpsWorkspaceTarget } from './server-ops-connections'
 import type { ServerOpsConnection } from './server-ops-connections'
 import { createServerOpsSqlQueryHistoryController } from './server-ops-sql-query-history-controller'
 import { createServerOpsSqlQueryController } from './server-ops-sql-query-controller'
@@ -137,44 +114,6 @@ function createDeferred<T>(): Deferred<T> {
 async function flushPromises(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
-}
-
-/** 创建授权测试所需的内存 IPC 与投影观察器。 */
-function createAgentAccessHarness(activate = true) {
-  /** 查询调用记录。 */
-  const getCalls: Array<{ sessionId: string; hostId: string }> = []
-  /** 写入调用记录。 */
-  const setCalls: ServerOpsAgentAccess[] = []
-  /** Renderer 投影历史。 */
-  const projections: ServerOpsAgentAccessProjection[] = []
-  /** 用户可见错误记录。 */
-  const errors: string[] = []
-  /** 默认查询实现返回未授权。 */
-  let getAccess = async (target: { sessionId: string; hostId: string }): Promise<ServerOpsAgentAccess | null> => {
-    getCalls.push(target)
-    return null
-  }
-  /** 默认写入实现原样接管授权事实，撤销时返回空槽。 */
-  let setAccess = async (access: ServerOpsAgentAccess): Promise<ServerOpsAgentAccess | null> => {
-    setCalls.push(access)
-    return access.granted ? access : null
-  }
-  const controller = createServerOpsAgentAccessController({
-    getAccess: (target) => getAccess(target),
-    setAccess: (access) => setAccess(access),
-    publish: (projection) => { projections.push(projection) },
-    reportError: (message) => { errors.push(message) },
-  })
-  if (activate) controller.activate()
-  return {
-    controller,
-    errors,
-    getCalls,
-    projections,
-    setCalls,
-    setGetAccess: (implementation: typeof getAccess) => { getAccess = implementation },
-    setSetAccess: (implementation: typeof setAccess) => { setAccess = implementation },
-  }
 }
 
 /** 创建工作区测试使用的服务器资产。 */
@@ -716,14 +655,14 @@ describe('服务器运维右侧工作区', () => {
     expect(html).toContain('<option value="trust-revoke">')
   })
 
-  test('Given 已选择服务器 When 渲染工具栏 Then 次要服务器操作收进菜单且 Agent Shield 权限入口保持可见', () => {
+  test('Given 已选择服务器 When 渲染工具栏 Then 次要服务器操作收进菜单且不显示板块授权', () => {
     const host = createHost()
     const html = renderToStaticMarkup(
       <ServerOpsWorkspaceView {...createCallbacks()} status="ready" hosts={[host]} selectedHost={host} activeSection="overview" />,
     )
 
     expect(html).toContain('aria-label="更多服务器操作"')
-    expect(html).toContain('aria-label="允许当前 Agent 使用此服务器"')
+    expect(html).not.toContain('data-server-ops-agent-access')
   })
 
   test('Given 审计 actor 筛选 When 加载当前主机服务操作 Then IPC 包含完整 actor 与 operation', async () => {
@@ -753,385 +692,14 @@ describe('服务器运维右侧工作区', () => {
     }])
   })
 
-  test('Given 新旧控制器共享投影 sink When 旧 owner 卸载后请求迟到 Then 不覆盖新 owner 或报告错误', async () => {
-    /** 两个组件 owner 共享的 Jotai 投影 sink。 */
-    const sharedProjections: ServerOpsAgentAccessProjection[] = []
-    /** 旧 owner 的可控读取。 */
-    const oldRead = createDeferred<ServerOpsAgentAccess | null>()
-    /** 旧 owner 的可控写入。 */
-    const oldWrite = createDeferred<ServerOpsAgentAccess | null>()
-    /** 卸载后不得出现的 toast。 */
-    const oldErrors: string[] = []
-    const oldController = createServerOpsAgentAccessController({
-      getAccess: () => oldRead.promise,
-      setAccess: () => oldWrite.promise,
-      publish: (projection) => { sharedProjections.push(projection) },
-      reportError: (message) => { oldErrors.push(message) },
-    })
-    oldController.activate()
-    void oldController.select({ sessionId: 'agent-old', hostId: 'host-old' })
-    const oldToggle = oldController.toggle()
-    oldController.dispose()
-
-    const newController = createServerOpsAgentAccessController({
-      getAccess: async (target) => ({ ...target, granted: true }),
-      setAccess: async (access) => access,
-      publish: (projection) => { sharedProjections.push(projection) },
-      reportError: () => undefined,
-    })
-    newController.activate()
-    await newController.select({ sessionId: 'agent-new', hostId: 'host-new' })
-    const newOwnerProjectionCount = sharedProjections.length
-
-    oldRead.resolve({ sessionId: 'agent-old', hostId: 'host-old', granted: true })
-    oldWrite.reject(new Error('旧 owner 失败'))
-    await oldToggle
-    await flushPromises()
-
-    expect(sharedProjections).toHaveLength(newOwnerProjectionCount)
-    expect(sharedProjections.at(-1)).toMatchObject({
-      target: { sessionId: 'agent-new', hostId: 'host-new' },
-      access: { sessionId: 'agent-new', hostId: 'host-new', granted: true },
-    })
-    expect(oldErrors).toEqual([])
-  })
-
-  test('Given StrictMode 重放同一 controller When dispose 后重新 activate Then fresh-read 当前目标', async () => {
-    const harness = createAgentAccessHarness(false)
-    harness.controller.activate()
-    await harness.controller.select({ sessionId: 'agent-1', hostId: 'host-1' })
-    harness.controller.dispose()
-    harness.controller.activate()
-    await harness.controller.select({ sessionId: 'agent-1', hostId: 'host-1' })
-
-    expect(harness.getCalls).toEqual([
-      { sessionId: 'agent-1', hostId: 'host-1' },
-      { sessionId: 'agent-1', hostId: 'host-1' },
-    ])
-  })
-
-  test('Given Renderer 投影仍属于旧目标 When 绑定新目标 Then 按钮禁用且不显示旧授权', () => {
-    /** 旧主机的已授权投影。 */
-    const projection: ServerOpsAgentAccessProjection = {
-      target: { sessionId: 'agent-1', hostId: 'host-old' },
-      access: { sessionId: 'agent-1', hostId: 'host-old', granted: true },
-      status: 'ready',
-      error: null,
-    }
-    /** 组件绑定新主机时必须先进入等待主进程事实的状态。 */
-    const viewState = resolveServerOpsAgentAccessViewState({
-      projection,
-      sessionId: 'agent-1',
-      hostId: 'host-new',
-    })
-    const html = renderToStaticMarkup(
-      <ServerOpsWorkspaceView
-        {...createCallbacks()}
-        status="ready"
-        hosts={[{ ...createHost(), id: 'host-new' }]}
-        selectedHost={{ ...createHost(), id: 'host-new' }}
-        activeSection="overview"
-        {...viewState}
-        onToggleAgentAccess={() => undefined}
-      />,
-    )
-
-    expect(viewState).toMatchObject({ agentAccessGranted: false, agentAccessStatus: 'loading' })
-    expect(html).toContain('aria-pressed="false"')
-    expect(html).toContain('data-server-ops-agent-access="true" disabled=""')
-    expect(html).not.toContain('aria-label="撤销当前 Agent 的服务器权限"')
-  })
-
-  test('Given 没有 selectedHost When 渲染顶栏 Then 显示禁用 Shield 并提示先选服务器', () => {
-    const html = renderToStaticMarkup(
-      <ServerOpsWorkspaceView
-        {...createCallbacks()}
-        status="ready"
-        hosts={[]}
-        selectedHost={null}
-        activeSection="overview"
-        agentAccessAvailable={false}
-        agentAccessGranted={false}
-        agentAccessStatus="idle"
-        agentAccessDisabledReason="请先选择服务器"
-        onToggleAgentAccess={() => undefined}
-      />,
-    )
-
-    expect(html).toContain('data-server-ops-agent-access="true" disabled=""')
-    expect(html).toContain('aria-label="请先选择服务器"')
-    expect(html).toContain('aria-pressed="false"')
-  })
-
-  test('Given 定时任务会话 When 解析授权会话 Then 返回禁用原因而不是发起授权请求', () => {
-    /** 用户自己新建的普通 Agent 会话。 */
-    const ordinarySession = { id: 'agent-1', title: '排查 API 延迟', createdAt: 1, updatedAt: 1 }
-    /** 定时任务创建的会话；列表里可见，但不允许获取服务器授权。 */
-    const automationSession = {
-      id: 'agent-automation', title: '用心读书每日汇报', sourceAutomationId: 'automation-1', createdAt: 1, updatedAt: 1,
-    }
-
-    expect(resolveServerOpsAgentAccessSession([ordinarySession], 'agent-1')).toEqual({ sessionId: 'agent-1' })
-    expect(resolveServerOpsAgentAccessSession([ordinarySession], null)).toEqual({ sessionId: null })
-    /** 元数据尚未加载时保持原行为，由主进程守卫兜底。 */
-    expect(resolveServerOpsAgentAccessSession([], 'agent-1')).toEqual({ sessionId: 'agent-1' })
-
-    /** 定时任务会话解析后的授权身份。 */
-    const resolved = resolveServerOpsAgentAccessSession([ordinarySession, automationSession], 'agent-automation')
-    expect(resolved.sessionId).toBeNull()
-    expect(resolved.unavailableReason).toBe('当前会话不是普通 Agent 会话（定时任务或子会话），请切换会话后再授权')
-  })
-
-  test('Given 定时任务会话 When 渲染顶栏 Then 禁用 Shield 并给出会话类型原因', () => {
-    /** 会话类型不可用时同步计算出的视图状态。 */
-    const viewState = resolveServerOpsAgentAccessViewState({
-      projection: { target: null, access: null, status: 'idle', error: null },
-      sessionId: null,
-      hostId: 'host-1',
-      sessionUnavailableReason: '当前会话不是普通 Agent 会话（定时任务或子会话），请切换会话后再授权',
-    })
-    /** 顶栏 Shield 的静态标记。 */
-    const html = renderToStaticMarkup(
-      <ServerOpsWorkspaceView
-        {...createCallbacks()}
-        status="ready"
-        hosts={[createHost()]}
-        selectedHost={createHost()}
-        activeSection="overview"
-        {...viewState}
-        onToggleAgentAccess={() => undefined}
-      />,
-    )
-
-    expect(viewState).toMatchObject({ agentAccessAvailable: false, agentAccessStatus: 'idle' })
-    expect(html).toContain('data-server-ops-agent-access="true" disabled=""')
-    expect(html).toContain('aria-label="当前会话不是普通 Agent 会话（定时任务或子会话），请切换会话后再授权"')
-    expect(html).not.toContain('aria-label="请先打开普通 Agent 会话"')
-  })
-
-  test('Given 没有普通 Agent session When 渲染顶栏 Then 禁用 Shield 并提示先打开会话', () => {
-    /** 当前已选择服务器，但不存在普通 Agent 会话。 */
+  test('Given SSH 连接详情 When 渲染顶栏 Then 不再展示板块 Agent 授权入口', () => {
     const host = createHost()
-    const html = renderToStaticMarkup(
-      <ServerOpsWorkspaceView
-        {...createCallbacks()}
-        status="ready"
-        hosts={[host]}
-        selectedHost={host}
-        activeSection="overview"
-        agentAccessAvailable={false}
-        agentAccessGranted={false}
-        agentAccessStatus="idle"
-        agentAccessDisabledReason="请先打开普通 Agent 会话"
-        onToggleAgentAccess={() => undefined}
-      />,
-    )
+    const html = renderToStaticMarkup(<ServerOpsWorkspaceView {...createCallbacks()} status="ready" hosts={[host]} selectedHost={host} activeSection="overview" />)
 
-    expect(html).toContain('data-server-ops-agent-access="true" disabled=""')
-    expect(html).toContain('aria-label="请先打开普通 Agent 会话"')
-    expect(html).toContain('aria-pressed="false"')
-    expect(html).toContain('data-server-ops-agent-access-tooltip-trigger="true" tabindex="0" aria-label="请先打开普通 Agent 会话"')
-  })
-
-  test('Given SSH 未连接 When 渲染授权按钮 Then 当前 Agent 仍可授权且文案准确', () => {
-    /** 当前选中的测试服务器。 */
-    const host = createHost()
-    /** 未连接但具备普通 Agent 会话的工作区。 */
-    const html = renderToStaticMarkup(
-      <ServerOpsWorkspaceView
-        {...createCallbacks()}
-        status="ready"
-        hosts={[host]}
-        selectedHost={host}
-        activeSection="overview"
-        agentAccessAvailable
-        agentAccessGranted={false}
-        agentAccessStatus="ready"
-        onToggleAgentAccess={() => undefined}
-      />,
-    )
-
-    expect(html).toContain('aria-label="允许当前 Agent 使用此服务器"')
-    expect(html).toContain('aria-pressed="false"')
-    expect(html).toContain('允许当前 Agent 使用此服务器')
-    expect(html).not.toContain('data-server-ops-agent-access="true" disabled=""')
-    expect(html).not.toContain('data-server-ops-agent-access-tooltip-trigger="true" tabindex="0"')
-  })
-
-  test('Given 已授权或正在同步 When 渲染授权按钮 Then aria-pressed、Tooltip 和 loading 可感知', () => {
-    /** 当前选中的测试服务器。 */
-    const host = createHost()
-    /** 已授权工作区。 */
-    const grantedHtml = renderToStaticMarkup(
-      <ServerOpsWorkspaceView
-        {...createCallbacks()}
-        status="ready"
-        hosts={[host]}
-        selectedHost={host}
-        activeSection="overview"
-        agentAccessAvailable
-        agentAccessGranted
-        agentAccessStatus="ready"
-        onToggleAgentAccess={() => undefined}
-      />,
-    )
-    /** 正在撤销的工作区。 */
-    const loadingHtml = renderToStaticMarkup(
-      <ServerOpsWorkspaceView
-        {...createCallbacks()}
-        status="ready"
-        hosts={[host]}
-        selectedHost={host}
-        activeSection="overview"
-        agentAccessAvailable
-        agentAccessGranted
-        agentAccessStatus="loading"
-        onToggleAgentAccess={() => undefined}
-      />,
-    )
-
-    expect(grantedHtml).toContain('aria-label="撤销当前 Agent 的服务器权限"')
-    expect(grantedHtml).toContain('aria-pressed="true"')
-    expect(grantedHtml).toContain('撤销当前 Agent 的服务器权限')
-    expect(loadingHtml).toContain('aria-busy="true"')
-    expect(loadingHtml).toContain('正在同步当前 Agent 的服务器权限')
-    expect(loadingHtml).toContain('disabled=""')
-  })
-
-  test('Given 当前身份 When grant 和 revoke 未完成 Then 保持原事实并发布 loading', async () => {
-    const harness = createAgentAccessHarness()
-    const grant = createDeferred<ServerOpsAgentAccess | null>()
-    const revoke = createDeferred<ServerOpsAgentAccess | null>()
-    await harness.controller.select({ sessionId: 'agent-1', hostId: 'host-1' })
-    harness.setSetAccess((access) => {
-      harness.setCalls.push(access)
-      return access.granted ? grant.promise : revoke.promise
-    })
-
-    const granting = harness.controller.toggle()
-    expect(harness.projections.at(-1)).toMatchObject({ status: 'loading', access: null })
-    grant.resolve({ sessionId: 'agent-1', hostId: 'host-1', granted: true })
-    await granting
-    expect(harness.projections.at(-1)).toMatchObject({ status: 'ready', access: { granted: true } })
-
-    const revoking = harness.controller.toggle()
-    expect(harness.projections.at(-1)).toMatchObject({ status: 'loading', access: { granted: true } })
-    revoke.resolve(null)
-    await revoking
-    expect(harness.projections.at(-1)).toMatchObject({ status: 'ready', access: null })
-  })
-
-  test('Given IPC 写入失败 When 切换授权 Then 不伪造授权并报告错误', async () => {
-    const harness = createAgentAccessHarness()
-    await harness.controller.select({ sessionId: 'agent-1', hostId: 'host-1' })
-    harness.setSetAccess(async (access) => {
-      harness.setCalls.push(access)
-      throw new Error('IPC unavailable')
-    })
-
-    await harness.controller.toggle()
-
-    expect(harness.projections.at(-1)).toMatchObject({ status: 'error', access: null, error: 'IPC unavailable' })
-    expect(harness.errors).toEqual(['IPC unavailable'])
-  })
-
-  test('Given host 或 session 切换 When 旧读取迟到 Then 先撤销旧组合且不污染新组合', async () => {
-    const harness = createAgentAccessHarness()
-    const oldRead = createDeferred<ServerOpsAgentAccess | null>()
-    const nextRead = createDeferred<ServerOpsAgentAccess | null>()
-    harness.setGetAccess((target) => {
-      harness.getCalls.push(target)
-      return target.hostId === 'host-1' ? oldRead.promise : nextRead.promise
-    })
-
-    void harness.controller.select({ sessionId: 'agent-1', hostId: 'host-1' })
-    await flushPromises()
-    const switching = harness.controller.select({ sessionId: 'agent-2', hostId: 'host-2' })
-    await flushPromises()
-    expect(harness.setCalls).toEqual([{ sessionId: 'agent-1', hostId: 'host-1', granted: false }])
-    expect(harness.getCalls.at(-1)).toEqual({ sessionId: 'agent-2', hostId: 'host-2' })
-
-    nextRead.resolve({ sessionId: 'agent-2', hostId: 'host-2', granted: true })
-    await switching
-    oldRead.resolve({ sessionId: 'agent-1', hostId: 'host-1', granted: true })
-    await flushPromises()
-    expect(harness.projections.at(-1)).toMatchObject({
-      target: { sessionId: 'agent-2', hostId: 'host-2' },
-      access: { sessionId: 'agent-2', hostId: 'host-2', granted: true },
-    })
-  })
-
-  test('Given 另一 Pane 移动已授权主机 When 当前项目退回清单 Then 保留授权直到用户显式离开', async () => {
-    /** 模拟主进程的精确授权槽，项目移动不能触碰它。 */
-    let authority: ServerOpsAgentAccess | null = { sessionId: 'agent-1', hostId: 'host-1', granted: true }
-    /** 真实授权控制器通过模拟 IPC 观察是否发生撤销。 */
-    const harness = createAgentAccessHarness()
-    harness.setGetAccess(async () => authority)
-    harness.setSetAccess(async (access) => { harness.setCalls.push(access); authority = access.granted ? access : null; return authority })
-    /** 当前 Pane 原先明确查看项目一的服务器。 */
-    const selection = { sessionId: 'agent-1', selectedConnectionId: 'ssh:host-1', projectViewActive: false }
-    const source = { projects: [], hosts: [{ ...createHost(), projectId: 'project-1' }], dataSources: [], connectionStates: {} }
-    await harness.controller.select(resolveServerOpsAgentAccessTarget({ ...selection, connections: buildServerOpsConnections(source) }))
-    /** 另一 Pane 的移动回执只改变共享归属。 */
-    const connections = buildServerOpsConnections({ ...source, hosts: [{ ...source.hosts[0]!, projectId: 'project-2' }] })
-    expect(resolveServerOpsWorkspaceTarget({ ...selection, connections: connections.filter((entry) => entry.projectId === 'project-1') })).toEqual({ kind: 'project' })
-    expect(resolveServerOpsAgentAccessTarget({ ...selection, connections })).toEqual({ sessionId: 'agent-1', hostId: 'host-1' })
-    await harness.controller.select(resolveServerOpsAgentAccessTarget({ ...selection, connections }))
-    expect(harness.setCalls).toEqual([])
-    expect(authority).toEqual({ sessionId: 'agent-1', hostId: 'host-1', granted: true })
-
-    /** 显式进入项目仍按原规则撤销，不能把移动特例变成永久授权。 */
-    await harness.controller.select(resolveServerOpsAgentAccessTarget({ ...selection, connections, projectViewActive: true }))
-    expect(harness.setCalls).toEqual([{ sessionId: 'agent-1', hostId: 'host-1', granted: false }])
-    expect(authority).toBeNull()
-  })
-
-  test('Given 全局主机已删除或身份无效 When 解析移动后的授权目标 Then 返回空且删除会撤销原组合', async () => {
-    /** 有效的全局连接，不通过字符串前缀推测主机身份。 */
-    const connections = buildServerOpsConnections({ projects: [], hosts: [createHost()], dataSources: [], connectionStates: {} })
-    const selection = { sessionId: 'agent-1', selectedConnectionId: 'ssh:host-1', projectViewActive: false, connections }
-    const harness = createAgentAccessHarness()
-    await harness.controller.select(resolveServerOpsAgentAccessTarget(selection))
-    expect(resolveServerOpsAgentAccessTarget({ ...selection, sessionId: null })).toBeNull()
-    expect(resolveServerOpsAgentAccessTarget({ ...selection, selectedConnectionId: 'ssh:missing' })).toBeNull()
-    await harness.controller.select(resolveServerOpsAgentAccessTarget({ ...selection, connections: [] }))
-    expect(harness.setCalls).toEqual([{ sessionId: 'agent-1', hostId: 'host-1', granted: false }])
-  })
-
-  test('Given 当前组合已授权 When SSH disconnect 完成 Then Renderer 投影立即撤销', async () => {
-    const harness = createAgentAccessHarness()
-    harness.setGetAccess(async (target) => ({ ...target, granted: true }))
-    await harness.controller.select({ sessionId: 'agent-1', hostId: 'host-1' })
-
-    harness.controller.resetAfterDisconnect({ sessionId: 'agent-1', hostId: 'host-1' })
-
-    expect(harness.projections.at(-1)).toMatchObject({ status: 'ready', access: null })
-  })
-
-  test('Given 主进程授权 Store 变化 When 收到事件 Then 仅同步当前精确组合', async () => {
-    const harness = createAgentAccessHarness()
-    await harness.controller.select({ sessionId: 'agent-1', hostId: 'host-1' })
-    /** 当前组合获得授权的主进程事件。 */
-    const grantedEvent: ServerOpsAgentAccessChanged = {
-      previous: null,
-      current: { sessionId: 'agent-1', hostId: 'host-1', granted: true },
-    }
-    harness.controller.handleChanged(grantedEvent)
-    expect(harness.projections.at(-1)).toMatchObject({ status: 'ready', access: grantedEvent.current })
-
-    harness.controller.handleChanged({
-      previous: grantedEvent.current,
-      current: { sessionId: 'agent-2', hostId: 'host-2', granted: true },
-    })
-    expect(harness.projections.at(-1)).toMatchObject({ status: 'ready', access: null })
-
-    /** 与当前组合无关的事件不得改变投影。 */
-    const beforeUnrelated = harness.projections.length
-    harness.controller.handleChanged({
-      previous: null,
-      current: { sessionId: 'agent-3', hostId: 'host-3', granted: true },
-    })
-    expect(harness.projections).toHaveLength(beforeUnrelated)
+    expect(html).not.toContain('data-server-ops-agent-access')
+    expect(html).not.toContain('允许当前 Agent 使用此服务器')
+    expect(html).not.toContain('撤销当前 Agent 的服务器权限')
+    expect(html).toContain('aria-label="连接 SSH"')
   })
 
   test('已有凭据和 SSH Agent 直接连接，缺少凭据时才补录', () => {
