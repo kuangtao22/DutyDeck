@@ -1,13 +1,13 @@
 /**
  * AgentHeader — Agent 会话头部
  *
- * 显示会话标题；通过标题下拉菜单进入重命名。
+ * 显示会话标题和所属项目；通过标题下拉菜单进入重命名。
  */
 
 import * as React from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { Check, ChevronDown, PanelRight, Pencil, Split, X } from 'lucide-react'
-import { agentSessionsAtom, agentSideTemporaryAgentMapAtom, agentDiffPanelTabAtom, currentSessionSidePanelOpenAtom, getExplorationSidePanelTab } from '@/atoms/agent-atoms'
+import { Check, ChevronDown, FolderOpen, PanelRight, Pencil, Split, X } from 'lucide-react'
+import { agentSessionsAtom, agentSideTemporaryAgentMapAtom, agentDiffPanelTabAtom, agentWorkspacesAtom, currentSessionSidePanelOpenAtom, getExplorationSidePanelTab } from '@/atoms/agent-atoms'
 import { tabsAtom, updateTabTitle } from '@/atoms/tab-atoms'
 import { replaceAgentSessionInFreshnessOrder } from '@/lib/agent-session-list'
 import { cn } from '@/lib/utils'
@@ -26,6 +26,11 @@ interface AgentHeaderProps {
 export function AgentHeader({ sessionId }: AgentHeaderProps): React.ReactElement | null {
   const sessions = useAtomValue(agentSessionsAtom)
   const session = sessions.find((s) => s.id === sessionId) ?? null
+  const workspaces = useAtomValue(agentWorkspacesAtom)
+  /** 按会话自身的 workspaceId 解析项目名称，避免旧会话串到当前选择的项目。 */
+  const workspaceName = session?.workspaceId
+    ? workspaces.find((workspace) => workspace.id === session.workspaceId)?.name
+    : undefined
   const setAgentSessions = useSetAtom(agentSessionsAtom)
   const setTabs = useSetAtom(tabsAtom)
   const setSideTemporaryAgentMap = useSetAtom(agentSideTemporaryAgentMapAtom)
@@ -176,6 +181,19 @@ export function AgentHeader({ sessionId }: AgentHeaderProps): React.ReactElement
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+      )}
+      {workspaceName && (
+        <div
+          className={cn(
+            'titlebar-no-drag flex h-8 max-w-[min(16rem,35%)] min-w-0 shrink-0 items-center gap-1.5 rounded-lg px-2 text-xs text-muted-foreground',
+            isRightPanelOpen && 'ml-auto',
+          )}
+          title={`当前项目：${workspaceName}`}
+          aria-label={`当前项目：${workspaceName}`}
+        >
+          <FolderOpen className="size-3.5 shrink-0" />
+          <span className="truncate">{workspaceName}</span>
+        </div>
       )}
       {!isRightPanelOpen && (
         <button
