@@ -259,6 +259,21 @@ describe('Pi Server Ops 工具合同', () => {
     expect(JSON.stringify(tools.map((tool) => tool.parameters))).not.toMatch(/sessionId|credentialRef|candidateId/)
   })
 
+  test('Given 服务器变更工具 When 构建审批元数据 Then 确认卡使用清晰中文说明风险和影响', () => {
+    /** 提供会触发逐次确认的可选能力，验证它们传给审批卡的用户可见说明。 */
+    const facade = {
+      dockerAction: async () => ({}),
+      filesMutate: async () => ({}),
+    } as unknown as ServerOpsAgentFacade
+    /** 构建与实际运行相同的服务器工具元数据，避免只测试静态文案文件。 */
+    const tools = buildServerOpsTools(sdk, facade)
+
+    expect(tools.find((tool) => tool.name === 'server_exec')?.description).toContain('只读诊断可能自动执行')
+    expect(tools.find((tool) => tool.name === 'server_exec')?.description).toContain('每次都要单独确认')
+    expect(tools.find((tool) => tool.name === 'server_docker_action')?.description).toContain('启动、停止或重启容器')
+    expect(tools.find((tool) => tool.name === 'server_files_mutate')?.description).toContain('覆盖已有文件')
+  })
+
   test.each([
     [undefined, true],
     ['user', true],

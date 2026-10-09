@@ -1704,8 +1704,8 @@ export function buildServerOpsTools(sdk: PiSdk, facade: ServerOpsAgentFacade): T
     sdk.defineTool({
       name: 'server_list',
       label: '列出已连接服务器',
-      description: 'List saved servers connected when this Agent run began, including public SSH identity and connection phase.',
-      promptSnippet: 'server_list: inspect available saved servers with active connections.',
+      description: '列出本次 Agent 运行开始时已连接的已保存服务器，返回公开 SSH 身份和连接阶段。',
+      promptSnippet: 'server_list：查看当前已连接的已保存服务器。',
       parameters: Type.Object({}),
       async execute() {
         return jsonToolResult({ hosts: facade.list() })
@@ -1714,9 +1714,9 @@ export function buildServerOpsTools(sdk: PiSdk, facade: ServerOpsAgentFacade): T
     sdk.defineTool({
       name: 'server_status',
       label: '查看服务器连接状态',
-      description: 'Read the public SSH connection state for an already connected saved server.',
-      promptSnippet: 'server_status: inspect the saved server connection state without exposing connection secrets.',
-      parameters: Type.Object({ hostId: Type.String({ description: 'Server ID returned by server_list.' }) }),
+      description: '查看已连接的已保存服务器的公开 SSH 连接状态。',
+      promptSnippet: 'server_status：查看服务器连接状态，不读取连接凭据。',
+      parameters: Type.Object({ hostId: Type.String({ description: 'server_list 返回的服务器 ID。' }) }),
       async execute(_toolCallId, params) {
         const args = params as { hostId: string }
         return jsonToolResult(facade.status({ hostId: args.hostId }))
@@ -1725,9 +1725,9 @@ export function buildServerOpsTools(sdk: PiSdk, facade: ServerOpsAgentFacade): T
     sdk.defineTool({
       name: 'server_connect',
       label: '检查服务器连接',
-      description: 'Verify an existing saved server connection. This tool does not establish or reconnect SSH; connect and confirm host keys in the Server Ops UI first.',
-      promptSnippet: 'server_connect: inspect an existing connection; establish SSH connections in the Server Ops UI.',
-      parameters: Type.Object({ hostId: Type.String({ description: 'Server ID returned by server_list.' }) }),
+      description: '检查已保存服务器的现有连接。此工具不会建立或重新连接 SSH；如需连接，请先在运维面板中连接服务器并确认主机密钥。',
+      promptSnippet: 'server_connect：检查现有连接；建立 SSH 连接必须先在运维面板中完成。',
+      parameters: Type.Object({ hostId: Type.String({ description: 'server_list 返回的服务器 ID。' }) }),
       async execute(_toolCallId, params) {
         const args = params as { hostId: string }
         return jsonToolResult(await facade.connect({ hostId: args.hostId }))
@@ -1736,12 +1736,12 @@ export function buildServerOpsTools(sdk: PiSdk, facade: ServerOpsAgentFacade): T
     sdk.defineTool({
       name: 'server_exec',
       label: '执行服务器命令',
-      description: 'Execute one bounded non-interactive command on the connected saved server. Read-only diagnostics may run automatically; all other commands require per-use approval.',
-      promptSnippet: 'server_exec: prefer narrow read-only diagnostics; mutating or unknown commands require explicit per-use approval.',
+      description: '在已连接的服务器上执行一条受范围限制的非交互式命令（不会等待键盘输入）。只读诊断可能自动执行；会修改服务、文件或数据的命令，以及无法判断风险的命令，每次都要单独确认。',
+      promptSnippet: 'server_exec：优先执行范围窄的只读诊断；会修改内容或无法判断风险的命令必须逐次确认。',
       parameters: Type.Object({
-        hostId: Type.String({ description: 'Server ID returned by server_list.' }),
-        command: Type.String({ minLength: 1, maxLength: 8192, description: 'One remote shell command.' }),
-        timeoutMs: Type.Optional(Type.Number({ minimum: 1000, maximum: 120000, description: 'Timeout in milliseconds. Default 30000.' })),
+        hostId: Type.String({ description: 'server_list 返回的服务器 ID。' }),
+        command: Type.String({ minLength: 1, maxLength: 8192, description: '要在远程服务器执行的一条 Shell 命令。' }),
+        timeoutMs: Type.Optional(Type.Number({ minimum: 1000, maximum: 120000, description: '超时时间（毫秒），默认 30000。' })),
       }),
       async execute(_toolCallId, params) {
         const args = params as { hostId: string; command: string; timeoutMs?: number }
@@ -1751,9 +1751,9 @@ export function buildServerOpsTools(sdk: PiSdk, facade: ServerOpsAgentFacade): T
     sdk.defineTool({
       name: 'server_disconnect',
       label: '断开服务器',
-      description: 'Disconnect an existing saved server connection after per-use confirmation. The current run can no longer use that connection.',
-      promptSnippet: 'server_disconnect: disconnect the saved server after per-use confirmation.',
-      parameters: Type.Object({ hostId: Type.String({ description: 'Server ID returned by server_list.' }) }),
+      description: '断开一个已保存服务器的现有连接。此操作每次都需要单独确认；断开后，本轮 Agent 运行将不能继续使用该连接。',
+      promptSnippet: 'server_disconnect：断开已保存服务器连接前必须逐次确认。',
+      parameters: Type.Object({ hostId: Type.String({ description: 'server_list 返回的服务器 ID。' }) }),
       async execute(_toolCallId, params) {
         const args = params as { hostId: string }
         return jsonToolResult(await facade.disconnect({ hostId: args.hostId }))
@@ -1762,37 +1762,37 @@ export function buildServerOpsTools(sdk: PiSdk, facade: ServerOpsAgentFacade): T
   ] as ToolDefinition[]
   if (facade.dockerResources) tools.push(sdk.defineTool({
     name: 'server_docker_resources', label: '查看 Docker 资源',
-    description: 'Read bounded containers, images, networks and volumes on the connected saved SSH server local Docker daemon.',
+    description: '查看已连接服务器本机 Docker 守护进程中的容器、镜像、网络和卷；结果有数量和大小限制。',
     parameters: Type.Object({ hostId: Type.String() }),
     async execute(_id, params) { return jsonToolResult(await facade.dockerResources!(params as { hostId: string })) },
   }) as ToolDefinition)
   if (facade.dockerDetail) tools.push(sdk.defineTool({
     name: 'server_docker_detail', label: '查看容器详情',
-    description: 'Read sanitized container details by its full 64-character ID; environment variables and secrets are excluded.',
+    description: '根据完整的 64 位容器 ID 查看已脱敏的容器详情；不会返回环境变量和秘密。',
     parameters: Type.Object({ hostId: Type.String(), containerId: Type.String({ pattern: '^[a-f0-9]{64}$' }) }),
     async execute(_id, params) { return jsonToolResult(await facade.dockerDetail!(params as { hostId: string; containerId: string })) },
   }) as ToolDefinition)
   if (facade.dockerAction) tools.push(sdk.defineTool({
     name: 'server_docker_action', label: '变更容器运行状态',
-    description: 'Start, stop or restart one exact full container ID after per-use approval. Rechecks identity and inspects the result; unknown outcomes must not be retried automatically.',
+    description: '对指定的完整容器 ID 启动、停止或重启容器；每次都需要单独确认。执行前会再次核对容器身份并检查结果，结果不明确时不会自动重试。',
     parameters: Type.Object({ hostId: Type.String(), containerId: Type.String({ pattern: '^[a-f0-9]{64}$' }), action: Type.Union([Type.Literal('start'), Type.Literal('stop'), Type.Literal('restart')]) }),
     async execute(_id, params) { return jsonToolResult(await facade.dockerAction!(params as { hostId: string; containerId: string; action: 'start' | 'stop' | 'restart' })) },
   }) as ToolDefinition)
   if (facade.filesList) tools.push(sdk.defineTool({
     name: 'server_files_list', label: '浏览远程目录',
-    description: 'Read one bounded directory page on the connected saved server. Results are limited to 64 KiB; a truncated result is not a complete directory listing.',
+    description: '查看已连接服务器上的一页远程目录。结果最多 64 KiB；如果被截断，就不代表完整目录列表。',
     parameters: Type.Object({ hostId: Type.String(), path: Type.String({ minLength: 1, maxLength: 4096 }) }),
     async execute(_id, params) { return jsonToolResult(await facade.filesList!(params as { hostId: string; path: string })) },
   }) as ToolDefinition)
   if (facade.filesRead) tools.push(sdk.defineTool({
     name: 'server_files_read', label: '读取远程文件',
-    description: 'Read a UTF-8 text preview only when requested by the user. Binary files, symlinks and oversized content are not followed or returned as text. Tool results are limited to 64 KiB.',
+    description: '仅在用户要求时读取远程文件的 UTF-8 文本预览。不会跟随符号链接，也不会把二进制文件或超大内容作为文本返回；结果最多 64 KiB。',
     parameters: Type.Object({ hostId: Type.String(), path: Type.String({ minLength: 1, maxLength: 4096 }) }),
     async execute(_id, params) { return jsonToolResult(await facade.filesRead!(params as { hostId: string; path: string })) },
   }) as ToolDefinition)
   if (facade.filesMutate) tools.push(sdk.defineTool({
     name: 'server_files_mutate', label: '变更远程文件',
-    description: 'Perform one exact file operation after per-use approval. Existing-file save requires the unchanged editToken from server_files_read. No recursive deletion, permission changes or automatic retries.',
+    description: '对远程文件执行一次精确变更；每次都需要单独确认。覆盖已有文件必须提供 server_files_read 返回且文件未变化的 editToken；不允许递归删除、修改权限或自动重试。',
     parameters: Type.Union([
       Type.Object({ hostId: Type.String(), action: Type.Literal('mkdir'), path: Type.String() }),
       Type.Object({ hostId: Type.String(), action: Type.Literal('rename'), path: Type.String(), destinationPath: Type.String() }),
