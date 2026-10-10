@@ -6,6 +6,11 @@ import {
   isServerOpsSqliteFilePath,
   limitServerOpsSqlQuery,
   parseServerOpsDataMetricList,
+  parseServerOpsDataWriteResult,
+  planServerOpsSqlWrite,
+  isServerOpsId,
+  SERVER_OPS_DATA_WRITE_MAX_TIMEOUT_MS,
+  SERVER_OPS_DATA_WRITE_STATEMENT_LIMIT,
   parseServerOpsDataQueryResult,
   parseServerOpsDataSourceCellResult,
   parseServerOpsDataSourceRowsResult,
@@ -16,8 +21,8 @@ import {
   parseServerOpsDataWarnings,
   SERVER_OPS_DATA_QUERY_TIMEOUT_MS,
 } from '@proma/shared'
-import type { ServerOpsDataQueryResult } from '@proma/shared'
-import type { ServerOpsRuntimeDataReadRequest, ServerOpsRuntimeDataReadResult } from './server-ops-runtime-protocol'
+import type { ServerOpsDataQueryResult, ServerOpsDataWriteResult } from '@proma/shared'
+import type { ServerOpsRuntimeDataReadRequest, ServerOpsRuntimeDataReadResult, ServerOpsRuntimeDataWriteRequest } from './server-ops-runtime-protocol'
 import { getServerOpsSqlQueryPublicError } from './server-ops-query-runtime'
 import { SERVER_OPS_SQLITE_REMOTE_SCRIPT } from './server-ops-sqlite-script'
 
@@ -58,6 +63,7 @@ const SQLITE_PUBLIC_ERROR_MESSAGES = new Map<string, string>([
   ['SERVER_OPS_DATA_WRITE_PERMISSION_DENIED', 'SQLite 文件不可写，请检查文件权限'],
   ['SERVER_OPS_DATA_WRITE_TIMEOUT', 'SQLite 写入超时，请核对实际数据'],
   ['SERVER_OPS_DATA_WRITE_CANCELLED', 'SQLite 写入已请求取消，请按运行结果核对事务状态'],
+  ['SERVER_OPS_DATA_WRITE_INPUT_INVALID', 'SQLite 写入请求无效'],
   ['SERVER_OPS_DATA_SCHEMA_FILTERS_INVALID', '筛选条件无效或字段不可用于筛选'],
   ['SERVER_OPS_DATA_CELL_CHANGED', '该单元格所在行或内容已变化，请刷新后重试'],
   ['SERVER_OPS_DATA_CELL_REDACTED', '敏感字段不允许查看完整内容'],
@@ -248,6 +254,49 @@ export function createServerOpsSqliteExecutionPayload(input: ServerOpsRuntimeDat
   }
 }
 
+/** 校验远程 SQLite 写请求，确保路径、主库和语句计划都已收窄。 */
+function validateRemoteWriteInput(input: ServerOpsRuntimeDataWriteRequest): void {
+  if (input.transport !== 'ssh' || input.engine !== 'sqlite' || !isServerOpsSqliteFilePath(input.filePath)
+    || input.localFileId !== undefined || input.database !== 'main' || !isServerOpsId(input.writeId)) {
+    throw createPublicError('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+  }
+  if (input.address !== undefined || input.port !== undefined || input.username !== undefined
+    || input.password !== undefined || input.tlsMode !== 'disabled' || input.tlsServerName !== undefined) {
+    throw createPublicError('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+  }
+  if (!Array.isArray(input.statements) || input.statements.length < 1
+    || input.statements.length > SERVER_OPS_DATA_WRITE_STATEMENT_LIMIT
+    || !Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > SERVER_OPS_DATA_WRITE_MAX_TIMEOUT_MS) {
+    throw createPublicError('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+  }
+  for (const statement of input.statements) {
+    if (typeof statement.text !== 'string' || statement.text.length < 1 || statement.text.length > 65_536
+      || /[\u0000-\u001f\u007f]/u.test(statement.text)
+      || typeof statement.head !== 'string' || !/^[A-Z_]{1,32}$/u.test(statement.head)) {
+      throw createPublicError('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+    }
+  }
+  try {
+    const verified = planServerOpsSqlWrite(input.statements.map((statement) => statement.text).join(';\n'), 'sqlite').statements
+    if (verified.length !== input.statements.length
+      || verified.some((statement, index) => statement.text !== input.statements[index]?.text || statement.head !== input.statements[index]?.head)) {
+      throw new Error('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+    }
+  } catch {
+    throw createPublicError('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+  }
+}
+
+/** 构造远程 Python 写入 stdin payload；只携带已验证的语句计划。 */
+export function createServerOpsSqliteWritePayload(input: ServerOpsRuntimeDataWriteRequest): Record<string, unknown> {
+  validateRemoteWriteInput(input)
+  return {
+    mode: 'sql-write', filePath: input.filePath, writeId: input.writeId, database: input.database,
+    timeoutMs: Math.min(SERVER_OPS_DATA_WRITE_MAX_TIMEOUT_MS, Math.max(250, input.timeoutMs)),
+    statements: input.statements.map((statement) => ({ text: statement.text, head: statement.head })),
+  }
+}
+
 /** 幂等发送 TERM 并销毁 SSH channel。 */
 function terminateChannel(channel: ServerOpsSqliteChannel): void {
   try { channel.signal?.('TERM', () => undefined) } catch { /* SSH 服务端不支持 signal 时仍继续销毁。 */ }
@@ -291,7 +340,8 @@ async function executeRemote(
     const localTimeout = setTimeout(() => {
       terminateChannel(channel)
       finish(createPublicError(payload.mode === 'sql-query' ? 'SERVER_OPS_DATA_QUERY_TIMEOUT'
-        : payload.mode === 'schema-cell' ? 'SERVER_OPS_DATA_CELL_TIMEOUT' : 'SERVER_OPS_SQLITE_TIMEOUT'))
+        : payload.mode === 'sql-write' ? 'SERVER_OPS_DATA_WRITE_TIMEOUT'
+          : payload.mode === 'schema-cell' ? 'SERVER_OPS_DATA_CELL_TIMEOUT' : 'SERVER_OPS_SQLITE_TIMEOUT'))
     }, Number(payload.timeoutMs) + 1_000)
 
     /** 统一完成并释放取消监听。 */
@@ -346,7 +396,8 @@ async function executeRemote(
       }
       if (exitCode === 124) {
         finish(createPublicError(payload.mode === 'sql-query' ? 'SERVER_OPS_DATA_QUERY_TIMEOUT'
-          : payload.mode === 'schema-cell' ? 'SERVER_OPS_DATA_CELL_TIMEOUT' : 'SERVER_OPS_SQLITE_TIMEOUT'))
+          : payload.mode === 'sql-write' ? 'SERVER_OPS_DATA_WRITE_TIMEOUT'
+            : payload.mode === 'schema-cell' ? 'SERVER_OPS_DATA_CELL_TIMEOUT' : 'SERVER_OPS_SQLITE_TIMEOUT'))
         return
       }
       if (exitCode !== undefined && exitCode !== 0) {
@@ -489,5 +540,50 @@ export async function runServerOpsSqliteRead(
   } catch (error) {
     if (error instanceof ServerOpsSqlitePublicError) throw error
     throw createPublicError('SERVER_OPS_SQLITE_READ_FAILED')
+  }
+}
+
+/** 远程写通道在进程/连接中断时生成保守回执，避免把取消误报为已回滚。 */
+function createUnknownRemoteWriteResult(
+  input: ServerOpsRuntimeDataWriteRequest,
+  errorCode: string,
+  startedAt: number,
+): ServerOpsDataWriteResult {
+  return {
+    writeId: input.writeId, database: input.database, statementCount: 0, affectedRows: 0,
+    committed: false, outcome: 'unknown', errorCode, durationMs: Math.max(0, Date.now() - startedAt), statements: [],
+    warnings: ['写入进程在返回事务结果前终止，数据库状态需要重新核对'],
+  }
+}
+
+/**
+ * 通过当前 SSH 连接在远端以事务方式写入 SQLite 文件。
+ *
+ * @param input 已由主进程绑定来源、连接代次和语句计划的写请求
+ * @param createChannel 在已认证主机上执行固定 Python 命令的 channel factory
+ * @param signal 用户取消信号；远端进程被终止时返回 unknown 回执
+ * @returns 已提交、已回滚或状态未知的写回执
+ */
+export async function runServerOpsSqliteWrite(
+  input: ServerOpsRuntimeDataWriteRequest,
+  createChannel: ServerOpsSqliteChannelFactory,
+  signal?: AbortSignal,
+): Promise<ServerOpsDataWriteResult> {
+  /** 远端进程未返回事务结果时仍保留本次调用的真实耗时，便于审计与用户核对。 */
+  const startedAt = Date.now()
+  validateRemoteWriteInput(input)
+  const payload = createServerOpsSqliteWritePayload(input)
+  try {
+    const remoteResult = await executeRemote(payload, createChannel, signal)
+    return parseServerOpsDataWriteResult(remoteResult)
+  } catch (error) {
+    const code = error instanceof ServerOpsSqlitePublicError ? error.code : error instanceof Error ? error.message : ''
+    if (code === 'SERVER_OPS_DATA_CANCELLED' || code === 'SERVER_OPS_DATA_WRITE_CANCELLED') {
+      return createUnknownRemoteWriteResult(input, 'SERVER_OPS_DATA_WRITE_CANCELLED', startedAt)
+    }
+    if (code === 'SERVER_OPS_DATA_WRITE_TIMEOUT' || code === 'SERVER_OPS_SQLITE_TIMEOUT') {
+      return createUnknownRemoteWriteResult(input, 'SERVER_OPS_DATA_WRITE_TIMEOUT', startedAt)
+    }
+    throw error
   }
 }

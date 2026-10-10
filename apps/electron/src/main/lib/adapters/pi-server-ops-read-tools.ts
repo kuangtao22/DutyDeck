@@ -145,7 +145,7 @@ export function buildServerOpsReadWriteTools(sdk: PiSdk, facade: ServerOpsAgentR
     ...buildServerOpsReadTools(sdk, facade),
     ...(databaseWrite ? [sdk.defineTool({
       name: 'ops_database_write', label: '执行数据库写入',
-      description: `对已保存的直连 MySQL 或本地 SQLite 执行有界写入脚本。每次执行前必须由用户在 Agent 原生确认弹窗中批准，完全自动模式也不能跳过，不需要额外的服务器 Agent 授权。目标限于指定业务库且不得引用禁用表；脚本会记录审计，结果为 committed、rolled-back、partial 或 unknown。partial/unknown 必须先核对实际数据，禁止自动重试。PostgreSQL 与 SSH 隧道写入不可用。${UNTRUSTED_EVIDENCE}`,
+      description: `对已保存的直连 MySQL、本地 SQLite 或已连接 SSH 主机上的 SQLite 文件执行有界写入脚本。每次执行前必须由用户在 Agent 原生确认弹窗中批准，完全自动模式也不能跳过，不需要额外的服务器 Agent 授权。目标限于指定业务库且不得引用禁用表；脚本会记录审计，结果为 committed、rolled-back、partial 或 unknown。partial/unknown 必须先核对实际数据，禁止自动重试。PostgreSQL 与 SSH MySQL/Redis 写入不可用。${UNTRUSTED_EVIDENCE}`,
       parameters: Type.Object({
         sourceId: Type.String(),
         database: Type.String({ minLength: 1, maxLength: 64 }),

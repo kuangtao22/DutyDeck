@@ -23,6 +23,16 @@ export const SERVER_OPS_DATA_WRITE_PUBLIC_CODES: ReadonlySet<string> = new Set([
   'SERVER_OPS_DATA_WRITE_CANCELLED',
   'SERVER_OPS_DATA_WRITE_TIMEOUT',
   'SERVER_OPS_DATA_WRITE_PERMISSION_DENIED',
+  'SERVER_OPS_DATA_WRITE_INPUT_INVALID',
+  'SERVER_OPS_SQLITE_FILE_NOT_FOUND',
+  'SERVER_OPS_SQLITE_FILE_NOT_REGULAR',
+  'SERVER_OPS_SQLITE_FILE_PERMISSION_DENIED',
+  'SERVER_OPS_SQLITE_FILE_UNAVAILABLE',
+  'SERVER_OPS_SQLITE_DATABASE_INVALID',
+  'SERVER_OPS_SQLITE_DATABASE_LOCKED',
+  'SERVER_OPS_SQLITE_PYTHON_MISSING',
+  'SERVER_OPS_SQLITE_PYTHON_VERSION_UNSUPPORTED',
+  'SERVER_OPS_SQLITE_MODULE_UNAVAILABLE',
 ])
 
 /** 写执行的稳定错误：调用方只按 code 分类，绝不透传驱动正文。 */
@@ -56,6 +66,8 @@ export interface ServerOpsDataWriteDependencies {
   runMySqlWrite: typeof runServerOpsMySqlWriteScript
   /** 执行本地 SQLite 写脚本。 */
   runLocalSqliteWrite: typeof runServerOpsLocalSqliteWrite
+  /** 执行已认证 SSH 主机上的远程 SQLite 写脚本。 */
+  runRemoteSqliteWrite?: (input: ServerOpsRuntimeDataWriteRequest, signal: AbortSignal) => Promise<ServerOpsDataWriteResult>
   /** 时间源。 */
   now: () => number
 }
@@ -63,12 +75,14 @@ export interface ServerOpsDataWriteDependencies {
 /** 真实依赖；生产只在这里组装一次。 */
 export function createServerOpsDataWriteDependencies(
   createDirectChannel: (address: string, port: number) => Duplex,
+  options: Pick<ServerOpsDataWriteDependencies, 'runRemoteSqliteWrite'> = {},
 ): ServerOpsDataWriteDependencies {
   return {
     createDirectChannel,
     openMySqlConnection: openServerOpsMySqlConnection,
     runMySqlWrite: runServerOpsMySqlWriteScript,
     runLocalSqliteWrite: runServerOpsLocalSqliteWrite,
+    ...options,
     now: Date.now,
   }
 }
@@ -116,8 +130,14 @@ export async function executeServerOpsDataWrite(
   dependencies: ServerOpsDataWriteDependencies,
 ): Promise<ServerOpsDataWriteResult> {
   /** 经跳板的写需要另一套通道所有权与终止语义，在没做对之前显式拒绝。 */
+  if (input.transport === 'ssh') {
+    if (input.engine !== 'sqlite' || dependencies.runRemoteSqliteWrite === undefined) {
+      throw new ServerOpsDataWriteError('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', '仅支持通过已连接 SSH 主机写入 SQLite 文件，MySQL 请配置直连')
+    }
+    return dependencies.runRemoteSqliteWrite(input, context.signal)
+  }
   if (input.transport !== 'direct') {
-    throw new ServerOpsDataWriteError('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', '经跳板的写库尚未支持，请为该数据源配置直连')
+    throw new ServerOpsDataWriteError('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', '数据库连接方式不支持写入')
   }
   const startedAt = dependencies.now()
   if (input.engine === 'sqlite') {

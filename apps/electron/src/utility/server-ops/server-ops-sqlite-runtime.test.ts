@@ -5,9 +5,10 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import type { ServerOpsRuntimeDataReadRequest } from './server-ops-runtime-protocol'
+import type { ServerOpsRuntimeDataReadRequest, ServerOpsRuntimeDataWriteRequest } from './server-ops-runtime-protocol'
 import {
   runServerOpsSqliteRead,
+  runServerOpsSqliteWrite,
   type ServerOpsSqliteChannel,
   type ServerOpsSqliteChannelFactory,
 } from './server-ops-sqlite-runtime'
@@ -31,6 +32,16 @@ function createInput(overrides: Partial<ServerOpsRuntimeDataReadRequest> = {}): 
     tlsMode: 'disabled',
     /** 避免全仓负载下 shell/Python 启动耗时被两秒的测试专用预算误判为读取故障。 */
     timeoutMs: 15_000,
+    ...overrides,
+  }
+}
+
+/** 构造远程 SQLite 写请求；语句正文已按共享规划器生成首关键字。 */
+function createWriteInput(overrides: Partial<ServerOpsRuntimeDataWriteRequest> = {}): ServerOpsRuntimeDataWriteRequest {
+  return {
+    requestId: 'request-write', hostId: 'host-sqlite', connectionId: 'connection-sqlite', transport: 'ssh', engine: 'sqlite',
+    database: 'main', filePath: databasePath, tlsMode: 'disabled', timeoutMs: 15_000, writeId: 'write-sqlite',
+    statements: [{ text: "UPDATE users SET name = '远程已写入' WHERE id = 1", head: 'UPDATE' }],
     ...overrides,
   }
 }
@@ -124,6 +135,53 @@ afterEach(() => {
 })
 
 describe('远程 SQLite 只读运行时', () => {
+  test('Given 已连接 SSH 的 SQLite 文件 When 执行受控写入 Then 远端事务提交并返回影响行数', async () => {
+    const payloads: Array<Record<string, unknown>> = []
+    const result = await runServerOpsSqliteWrite(createWriteInput(), createLocalChannelFactory([], [], payloads))
+    expect(result).toMatchObject({ writeId: 'write-sqlite', database: 'main', committed: true, outcome: 'committed', affectedRows: 1 })
+    expect(payloads[0]).toMatchObject({ mode: 'sql-write', filePath: databasePath, database: 'main' })
+    const database = new Database(databasePath)
+    expect(database.query('SELECT name FROM users WHERE id = 1').get()).toEqual({ name: '远程已写入' })
+    database.close()
+  })
+
+  test('Given 事务第二条语句失败 When 远程 SQLite 执行 Then 已执行语句回滚且回执保留回滚事实', async () => {
+    const result = await runServerOpsSqliteWrite(createWriteInput({ statements: [
+      { text: "UPDATE users SET name = '不应保留' WHERE id = 1", head: 'UPDATE' },
+      { text: 'UPDATE missing_table SET name = 1', head: 'UPDATE' },
+    ] }), createLocalChannelFactory([]))
+    expect(result).toMatchObject({ committed: false, outcome: 'rolled-back', errorCode: 'SERVER_OPS_DATA_WRITE_FAILED' })
+    const database = new Database(databasePath)
+    expect(database.query('SELECT name FROM users WHERE id = 1').get()).toEqual({ name: '中文用户' })
+    database.close()
+  })
+
+  test('Given 远程写请求夹带本地文件身份 When 启动执行 Then 在 SSH channel 创建前拒绝', async () => {
+    let opened = false
+    await expect(runServerOpsSqliteWrite(createWriteInput({ localFileId: '1:2:3' }), async () => {
+      opened = true
+      throw new Error('must-not-open')
+    })).rejects.toMatchObject({ code: 'SERVER_OPS_DATA_WRITE_INPUT_INVALID' })
+    expect(opened).toBe(false)
+  })
+
+  test('Given 远程写进程超时 When channel 以超时退出 Then 返回 unknown 而不是假定回滚', async () => {
+    await expect(runServerOpsSqliteWrite(createWriteInput(), createFixedChannelFactory('', 124)))
+      .resolves.toMatchObject({ committed: false, outcome: 'unknown', errorCode: 'SERVER_OPS_DATA_WRITE_TIMEOUT' })
+  })
+
+  test('Given SQLite 文件被独占锁定 When 远程写入 Then 返回锁定错误且不伪造事务回执', async () => {
+    const writer = new Database(databasePath)
+    writer.exec('BEGIN EXCLUSIVE')
+    try {
+      await expect(runServerOpsSqliteWrite(createWriteInput({ timeoutMs: 10_000 }), createLocalChannelFactory([])))
+        .rejects.toMatchObject({ code: 'SERVER_OPS_SQLITE_DATABASE_LOCKED' })
+    } finally {
+      writer.exec('ROLLBACK')
+      writer.close()
+    }
+  })
+
   test('Given 有损预览 When 读取单格 Then 按筛选和页内位置返回含换行的完整原文', async () => {
     /** JSON 保留超安全整数和换行，确保原文不会被预览清洗覆盖。 */
     const value = '{\n\t"id":90071992547409931234,"body":"' + '长'.repeat(400) + '"\n}'

@@ -1073,6 +1073,30 @@ describe('Server Ops Agent 多资源只读 Facade', () => {
     await expect(redis.revalidateWriteApproval!(redisSnapshot, redisInput)).rejects.toThrow('SERVER_OPS_AGENT_WRITE_APPROVAL_EXPIRED')
   })
 
+  test('Given 已连接 SSH SQLite 来源 When Agent 获批写入 Then 复用远程文件来源并保留单次确认', async () => {
+    const deps = dependencies()
+    deps.services.access.getReadAccess = () => ({
+      sessionId: 'session-1', revision: 7, grantedAt: 10, expiresAt: Date.now() + 1_800_000,
+      resources: [{ kind: 'sqlite', sourceId: 'source-1', instance: false, databases: [{ database: 'main', tables: ['users'], readRows: true }] }],
+    })
+    deps.services.data!.listSources = () => ({ sources: [{
+      id: 'source-1', projectId: 'project-1', transport: 'ssh', hostId: 'host-1', engine: 'sqlite', label: 'NAS SQLite',
+      filePath: '/vol1/docker/app.db', database: 'main', tlsMode: 'disabled', hasPassword: false, createdAt: 1, updatedAt: 2,
+    }] })
+    let writes = 0
+    deps.services.data!.writeSource = async (input) => {
+      writes += 1
+      expect(input.source.transport).toBe('ssh')
+      expect(input.source.engine).toBe('sqlite')
+      return { writeId: input.writeId, database: 'main', statementCount: 1, affectedRows: 1, committed: true,
+        outcome: 'committed', durationMs: 1, statements: [{ head: 'UPDATE', affectedRows: 1 }], warnings: [] }
+    }
+    const facade = createServerOpsAgentReadFacade({ sessionId: 'session-1', dependencies: deps, allowDatabaseWrite: true })!
+    const result = await facade.databaseWrite!({ sourceId: 'source-1', database: 'main', sql: "UPDATE users SET name = 'ok'" })
+    expect(result).toMatchObject({ committed: true, outcome: 'committed' })
+    expect(writes).toBe(1)
+  })
+
   test('Given 只读模式或非直连/非支持引擎 When Agent 请求写入 Then 在执行前拒绝', async () => {
     const readonlyDeps = dependencies()
     readonlyDeps.services.data!.writeSource = async () => { throw new Error('must-not-run') }

@@ -60,6 +60,8 @@ describe('数据服务展示文案', () => {
       ['SERVER_OPS_DATA_DISPATCH_FAILED', '数据库读取没能下发到运行时，请稍后重试'],
       ['SERVER_OPS_DATA_SCHEMA_FILTERS_INVALID', '筛选条件无效或字段不可筛选，请刷新字段后调整条件'],
       ['SERVER_OPS_DATA_SCHEMA_FILTERS_UNAVAILABLE', '当前连接不支持安全筛选，请更新客户端后重试'],
+      ['SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', '仅支持通过已连接 SSH 主机写入 SQLite 文件；MySQL 请配置直连'],
+      ['SERVER_OPS_DATA_WRITE_ENGINE_UNSUPPORTED', '当前仅支持 MySQL、本地 SQLite 和已连接 SSH 主机上的 SQLite 写入'],
       ['SERVER_OPS_RUNTIME_STOPPED', 'SSH 运行时已停止，请重新连接服务器后再试'],
     ]
     for (const [code, text] of expectations) {

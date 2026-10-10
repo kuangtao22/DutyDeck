@@ -1,5 +1,12 @@
 # MEMORY.md
 
+## 2026-10-10（SSH SQLite Agent 写入链）
+
+- 远程 SSH SQLite 数据源已接入 Agent 原生逐次确认后的写入链：主进程复核保存来源、SSH `connectionId/generation`、禁用表与目标指纹，utility 复用当前 SSH exec channel 执行固定 `python3 -I -S` 脚本；Python 侧以 `mode=rw`、`BEGIN IMMEDIATE`、提交/回滚和 `total_changes` 生成统一写回执。
+- 远程写入只允许已保存 SSH SQLite 的 `main` 库绝对路径，禁止夹带 `localFileId`、网络数据库字段或 Shell/文件上传绕过；事务中断、超时、取消或断线统一保守返回 `unknown`，权限、锁定和文件状态使用稳定错误码。MySQL SSH、PostgreSQL、Redis 写入边界保持拒绝。
+- 影响：截图中的 NAS `/vol1/docker/taokoplay/shared/data/open-api.db` 可在 Agent 单次确认后直接修改，前提是当前 SSH 用户对该文件有写权限；每次写启动一次短生命周期远程 Python 进程，沿用同源串行队列，无新增常驻连接。
+- 复核截图时发现能力实现与 Agent 可见契约必须同步：`ops_database_write` 工具描述和系统提示若仍写“SSH 隧道不可写”，模型会主动回避已支持的 SSH SQLite，用户会看到权限/输入无效的假象。后续扩展数据库写入能力时，必须同时更新 Facade、工具描述、系统提示和对应回归断言；远程 SQLite unknown 回执还要记录实际耗时，便于审计和用户核对。
+
 ## 项目
 
 - 名称：Proma

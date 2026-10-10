@@ -112,7 +112,7 @@ export function ServerOpsAgentReadAccess({ projectId, allConnections, dataSource
       <DialogContent className="z-[260] flex max-h-[90vh] w-[calc(100%-2rem)] max-w-2xl flex-col gap-3 overflow-hidden" overlayClassName="z-[250]" hideClose={view.saving}
         onCloseAutoFocus={(event) => { event.preventDefault(); triggerRef.current?.focus() }}
         onEscapeKeyDown={(event) => { event.stopPropagation(); if (view.saving) event.preventDefault() }}>
-        <DialogHeader><DialogTitle>管理禁用表{targetConnection ? ` · ${targetConnection.label}` : ''}</DialogTitle><DialogDescription>未禁用的业务表默认可读取。直连 MySQL 和本地 SQLite 写入由 Agent 原生确认弹窗逐次批准；勾选的表会持续禁止 Agent 读写。</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>管理禁用表{targetConnection ? ` · ${targetConnection.label}` : ''}</DialogTitle><DialogDescription>未禁用的业务表默认可读取。直连 MySQL、本地 SQLite 和已连接 SSH 主机上的 SQLite 写入由 Agent 原生确认弹窗逐次批准；勾选的表会持续禁止 Agent 读写。</DialogDescription></DialogHeader>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
           {targetConnection && source ? <div className="min-w-0 space-y-2 rounded-md border border-border/60 p-3">
             <div className="flex min-w-0 items-start gap-2 text-xs font-medium">

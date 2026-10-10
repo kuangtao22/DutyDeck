@@ -722,7 +722,9 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
     if (scope.tables.some((table) => schema.tables.some((entry) => entry.type === 'view' && isSameTable(entry.name, table)))) {
       throw new Error('SERVER_OPS_AGENT_SCOPE_REQUIRED')
     }
-    if (source.transport !== 'direct') throw new Error('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED')
+    if (source.transport !== 'direct' && !(source.transport === 'ssh' && source.engine === 'sqlite')) {
+      throw new Error('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED')
+    }
     if (!data.writeSource) throw new Error('SERVER_OPS_DATA_UNAVAILABLE')
     const binding = captureBindings([resource])[0]
     if (!binding) throw new Error('SERVER_OPS_AGENT_RESOURCE_CHANGED')
@@ -734,7 +736,7 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
     return {
       toolName: 'ops_database_write', sourceId, database, target, operation: sql, fingerprint,
       title: '数据库写入需要确认',
-      description: `目标：${target}\n风险：这段 SQL 会直接修改数据库数据；目标、数据库、SQL 或连接配置发生变化时会重新确认。\n注意：请确认已有备份或可恢复手段，执行结果未知时不会自动重试。`,
+      description: `目标：${target}\n风险：这段 SQL 会直接修改数据库数据；远程 SQLite 将通过当前 SSH 连接修改服务器文件。目标、数据库、SQL 或连接配置发生变化时会重新确认。\n注意：请确认已有备份或可恢复手段，执行结果未知时不会自动重试。`,
     }
   }
 
@@ -863,8 +865,10 @@ export function createServerOpsAgentReadFacade(input: CreateServerOpsAgentReadFa
         if (scope.tables.some((table) => schema.tables.some((entry) => entry.type === 'view' && isSameTable(entry.name, table)))) {
           throw new Error('SERVER_OPS_AGENT_SCOPE_REQUIRED')
         }
-        /** Agent 写入只走当前已保存的直连来源；SSH 隧道需要独立的写入生命周期与取消合同。 */
-        if (source.transport !== 'direct') throw new Error('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED')
+        /** Agent 允许直连数据库与已连接 SSH 主机上的 SQLite 文件，其他 SSH 引擎仍拒绝。 */
+        if (source.transport !== 'direct' && !(source.transport === 'ssh' && source.engine === 'sqlite')) {
+          throw new Error('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED')
+        }
         if (!data.writeSource) throw new Error('SERVER_OPS_DATA_UNAVAILABLE')
         const request = parseServerOpsDataWriteInput({
           sourceId, source, database, writeId: randomUUID(), sql,

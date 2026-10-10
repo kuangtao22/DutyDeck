@@ -185,9 +185,9 @@ export interface ServerOpsRuntimeDataWriteRequest {
   /** 仅网络数据库携带 TCP 端点。 */
   address?: string
   port?: number
-  /** SQLite 的文件路径：direct 为本机绝对路径。 */
+  /** SQLite 的文件路径：direct 为本机绝对路径，ssh 为已连接主机上的绝对路径。 */
   filePath?: string
-  /** 主进程绑定的本地 SQLite 文件身份；只允许 direct SQLite 携带。 */
+  /** 主进程绑定的本地 SQLite 文件身份；远程 SQLite 不携带本地文件身份。 */
   localFileId?: string
   database: string
   username?: string
@@ -628,8 +628,8 @@ function isLogSequence(value: unknown): value is number {
 /**
  * 严格解析主进程发往 runtime 的写库请求。
  *
- * 只有 MySQL 与本地 SQLite 拥有写执行器；PostgreSQL、Redis 与远端 SQLite 明确拒绝，
- * 不能因为「看起来能连」就静默降级到某个读写行为不明的路径。
+ * 只有 MySQL、SQLite（本地文件或已认证 SSH 主机上的文件）拥有写执行器；
+ * PostgreSQL 与 Redis 明确拒绝，不能因为「看起来能连」就静默降级到某个读写行为不明的路径。
  */
 function parseDataWriteRequest(value: unknown): ServerOpsRuntimeDataWriteRequest {
   if (!isRecord(value)) throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
@@ -660,11 +660,14 @@ function parseDataWriteRequest(value: unknown): ServerOpsRuntimeDataWriteRequest
     throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
   }
   if (value.engine === 'sqlite') {
-    /** 写链只支持本地文件：远端 SQLite 写需要另一套远端脚本与权限模型。 */
-    if (value.transport !== 'direct' || !isConnectionText(value.filePath, 1_024) || value.localFileId === undefined
-      || !isServerOpsSqliteFileId(value.localFileId)
+    if (!isConnectionText(value.filePath, 1_024)
       || value.address !== undefined || value.port !== undefined
       || value.username !== undefined || value.password !== undefined || value.tlsServerName !== undefined) {
+      throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
+    }
+    if (value.transport === 'direct') {
+      if (value.localFileId === undefined || !isServerOpsSqliteFileId(value.localFileId)) throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
+    } else if (value.localFileId !== undefined) {
       throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
     }
   } else if (!isConnectionText(value.address, 255) || !isPort(value.port) || value.filePath !== undefined || value.localFileId !== undefined) {

@@ -36,6 +36,7 @@ interface Harness {
   mySqlConnections: unknown[]
   openedChannels: number
   openedConnections: number
+  remoteWrites: number
 }
 
 /**
@@ -49,11 +50,12 @@ function createHarness(options: {
   mysqlOpen?: () => unknown
   mysqlWrite?: () => unknown
   sqlite?: () => unknown
+  remoteSqlite?: () => unknown
 } = {}): Harness {
   /** 时钟在第二次读取时前进，使 durationMs 可断言。 */
   let clock = 1_000
   const harness: Harness = {
-    sqliteInputs: [], mySqlStatements: [], mySqlConnections: [], openedChannels: 0, openedConnections: 0,
+    sqliteInputs: [], mySqlStatements: [], mySqlConnections: [], openedChannels: 0, openedConnections: 0, remoteWrites: 0,
     dependencies: null as unknown as ServerOpsDataWriteDependencies,
   }
   harness.dependencies = {
@@ -79,6 +81,12 @@ function createHarness(options: {
       if (outcome instanceof Error) throw outcome
       return outcome ?? { writeId: 'write-1', database: 'main', statementCount: 1, affectedRows: 2, committed: true, durationMs: 5, statements: [{ head: 'UPDATE', affectedRows: 2 }], warnings: [] }
     }) as unknown as ServerOpsDataWriteDependencies['runLocalSqliteWrite'],
+    runRemoteSqliteWrite: (async () => {
+      harness.remoteWrites += 1
+      const outcome = options.remoteSqlite?.()
+      if (outcome instanceof Error) throw outcome
+      return outcome ?? { writeId: 'write-1', database: 'main', statementCount: 1, affectedRows: 1, committed: true, outcome: 'committed', durationMs: 5, statements: [{ head: 'UPDATE', affectedRows: 1 }], warnings: [] }
+    }) as unknown as ServerOpsDataWriteDependencies['runRemoteSqliteWrite'],
     now: () => { clock += 7; return clock },
   }
   return harness
@@ -124,6 +132,17 @@ describe('写执行核心', () => {
     /** 拒绝必须发生在建通道与建连接之前。 */
     expect(harness.openedChannels).toBe(0)
     expect(harness.mySqlStatements).toEqual([])
+  })
+
+  test('Given SSH SQLite 请求 When 执行 Then 路由到远程 SQLite 执行器', async () => {
+    const harness = createHarness()
+    const result = await executeServerOpsDataWrite(
+      { ...baseRequest, transport: 'ssh', engine: 'sqlite', database: 'main', address: undefined, port: undefined,
+        filePath: '/var/lib/app.sqlite', localFileId: undefined }, createContext(harness), harness.dependencies,
+    )
+    expect(result).toMatchObject({ committed: true, outcome: 'committed', affectedRows: 1 })
+    expect(harness.remoteWrites).toBe(1)
+    expect(harness.openedConnections).toBe(0)
   })
 
   test('Given MySQL 写入成功 When 执行 Then 用 promise 形态连接并补上 durationMs', async () => {

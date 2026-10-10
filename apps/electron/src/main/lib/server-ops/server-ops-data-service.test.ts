@@ -9,7 +9,7 @@ import { ServerOpsDataSourceStore } from './server-ops-data-source-store'
 import type { ServerOpsStoredDataSource } from './server-ops-data-source-store'
 import { ServerOpsDataSchemaCache } from './server-ops-data-schema-cache'
 import type { ServerOpsDataSchemaCacheScope, ServerOpsDataSchemaCacheValue } from './server-ops-data-schema-cache'
-import type { ServerOpsRuntimeDataReadRequest, ServerOpsRuntimeDataReadResult } from '../../../utility/server-ops/server-ops-runtime-protocol'
+import type { ServerOpsRuntimeDataReadRequest, ServerOpsRuntimeDataReadResult, ServerOpsRuntimeDataWriteRequest } from '../../../utility/server-ops/server-ops-runtime-protocol'
 
 /** 内存数据源 Store 替身，只实现服务实际使用的方法。 */
 class FakeSourceStore {
@@ -354,6 +354,22 @@ describe('服务器运维数据服务编排', () => {
     const source = service.upsertSource(createInput({ transport: 'direct', hostId: undefined, database: 'app' })).source
     await expect(service.writeSource({ sourceId: source.id, source, database: 'app', writeId: 'write-1', sql: 'UPDATE t SET n=1' }))
       .resolves.toMatchObject({ committed: false, outcome: 'unknown' })
+  })
+
+  test('Given 已连接 SSH SQLite 来源 When 写入 Then 带上当前主机连接身份并复核代次', async () => {
+    const seen: ServerOpsRuntimeDataWriteRequest[] = []
+    const fixture = createService({ write: async (input) => {
+      seen.push(input as ServerOpsRuntimeDataWriteRequest)
+      return { writeId: input.writeId, database: input.database, statementCount: 1, affectedRows: 1, committed: true,
+        outcome: 'committed', durationMs: 1, statements: [{ head: 'UPDATE', affectedRows: 1 }], warnings: [] }
+    } })
+    const source = fixture.service.upsertSource({ transport: 'ssh', hostId: 'host-1', engine: 'sqlite', label: 'NAS SQLite',
+      filePath: '/vol1/docker/shared/data/open-api.db', database: 'main', tlsMode: 'disabled' }).source
+    await expect(fixture.service.writeSource({ sourceId: source.id, source, database: 'main', writeId: 'write-ssh-sqlite', sql: 'UPDATE users SET name=1' }))
+      .resolves.toMatchObject({ committed: true, outcome: 'committed' })
+    expect(seen[0]).toMatchObject({ transport: 'ssh', engine: 'sqlite', hostId: 'host-1', connectionId: 'connection-1', filePath: source.filePath, database: 'main' })
+    expect(fixture.identityCalls.length).toBeGreaterThanOrEqual(2)
+    expect(fixture.identityCalls.every((hostId) => hostId === 'host-1')).toBe(true)
   })
 
   test('Given 用户确认后另一窗口修改目标 When 服务收到旧快照 Then 在 runtime 前拒绝写入', async () => {

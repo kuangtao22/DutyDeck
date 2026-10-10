@@ -330,6 +330,69 @@ def execute_request(payload):
             'warnings': ['部分单元格内容过长，已截断'] if truncated_cells else [],
         }
 
+    if mode == 'sql-write':
+        started_at = time.monotonic()
+        statements = payload.get('statements')
+        if (not isinstance(statements, list) or len(statements) < 1 or len(statements) > 200
+            or not isinstance(payload.get('writeId'), str) or payload.get('database') != 'main'):
+            fail('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+        results = []
+        affected_total = 0
+        affected_heads = {'INSERT', 'UPDATE', 'DELETE', 'REPLACE'}
+
+        def write_failure(outcome, error_code, warnings=None):
+            """构造写事务失败回执；入参为事务终态、稳定码和可选警告，返回公开结果。"""
+            return {
+                'writeId': payload['writeId'], 'database': 'main', 'statementCount': len(results),
+                'affectedRows': affected_total, 'committed': False, 'outcome': outcome,
+                'errorCode': error_code, 'durationMs': max(0, int((time.monotonic() - started_at) * 1000)),
+                'statements': results, 'warnings': warnings or [],
+            }
+
+        try:
+            connection.execute('BEGIN IMMEDIATE')
+        except sqlite3.OperationalError as error:
+            text = str(error).lower()
+            if 'locked' in text or 'busy' in text:
+                fail('SERVER_OPS_SQLITE_DATABASE_LOCKED')
+            return write_failure('not-started', 'SERVER_OPS_DATA_WRITE_FAILED')
+        except Exception:
+            return write_failure('not-started', 'SERVER_OPS_DATA_WRITE_FAILED')
+        try:
+            for entry in statements:
+                if (not isinstance(entry, dict) or set(entry) != {'text', 'head'}
+                    or not isinstance(entry['text'], str) or not isinstance(entry['head'], str)
+                    or not re.fullmatch(r'[A-Z_]{1,32}', entry['head'])):
+                    fail('SERVER_OPS_DATA_WRITE_INPUT_INVALID')
+                before = connection.total_changes
+                connection.execute(entry['text'])
+                changed = connection.total_changes - before
+                affected = int(changed) if entry['head'] in affected_heads and changed > 0 else 0
+                results.append({'head': entry['head'], 'affectedRows': affected})
+                affected_total += affected
+        except SystemExit:
+            raise
+        except Exception:
+            try:
+                connection.execute('ROLLBACK')
+                return write_failure('rolled-back', 'SERVER_OPS_DATA_WRITE_FAILED')
+            except Exception:
+                return write_failure('unknown', 'SERVER_OPS_DATA_WRITE_FAILED', ['SQLite 回滚确认失败，改动状态未知'])
+        try:
+            connection.execute('COMMIT')
+        except Exception:
+            try:
+                connection.execute('ROLLBACK')
+                return write_failure('rolled-back', 'SERVER_OPS_DATA_WRITE_COMMIT_FAILED')
+            except Exception:
+                return write_failure('unknown', 'SERVER_OPS_DATA_WRITE_COMMIT_FAILED', ['SQLite 提交与回滚均未确认，改动状态未知'])
+        return {
+            'writeId': payload['writeId'], 'database': 'main', 'statementCount': len(results),
+            'affectedRows': affected_total, 'committed': True, 'outcome': 'committed',
+            'durationMs': max(0, int((time.monotonic() - started_at) * 1000)),
+            'statements': results, 'warnings': [],
+        }
+
     table_name = payload.get('schemaTable')
     if not isinstance(table_name, str):
         fail('SERVER_OPS_SQLITE_TABLE_REQUIRED')
@@ -458,7 +521,9 @@ except OSError:
 if not stat.S_ISREG(path_stat.st_mode):
     fail('SERVER_OPS_SQLITE_FILE_NOT_REGULAR')
 if not os.access(path, os.R_OK):
-    fail('SERVER_OPS_SQLITE_FILE_PERMISSION_DENIED')
+    fail('SERVER_OPS_DATA_WRITE_PERMISSION_DENIED' if payload.get('mode') == 'sql-write' else 'SERVER_OPS_SQLITE_FILE_PERMISSION_DENIED')
+if payload.get('mode') == 'sql-write' and not os.access(path, os.W_OK):
+    fail('SERVER_OPS_DATA_WRITE_PERMISSION_DENIED')
 file_size = max(0, int(path_stat.st_size))
 deadline = time.monotonic() + timeout_ms / 1000
 
@@ -472,9 +537,10 @@ if hasattr(signal, 'SIGALRM') and hasattr(signal, 'setitimer'):
 
 connection = None
 try:
-    uri = 'file:' + urllib.parse.quote(path, safe='/') + '?mode=ro'
+    uri = 'file:' + urllib.parse.quote(path, safe='/') + ('?mode=rw' if payload.get('mode') == 'sql-write' else '?mode=ro')
     connection = sqlite3.connect(uri, uri=True, timeout=min(timeout_ms, 2000) / 1000)
-    connection.execute('PRAGMA query_only = ON')
+    if payload.get('mode') != 'sql-write':
+        connection.execute('PRAGMA query_only = ON')
     connection.execute('PRAGMA trusted_schema = OFF')
     connection.execute('PRAGMA busy_timeout = ' + str(min(timeout_ms, 2000)))
     if hasattr(connection, 'enable_load_extension'):
@@ -489,13 +555,13 @@ try:
     connection.set_progress_handler(progress, 1000)
     emit({'ok': True, 'result': execute_request(payload)})
 except TimeoutError:
-    fail('SERVER_OPS_DATA_QUERY_TIMEOUT')
+    fail('SERVER_OPS_DATA_WRITE_TIMEOUT' if payload.get('mode') == 'sql-write' else 'SERVER_OPS_DATA_QUERY_TIMEOUT')
 except sqlite3.OperationalError as error:
     text = str(error).lower()
     if 'unable to open database file' in text:
-        fail('SERVER_OPS_SQLITE_FILE_UNAVAILABLE')
+        fail('SERVER_OPS_DATA_WRITE_PERMISSION_DENIED' if payload.get('mode') == 'sql-write' else 'SERVER_OPS_SQLITE_FILE_UNAVAILABLE')
     if 'interrupted' in text:
-        fail('SERVER_OPS_DATA_QUERY_TIMEOUT')
+        fail('SERVER_OPS_DATA_WRITE_TIMEOUT' if payload.get('mode') == 'sql-write' else 'SERVER_OPS_DATA_QUERY_TIMEOUT')
     if 'locked' in text or 'busy' in text:
         fail('SERVER_OPS_SQLITE_DATABASE_LOCKED')
     if 'not authorized' in text or 'authorization denied' in text:
@@ -504,21 +570,23 @@ except sqlite3.OperationalError as error:
         fail('SERVER_OPS_DATA_QUERY_TABLE_UNAVAILABLE')
     if 'no such column' in text:
         fail('SERVER_OPS_DATA_QUERY_COLUMN_UNAVAILABLE')
+    if payload.get('mode') == 'sql-write':
+        fail('SERVER_OPS_DATA_WRITE_FAILED')
     if payload.get('mode') == 'sql-query':
         fail('SERVER_OPS_DATA_QUERY_SQL_INVALID')
     fail('SERVER_OPS_SQLITE_DATABASE_INVALID')
 except PermissionError:
-    fail('SERVER_OPS_SQLITE_FILE_PERMISSION_DENIED')
+    fail('SERVER_OPS_DATA_WRITE_PERMISSION_DENIED' if payload.get('mode') == 'sql-write' else 'SERVER_OPS_SQLITE_FILE_PERMISSION_DENIED')
 except sqlite3.DatabaseError as error:
     text = str(error).lower()
     # 单条记录超过读取预算不代表文件损坏，使用可操作的大小错误。
     if 'too big' in text:
         fail('SERVER_OPS_DATA_CELL_TOO_LARGE' if payload.get('mode') == 'schema-cell' else 'SERVER_OPS_SQLITE_RESULT_TOO_LARGE')
     if 'interrupted' in text:
-        fail('SERVER_OPS_DATA_QUERY_TIMEOUT')
+        fail('SERVER_OPS_DATA_WRITE_TIMEOUT' if payload.get('mode') == 'sql-write' else 'SERVER_OPS_DATA_QUERY_TIMEOUT')
     if 'not authorized' in text or 'authorization denied' in text:
         fail('SERVER_OPS_DATA_QUERY_PERMISSION_DENIED')
-    fail('SERVER_OPS_SQLITE_DATABASE_INVALID')
+    fail('SERVER_OPS_DATA_WRITE_FAILED' if payload.get('mode') == 'sql-write' else 'SERVER_OPS_SQLITE_DATABASE_INVALID')
 except SystemExit:
     raise
 except Exception:

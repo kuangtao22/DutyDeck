@@ -4,6 +4,7 @@ import {
   parseServerOpsRuntimeMessage,
   parseServerOpsRuntimeRequest,
 } from './server-ops-runtime-protocol'
+import type { ServerOpsRuntimeDataWriteRequest } from './server-ops-runtime-protocol'
 
 /** 构造完整且可通过协议边界的连接请求。 */
 function createConnectRequest(): unknown {
@@ -48,6 +49,16 @@ describe('Server Ops utility runtime 请求协议', () => {
     for (const extra of [{ localFileId: undefined }, { localFileId: 'invalid' }, { transport: 'ssh', filePath: '/srv/app.db' }, { engine: 'mysql', address: '127.0.0.1', port: 3306, filePath: undefined }]) {
       expect(() => parseServerOpsRuntimeRequest({ type: 'server-ops.data-read', input: { ...input, ...extra } })).toThrow()
     }
+  })
+  test('Given SSH SQLite 写请求 When 进入 utility Then 允许远程路径但拒绝本地文件身份', () => {
+    const input: ServerOpsRuntimeDataWriteRequest = {
+      requestId: 'remote-write', hostId: 'host-1', connectionId: 'connection-1', transport: 'ssh', engine: 'sqlite',
+      filePath: '/vol1/docker/app.db', database: 'main', tlsMode: 'disabled', timeoutMs: 60_000, writeId: 'write-1',
+      statements: [{ text: 'UPDATE users SET name = \'ok\'', head: 'UPDATE' }],
+    }
+    expect(parseServerOpsRuntimeRequest({ type: 'server-ops.data-write', input })).toEqual({ type: 'server-ops.data-write', input })
+    expect(() => parseServerOpsRuntimeRequest({ type: 'server-ops.data-write', input: { ...input, localFileId: '1:2:3' } })).toThrow()
+    expect(() => parseServerOpsRuntimeRequest({ type: 'server-ops.data-write', input: { ...input, address: '127.0.0.1' } })).toThrow()
   })
   test('Given 指定库目录搜索 When 解析协议 Then 只允许 schema-tables 携带有界搜索词', () => {
     const base = { requestId: 'search-1', hostId: 'host-1', connectionId: 'connection-1', transport: 'direct', engine: 'mysql', address: '127.0.0.1', port: 3306, tlsMode: 'disabled', timeoutMs: 15_000 } as const

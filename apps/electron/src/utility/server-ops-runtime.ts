@@ -6,7 +6,7 @@ import type { ServerOpsSftpRequest } from './server-ops/server-ops-sftp-runtime'
 import { runServerOpsDataRead } from './server-ops/server-ops-data-runtime'
 import { runServerOpsRedisCommand } from './server-ops/server-ops-redis-runtime'
 import type { ServerOpsRuntimeRedisRequest } from './server-ops/server-ops-runtime-protocol'
-import { runServerOpsSqliteRead, getServerOpsSqlitePublicError } from './server-ops/server-ops-sqlite-runtime'
+import { runServerOpsSqliteRead, runServerOpsSqliteWrite, getServerOpsSqlitePublicError } from './server-ops/server-ops-sqlite-runtime'
 import type { ServerOpsSqliteChannelFactory } from './server-ops/server-ops-sqlite-runtime'
 import { runServerOpsLocalSqliteRead } from './server-ops/server-ops-local-sqlite-runtime'
 import { createServerOpsDataWriteDependencies, executeServerOpsDataWrite,
@@ -828,9 +828,16 @@ function dataRead(input: ServerOpsRuntimeDataReadRequest): void {
  * @param input 已由协议解析器校验过的写请求
  */
 function dataWrite(input: ServerOpsRuntimeDataWriteRequest): void {
-  if (input.transport !== 'direct') {
+  /** 远程 SQLite 必须绑定当前 SSH 连接；其它 SSH 数据库仍保持明确拒绝。 */
+  const sshConnection = input.transport === 'ssh' ? connections.get(input.connectionId) : undefined
+  if (input.transport === 'ssh' && (!sshConnection || sshConnection.hostId !== input.hostId)) {
     post({ type: 'server-ops.error', requestId: input.requestId, hostId: input.hostId, connectionId: input.connectionId,
-      code: 'SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', message: '经跳板的写库尚未支持，请为该数据源配置直连' })
+      code: 'SERVER_OPS_CONNECTION_NOT_ACTIVE', message: 'SSH 连接未激活' })
+    return
+  }
+  if (input.transport !== 'direct' && !(input.transport === 'ssh' && input.engine === 'sqlite')) {
+    post({ type: 'server-ops.error', requestId: input.requestId, hostId: input.hostId, connectionId: input.connectionId,
+      code: 'SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', message: '仅支持通过已连接 SSH 主机写入 SQLite 文件，MySQL 请配置直连' })
     return
   }
   const startedAt = Date.now()
@@ -838,6 +845,8 @@ function dataWrite(input: ServerOpsRuntimeDataWriteRequest): void {
   let settled = false
   /** 本次写持有的直连 socket 与驱动连接，结算时一起销毁。 */
   let activeChannel: Duplex | undefined
+  /** 远程 SQLite exec channel 需要先发 TERM，并从 SSH 连接资源表移除。 */
+  let activeSshChannel: ClientChannel | undefined
   let activeConnection: { destroy: () => void } | undefined
   /** 是否已经成功建立驱动连接；用于区分「连不上」与「执行失败」两类错误。 */
   /** 执行器与驱动共享的取消信号。 */
@@ -846,11 +855,16 @@ function dataWrite(input: ServerOpsRuntimeDataWriteRequest): void {
   let terminalError: { code: string; message: string } | undefined
   /** 销毁本次写持有的全部底层资源；只用一条收口路径。 */
   const releaseResources = (): void => {
-    const connection = activeConnection
+    const driverConnection = activeConnection
     const channel = activeChannel
     activeConnection = undefined
     activeChannel = undefined
-    if (connection) { try { connection.destroy() } catch { /* 驱动可能已自行关闭。 */ } }
+    if (activeSshChannel) {
+      sshConnection?.dataChannels.delete(activeSshChannel)
+      try { activeSshChannel.signal('TERM') } catch { /* 远端进程已退出时无需重复终止。 */ }
+      activeSshChannel = undefined
+    }
+    if (driverConnection) { try { driverConnection.destroy() } catch { /* 驱动可能已自行关闭。 */ } }
     if (channel && !channel.destroyed) { try { channel.destroy() } catch { /* 通道可能已被远端关闭。 */ } }
   }
   activeDataWrites.set(input.requestId, {
@@ -886,6 +900,42 @@ function dataWrite(input: ServerOpsRuntimeDataWriteRequest): void {
   const timer = setTimeout(() => {
     activeDataWrites.get(input.requestId)?.fail('SERVER_OPS_DATA_WRITE_TIMEOUT', '数据库写入超时')
   }, input.timeoutMs)
+  /** 在当前 SSH 会话启动固定远程 SQLite Python 脚本。 */
+  const createRemoteSqliteChannel: ServerOpsSqliteChannelFactory = (command) => new Promise((resolve, reject) => {
+    if (!sshConnection || settled || controller.signal.aborted || connections.get(input.connectionId) !== sshConnection) {
+      reject(new Error('SERVER_OPS_CONNECTION_NOT_ACTIVE'))
+      return
+    }
+    const abortOpening = (): void => { reject(new Error('SERVER_OPS_DATA_CANCELLED')) }
+    controller.signal.addEventListener('abort', abortOpening, { once: true })
+    try {
+      sshConnection.client.exec(command, (error, channel) => {
+        controller.signal.removeEventListener('abort', abortOpening)
+        if (error) { reject(error); return }
+        if (controller.signal.aborted || settled || connections.get(input.connectionId) !== sshConnection) {
+          try { channel.signal('TERM') } catch { /* 迟到通道可能已经退出。 */ }
+          channel.destroy()
+          reject(new Error('SERVER_OPS_DATA_CANCELLED'))
+          return
+        }
+        activeChannel = channel
+        activeSshChannel = channel
+        sshConnection.dataChannels.add(channel)
+        channel.once('close', () => {
+          sshConnection.dataChannels.delete(channel)
+          if (activeChannel === channel) activeChannel = undefined
+          if (activeSshChannel === channel) activeSshChannel = undefined
+        })
+        resolve(channel)
+      })
+    } catch (error) {
+      controller.signal.removeEventListener('abort', abortOpening)
+      reject(error instanceof Error ? error : new Error('SERVER_OPS_DATA_CHANNEL_FAILED'))
+    }
+  })
+  const runRemoteSqliteWrite = input.transport === 'ssh' && input.engine === 'sqlite'
+    ? (request: ServerOpsRuntimeDataWriteRequest, signal: AbortSignal): Promise<ServerOpsDataWriteResult> => runServerOpsSqliteWrite(request, createRemoteSqliteChannel, signal)
+    : undefined
   /**
    * 执行语义全部交给可测核心：分引擎执行、错误归一化与「连不上 vs 写入失败」的区分
    * 都在 `executeServerOpsDataWrite` 里，并由它的单元测试覆盖。
@@ -895,7 +945,7 @@ function dataWrite(input: ServerOpsRuntimeDataWriteRequest): void {
     signal: controller.signal,
     onChannelOpened: (channel) => { activeChannel = channel },
     onConnectionOpened: (connection) => { activeConnection = connection },
-  }, createServerOpsDataWriteDependencies(createDirectSocket))
+  }, createServerOpsDataWriteDependencies(createDirectSocket, { runRemoteSqliteWrite }))
   void write.then((result) => {
     /** 超时分类属于 runtime 墙钟事实；保留引擎返回的事务 outcome 与已执行统计。 */
     finishResult(terminalError !== undefined && !result.committed
@@ -1009,6 +1059,11 @@ function failDataReadsForConnection(connection: ManagedSshConnection, message: s
     if (active.hostId === connection.hostId && active.connectionId === connection.connectionId) active.controller.abort()
   }
   for (const active of activeDataReads.values()) {
+    if (active.hostId === connection.hostId && active.connectionId === connection.connectionId) {
+      active.fail('SERVER_OPS_CONNECTION_CLOSED', message)
+    }
+  }
+  for (const active of activeDataWrites.values()) {
     if (active.hostId === connection.hostId && active.connectionId === connection.connectionId) {
       active.fail('SERVER_OPS_CONNECTION_CLOSED', message)
     }

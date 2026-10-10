@@ -764,7 +764,7 @@ export class ServerOpsDataService {
    * ①窗口调用与 Agent 读写模式共用这一条受控写链；没有明确 actor 的会话上下文仍一律拒绝，
    *   普通只读模式不能顺着读取工具链漏出写能力；
    * ②主进程与 utility 使用同一语句规划器校验，跨进程入口再次拒绝会话控制；
-   * ③只支持直连的 MySQL 与本地 SQLite，其余组合在发起前明确拒绝。
+   * ③只支持直连 MySQL、本地 SQLite，以及已连接 SSH 主机上的 SQLite 文件。
    *
    * @param input 渲染层提交的写请求
    * @param signal 取消信号
@@ -789,9 +789,15 @@ export class ServerOpsDataService {
       if (expectedSource.engine !== 'mysql' && expectedSource.engine !== 'sqlite') {
         throw new Error('SERVER_OPS_DATA_WRITE_ENGINE_UNSUPPORTED')
       }
-      /** 经跳板的写需要另一套通道所有权与终止语义，未实现前明确拒绝。 */
-      if (expectedSource.transport !== 'direct') throw new Error('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED')
+      /** SSH 只开放远程 SQLite 文件；MySQL 等网络数据库仍要求直连写入。 */
+      if (expectedSource.transport === 'ssh' && expectedSource.engine !== 'sqlite') {
+        throw new Error('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED')
+      }
       this.assertDirectTransportIsSafe(expectedSource)
+      /** 固定写入时的 SSH 会话代次；排队期间断线或换连都会拒绝旧目标。 */
+      const expectedConnection = expectedSource.transport === 'ssh'
+        ? this.dependencies.connection.getActiveIdentity(expectedSource.hostId ?? '')
+        : undefined
       /** 切分、会话控制拒绝与「必须含写语句」都在共享层判定，主进程与 utility 共用同一份规则。 */
       const plan = planServerOpsSqlWrite(parsedInput.sql, expectedSource.engine === 'sqlite' ? 'sqlite' : 'mysql')
       const password = expectedSource.credentialRef === undefined
@@ -814,15 +820,20 @@ export class ServerOpsDataService {
           ? undefined
           : this.dependencies.credentials.resolveSecret(current.credentialRef)
         if (currentPassword !== password) throw new Error('SERVER_OPS_DATA_SOURCE_CHANGED')
+        if (expectedConnection !== undefined) {
+          const currentConnection = this.dependencies.connection.getActiveIdentity(expectedConnection.hostId)
+          if (currentConnection.connectionId !== expectedConnection.connectionId
+            || currentConnection.generation !== expectedConnection.generation) throw new Error('SERVER_OPS_DATA_SOURCE_CHANGED')
+        }
       }
       /** 写与读共用同一个每源串行队列，终态不使用只读的撤销规则。 */
       const result = await this.scheduler.run(expectedSource.id, async () => {
         validate()
         dispatched = true
         return await this.dependencies.runtime.dataWrite({
-          hostId: SERVER_OPS_DATA_DIRECT_HOST_ID,
-          connectionId: this.uuid(),
-          transport: 'direct',
+          hostId: expectedConnection?.hostId ?? SERVER_OPS_DATA_DIRECT_HOST_ID,
+          connectionId: expectedConnection?.connectionId ?? this.uuid(),
+          transport: expectedSource.transport,
           engine: expectedSource.engine,
           ...(expectedSource.address === undefined ? {} : { address: expectedSource.address }),
           ...(expectedSource.port === undefined ? {} : { port: expectedSource.port }),
