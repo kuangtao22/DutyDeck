@@ -49,6 +49,8 @@ jobs:
     name: build (macos-latest, mac, arm64)
     runs-on: macos-latest
     needs: [validate-release]
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
 
     steps:
       - name: 检出代码
@@ -141,6 +143,8 @@ jobs:
     name: build (macos-15-intel, mac, x64)
     runs-on: macos-15-intel
     needs: [validate-release]
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
 
     steps:
       - name: 检出代码
