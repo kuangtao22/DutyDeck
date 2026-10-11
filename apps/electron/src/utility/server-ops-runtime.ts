@@ -819,25 +819,25 @@ function dataRead(input: ServerOpsRuntimeDataReadRequest): void {
 /**
  * 执行一次写库脚本。
  *
- * 与只读读取共用同一套「登记 → 超时 → 结算」语义，但**只支持直连**：
- * 经跳板的写需要另一套通道生命周期与终止语义，在没做对之前显式拒绝，
- * 而不是让它落到读写行为不明的路径上。
+ * 与只读读取共用同一套「登记 → 超时 → 结算」语义；网络数据库的直连与 SSH 转发
+ * 都复用同一套驱动连接适配器，SQLite 远程文件继续使用独立的 exec 执行器。
  *
  * 语句的切分、会话控制拒绝与写类别判定都已在主进程完成，这里只执行。
  *
  * @param input 已由协议解析器校验过的写请求
  */
 function dataWrite(input: ServerOpsRuntimeDataWriteRequest): void {
-  /** 远程 SQLite 必须绑定当前 SSH 连接；其它 SSH 数据库仍保持明确拒绝。 */
+  /** SSH 请求必须绑定当前连接；网络数据库走 forwardOut，SQLite 走 exec。 */
   const sshConnection = input.transport === 'ssh' ? connections.get(input.connectionId) : undefined
   if (input.transport === 'ssh' && (!sshConnection || sshConnection.hostId !== input.hostId)) {
     post({ type: 'server-ops.error', requestId: input.requestId, hostId: input.hostId, connectionId: input.connectionId,
       code: 'SERVER_OPS_CONNECTION_NOT_ACTIVE', message: 'SSH 连接未激活' })
     return
   }
-  if (input.transport !== 'direct' && !(input.transport === 'ssh' && input.engine === 'sqlite')) {
+  if (input.transport !== 'direct' && !(input.transport === 'ssh'
+    && (input.engine === 'sqlite' || input.engine === 'mysql' || input.engine === 'postgresql'))) {
     post({ type: 'server-ops.error', requestId: input.requestId, hostId: input.hostId, connectionId: input.connectionId,
-      code: 'SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', message: '仅支持通过已连接 SSH 主机写入 SQLite 文件，MySQL 请配置直连' })
+      code: 'SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', message: '数据库 SSH 转发连接不可用' })
     return
   }
   const startedAt = Date.now()
@@ -933,6 +933,53 @@ function dataWrite(input: ServerOpsRuntimeDataWriteRequest): void {
       reject(error instanceof Error ? error : new Error('SERVER_OPS_DATA_CHANNEL_FAILED'))
     }
   })
+  /** 建立网络数据库通道；直连使用 TCP，SSH 使用当前主机的端口转发。 */
+  const createDatabaseChannel = (): Promise<Duplex> => new Promise((resolve, reject) => {
+    if (settled || controller.signal.aborted) {
+      reject(new Error('SERVER_OPS_DATA_CANCELLED'))
+      return
+    }
+    if (typeof input.address !== 'string' || typeof input.port !== 'number') {
+      reject(new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID'))
+      return
+    }
+    if (input.transport === 'direct') {
+      const socket = createDirectSocket(input.address, input.port)
+      activeChannel = socket
+      let channelSettled = false
+      const fail = (error: Error): void => { if (channelSettled) return; channelSettled = true; reject(error) }
+      socket.once('error', fail)
+      socket.once('close', () => fail(new Error('SERVER_OPS_DATA_CHANNEL_CLOSED')))
+      socket.once('connect', () => {
+        if (settled || controller.signal.aborted) { socket.destroy(); fail(new Error('SERVER_OPS_DATA_CANCELLED')); return }
+        if (channelSettled) return
+        channelSettled = true
+        resolve(socket)
+      })
+      return
+    }
+    try {
+      sshConnection!.client.forwardOut('127.0.0.1', 0, input.address, input.port, (error, channel) => {
+        if (error) { reject(error); return }
+        if (settled || controller.signal.aborted || connections.get(input.connectionId) !== sshConnection) {
+          channel.destroy()
+          reject(new Error('SERVER_OPS_DATA_CANCELLED'))
+          return
+        }
+        activeChannel = channel
+        activeSshChannel = channel
+        sshConnection!.dataChannels.add(channel)
+        channel.once('close', () => {
+          sshConnection!.dataChannels.delete(channel)
+          if (activeChannel === channel) activeChannel = undefined
+          if (activeSshChannel === channel) activeSshChannel = undefined
+        })
+        resolve(channel)
+      })
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error('SERVER_OPS_DATA_CHANNEL_FAILED'))
+    }
+  })
   const runRemoteSqliteWrite = input.transport === 'ssh' && input.engine === 'sqlite'
     ? (request: ServerOpsRuntimeDataWriteRequest, signal: AbortSignal): Promise<ServerOpsDataWriteResult> => runServerOpsSqliteWrite(request, createRemoteSqliteChannel, signal)
     : undefined
@@ -945,6 +992,7 @@ function dataWrite(input: ServerOpsRuntimeDataWriteRequest): void {
     signal: controller.signal,
     onChannelOpened: (channel) => { activeChannel = channel },
     onConnectionOpened: (connection) => { activeConnection = connection },
+    createChannel: input.engine === 'sqlite' ? undefined : createDatabaseChannel,
   }, createServerOpsDataWriteDependencies(createDirectSocket, { runRemoteSqliteWrite }))
   void write.then((result) => {
     /** 超时分类属于 runtime 墙钟事实；保留引擎返回的事务 outcome 与已执行统计。 */

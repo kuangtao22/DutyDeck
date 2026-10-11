@@ -19,10 +19,13 @@ import { createServerOpsQueryableScope, toggleServerOpsExcludedTable } from './s
 import { ServerOpsSqlQueryPanel } from './ServerOpsSqlQueryPanel'
 
 describe('PostgreSQL 运维表单与补全', () => {
-  test('Given PostgreSQL 数据源 When 进入查询工作台 Then 只显示只读 SELECT 且没有写模式入口', () => {
-    const html = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={{}} sourceId="source-1" database="business" configurationKey="v1" available dialect="postgresql" />)
-    expect(html).toContain('只读 SELECT')
-    expect(html).not.toContain('写模式')
+  test('Given PostgreSQL 数据源 When 进入 SQL 工作台 Then 使用统一执行入口且保留写入确认能力', () => {
+    const source: ServerOpsDataSource = { id: 'source-1', transport: 'direct', engine: 'postgresql', label: '业务库', address: 'db.example.com', port: 5432, database: 'business', tlsMode: 'required', hasPassword: true, createdAt: 1, updatedAt: 1 }
+    const html = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={{}} source={source} sourceId="source-1" database="business" configurationKey="v1" available dialect="postgresql" />)
+    expect(html).toContain('自动识别 SQL')
+    expect(html).toContain('aria-label="执行"')
+    expect(html).not.toContain('查询模式')
+    expect(html).not.toContain('写入模式')
     expect(html).not.toContain('确认执行写入')
   })
 

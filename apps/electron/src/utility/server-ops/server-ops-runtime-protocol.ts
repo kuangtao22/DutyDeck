@@ -628,8 +628,8 @@ function isLogSequence(value: unknown): value is number {
 /**
  * 严格解析主进程发往 runtime 的写库请求。
  *
- * 只有 MySQL、SQLite（本地文件或已认证 SSH 主机上的文件）拥有写执行器；
- * PostgreSQL 与 Redis 明确拒绝，不能因为「看起来能连」就静默降级到某个读写行为不明的路径。
+ * MySQL、PostgreSQL、SQLite（本地文件或已认证 SSH 主机上的文件）拥有写执行器；
+ * Redis 仍不进入 SQL 写协议。
  */
 function parseDataWriteRequest(value: unknown): ServerOpsRuntimeDataWriteRequest {
   if (!isRecord(value)) throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
@@ -647,7 +647,7 @@ function parseDataWriteRequest(value: unknown): ServerOpsRuntimeDataWriteRequest
     || !isRuntimeId(value.writeId)
     || (value.transport !== 'ssh' && value.transport !== 'direct')
     || !isServerOpsDataEngine(value.engine)
-    || (value.engine !== 'mysql' && value.engine !== 'sqlite')
+    || (value.engine !== 'mysql' && value.engine !== 'postgresql' && value.engine !== 'sqlite')
     || !isConnectionText(value.database, 64)
     || (value.username !== undefined && !isConnectionText(value.username, 128))
     || (value.password !== undefined && !isSecretText(value.password))

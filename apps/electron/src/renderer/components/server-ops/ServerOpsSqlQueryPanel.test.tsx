@@ -14,7 +14,7 @@ import { createServerOpsSqlQueryHistoryIdleProjection } from './server-ops-sql-q
 import { createServerOpsSqlWriteIdleProjection } from './server-ops-sql-write-controller'
 import type { ServerOpsDataSource } from '@proma/shared'
 
-/** 面板写模式使用的完整公开数据源快照。 */
+/** 面板写入链使用的完整公开数据源快照。 */
 const mysqlSource: ServerOpsDataSource = {
   id: 'source-1', transport: 'direct', engine: 'mysql', label: '业务主库', address: '127.0.0.1', port: 3306,
   tlsMode: 'disabled', hasPassword: true, createdAt: 1, updatedAt: 2,
@@ -59,6 +59,13 @@ describe('ServerOpsSqlQueryPanel', () => {
     expect(description).not.toContain('任一句失败会自动回滚')
   })
 
+  test('Given PostgreSQL 写入确认 When 展示事务说明 Then 说明事务边界而不套用 SQLite 文案', () => {
+    const description = getServerOpsSqlWriteConfirmationDescription('postgresql')
+    expect(description).toContain('PostgreSQL')
+    expect(description).toContain('事务失败会尝试回滚')
+    expect(description).not.toContain('SQLite')
+  })
+
   test('Given 网络库与 SQLite When 展示写入目标 Then 包含名称端点或文件路径及数据库', () => {
     expect(formatServerOpsSqlWriteTarget(mysqlSource, 'app')).toBe('业务主库 · 127.0.0.1:3306 · 数据库 app')
     expect(formatServerOpsSqlWriteTarget({
@@ -66,14 +73,15 @@ describe('ServerOpsSqlQueryPanel', () => {
     }, 'main')).toBe('本地缓存 · /tmp/app.db · 数据库 main')
   })
 
-  test('Given 当前数据库 When 渲染 Then 提供显式执行取消与有界行数控件', () => {
+  test('Given 当前数据库 When 渲染 Then 提供统一执行取消与有界行数控件', () => {
     const html = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={{}} sourceId="source-1" database="app" configurationKey="v1" available />)
     expect(html).toContain('SQL 编辑器')
-    expect(html).toContain('执行查询')
+    expect(html).toContain('aria-label="执行"')
+    expect(html).toContain('>执行</button>')
     expect(html).toContain('取消查询')
     expect(html).toContain('max="200"')
     expect(html).toContain('Ctrl/Cmd + Enter')
-    expect(html).toContain('aria-label="查询说明"')
+    expect(html).toContain('自动识别 SQL')
     expect(html).toContain('aria-label="查询输出"')
     expect(html).toMatch(/role="tab"[^>]*aria-selected="true"[^>]*>.*?查询结果/s)
     expect(html).toContain('查询历史')
@@ -87,7 +95,7 @@ describe('ServerOpsSqlQueryPanel', () => {
 
   test('Given 查询接口缺失 When 渲染 Then 执行入口不可用且说明升级原因', () => {
     const html = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={{}} sourceId="source-1" database="app" configurationKey="v1" available />)
-    expect(html).toMatch(/disabled=""[^>]*aria-label="执行查询"|aria-label="执行查询"[^>]*disabled=""/)
+    expect(html).toMatch(/disabled=""[^>]*aria-label="执行"|aria-label="执行"[^>]*disabled=""/)
     expect(html).toContain('查询接口尚未就绪')
   })
 
@@ -121,13 +129,33 @@ describe('ServerOpsSqlQueryPanel', () => {
     expect(html).not.toContain('执行查询')
   })
 
-  test('Given 数据库查询页 When 渲染 Then 只显示只读能力且不再提供写模式切换', () => {
-    const html = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={{}} sourceId="source-1" database="main" configurationKey="v1" available />)
-    expect(html).toContain('只读 SELECT')
-    expect(html).not.toContain('写入模式 · 会修改数据')
-    expect(html).not.toContain('写模式</button>')
-    expect(html).not.toContain('aria-pressed')
+  test('Given 直连 MySQL When 渲染 Then 统一入口自动识别且不显示模式切换', () => {
+    const html = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={{}} source={mysqlSource} sourceId="source-1" database="main" configurationKey="v1" available />)
+    expect(html).toContain('自动识别 SQL')
+    expect(html).not.toContain('查询模式')
+    expect(html).not.toContain('写入模式')
     expect(html).not.toContain('data-server-ops-sql-write-result')
+  })
+
+  test('Given 本地或 SSH SQLite When 渲染 Then 两者均沿用统一执行入口', () => {
+    for (const transport of ['direct', 'ssh'] as const) {
+      /** SSH SQLite 与本地 SQLite 共用写入面板，不要求额外 Agent 授权。 */
+      const source: ServerOpsDataSource = { id: 'sqlite-1', transport, engine: 'sqlite', label: '业务库', filePath: '/srv/app.db', tlsMode: 'disabled', hasPassword: false, createdAt: 1, updatedAt: 1, ...(transport === 'ssh' ? { hostId: 'nas-1' } : { localFileId: 'file-1' }) }
+      /** 写入能力由执行时 SQL 自动识别，静态页面不再暴露模式入口。 */
+      const html = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={{}} source={source} sourceId={source.id} database="main" configurationKey="v1" available dialect="sqlite" />)
+      expect(html).toContain('aria-label="执行"')
+      expect(html).not.toContain('写入模式')
+    }
+  })
+
+  test('Given SSH MySQL 或来源身份不匹配 When 渲染 Then 只显示统一执行入口且不出现模式切换', () => {
+    for (const source of [{ ...mysqlSource, transport: 'ssh' as const, hostId: 'host-1' }, { ...mysqlSource, id: 'other' }]) {
+      /** SSH 网络库也沿用统一执行入口；来源失配时由上下文校验禁用执行。 */
+      const html = renderToStaticMarkup(<ServerOpsSqlQueryPanel api={{}} source={source} sourceId="source-1" database="app" configurationKey="v1" available />)
+      expect(html).toContain('aria-label="执行"')
+      expect(html).not.toContain('写入模式')
+      expect(html).not.toContain('查询模式')
+    }
   })
 
   test('Given 写执行成功 When 渲染写入结果 Then 明确说明改动是否已生效', () => {
@@ -140,6 +168,12 @@ describe('ServerOpsSqlQueryPanel', () => {
     /** 逐条语句用首关键字展示，不泄漏正文。 */
     expect(html).toContain('>ALTER<')
     expect(html).toContain('>UPDATE<')
+  })
+
+  test('Given 上次写入成功且新写入运行中 When 显示回执 Then 不把旧已提交状态冒充本次结果', () => {
+    /** 新写入完成前保留旧回执，但必须同时说明它属于上一次执行。 */
+    const html = renderToStaticMarkup(<ServerOpsSqlWriteResult projection={createWriteProjection({ status: 'running' })} />)
+    expect(html).toContain('正在执行新写入，以下为上次执行回执')
   })
 
   test('Given 旧写回执只有 committed=false When 渲染写入结果 Then 显示结果未知而不谎称已回滚', () => {

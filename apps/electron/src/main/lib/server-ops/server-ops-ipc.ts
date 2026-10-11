@@ -824,7 +824,7 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
     if (!options.audit.append) throw new Error('SERVER_OPS_AUDIT_START_WRITE_FAILED')
     /** 以主进程保存的真实引擎判定支持范围，窗口不能伪造执行器类型。 */
     const source = data.listSources({}).sources.find((entry) => entry.id === request.sourceId)
-    if (!source || source.engine === 'redis' || source.engine === 'postgresql') {
+    if (!source || source.engine === 'redis') {
       throw new Error('SERVER_OPS_DATA_WRITE_ENGINE_UNSUPPORTED')
     }
     /** 在历史、审计与数据库动作前拒绝过期确认，避免同一 sourceId 已指向另一目标。 */

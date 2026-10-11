@@ -170,7 +170,7 @@ export function ServerOpsDatabaseWorkbench({ api, source, jumpHost, viewScope, r
           <ServerOpsSchemaBrowserView projection={schema} showDatabaseSelector={false} onSelectDatabase={selectDatabase} onOpenTable={schemaController.openTable} onBackToList={schemaController.backToList} onDetailTabChange={schemaController.setDetailTab} onLoadRows={schemaController.loadRows} onOpenCell={schemaController.openCell} onCloseCell={schemaController.closeCell} onApplyRowFilters={schemaController.applyRowFilters} onLoadFilterFields={schemaController.loadFilterFields} onRefresh={schemaController.refresh} onRefreshTables={schemaController.refreshTables} directoryWidth={navigation.directoryWidth} onDirectoryWidthChange={(directoryWidth) => updateNavigation({ directoryWidth })} />
         </TabsContent>
         <TabsContent value="query" className={contentClass}>
-          <ServerOpsSqlQueryPanel api={api} sourceId={source.id} database="main" configurationKey={identity} available={readable} dialect="sqlite" />
+          <ServerOpsSqlQueryPanel api={api} source={source} sourceId={source.id} database="main" configurationKey={identity} available={readable} dialect="sqlite" />
         </TabsContent>
       </Tabs>
     ) : <Tabs className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" value={navigation.section} onValueChange={(section) => updateNavigation({ section: section as ServerOpsDatabaseSection })}>
@@ -203,7 +203,7 @@ export function ServerOpsDatabaseWorkbench({ api, source, jumpHost, viewScope, r
             <ServerOpsSchemaBrowserView projection={schema} showDatabaseSelector={false} onSelectDatabase={selectDatabase} onOpenTable={schemaController.openTable} onBackToList={schemaController.backToList} onDetailTabChange={schemaController.setDetailTab} onLoadRows={schemaController.loadRows} onOpenCell={schemaController.openCell} onCloseCell={schemaController.closeCell} onApplyRowFilters={schemaController.applyRowFilters} onLoadFilterFields={schemaController.loadFilterFields} onRefresh={schemaController.refresh} onRefreshTables={schemaController.refreshTables} directoryWidth={navigation.directoryWidth} onDirectoryWidthChange={(directoryWidth) => updateNavigation({ directoryWidth })} />
           </TabsContent>
           <TabsContent value="query" className={contentClass}>
-            <ServerOpsSqlQueryPanel api={api} sourceId={source.id} database={schema.database} configurationKey={identity} available={readable && schema.collectedAt !== undefined} dialect={source.engine === 'postgresql' ? 'postgresql' : 'mysql'} />
+            <ServerOpsSqlQueryPanel api={api} source={source} sourceId={source.id} database={schema.database} configurationKey={identity} available={readable && schema.collectedAt !== undefined} dialect={source.engine === 'postgresql' ? 'postgresql' : 'mysql'} />
           </TabsContent>
           {databasePages.map(([page]) => page === 'browse' || page === 'query' ? null : <TabsContent key={page} value={page} className={contentClass}>
             <ServerOpsDatabaseDiagnostics engine={source.engine} projection={databaseDiagnostics} page={page} scope="database" onRefresh={databaseDiagnosticsController.refresh} />

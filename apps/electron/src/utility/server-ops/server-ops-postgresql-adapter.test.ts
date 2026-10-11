@@ -5,6 +5,7 @@ import {
   closeServerOpsPostgresqlClient,
   configureServerOpsPostgresqlSession,
   createServerOpsPostgresqlClient,
+  openServerOpsPostgresqlConnection,
   readServerOpsPostgresqlWithClient,
   sendServerOpsPostgresqlCancelRequest,
   SERVER_OPS_POSTGRESQL_STARTUP_STATEMENTS,
@@ -60,6 +61,26 @@ describe('PostgreSQL adapter 会话合同', () => {
         else process.env[name] = value
       }
     }
+  })
+
+  test('Given 写入模式 When 构造 client Then 不带 default_transaction_read_only 或 pg_catalog search_path', () => {
+    let received: Record<string, unknown> | undefined
+    createServerOpsPostgresqlClient({ address: 'db.example.test', port: 5432, tlsMode: 'required', readOnly: false, connectTimeoutMs: 15_000 }, (options) => {
+      received = options
+      return { query: async () => ({ rows: [] }), end: async () => undefined }
+    })
+    expect(received?.options).toBe('-c statement_timeout=10000 -c lock_timeout=10000 -c idle_in_transaction_session_timeout=10000 -c standard_conforming_strings=on')
+  })
+
+  test('Given 已建立通道 When 打开 PostgreSQL 写连接 Then 使用 writable client 并返回原通道', async () => {
+    const channel = new PassThrough()
+    let connectCalls = 0
+    const opened = await openServerOpsPostgresqlConnection({ address: 'db.example.test', port: 5432, tlsMode: 'disabled', connectTimeoutMs: 15_000 }, {
+      createChannel: async () => channel,
+      factory: () => ({ connect: async () => { connectCalls += 1 }, query: async () => ({ rows: [] }), end: async () => undefined, destroy: () => undefined }),
+    })
+    expect(connectCalls).toBe(1)
+    expect(opened.channel).toBe(channel)
   })
 
   test('Given 新建 client When 配置只读会话 Then 固定执行安全参数和 BEGIN READ ONLY', async () => {

@@ -46,7 +46,8 @@ const QUERY_PUBLIC_ERROR_MESSAGES = new Map<string, string>([
   ['SERVER_OPS_DATA_WRITE_CANCELLED', 'SQL 写入已请求取消，请按运行结果核对事务状态'],
   ['SERVER_OPS_DATA_WRITE_TIMEOUT', 'SQL 写入超时，请核对实际数据'],
   ['SERVER_OPS_DATA_WRITE_PERMISSION_DENIED', '数据库账号没有写入权限，请改用具备写权限的账号'],
-  ['SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', '仅支持通过已连接 SSH 主机写入 SQLite 文件；MySQL 请配置直连'],
+  ['SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', '数据库 SSH 转发连接不可用，请检查当前主机连接'],
+  ['SERVER_OPS_DATA_TLS_MODE_UNSUPPORTED', '当前数据库连接不支持 preferred TLS 模式'],
 ])
 
 /** 表不存在或不可用的 MySQL 驱动错误码。 */

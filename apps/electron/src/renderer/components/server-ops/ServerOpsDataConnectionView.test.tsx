@@ -11,7 +11,19 @@ import type { ServerOpsWorkspaceToolbarContent } from './ServerOpsWorkspaceToolb
 
 /** 复用生产顶部导航，静态夹具不发起项目或授权读取。 */
 function renderWorkspaceToolbar(content: ServerOpsWorkspaceToolbarContent = {}): React.ReactNode {
-  return <ServerOpsWorkspaceToolbar projects={[{ id: 'project-1', name: '生产环境', createdAt: 1, updatedAt: 1 }]} projectId="project-1" onSelectProject={() => undefined} {...content} actions={<button>Agent 只读授权</button>} />
+  return <ServerOpsWorkspaceToolbar
+    projects={[{ id: 'project-1', name: '生产环境', createdAt: 1, updatedAt: 1 }]}
+    projectId="project-1"
+    onSelectProject={() => undefined}
+    connectionOptions={[
+      { id: 'ssh:host-1', label: '应用服务器', detail: 'ops@10.0.0.8:22', protocol: 'SSH' },
+      { id: 'data:source-1', label: '业务主库', detail: '127.0.0.1:13306 · 库 app', protocol: 'MySQL' },
+    ]}
+    connectionId="data:source-1"
+    onSelectConnection={() => undefined}
+    {...content}
+    actions={<button>Agent 只读授权</button>}
+  />
 }
 
 /** 直连的数据库连接。 */
@@ -99,6 +111,7 @@ describe('数据连接详情视图', () => {
     const html = renderToStaticMarkup(<Provider store={store}><ServerOpsDataConnectionView api={api} source={source} projectLabel="生产环境" jumpHost={null} renderWorkspaceToolbar={renderWorkspaceToolbar} viewScope="scope-test" onOpenDrawer={() => undefined} onBackToProject={() => undefined} /></Provider>)
     expect(html).not.toContain('aria-label="选择数据库"')
     expect(html).toContain('aria-label="切换运维项目"')
+    expect(html).toContain('aria-label="切换当前项目连接"')
     expect(html).toContain('aria-label="实例功能"')
     expect(html).toContain('data-server-ops-database-page-tabs="instance"')
     expect(html).toContain('总览')
@@ -115,6 +128,8 @@ describe('数据连接详情视图', () => {
     /** 项目只在统一选择器出现，连接身份不再重复项目面包屑。 */
     expect(html).not.toContain('data-server-ops-connection-project')
     expect(html).toContain('data-server-ops-connection-module')
+    /** 连接切换入口位于统一标题栏的右侧 access 区，而不是挤在连接身份左侧。 */
+    expect(html).toMatch(/style="grid-area:access"[^>]*>[\s\S]*data-server-ops-connection-switcher/)
     expect(html).toContain('生产环境')
     expect(html).toContain('业务主库')
     /** 第二行是这条连接的完整身份（地址、库、用户、密码状态、链路）。 */

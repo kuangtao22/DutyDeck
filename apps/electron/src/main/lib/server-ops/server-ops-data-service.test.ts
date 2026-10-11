@@ -372,6 +372,27 @@ describe('服务器运维数据服务编排', () => {
     expect(fixture.identityCalls.every((hostId) => hostId === 'host-1')).toBe(true)
   })
 
+  test('Given PostgreSQL 直连或 MySQL SSH 来源 When 写入 Then 按各自 SQL 方言规划并下发网络连接', async () => {
+    const seen: ServerOpsRuntimeDataWriteRequest[] = []
+    const fixture = createService({ write: async (input) => {
+      seen.push(input as ServerOpsRuntimeDataWriteRequest)
+      return { writeId: input.writeId, database: input.database, statementCount: 1, affectedRows: 1, committed: true,
+        outcome: 'committed', durationMs: 1, statements: [{ head: 'UPDATE', affectedRows: 1 }], warnings: [] }
+    } })
+    const postgres = fixture.service.upsertSource({ transport: 'direct', engine: 'postgresql', label: 'PostgreSQL', address: 'db.internal', port: 5432,
+      database: 'app', username: 'writer', tlsMode: 'required' }).source
+    await expect(fixture.service.writeSource({ sourceId: postgres.id, source: postgres, database: 'app', writeId: 'write-pg', sql: 'UPDATE users SET active = true' }))
+      .resolves.toMatchObject({ committed: true })
+    const mysql = fixture.service.upsertSource({ transport: 'ssh', hostId: 'host-1', engine: 'mysql', label: 'SSH MySQL', address: '127.0.0.1', port: 3306,
+      database: 'app', username: 'writer', tlsMode: 'disabled' }).source
+    await expect(fixture.service.writeSource({ sourceId: mysql.id, source: mysql, database: 'app', writeId: 'write-mysql-ssh', sql: 'UPDATE users SET active = 1' }))
+      .resolves.toMatchObject({ committed: true })
+    expect(seen).toMatchObject([
+      { engine: 'postgresql', transport: 'direct', port: 5432, database: 'app' },
+      { engine: 'mysql', transport: 'ssh', hostId: 'host-1', port: 3306, database: 'app', connectionId: 'connection-1' },
+    ])
+  })
+
   test('Given 用户确认后另一窗口修改目标 When 服务收到旧快照 Then 在 runtime 前拒绝写入', async () => {
     let writes = 0
     const { service } = createService({ write: async () => {

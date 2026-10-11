@@ -764,7 +764,7 @@ export class ServerOpsDataService {
    * ①窗口调用与 Agent 读写模式共用这一条受控写链；没有明确 actor 的会话上下文仍一律拒绝，
    *   普通只读模式不能顺着读取工具链漏出写能力；
    * ②主进程与 utility 使用同一语句规划器校验，跨进程入口再次拒绝会话控制；
-   * ③只支持直连 MySQL、本地 SQLite，以及已连接 SSH 主机上的 SQLite 文件。
+   * ③支持直连或 SSH 转发的 MySQL/PostgreSQL，以及本地或 SSH SQLite 文件。
    *
    * @param input 渲染层提交的写请求
    * @param signal 取消信号
@@ -786,12 +786,8 @@ export class ServerOpsDataService {
       /** 用户确认的公开快照必须仍是当前版本，避免跨窗口编辑后把旧确认写到新目标。 */
       const expectedPublicSource = parseServerOpsDataSource(this.toPublicSource(expectedSource))
       if (!isDeepStrictEqual(parsedInput.source, expectedPublicSource)) throw new Error('SERVER_OPS_DATA_SOURCE_CHANGED')
-      if (expectedSource.engine !== 'mysql' && expectedSource.engine !== 'sqlite') {
+      if (expectedSource.engine !== 'mysql' && expectedSource.engine !== 'postgresql' && expectedSource.engine !== 'sqlite') {
         throw new Error('SERVER_OPS_DATA_WRITE_ENGINE_UNSUPPORTED')
-      }
-      /** SSH 只开放远程 SQLite 文件；MySQL 等网络数据库仍要求直连写入。 */
-      if (expectedSource.transport === 'ssh' && expectedSource.engine !== 'sqlite') {
-        throw new Error('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED')
       }
       this.assertDirectTransportIsSafe(expectedSource)
       /** 固定写入时的 SSH 会话代次；排队期间断线或换连都会拒绝旧目标。 */
@@ -799,7 +795,7 @@ export class ServerOpsDataService {
         ? this.dependencies.connection.getActiveIdentity(expectedSource.hostId ?? '')
         : undefined
       /** 切分、会话控制拒绝与「必须含写语句」都在共享层判定，主进程与 utility 共用同一份规则。 */
-      const plan = planServerOpsSqlWrite(parsedInput.sql, expectedSource.engine === 'sqlite' ? 'sqlite' : 'mysql')
+      const plan = planServerOpsSqlWrite(parsedInput.sql, expectedSource.engine === 'sqlite' ? 'sqlite' : expectedSource.engine)
       const password = expectedSource.credentialRef === undefined
         ? undefined
         : this.dependencies.credentials.resolveSecret(expectedSource.credentialRef)

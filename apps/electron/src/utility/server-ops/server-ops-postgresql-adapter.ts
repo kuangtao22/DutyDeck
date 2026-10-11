@@ -39,6 +39,8 @@ export interface ServerOpsPostgresqlConnectionOptions {
   tlsServerName?: string
   stream?: Duplex
   connectTimeoutMs: number
+  /** 写入连接不得继承只读启动参数；读取默认保持只读。 */
+  readOnly?: boolean
 }
 
 /** 查询字段只保留公开列名；生产驱动额外携带 OID 用于来源核验。 */
@@ -54,6 +56,8 @@ export interface ServerOpsPostgresqlClient {
   query(text: string, values?: readonly unknown[]): Promise<{
     rows: Record<string, unknown>[]
     fields?: readonly ServerOpsPostgresqlField[]
+    rowCount?: number | null
+    command?: string
   }>
   connect?(): Promise<void>
   end(): Promise<void>
@@ -163,7 +167,7 @@ function defaultPostgresqlClientFactory(options: Record<string, unknown>): Serve
   const adapter: ServerOpsPostgresqlClient = {
     query: async (text: string, values: readonly unknown[] = []) => {
       const result = await client.query<Record<string, unknown>>(text, [...values])
-      return { rows: result.rows, fields: result.fields }
+      return { rows: result.rows, fields: result.fields, rowCount: result.rowCount, command: result.command }
     },
     connect: async () => {
       await client.connect()
@@ -285,6 +289,10 @@ export function createServerOpsPostgresqlClient(
 ): ServerOpsPostgresqlClient {
   if (input.tlsMode === 'verify' && !input.tlsServerName) throw new Error('SERVER_OPS_DATA_TLS_SERVER_NAME_REQUIRED')
   const stream = input.stream === undefined ? undefined : new ConnectedPostgresqlStream(input.stream)
+  const readOnly = input.readOnly !== false
+  const sessionOptions = readOnly
+    ? '-c default_transaction_read_only=on -c statement_timeout=10000 -c lock_timeout=10000 -c idle_in_transaction_session_timeout=10000 -c standard_conforming_strings=on -c search_path=pg_catalog'
+    : '-c statement_timeout=10000 -c lock_timeout=10000 -c idle_in_transaction_session_timeout=10000 -c standard_conforming_strings=on'
   const options: Record<string, unknown> = {
     /** 显式填写认证与 TLS 字段，禁止继承 PGUSER/PGPASSWORD/PGSSLMODE。 */
     host: input.tlsMode === 'verify' ? input.tlsServerName : input.address,
@@ -298,7 +306,7 @@ export function createServerOpsPostgresqlClient(
     client_encoding: 'UTF8',
     replication: 'false',
     sslnegotiation: 'postgres',
-    options: '-c default_transaction_read_only=on -c statement_timeout=10000 -c lock_timeout=10000 -c idle_in_transaction_session_timeout=10000 -c standard_conforming_strings=on -c search_path=pg_catalog',
+    options: sessionOptions,
     types: createPostgresqlTypeOverrides(),
     ssl: input.tlsMode === 'disabled' ? false : {
       rejectUnauthorized: input.tlsMode === 'verify',
@@ -308,6 +316,40 @@ export function createServerOpsPostgresqlClient(
   }
   const client = factory(options)
   return client
+}
+
+/** PostgreSQL 写连接的最小结果；调用方负责在结算时销毁 client 与底层通道。 */
+export interface ServerOpsPostgresqlOpenConnection {
+  client: ServerOpsPostgresqlClient
+  channel: Duplex
+}
+
+/** 建立不带只读会话设置的 PostgreSQL client，直连与 SSH 转发共用。 */
+export async function openServerOpsPostgresqlConnection(
+  input: ServerOpsPostgresqlConnectionOptions,
+  dependencies: {
+    createChannel: () => Promise<Duplex>
+    factory?: ServerOpsPostgresqlClientFactory
+    signal?: AbortSignal
+  },
+): Promise<ServerOpsPostgresqlOpenConnection> {
+  if (dependencies.signal?.aborted) throw new Error('SERVER_OPS_DATA_CANCELLED')
+  const channel = await dependencies.createChannel()
+  if (dependencies.signal?.aborted) {
+    channel.destroy()
+    throw new Error('SERVER_OPS_DATA_CANCELLED')
+  }
+  const client = createServerOpsPostgresqlClient({ ...input, stream: channel, readOnly: false }, dependencies.factory)
+  client.on?.('error', () => undefined)
+  try {
+    await client.connect?.()
+    if (dependencies.signal?.aborted) throw new Error('SERVER_OPS_DATA_CANCELLED')
+    return { client, channel }
+  } catch (error) {
+    try { client.destroy?.() } catch { /* 握手失败时继续释放底层通道。 */ }
+    if (!channel.destroyed) channel.destroy()
+    throw error
+  }
 }
 
 /** 开启只读事务并固定查询、锁等待与 schema 解析范围。 */

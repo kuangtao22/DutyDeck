@@ -2,6 +2,7 @@ import * as React from 'react'
 import { isServerOpsAuditActorOperation } from '@proma/shared'
 import { atom, useAtom, useStore } from 'jotai'
 import {
+  ArrowLeft,
   Box,
   ClipboardList,
   FileText,
@@ -11,7 +12,6 @@ import {
   LoaderCircle,
   LogIn,
   MoreHorizontal,
-  PanelLeft,
   Pencil,
   Plus,
   RefreshCw,
@@ -101,7 +101,6 @@ import {
   SERVER_OPS_SEGMENTED_CLASS,
   SERVER_OPS_TAB_CLASS,
   SERVER_OPS_TABS_LIST_CLASS,
-  SERVER_OPS_TOOLBAR_CLASS,
 } from './server-ops-ui'
 import { createServerOpsProjectController, createServerOpsProjectsIdleProjection } from './server-ops-project-controller'
 import type { ServerOpsProjectControllerOptions } from './server-ops-project-controller'
@@ -202,7 +201,7 @@ export const serverOpsDataApi: ServerOpsDataPanelApi = {
   /** 历史同样保留桥接能力缺失，避免包装函数掩盖版本不一致。 */
   get listServerOpsDatabaseQueryHistory() { return window.electronAPI.listServerOpsDatabaseQueryHistory },
   get saveServerOpsDatabaseQueryHistory() { return window.electronAPI.saveServerOpsDatabaseQueryHistory },
-  /** 写接口同样延迟读取：旧 preload 下写模式必须显式禁用，而不是按钮点了没反应。 */
+  /** 写接口同样延迟读取：旧 preload 下写入必须显式禁用，而不是按钮点了没反应。 */
   get writeServerOpsDatabase() { return window.electronAPI.writeServerOpsDatabase },
   get cancelServerOpsDatabaseWrite() { return window.electronAPI.cancelServerOpsDatabaseWrite },
 }
@@ -256,8 +255,9 @@ export interface ServerOpsWorkspaceViewProps {
   containerConsole?: { hostId: string; containerId: string } | null
   onContainerLogChange?: (target: { hostId: string; containerId: string } | null) => void
   onContainerConsoleChange?: (target: { hostId: string; containerId: string } | null) => void
-  onOpenDrawer: () => void
-  /** 当前项目名；作为连接视图面包屑的第一段（同时也是返回项目视图的入口）。 */
+  /** 与数据库详情共用同一套项目、连接、返回和操作头部。 */
+  renderWorkspaceToolbar: (content?: ServerOpsWorkspaceToolbarContent) => React.ReactNode
+  /** 当前项目名；用于统一头部返回按钮的提示。 */
   projectLabel?: string
   /**
    * 返回项目视图。
@@ -489,7 +489,7 @@ export function ServerOpsWorkspaceView({
   containerConsole = null,
   onContainerLogChange,
   onContainerConsoleChange,
-  onOpenDrawer,
+  renderWorkspaceToolbar,
   onBackToProject,
   projectLabel,
   onCreateHost,
@@ -522,77 +522,64 @@ export function ServerOpsWorkspaceView({
 
   return (
     <div className="server-ops-workspace-container flex min-h-0 flex-1 flex-col bg-content-area" data-server-ops-workspace>
-      <div className={cn(SERVER_OPS_TOOLBAR_CLASS, 'min-h-14 px-4')} data-server-ops-toolbar>
-        <TooltipProvider delayDuration={200}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button type="button" variant="ghost" size="icon-sm" aria-label="打开项目列表" onClick={onOpenDrawer}>
-                <PanelLeft className="size-3.5" aria-hidden="true" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">项目列表</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-        <div className="min-w-0 flex-1">
-          {/*
-            身份只写一遍：第一行是"项目 › 服务器"面包屑（项目段可点，代替独立的返回按钮），
-            第二行是这条连接的登录身份。
-          */}
-          <div className="flex min-w-0 items-center gap-1 text-xs font-medium">
-            {onBackToProject && projectLabel ? (
-              <button
-                type="button"
-                className="truncate rounded-sm px-0.5 text-muted-foreground transition-colors hover:text-foreground"
-                aria-label="返回项目视图"
-                data-server-ops-connection-project
-                onClick={onBackToProject}
-              >
-                {projectLabel}
-              </button>
+      {renderWorkspaceToolbar({
+        connection: (
+          <div className="flex min-w-0 items-center gap-2">
+            {onBackToProject ? (
+              <TooltipProvider delayDuration={200}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button type="button" variant="ghost" size="icon-sm" className="shrink-0" aria-label="返回项目连接" onClick={onBackToProject}>
+                      <ArrowLeft className="size-3.5" aria-hidden="true" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">返回{projectLabel ?? '项目'}的连接列表</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             ) : null}
-            {onBackToProject && projectLabel ? <span className="shrink-0 text-muted-foreground" aria-hidden="true">›</span> : null}
-            <span className="flex min-w-0 items-center gap-1.5 truncate" data-server-ops-connection-module>
-              <Server className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-              {selectedHost?.name ?? '服务器运维'}
-            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-1.5 text-xs font-medium">
+                <Server className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                <span className="truncate" title={selectedHost?.name ?? '服务器运维'} data-server-ops-connection-module>{selectedHost?.name ?? '服务器运维'}</span>
+                <span className="shrink-0 text-[10px] font-normal text-muted-foreground">SSH</span>
+              </div>
+              {selectedHost && <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{selectedHost.username}@{selectedHost.address}:{selectedHost.port}</div>}
+            </div>
           </div>
-          {selectedHost && <div className="truncate font-mono text-[11px] text-muted-foreground">{selectedHost.username}@{selectedHost.address}:{selectedHost.port}</div>}
-        </div>
-        {selectedHost && <Badge variant="outline" className={cn('shrink-0 px-2 py-0 text-[10px] font-normal', connected ? 'border-emerald-500/40 text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')} data-server-ops-connection-badge>{connectionLabel}</Badge>}
-        {selectedHost && (
-          <>
-            {connected ? (
-              <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-[11px]" aria-label="断开 SSH" data-server-ops-connection-action onClick={onDisconnect}>
-                <Unplug className="size-3.5" aria-hidden="true" /><span data-server-ops-connection-label>断开</span>
+        ),
+        connectionActions: selectedHost ? <>
+          <Badge variant="outline" className={cn('shrink-0 px-2 py-0 text-[10px] font-normal', connected ? 'border-emerald-500/40 text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')} data-server-ops-connection-badge>{connectionLabel}</Badge>
+          {connected ? (
+            <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-[11px]" aria-label="断开 SSH" data-server-ops-connection-action onClick={onDisconnect}>
+              <Unplug className="size-3.5" aria-hidden="true" /><span data-server-ops-connection-label>断开</span>
+            </Button>
+          ) : (
+            <Button type="button" size="sm" className="h-7 gap-1.5 px-2 text-[11px]" aria-label="连接 SSH" data-server-ops-connection-action disabled={connectionPhase === 'connecting' || connectionPhase === 'disconnecting'} onClick={onConnect}>
+              {connectionPhase === 'connecting' ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" /> : <LogIn className="size-3.5" aria-hidden="true" />}
+              <span data-server-ops-connection-label>连接</span>
+            </Button>
+          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="ghost" size="icon-sm" aria-label="更多服务器操作">
+                <MoreHorizontal className="size-3.5" aria-hidden="true" />
               </Button>
-            ) : (
-              <Button type="button" size="sm" className="h-7 gap-1.5 px-2 text-[11px]" aria-label="连接 SSH" data-server-ops-connection-action disabled={connectionPhase === 'connecting' || connectionPhase === 'disconnecting'} onClick={onConnect}>
-                {connectionPhase === 'connecting' ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" /> : <LogIn className="size-3.5" aria-hidden="true" />}
-                <span data-server-ops-connection-label>连接</span>
-              </Button>
-            )}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button type="button" variant="ghost" size="icon-sm" aria-label="更多服务器操作">
-                  <MoreHorizontal className="size-3.5" aria-hidden="true" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="z-[9999] min-w-40">
-                <DropdownMenuItem aria-label="管理服务器信任" onSelect={onManageTrust}>
-                  <Fingerprint className="size-3.5" aria-hidden="true" />管理服务器信任
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => onEditHost(selectedHost)}>
-                  <Pencil className="size-3.5" aria-hidden="true" />编辑服务器
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => onDeleteHost(selectedHost)}>
-                  <Trash2 className="size-3.5" aria-hidden="true" />删除服务器
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </>
-        )}
-      </div>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="z-[9999] min-w-40">
+              <DropdownMenuItem aria-label="管理服务器信任" onSelect={onManageTrust}>
+                <Fingerprint className="size-3.5" aria-hidden="true" />管理服务器信任
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => onEditHost(selectedHost)}>
+                <Pencil className="size-3.5" aria-hidden="true" />编辑服务器
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => onDeleteHost(selectedHost)}>
+                <Trash2 className="size-3.5" aria-hidden="true" />删除服务器
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </> : undefined,
+      })}
 
       {status === 'loading' ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-xs text-muted-foreground">
@@ -1729,9 +1716,24 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
   /** 数据库保留禁用表入口；SSH 与 Redis 不再展示板块 Agent 授权。 */
   const readAccessControl = selectedConnection?.kind === 'database' ? <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 text-xs"
     aria-label={`管理禁用表：${selectedConnection.label}`} onClick={() => openDatabasePolicy(selectedConnection)}><ShieldCheck className="size-3.5" />管理禁用表</Button> : undefined
-  /** 顶部导航只组合现有状态；数据库工作台展开时由其内部调用，避免导航被遮住。 */
+  /** 头部连接切换只允许跳到当前项目仍存在的连接，实际切换继续经过传输收口。 */
+  const handleSelectConnectionFromToolbar = (connectionId: string): void => {
+    const target = projectConnections.find((connection) => connection.id === connectionId)
+    if (target !== undefined) handleSelectConnection(target)
+  }
+  /** 顶部导航由服务器与数据库详情共同复用，并提供当前项目连接切换。 */
   const renderWorkspaceToolbar = (content: ServerOpsWorkspaceToolbarContent = {}): React.ReactNode => (
-    <ServerOpsWorkspaceToolbar projects={projects} projectId={currentProjectId} onSelectProject={handleSelectProject} onManageProjects={() => setDrawerOpen(true)} {...content} actions={readAccessControl} />
+    <ServerOpsWorkspaceToolbar
+      projects={projects}
+      projectId={currentProjectId}
+      onSelectProject={handleSelectProject}
+      onManageProjects={() => setDrawerOpen(true)}
+      connectionOptions={projectConnections}
+      connectionId={selectedConnectionId}
+      onSelectConnection={handleSelectConnectionFromToolbar}
+      {...content}
+      actions={readAccessControl}
+    />
   )
   /** 详情与项目页共用待领入口；只展示当前会话并且仅在真实 Pane 活动时展示。 */
   const visibleConnectionDrafts = paneActive ? connectionDrafts.filter((draft) => draft.sessionId === currentAgentSessionId) : []
@@ -1794,6 +1796,7 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
           containerConsole={containerConsole}
           onContainerLogChange={setContainerLog}
           onContainerConsoleChange={setContainerConsole}
+          renderWorkspaceToolbar={renderWorkspaceToolbar}
           terminalContent={selectedConnectionState?.phase === 'connected' && selectedConnectionState.connectionId
             ? <ServerOpsRemoteTerminal hostId={selectedHost.id} connectionId={selectedConnectionState.connectionId} />
             : undefined}
@@ -1803,7 +1806,6 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
           auditHostFilter={auditHostFilter}
           auditActorFilter={auditActorFilter}
           auditOperationFilter={auditOperationFilter}
-          onOpenDrawer={() => setDrawerOpen(true)}
           onBackToProject={handleBackToProject}
           projectLabel={currentProject?.name ?? '未命名项目'}
           onCreateHost={handleCreateHost}
@@ -1852,7 +1854,6 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
       onFiles={(files) => { void handleOpenLocalSqlite(files) }}>
       {/* 中间区域三选一：项目分组列表、SSH 能力页签、数据连接详情。 */}
       {connectionPane ? <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {selectedConnection?.kind === 'ssh' ? renderWorkspaceToolbar() : null}
         {pendingDraftPanel}
         {connectionPane}
       </div> : projectPane}

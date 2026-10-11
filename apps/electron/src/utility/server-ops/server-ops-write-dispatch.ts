@@ -3,6 +3,8 @@ import { createConnection as createMysqlConnection } from 'mysql2'
 import type { ServerOpsDataWriteResult } from '@proma/shared'
 import type { ServerOpsRuntimeDataWriteRequest } from './server-ops-runtime-protocol'
 import { openServerOpsMySqlConnection } from './server-ops-mysql-connection'
+import { openServerOpsPostgresqlConnection } from './server-ops-postgresql-adapter'
+import { runServerOpsPostgresqlWriteScript } from './server-ops-postgresql-write-runtime'
 import { runServerOpsMySqlWriteScript } from './server-ops-write-runtime'
 import { runServerOpsLocalSqliteWrite } from './server-ops-local-sqlite-runtime'
 import { getServerOpsSqlQueryPublicError } from './server-ops-query-runtime'
@@ -24,6 +26,8 @@ export const SERVER_OPS_DATA_WRITE_PUBLIC_CODES: ReadonlySet<string> = new Set([
   'SERVER_OPS_DATA_WRITE_TIMEOUT',
   'SERVER_OPS_DATA_WRITE_PERMISSION_DENIED',
   'SERVER_OPS_DATA_WRITE_INPUT_INVALID',
+  'SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED',
+  'SERVER_OPS_DATA_TLS_MODE_UNSUPPORTED',
   'SERVER_OPS_SQLITE_FILE_NOT_FOUND',
   'SERVER_OPS_SQLITE_FILE_NOT_REGULAR',
   'SERVER_OPS_SQLITE_FILE_PERMISSION_DENIED',
@@ -64,6 +68,10 @@ export interface ServerOpsDataWriteDependencies {
   openMySqlConnection: typeof openServerOpsMySqlConnection
   /** 执行 MySQL 写脚本。 */
   runMySqlWrite: typeof runServerOpsMySqlWriteScript
+  /** 建立 PostgreSQL 写连接。 */
+  openPostgresqlConnection?: typeof openServerOpsPostgresqlConnection
+  /** 执行 PostgreSQL 写脚本。 */
+  runPostgresqlWrite?: typeof runServerOpsPostgresqlWriteScript
   /** 执行本地 SQLite 写脚本。 */
   runLocalSqliteWrite: typeof runServerOpsLocalSqliteWrite
   /** 执行已认证 SSH 主机上的远程 SQLite 写脚本。 */
@@ -75,12 +83,14 @@ export interface ServerOpsDataWriteDependencies {
 /** 真实依赖；生产只在这里组装一次。 */
 export function createServerOpsDataWriteDependencies(
   createDirectChannel: (address: string, port: number) => Duplex,
-  options: Pick<ServerOpsDataWriteDependencies, 'runRemoteSqliteWrite'> = {},
+  options: Pick<ServerOpsDataWriteDependencies, 'runRemoteSqliteWrite' | 'openPostgresqlConnection' | 'runPostgresqlWrite'> = {},
 ): ServerOpsDataWriteDependencies {
   return {
     createDirectChannel,
     openMySqlConnection: openServerOpsMySqlConnection,
     runMySqlWrite: runServerOpsMySqlWriteScript,
+    openPostgresqlConnection: openServerOpsPostgresqlConnection,
+    runPostgresqlWrite: runServerOpsPostgresqlWriteScript,
     runLocalSqliteWrite: runServerOpsLocalSqliteWrite,
     ...options,
     now: Date.now,
@@ -113,6 +123,8 @@ export interface ServerOpsDataWriteContext {
   onChannelOpened: (channel: Duplex) => void
   /** 连接就绪后交给 runtime 登记，便于取消时销毁。 */
   onConnectionOpened: (connection: { destroy: () => void }) => void
+  /** 运行时提供直连或 SSH 转发通道；测试未提供时由 dispatch 建立直连通道。 */
+  createChannel?: () => Promise<Duplex>
 }
 
 /**
@@ -130,13 +142,17 @@ export async function executeServerOpsDataWrite(
   dependencies: ServerOpsDataWriteDependencies,
 ): Promise<ServerOpsDataWriteResult> {
   /** 经跳板的写需要另一套通道所有权与终止语义，在没做对之前显式拒绝。 */
-  if (input.transport === 'ssh') {
-    if (input.engine !== 'sqlite' || dependencies.runRemoteSqliteWrite === undefined) {
-      throw new ServerOpsDataWriteError('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', '仅支持通过已连接 SSH 主机写入 SQLite 文件，MySQL 请配置直连')
+  if (input.transport === 'ssh' && input.engine === 'sqlite') {
+    if (dependencies.runRemoteSqliteWrite === undefined) {
+      throw new ServerOpsDataWriteError('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', '当前 SSH 数据库写入执行器不可用')
     }
     return dependencies.runRemoteSqliteWrite(input, context.signal)
   }
-  if (input.transport !== 'direct') {
+  /** SSH 网络库必须由 runtime 注入已认证的 forwardOut 通道，禁止测试/调用方降级成直连。 */
+  if (input.transport === 'ssh' && context.createChannel === undefined) {
+    throw new ServerOpsDataWriteError('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', '数据库 SSH 转发连接不可用，请检查当前主机连接')
+  }
+  if (input.transport !== 'direct' && input.transport !== 'ssh') {
     throw new ServerOpsDataWriteError('SERVER_OPS_DATA_WRITE_SSH_UNSUPPORTED', '数据库连接方式不支持写入')
   }
   const startedAt = dependencies.now()
@@ -153,43 +169,52 @@ export async function executeServerOpsDataWrite(
   /** 是否已经建立驱动连接；决定失败时是「连不上」还是「写入失败」。 */
   let connected = false
   try {
-    const opened = await dependencies.openMySqlConnection({
+    /** 直连测试上下文没有注入通道时，沿用原有 socket 建链实现。 */
+    const createChannel = context.createChannel ?? (() => {
+      if (typeof input.address !== 'string' || typeof input.port !== 'number') return Promise.reject(new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID'))
+      const socket = dependencies.createDirectChannel(input.address, input.port)
+      context.onChannelOpened(socket)
+      return new Promise<Duplex>((resolve, reject) => {
+        let settled = false
+        const fail = (error: Error): void => { if (settled) return; settled = true; reject(error) }
+        socket.once('error', fail)
+        socket.once('close', () => fail(new Error('SERVER_OPS_DATA_CHANNEL_CLOSED')))
+        socket.once('connect', () => {
+          if (context.signal.aborted) { socket.destroy(); fail(new Error('SERVER_OPS_DATA_CANCELLED')); return }
+          if (settled) return
+          settled = true
+          resolve(socket)
+        })
+      })
+    })
+    if (typeof input.address !== 'string' || typeof input.port !== 'number') throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
+    const connectionInput = {
       address: input.address, port: input.port, username: input.username, password: input.password,
       database: input.database, tlsMode: input.tlsMode, tlsServerName: input.tlsServerName,
-    }, {
-      /** 直连通道：写链不建立 SSH 转发。 */
-      createChannel: async () => {
-        if (typeof input.address !== 'string' || typeof input.port !== 'number') throw new Error('SERVER_OPS_RUNTIME_PROTOCOL_INVALID')
-        const socket = dependencies.createDirectChannel(input.address, input.port)
-        context.onChannelOpened(socket)
-        await new Promise<void>((resolve, reject) => {
-          /** 单次建链只允许结算一次。 */
-          let settled = false
-          const fail = (error: Error): void => { if (settled) return; settled = true; reject(error) }
-          socket.once('error', fail)
-          socket.once('close', () => fail(new Error('SERVER_OPS_DATA_CHANNEL_CLOSED')))
-          socket.once('connect', () => {
-            if (context.signal.aborted) {
-              socket.destroy()
-              fail(new Error('SERVER_OPS_DATA_CANCELLED'))
-              return
-            }
-            settled = true
-            resolve()
-          })
-        })
-        return socket
-      },
+    }
+    if (input.engine === 'postgresql') {
+      if (dependencies.openPostgresqlConnection === undefined || dependencies.runPostgresqlWrite === undefined) {
+        throw new ServerOpsDataWriteError('SERVER_OPS_DATA_WRITE_ENGINE_UNSUPPORTED', '当前 PostgreSQL 写入执行器不可用')
+      }
+      if (input.tlsMode === 'preferred') {
+        throw new ServerOpsDataWriteError('SERVER_OPS_DATA_TLS_MODE_UNSUPPORTED', 'PostgreSQL 不支持 preferred TLS 模式')
+      }
+      const tlsMode = input.tlsMode
+      const opened = await dependencies.openPostgresqlConnection({ ...connectionInput, tlsMode, connectTimeoutMs: input.timeoutMs }, { createChannel, signal: context.signal })
+      connected = true
+      context.onConnectionOpened({ destroy: () => { opened.client.destroy?.() } })
+      const outcome = await dependencies.runPostgresqlWrite(opened.client, input.statements, context.signal)
+      return { writeId: input.writeId, database: input.database, ...outcome, durationMs: Math.max(0, dependencies.now() - startedAt) }
+    }
+    const opened = await dependencies.openMySqlConnection(connectionInput, {
+      createChannel,
       createConnection: createMysqlConnection,
       timeoutMs: input.timeoutMs,
       signal: context.signal,
     })
     connected = true
     context.onConnectionOpened(opened.connection)
-    /**
-     * 与只读链一致，用 `connection.promise()` 拿到 Promise 形态的 API：
-     * mysql2 原始 Connection 的事务方法带回调重载，直接用会让类型与运行时语义脱节。
-     */
+    /** mysql2 原始 Connection 需要转成 Promise API。 */
     const outcome = await dependencies.runMySqlWrite(opened.connection.promise(), input.statements, context.signal)
     return {
       writeId: input.writeId, database: input.database, ...outcome,

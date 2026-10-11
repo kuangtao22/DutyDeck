@@ -3,7 +3,7 @@ import { getServerOpsDataErrorMessage } from './server-ops-data-display'
 import { getServerOpsWriteResultError } from './server-ops-write-outcome'
 
 /**
- * SQL 编辑器写模式的状态机。
+ * SQL 编辑器写入链的状态机。
  *
  * 与只读查询控制器同构（代次守卫、取消保留到服务确认、卸载即失效），但独立成一体：
  * 写链的取消码、错误文案与结果形状都不同，混在一个控制器里会让「查询」与「写入」
@@ -27,7 +27,7 @@ export interface ServerOpsSqlWriteExecution {
   result: ServerOpsDataWriteResult
 }
 
-/** 写模式页面的私有投影。 */
+/** 写入链页面的私有投影。 */
 export interface ServerOpsSqlWriteProjection {
   context: ServerOpsSqlWriteContext | null
   status: 'idle' | 'running' | 'cancelling' | 'success' | 'error'
@@ -88,7 +88,7 @@ function isWriteCancelled(error: unknown): boolean {
 }
 
 /**
- * 创建写模式控制器。
+ * 创建写入链控制器。
  *
  * @param options 写入接口、投影发布与可选的写入 ID / 执行回调
  * @returns 控制器；`execute` 只接受显式传入的 SQL 快照

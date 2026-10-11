@@ -155,6 +155,29 @@ describe('写执行核心', () => {
     expect(harness.mySqlConnections).toEqual([{ marker: 'promise-connection' }])
   })
 
+  test('Given PostgreSQL 直连或 SSH 转发请求 When 执行 Then 使用 writable client 写执行器', async () => {
+    const harness = createHarness()
+    let statements: unknown[] = []
+    harness.dependencies.openPostgresqlConnection = (async (_params: unknown, connectionDependencies: { createChannel: () => Promise<Duplex> }) => {
+      const channel = await connectionDependencies.createChannel()
+      return {
+        channel,
+        client: { destroy: () => undefined, query: async () => ({ rows: [] }), end: async () => undefined },
+      }
+    }) as unknown as NonNullable<ServerOpsDataWriteDependencies['openPostgresqlConnection']>
+    harness.dependencies.runPostgresqlWrite = (async (_client: unknown, input: readonly { text: string; head: string }[]) => {
+      statements = [...input]
+      return { statementCount: 1, affectedRows: 1, committed: true, outcome: 'committed', statements: [{ head: 'UPDATE', affectedRows: 1 }], warnings: [] }
+    }) as unknown as NonNullable<ServerOpsDataWriteDependencies['runPostgresqlWrite']>
+    const direct = await executeServerOpsDataWrite({ ...baseRequest, engine: 'postgresql', port: 5432 }, createContext(harness), harness.dependencies)
+    const ssh = await executeServerOpsDataWrite({ ...baseRequest, engine: 'postgresql', transport: 'ssh', port: 5432 }, {
+      ...createContext(harness), createChannel: async () => createFakeSocket(),
+    }, harness.dependencies)
+    expect(direct).toMatchObject({ committed: true, affectedRows: 1 })
+    expect(ssh).toMatchObject({ committed: true, affectedRows: 1 })
+    expect(statements).toHaveLength(1)
+  })
+
   test('Given 连接阶段失败 When 执行 Then 报连接失败而不是写入失败', async () => {
     const harness = createHarness({ mysqlOpen: () => new Error('connect ECONNREFUSED') })
     const failure = await executeServerOpsDataWrite(baseRequest, createContext(harness), harness.dependencies).catch((error) => error)

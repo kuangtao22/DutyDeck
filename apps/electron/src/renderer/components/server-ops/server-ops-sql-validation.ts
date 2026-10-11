@@ -15,7 +15,7 @@ export interface ServerOpsSqlDraftValidation {
   diagnostics: ServerOpsSqlEditorDiagnostic[]
 }
 
-/** 写模式校验额外返回将执行的语句首关键字，供确认卡展示。 */
+/** 写入脚本校验额外返回将执行的语句首关键字，供确认卡展示。 */
 export interface ServerOpsSqlWriteDraftValidation extends ServerOpsSqlDraftValidation {
   heads: string[]
 }

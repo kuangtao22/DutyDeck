@@ -60,6 +60,15 @@ describe('Server Ops utility runtime 请求协议', () => {
     expect(() => parseServerOpsRuntimeRequest({ type: 'server-ops.data-write', input: { ...input, localFileId: '1:2:3' } })).toThrow()
     expect(() => parseServerOpsRuntimeRequest({ type: 'server-ops.data-write', input: { ...input, address: '127.0.0.1' } })).toThrow()
   })
+  test('Given PostgreSQL 直连或 SSH 写请求 When 进入 utility Then 接受网络端点与完整语句计划', () => {
+    const base: ServerOpsRuntimeDataWriteRequest = {
+      requestId: 'pg-write', hostId: 'host-1', connectionId: 'connection-1', transport: 'direct', engine: 'postgresql',
+      address: 'db.internal', port: 5432, database: 'app', username: 'writer', tlsMode: 'required', timeoutMs: 60_000,
+      writeId: 'write-pg-1', statements: [{ text: 'UPDATE users SET active = true', head: 'UPDATE' }],
+    }
+    expect(parseServerOpsRuntimeRequest({ type: 'server-ops.data-write', input: base })).toEqual({ type: 'server-ops.data-write', input: base })
+    expect(parseServerOpsRuntimeRequest({ type: 'server-ops.data-write', input: { ...base, transport: 'ssh' } })).toMatchObject({ input: { engine: 'postgresql', transport: 'ssh' } })
+  })
   test('Given 指定库目录搜索 When 解析协议 Then 只允许 schema-tables 携带有界搜索词', () => {
     const base = { requestId: 'search-1', hostId: 'host-1', connectionId: 'connection-1', transport: 'direct', engine: 'mysql', address: '127.0.0.1', port: 3306, tlsMode: 'disabled', timeoutMs: 15_000 } as const
     const input = { ...base, mode: 'schema-tables', schemaDatabase: 'app', schemaTableSearch: "table_%'" }

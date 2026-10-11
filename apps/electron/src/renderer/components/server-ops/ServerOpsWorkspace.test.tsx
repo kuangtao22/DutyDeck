@@ -32,6 +32,8 @@ import { createServerOpsSqlQueryHistoryController } from './server-ops-sql-query
 import { createServerOpsSqlQueryController } from './server-ops-sql-query-controller'
 import { useServerOpsViewPosition } from './useServerOpsViewPosition'
 import type { ServerOpsViewPositionController } from './useServerOpsViewPosition'
+import { ServerOpsWorkspaceToolbar } from './ServerOpsWorkspaceToolbar'
+import type { ServerOpsWorkspaceToolbarContent } from './ServerOpsWorkspaceToolbar'
 
 test('Given 实际工作区加载旧 preload When 进入 SQL 工作台 Then 禁用执行并明确提示重启而非伪装为可调用接口', async () => {
   /** 保存测试前的全局窗口，避免兼容性用例影响其它组件。 */
@@ -146,7 +148,17 @@ function createOverviewSnapshot(hostId: string): ServerOpsOverviewResult {
 /** 创建静态工作区视图所需回调。 */
 function createCallbacks() {
   return {
-    onOpenDrawer: () => undefined,
+    renderWorkspaceToolbar: (content: ServerOpsWorkspaceToolbarContent = {}): React.ReactNode => (
+      <ServerOpsWorkspaceToolbar
+        projects={[{ id: 'project-1', name: '默认项目', createdAt: 1, updatedAt: 1 }]}
+        projectId="project-1"
+        onSelectProject={() => undefined}
+        connectionOptions={[{ id: 'ssh:host-1', label: '生产 API', detail: 'deploy@10.0.0.8:22', protocol: 'SSH' }]}
+        connectionId="ssh:host-1"
+        onSelectConnection={() => undefined}
+        {...content}
+      />
+    ),
     onCreateHost: () => undefined,
     onEditHost: () => undefined,
     onDeleteHost: () => undefined,
@@ -799,10 +811,10 @@ describe('服务器运维右侧工作区', () => {
       />,
     )
 
-    /** 项目列表在抽屉里；回项目视图由面包屑第一段承担，不再单独占一个返回按钮。 */
-    expect(html).toContain('aria-label="打开项目列表"')
-    expect(html).toContain('aria-label="返回项目视图"')
-    expect(html).toContain('data-server-ops-connection-project')
+    /** 服务器与数据库详情共用同一头部；返回与连接切换均在连接身份旁。 */
+    expect(html).toContain('aria-label="切换运维项目"')
+    expect(html).toContain('aria-label="返回项目连接"')
+    expect(html).toContain('aria-label="切换当前项目连接"')
     expect(html).toContain('默认项目')
     expect(html).toContain('data-server-ops-connection-module')
     expect(html).not.toContain('数据服务')
