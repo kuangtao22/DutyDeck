@@ -121,6 +121,9 @@ struct Config {
   std::string destination_child_name;
   std::string destination_entry_id;
   std::string file_name;
+  // 预览读取仅接受安全相对路径及硬字节上限。
+  std::string resource_path;
+  std::size_t max_file_bytes = 0;
   std::string expected_source_sha256;
   std::size_t expected_source_size = 0;
   bool overwrite = false;
@@ -139,6 +142,37 @@ bool IsCanvasIntentCandidateName(const std::string& name);
 bool IsSafeExportLeaf(const std::string& name) {
   return !name.empty() && name != "." && name != ".."
       && name.find('/') == std::string::npos && name.find('\\') == std::string::npos;
+}
+
+// 校验跨平台相对资源路径，拒绝父级、ADS 和 Windows 路径别名。
+bool IsSafeResourcePath(const std::string& path) {
+  if (path.empty() || path.size() > 4096 || path.back() == '/') return false;
+  std::istringstream parts(path);
+  std::string part;
+  while (std::getline(parts, part, '/')) {
+    if (part.empty() || part == "." || part == ".." || part.back() == '.' || part.back() == ' ') return false;
+    for (unsigned char ch : part) {
+      if (ch < 32 || ch == 127 || ch == '\\' || ch == ':' || ch == '*' || ch == '?' || ch == '"' || ch == '<' || ch == '>' || ch == '|') return false;
+    }
+  }
+  return true;
+}
+
+// 编码原始字节供 JSON 管道传输，保留图片、字体及非 UTF-8 文件内容。
+std::string EncodeResourceBase64(const std::string& bytes) {
+  static constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string encoded;
+  encoded.reserve((bytes.size() + 2) / 3 * 4);
+  for (std::size_t index = 0; index < bytes.size(); index += 3) {
+    const unsigned int value = (static_cast<unsigned char>(bytes[index]) << 16)
+        | (index + 1 < bytes.size() ? static_cast<unsigned char>(bytes[index + 1]) << 8 : 0)
+        | (index + 2 < bytes.size() ? static_cast<unsigned char>(bytes[index + 2]) : 0);
+    encoded.push_back(alphabet[(value >> 18) & 63]);
+    encoded.push_back(alphabet[(value >> 12) & 63]);
+    encoded.push_back(index + 1 < bytes.size() ? alphabet[(value >> 6) & 63] : '=');
+    encoded.push_back(index + 2 < bytes.size() ? alphabet[value & 63] : '=');
+  }
+  return encoded;
 }
 
 // 转义 UTF-8 JSON 字符串；输入原始文本，返回可安全嵌入 JSON 的内容。
@@ -162,6 +196,16 @@ std::string JsonEscape(const std::string& value) {
         }
     }
   }
+  return out.str();
+}
+
+// 构建无可重开路径的资源结果；失败只返回分类和诊断。
+std::string ResourceReadResult(const std::string& status, const std::string& value = "") {
+  std::ostringstream out;
+  out << "{\"type\":\"resource-read-result\",\"status\":\"" << status << '"';
+  if (status == "ok") out << ",\"contentBase64\":\"" << EncodeResourceBase64(value) << "\",\"size\":" << value.size();
+  if (status == "rejected") out << ",\"error\":\"" << JsonEscape(value) << '"';
+  out << '}';
   return out.str();
 }
 
@@ -195,7 +239,7 @@ bool ParseArguments(const std::vector<std::string>& args, Config* config, std::s
     }
     const std::string value = args[++index];
     if (key == "--mode") {
-      if (value != "list" && value != "scan"
+      if (value != "list" && value != "scan" && value != "preview-resource-read"
           && value != "canvas-intent-scan" && value != "canvas-intent-read" && value != "canvas-intent-write"
           && value != "canvas-intent-remove"
           && value != "canvas-content-write" && value != "canvas-content-read"
@@ -229,6 +273,10 @@ bool ParseArguments(const std::vector<std::string>& args, Config* config, std::s
       config->ignore_directories.insert(value);
     } else if (key == "--ignore-file") {
       config->ignore_files.insert(value);
+    } else if (key == "--resource-path") {
+      config->resource_path = value;
+    } else if (key == "--max-file-bytes") {
+      if (!ParseUnsigned(value, &config->max_file_bytes)) { *error = "invalid resource byte limit"; return false; }
     } else if (key == "--child-name") {
       config->child_name = value;
     } else if (key == "--entry-id") {
@@ -265,6 +313,12 @@ bool ParseArguments(const std::vector<std::string>& args, Config* config, std::s
   }
   if (config->roots.empty()) {
     *error = "at least one root is required";
+    return false;
+  }
+  if (config->mode == "preview-resource-read"
+      && (config->roots.size() != 1 || !IsSafeResourcePath(config->resource_path)
+          || config->max_file_bytes == 0 || config->max_file_bytes > 20U * 1024U * 1024U)) {
+    *error = "invalid preview resource contract";
     return false;
   }
   const bool export_write = config->mode == "artifact-export-write";
@@ -812,8 +866,10 @@ bool CanonicalPathForFd(int descriptor, std::string* output) {
 }
 
 // 以 no-follow 方式打开 root；输入请求路径，返回稳定对象或错误。
-bool OpenStableRoot(const std::string& requested_path, StableRoot* root, std::string* error) {
-  UniqueFd descriptor(open(requested_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+bool OpenStableRoot(const std::string& requested_path, StableRoot* root, std::string* error, bool directory_only = false) {
+  // 预览根只接受目录，阻止根路径被 FIFO 替换时在 OPENED 之前阻塞。
+  UniqueFd descriptor(open(requested_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+      | (directory_only ? O_DIRECTORY | O_NONBLOCK : 0)));
   if (descriptor.Get() < 0) {
     *error = WithPosixErrno("cannot open root", errno);
     return false;
@@ -1735,12 +1791,42 @@ CanvasIntentWriteOutcome ExportArtifactAtomic(const Config& config,
   return outcome;
 }
 
+// 逐段 openat 固定已授权根；非阻塞打开后先验证普通文件再执行有界读取。
+std::string ReadPreviewResource(const Config& config, const StableRoot& root) {
+  if (!S_ISDIR(root.identity.st_mode)) return ResourceReadResult("rejected", "preview root is not a directory");
+  UniqueFd parent(dup(root.descriptor.Get()));
+  if (parent.Get() < 0) return ResourceReadResult("rejected", "cannot retain preview root");
+  std::istringstream parts(config.resource_path);
+  std::string part;
+  while (std::getline(parts, part, '/')) {
+    const bool leaf = parts.peek() == std::char_traits<char>::eof();
+    UniqueFd opened(openat(parent.Get(), part.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK | (leaf ? 0 : O_DIRECTORY)));
+    if (opened.Get() < 0) return errno == ENOENT ? ResourceReadResult("missing") : ResourceReadResult("rejected", "unsafe or unreadable preview resource");
+    struct stat initial {};
+    if (fstat(opened.Get(), &initial) != 0 || (leaf ? !S_ISREG(initial.st_mode) : !S_ISDIR(initial.st_mode))) return ResourceReadResult("rejected", "preview resource is not a regular file or directory");
+    if (!leaf) { parent = std::move(opened); continue; }
+    if (initial.st_size < 0 || static_cast<std::uint64_t>(initial.st_size) > config.max_file_bytes) return ResourceReadResult("rejected", "preview resource exceeds byte limit");
+    std::string content(static_cast<std::size_t>(initial.st_size), '\0');
+    std::size_t offset = 0;
+    while (offset < content.size()) {
+      const ssize_t count = read(opened.Get(), content.data() + offset, content.size() - offset);
+      if (count < 0 && errno == EINTR) continue;
+      if (count <= 0) return ResourceReadResult("rejected", "preview resource changed during read");
+      offset += static_cast<std::size_t>(count);
+    }
+    struct stat final_state {};
+    if (fstat(opened.Get(), &final_state) != 0 || !SameCanvasContentFileState(initial, final_state)) return ResourceReadResult("rejected", "preview resource changed during read");
+    return ResourceReadResult("ok", content);
+  }
+  return ResourceReadResult("rejected", "invalid preview resource path");
+}
+
 // 执行 POSIX 两阶段协议；输入解析后的配置，返回进程退出码。
 int RunPlatform(const Config& config) {
   std::vector<StableRoot> roots(config.roots.size());
   for (std::size_t index = 0; index < config.roots.size(); ++index) {
     std::string error;
-    if (!OpenStableRoot(config.roots[index], &roots[index], &error)) {
+    if (!OpenStableRoot(config.roots[index], &roots[index], &error, config.mode == "preview-resource-read")) {
       std::cerr << error << ": " << config.roots[index] << '\n';
       return 2;
     }
@@ -1750,6 +1836,10 @@ int RunPlatform(const Config& config) {
   std::string decision;
   std::string payload;
   if (!std::getline(std::cin, decision) || !ParseAuthorization(config, decision, &payload)) return 3;
+  if (config.mode == "preview-resource-read") {
+    if (!EmitLine(ReadPreviewResource(config, roots.front()), config, &budget)) return 4;
+    return EmitLine("{\"type\":\"done\",\"entryCount\":0}", config, &budget) ? 0 : 4;
+  }
   if (config.mode == "artifact-export-write" || config.mode == "artifact-export-copy") {
     const CanvasIntentWriteOutcome outcome = ExportArtifactAtomic(config, roots, payload);
     if (!EmitLine(CanvasIntentWriteResultJson(outcome), config, &budget)) return 4;
@@ -3100,6 +3190,49 @@ CanvasIntentWriteOutcome ExportArtifactAtomic(const Config& config,
 }
 
 // 执行 Windows 两阶段协议；输入解析后的配置，返回进程退出码。
+// 逐段 NtCreateFile RootDirectory 打开，拒绝 reparse 与非磁盘文件后才读取。
+std::string ReadPreviewResource(const Config& config, const StableRoot& root) {
+  if ((root.identity.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) return ResourceReadResult("rejected", "preview root is not a directory");
+  HANDLE parent = root.handle.Get();
+  UniqueHandle directory;
+  std::istringstream parts(config.resource_path);
+  std::string part;
+  while (std::getline(parts, part, '/')) {
+    const bool leaf = parts.peek() == std::char_traits<char>::eof();
+    UniqueHandle opened;
+    std::string error;
+    if (!OpenRelativeWindows(parent, Utf8ToWide(part),
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE | (leaf ? FILE_READ_DATA : FILE_LIST_DIRECTORY),
+        FILE_OPEN, leaf ? FILE_NON_DIRECTORY_FILE : FILE_DIRECTORY_FILE, &opened, &error)) {
+      return IsCanvasWindowsMissingError(GetLastError()) ? ResourceReadResult("missing") : ResourceReadResult("rejected", error);
+    }
+    BY_HANDLE_FILE_INFORMATION initial {};
+    FILE_BASIC_INFO initial_basic {};
+    if (GetFileType(opened.Get()) != FILE_TYPE_DISK || !ReadWindowsFileState(opened.Get(), &initial, &initial_basic)
+        || (initial.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+        || (((initial.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) == leaf)) return ResourceReadResult("rejected", "unsafe preview resource");
+    if (!leaf) {
+      directory = std::move(opened);
+      parent = directory.Get();
+      continue;
+    }
+    const std::uint64_t size = (static_cast<std::uint64_t>(initial.nFileSizeHigh) << 32) | initial.nFileSizeLow;
+    if (size > config.max_file_bytes) return ResourceReadResult("rejected", "preview resource exceeds byte limit");
+    std::string content(static_cast<std::size_t>(size), '\0');
+    std::size_t offset = 0;
+    while (offset < content.size()) {
+      DWORD count = 0;
+      if (!ReadFile(opened.Get(), content.data() + offset, static_cast<DWORD>(content.size() - offset), &count, nullptr) || count == 0) return ResourceReadResult("rejected", "preview resource changed during read");
+      offset += count;
+    }
+    BY_HANDLE_FILE_INFORMATION final_state {};
+    FILE_BASIC_INFO final_basic {};
+    if (!ReadWindowsFileState(opened.Get(), &final_state, &final_basic) || !SameWindowsFileState(initial, initial_basic, final_state, final_basic)) return ResourceReadResult("rejected", "preview resource changed during read");
+    return ResourceReadResult("ok", content);
+  }
+  return ResourceReadResult("rejected", "invalid preview resource path");
+}
+
 int RunPlatform(const Config& config) {
   std::vector<StableRoot> roots(config.roots.size());
   // 内容模式继续走独立协议分支，读取与列表不应为授权根申请写权限。
@@ -3122,6 +3255,10 @@ int RunPlatform(const Config& config) {
   std::string decision;
   std::string payload;
   if (!std::getline(std::cin, decision) || !ParseAuthorization(config, decision, &payload)) return 3;
+  if (config.mode == "preview-resource-read") {
+    if (!EmitLine(ReadPreviewResource(config, roots.front()), config, &budget)) return 4;
+    return EmitLine("{\"type\":\"done\",\"entryCount\":0}", config, &budget) ? 0 : 4;
+  }
   if (config.mode == "artifact-export-write" || config.mode == "artifact-export-copy") {
     const CanvasIntentWriteOutcome outcome = ExportArtifactAtomic(config, roots, payload);
     if (!EmitLine(CanvasIntentWriteResultJson(outcome), config, &budget)) return 4;

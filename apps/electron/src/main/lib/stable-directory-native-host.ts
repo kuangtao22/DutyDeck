@@ -64,6 +64,7 @@ export type StableDirectoryCanvasMoveChild = 'nodes' | 'trash'
 
 export interface StableDirectoryNativeRequest {
   mode:
+    | 'preview-resource-read'
     | 'list'
     | 'scan'
     | 'canvas-intent-scan'
@@ -78,6 +79,10 @@ export interface StableDirectoryNativeRequest {
     | 'artifact-export-write'
     | 'artifact-export-copy'
   roots: string[]
+  /** 预览资源在已授权根中的安全 POSIX 相对路径。 */
+  resourcePath?: string
+  /** 单个预览资源硬读取上限，范围 1..20 MiB。 */
+  maxFileBytes?: number
   maxDepth?: number
   maxEntries?: number
   maxOutputBytes?: number
@@ -107,8 +112,16 @@ export interface StableDirectoryNativeRequest {
   signal?: AbortSignal
 }
 
+/** 预览资源二进制读取结果，无可重新打开的路径。 */
+export type StableDirectoryNativeResourceReadOutcome =
+  | { status: 'ok'; contentBase64: string; size: number }
+  | { status: 'missing' }
+  | { status: 'rejected'; error: string }
+
 export interface StableDirectoryNativeResult {
   roots: StableDirectoryOpenedRoot[]
+  /** 仅 preview-resource-read 模式返回。 */
+  resourceReadOutcome?: StableDirectoryNativeResourceReadOutcome
   entries: StableDirectoryNativeEntry[]
   /** 仅写入或 marker 清理模式返回。 */
   writeOutcome?: StableDirectoryNativeWriteOutcome
@@ -158,6 +171,35 @@ function defaultHelperPath(): string {
     : join(__dirname, 'resources', 'stable-directory', executableName)
 }
 
+/** 预览二进制转 Base64 后仍须允许完整上限，其余模式保留原预算。 */
+function helperOutputBudget(request: StableDirectoryNativeRequest): number {
+  return request.maxOutputBytes ?? (request.mode === 'preview-resource-read'
+    ? Math.ceil((request.maxFileBytes ?? 0) / 3) * 4 + 64 * 1024
+    : DEFAULT_MAX_OUTPUT_BYTES)
+}
+
+/** 校验无歧义的跨平台相对路径，拒绝父目录和 Windows ADS/别名。 */
+function isSafeResourcePath(path: string): boolean {
+  return path.length > 0 && Buffer.byteLength(path, 'utf8') <= 4096
+    && path.split('/').every((part) => part.length > 0 && part !== '.' && part !== '..'
+      && !/[. ]$/.test(part) && !/[\\:\x00-\x1f\x7f*?"<>|]/.test(part))
+}
+
+/** 解析有界二进制响应，验证标准 Base64 编码及其真实字节长度。 */
+function parseResourceReadOutcome(value: unknown, maxFileBytes: number): StableDirectoryNativeResourceReadOutcome | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  if (record.status === 'missing') return { status: 'missing' }
+  if (record.status === 'rejected') return typeof record.error === 'string' ? { status: 'rejected', error: record.error } : null
+  if (record.status !== 'ok' || typeof record.contentBase64 !== 'string'
+    || typeof record.size !== 'number' || !Number.isSafeInteger(record.size)
+    || record.size < 0 || record.size > maxFileBytes
+    || record.contentBase64.length !== Math.ceil(record.size / 3) * 4) return null
+  const decoded = Buffer.from(record.contentBase64, 'base64')
+  if (decoded.length !== record.size || decoded.toString('base64') !== record.contentBase64) return null
+  return { status: 'ok', contentBase64: record.contentBase64, size: record.size }
+}
+
 /** 把结构化请求转换为不经过 shell 的 argv。 */
 function buildHelperArguments(request: StableDirectoryNativeRequest): string[] {
   const args = ['--mode', request.mode]
@@ -170,10 +212,12 @@ function buildHelperArguments(request: StableDirectoryNativeRequest): string[] {
   const defaultMaxEntries = request.mode.startsWith('canvas-') ? 512 : 10_000
   args.push('--max-entries', String(request.maxEntries ?? defaultMaxEntries))
   if (!isCanvasContent) {
-    args.push('--max-output-bytes', String(request.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES))
+    args.push('--max-output-bytes', String(helperOutputBudget(request)))
     for (const name of request.ignoreDirectories ?? []) args.push('--ignore-dir', name)
     for (const name of request.ignoreFiles ?? []) args.push('--ignore-file', name)
   }
+  if (request.resourcePath !== undefined) args.push('--resource-path', request.resourcePath)
+  if (request.maxFileBytes !== undefined) args.push('--max-file-bytes', String(request.maxFileBytes))
   if (request.childName) args.push('--child-name', request.childName)
   if (request.entryId) args.push('--entry-id', request.entryId)
   if (request.destinationChildName) args.push('--destination-child-name', request.destinationChildName)
@@ -326,7 +370,7 @@ function executeStableDirectoryNative(
   }
 
   return new Promise<StableDirectoryNativeResult>((resolvePromise, rejectPromise) => {
-    const maxOutputBytes = request.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
+    const maxOutputBytes = helperOutputBudget(request)
     const spawnProcess = dependencies.spawnProcess ?? ((helperPath, args) => (
       spawn(helperPath, args, { stdio: ['pipe', 'pipe', 'pipe'], detached: false })
     ))
@@ -345,6 +389,8 @@ function executeStableDirectoryNative(
     let openedRoots: StableDirectoryOpenedRoot[] | null = null
     const entries: StableDirectoryNativeEntry[] = []
     let writeOutcome: StableDirectoryNativeWriteOutcome | null = null
+    /** 预览读取只允许一条完整的二进制结果。 */
+    let resourceReadOutcome: StableDirectoryNativeResourceReadOutcome | null = null
     let readOutcome: StableDirectoryNativeReadOutcome | null = null
     let moveOutcome: StableDirectoryNativeMoveOutcome | null = null
     let stdoutBuffer = ''
@@ -457,6 +503,15 @@ function executeStableDirectoryNative(
         if (!writeOutcome) finish(new Error('稳定目录 helper write-result 响应无效'))
         return
       }
+      if (record?.type === 'resource-read-result') {
+        if (!authorized || authorizationPending || request.mode !== 'preview-resource-read' || resourceReadOutcome) {
+          finish(new Error('稳定目录 helper resource-read-result 响应无效'))
+          return
+        }
+        resourceReadOutcome = parseResourceReadOutcome(value, request.maxFileBytes ?? 0)
+        if (!resourceReadOutcome) finish(new Error('稳定目录 helper resource-read-result 响应无效'))
+        return
+      }
       if (record?.type === 'read-result') {
         if (!authorized || authorizationPending
           || (request.mode !== 'canvas-content-read' && request.mode !== 'canvas-intent-read') || readOutcome) {
@@ -478,6 +533,8 @@ function executeStableDirectoryNative(
       }
       if (record?.type === 'done') {
         if (!authorized
+          || ((request.mode === 'preview-resource-read') !== Boolean(resourceReadOutcome))
+          || (request.mode === 'preview-resource-read' && entries.length !== 0)
           || !Number.isSafeInteger(record.entryCount)
           || record.entryCount !== entries.length
           || ((request.mode === 'canvas-intent-write'
@@ -495,6 +552,7 @@ function executeStableDirectoryNative(
           roots: request.mode.startsWith('canvas-content-') ? [] : openedRoots,
           entries,
           ...(writeOutcome ? { writeOutcome } : {}),
+          ...(resourceReadOutcome ? { resourceReadOutcome } : {}),
           ...(readOutcome ? { readOutcome } : {}),
           ...(moveOutcome ? { moveOutcome } : {}),
         })
@@ -616,6 +674,12 @@ export function createStableDirectoryNativeHost(
     run: (request, authorize, dependencies = {}) => {
       if (request.createOnly !== undefined && request.mode !== 'canvas-intent-write') {
         return Promise.reject(new Error('稳定目录 createOnly 请求模式无效'))
+      }
+      if (request.mode === 'preview-resource-read'
+        && (request.roots.length !== 1 || typeof request.resourcePath !== 'string' || !isSafeResourcePath(request.resourcePath)
+          || !Number.isSafeInteger(request.maxFileBytes) || (request.maxFileBytes ?? 0) < 1 || (request.maxFileBytes ?? 0) > 20 * 1024 * 1024
+          || request.content !== undefined || request.childName !== undefined || request.fileName !== undefined)) {
+        return Promise.reject(new Error('预览资源原生读取合同无效'))
       }
       if (request.roots.length === 0) {
         return request.mode.startsWith('canvas-')

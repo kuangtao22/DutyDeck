@@ -11,8 +11,6 @@ export interface PreviewContentCacheEntry {
   officeHtml?: string
   officeHtmlUrl?: string
   officeText?: string
-  /** HTML 预览的目录级 token URL，允许加载同目录相对资源 */
-  htmlPreviewUrl?: string
   /** 二进制或其他不可安全内联渲染的文件提示 */
   unsupportedPreviewReason?: string
   /** 无法内联预览时由主进程返回的安全基础元数据。 */

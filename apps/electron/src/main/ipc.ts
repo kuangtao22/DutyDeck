@@ -224,6 +224,7 @@ import {
   type StableDirectoryNativeEntry,
   type StableDirectoryOpenedRoot,
 } from './lib/stable-directory-native-host'
+import { createHtmlPreviewService } from './lib/html-preview-service'
 import { DesignAssetService } from './lib/design/design-asset-service'
 import { DesignContextCatalog } from './lib/design/design-context-catalog'
 import { DesignContextOrchestrator } from './lib/design/design-context-orchestrator'
@@ -1318,7 +1319,8 @@ function requireVisibleFileReadAccess(
   candidateBasePaths: readonly string[] | undefined,
   maxSize: number,
   existingSnapshot?: RendererFileAccessSnapshot,
-  openFlags = constants.O_RDONLY,
+  // 普通文件不受 O_NONBLOCK 影响；FIFO 等特殊文件必须先安全返回，再由 fstat 拒绝。
+  openFlags = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0),
 ): RendererFileReadAccessSnapshot {
   const snapshot = existingSnapshot ?? requireVisibleFileAccess(access)
   const effectiveBasePaths = candidateBasePaths ?? getPreviewCandidateBasePaths(snapshot.options, snapshot)
@@ -2243,6 +2245,8 @@ function getAgentCanvasBindingStore(): AgentCanvasBindingStore {
 }
 
 export function registerIpcHandlers(): void {
+  /** 当前进程共享预览预算；服务随窗口导航/关闭回收各自 lease。 */
+  const htmlPreviewService = createHtmlPreviewService({ run: runStableDirectoryNative })
   /** normal 数据根已准备完成后再取得业务 Store，并在注册任何 handler 前完成初始化。 */
   const agentCanvasBindingStore = getAgentCanvasBindingStore()
   /** 连接发现纯读取远端目录，执行权限仍在每次项目任务入口复核。 */
@@ -7350,13 +7354,35 @@ export function registerIpcHandlers(): void {
     }
   )
 
-  // HTML 相对资源需要目录级路径能力，当前无法绑定稳定目录对象，因此明确 fail closed。
+  // HTML 主文件先走普通文件 guard，资源由原生 helper 绑定根目录身份后按需读取。
   ipcMain.handle(
-    'file:resolve-html-preview-path',
-    async (): Promise<ResolvedFileUrl | null> => {
-      throw new Error('HTML 目录预览已禁用：无法安全绑定相对资源目录')
-    }
+    IPC_CHANNELS.RESOLVE_HTML_PREVIEW_PATH,
+    async (event, filePath: string, access?: FileAccessOptions | string[]): Promise<ResolvedFileUrl | null> => {
+      const accessSnapshot = requireVisibleFileReadAccess(access, filePath, undefined, 20 * 1024 * 1024)
+      const authorizedFile = accessSnapshot.authorizedFiles.get(filePath)
+      if (!authorizedFile) return null
+      try {
+        if (!['.html', '.htm'].includes(extname(authorizedFile.canonicalPath).toLowerCase())) {
+          throw new Error('该文件不是 HTML 页面')
+        }
+        return await htmlPreviewService.create({
+          owner: event.sender,
+          filePath: authorizedFile.canonicalPath,
+          authorize: (root, resourcePath) => {
+            // 不沿用旧 session 快照，附加目录移除或会话隐藏后缓存也不再提供。
+            const currentAccess = requireVisibleFileAccess(access)
+            return isCanonicalPathAllowed(join(root.canonicalPath, resourcePath), currentAccess.options, currentAccess)
+          },
+        })
+      } finally {
+        authorizedFile.close()
+      }
+    },
   )
+
+  ipcMain.handle(IPC_CHANNELS.RELEASE_HTML_PREVIEW, (event, url: string): void => {
+    htmlPreviewService.release(event.sender, url)
+  })
 
   // 为内联 PDF 预览生成临时 HTML 文件，返回文件路径
   ipcMain.handle(

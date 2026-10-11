@@ -437,6 +437,10 @@ export const IPC_CHANNELS = {
   FILE_EXISTS_BATCH: 'file:exists-batch',
   /** 仅解析 Renderer 已授权文件的 canonical path。 */
   RESOLVE_AUTHORIZED_FILE_PATH: 'file:resolve-authorized-path',
+  /** 创建绑定稳定目录身份的 HTML 预览。 */
+  RESOLVE_HTML_PREVIEW_PATH: 'file:resolve-html-preview-path',
+  /** 释放当前窗口拥有的 HTML 预览与资源缓存。 */
+  RELEASE_HTML_PREVIEW: 'file:release-html-preview',
   /** 扫描系统中可用的编辑器应用 */
   SCAN_EDITORS: 'shell:scan-editors',
   /** 查询某个文件在本机系统中的默认打开应用信息（带图标） */

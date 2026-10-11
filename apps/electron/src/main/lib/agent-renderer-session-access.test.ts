@@ -72,7 +72,7 @@ const NON_AGENT_FILE_CHANNELS = new Set([
   'RESOLVE_AUTHORIZED_FILE_PATH',
   'file:write-text',
   'file:resolve-path',
-  'file:resolve-html-preview-path',
+  'RESOLVE_HTML_PREVIEW_PATH',
   'file:prepare-pdf-preview',
   'file:docx-to-html',
   'file:office-to-html',
@@ -592,9 +592,12 @@ const RENDERER_HANDLER_POLICIES: Record<FullChannelKey, RendererHandlerPolicy> =
     'file:resolve-markdown-media',
     'file:resolve-path',
   ], { kind: 'path', guards: ['requireVisibleFileReadAccess'] }),
-  ...defineRendererHandlerPolicies('literal', [
-    'file:resolve-html-preview-path',
-  ], { kind: 'path', guards: ['Error'] }),
+  ...defineRendererHandlerPolicies('IPC_CHANNELS', [
+    'RESOLVE_HTML_PREVIEW_PATH',
+  ], { kind: 'path', guards: ['requireVisibleFileReadAccess'] }),
+  ...defineRendererHandlerPolicies('IPC_CHANNELS', [
+    'RELEASE_HTML_PREVIEW',
+  ], { kind: 'exempt', reason: '仅撤销同一 WebContents 拥有的预览 lease，不能读取或授权文件' }),
   ...defineRendererHandlerPolicies('literal', [
     'file:write-text',
   ], { kind: 'path', guards: ['requireVisibleFileWriteAccess'] }),
@@ -803,7 +806,7 @@ describe('普通 Renderer Agent IPC 会话访问矩阵', () => {
       const registered = handlers.find((handler) => handler.channel === channel)
       expect(registered, `${channel} 未纳入全量 ipcMain.handle 矩阵`).toBeDefined()
       const calls = collectTopLevelExecutionCalls(registered!.handler.body)
-      if (channel === 'file:resolve-html-preview-path' || channel === 'REVERT_FILE') {
+      if (channel === 'REVERT_FILE') {
         expect(registered!.handler.body.getText()).toContain('throw new Error')
         continue
       }
@@ -1039,6 +1042,23 @@ describe('普通 Renderer Agent IPC 会话访问矩阵', () => {
     }
   })
 
+  test('Given HTML 叶子是特殊文件 When 前置 guard 打开 Then 以非阻塞方式打开并在读取前拒绝', () => {
+    const { source } = loadAgentHandlers()
+    let openFlags = 0
+    let closed = false
+    const guard = compileLocalFunction<(access: undefined, filePath: string, roots: string[], size: number) => unknown>(source, 'requireVisibleFileReadAccess', {
+      requireVisibleFileAccess: () => ({ options: undefined }),
+      getRendererFileCandidates: () => ['/site/index.html'],
+      constants,
+      openSync: (_path: string, flags: number) => { openFlags = flags; return 42 },
+      fstatSync: () => ({ isFile: () => false }),
+      closeSync: () => { closed = true },
+    })
+    expect(() => guard(undefined, '/site/index.html', ['/site'], 1024)).toThrow('文件不存在或不在当前会话的授权范围内')
+    if (process.platform !== 'win32') expect(openFlags & constants.O_NONBLOCK).toBe(constants.O_NONBLOCK)
+    expect(closed).toBe(true)
+  }, 60_000)
+
   test('Given resolve-path guard 返回后路径被替换 When 注册协议 token Then 只注册授权 Buffer', async () => {
     const { handlers } = loadAgentHandlers()
     const registered = handlers.find(({ channel }) => channel === 'file:resolve-path')
@@ -1229,25 +1249,46 @@ describe('普通 Renderer Agent IPC 会话访问矩阵', () => {
     expect(openCount).toBe(0)
   })
 
-  test('Given HTML 目录无法绑定稳定授权对象 When 请求预览 Then 明确禁用且不注册目录', async () => {
+  test('Given HTML 已授权 When 创建预览 Then 使用安全服务且每次资源访问重新检查会话', async () => {
     const { handlers } = loadAgentHandlers()
-    const registered = handlers.find(({ channel }) => channel === 'file:resolve-html-preview-path')
+    const registered = handlers.find(({ channel }) => channel === 'RESOLVE_HTML_PREVIEW_PATH')
     expect(registered).toBeDefined()
-    let registerCallCount = 0
+    let closed = 0
+    let visible = true
+    let resourceAllowed = true
+    let authorize!: (root: { canonicalPath: string }, resource: string) => boolean
     const handler = compileHandler<(event: object, path: string) => Promise<unknown>>(registered!, {
-      requireVisibleFileAccess: () => ({ options: undefined }),
-      requireVisibleFileReadAccess: () => { throw new Error('不应打开文件') },
-      getPreviewCandidateBasePaths: () => [],
-      isPathAllowed: () => true,
-      registerPromaDirectoryPath: () => { registerCallCount += 1; return 'proma-file://directory-token' },
-      dirname,
-      basename: (value: string) => value,
-      console,
+      requireVisibleFileReadAccess: () => ({ authorizedFiles: new Map([['/tmp/index.html', {
+        canonicalPath: '/tmp/index.html', close: () => { closed += 1 },
+      }]]) }),
+      requireVisibleFileAccess: () => { if (!visible) throw new Error('Agent 会话不存在'); return { options: {} } },
+      isCanonicalPathAllowed: () => resourceAllowed,
+      htmlPreviewService: { create: async (input: { authorize: typeof authorize }) => {
+        authorize = input.authorize
+        return { url: 'proma-file://safe/index.html' }
+      } },
+      extname, join,
     })
+    expect(await handler({ sender: {} }, '/tmp/index.html')).toEqual({ url: 'proma-file://safe/index.html' })
+    expect(closed).toBe(1)
+    expect(authorize({ canonicalPath: '/tmp' }, 'app.js')).toBe(true)
+    resourceAllowed = false
+    expect(authorize({ canonicalPath: '/tmp' }, 'secret')).toBe(false)
+    visible = false
+    expect(() => authorize({ canonicalPath: '/tmp' }, 'index.html')).toThrow('Agent 会话不存在')
+  }, 60_000)
 
-    await expect(handler({}, '/tmp/preview.html')).rejects.toThrow('HTML 目录预览已禁用：无法安全绑定相对资源目录')
-    expect(registerCallCount).toBe(0)
-  })
+  test('Given 不可见会话请求 HTML When guard 拒绝 Then 不创建预览', async () => {
+    const { handlers } = loadAgentHandlers()
+    const registered = handlers.find(({ channel }) => channel === 'RESOLVE_HTML_PREVIEW_PATH')!
+    let created = false
+    const handler = compileHandler<(event: object, path: string) => Promise<unknown>>(registered, {
+      requireVisibleFileReadAccess: () => { throw new Error('Agent 会话不存在') },
+      htmlPreviewService: { create: () => { created = true } },
+    })
+    await expect(handler({ sender: {} }, '/managed/hidden/index.html')).rejects.toThrow('Agent 会话不存在')
+    expect(created).toBe(false)
+  }, 60_000)
 
   test('Given 附件 guard 返回后路径被替换 When 读取附件 Then 只消费授权 fd', async () => {
     const { handlers } = loadAgentHandlers()

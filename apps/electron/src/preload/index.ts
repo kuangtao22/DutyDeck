@@ -1146,6 +1146,9 @@ export interface ElectronAPI extends LanBridgePreloadApi, NormalPathManagementPr
   /** 解析 HTML 预览路径，并授权加载同目录的相对资源 */
   resolveHtmlPreviewPath: (filePath: string, access?: import('@proma/shared').FileAccessOptions) => Promise<import('@proma/shared').ResolvedFileUrl | null>
 
+  /** 关闭、刷新或切换 HTML 预览时释放本窗口的资源授权。 */
+  releaseHtmlPreview: (url: string) => Promise<void>
+
   /** 为内联 PDF 预览生成临时 HTML 文件，返回文件路径 */
   preparePdfPreview: (filePath: string, access?: import('@proma/shared').FileAccessOptions) => Promise<{ tmpHtmlUrl: string } | null>
 
@@ -2829,8 +2832,10 @@ const electronAPI: ElectronAPI = {
   },
 
   resolveHtmlPreviewPath: (filePath: string, access?: import('@proma/shared').FileAccessOptions) => {
-    return ipcRenderer.invoke('file:resolve-html-preview-path', filePath, access) as Promise<import('@proma/shared').ResolvedFileUrl | null>
+    return ipcRenderer.invoke(IPC_CHANNELS.RESOLVE_HTML_PREVIEW_PATH, filePath, access) as Promise<import('@proma/shared').ResolvedFileUrl | null>
   },
+
+  releaseHtmlPreview: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.RELEASE_HTML_PREVIEW, url) as Promise<void>,
 
   preparePdfPreview: (filePath: string, access?: import('@proma/shared').FileAccessOptions) => {
     return ipcRenderer.invoke('file:prepare-pdf-preview', filePath, access) as Promise<{ tmpHtmlUrl: string } | null>

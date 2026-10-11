@@ -13,6 +13,7 @@ import { File as PierreFile } from '@pierre/diffs/react'
 import { toast } from 'sonner'
 import type { FilePreviewMetadata } from '@proma/shared'
 import { cn } from '@/lib/utils'
+import { startHtmlPreviewLease, type HtmlPreviewLeaseState } from '@/lib/html-preview-lease'
 import { getFileParentPath } from '@/lib/file-utils'
 import {
   agentDiffPanelTabAtom,
@@ -345,7 +346,9 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
   const [officeHtmlUrl, setOfficeHtmlUrl] = React.useState('')
   const [officeText, setOfficeText] = React.useState('')
   // HTML 默认展示运行后的页面；用户可随时切换回源码高亮预览。
-  const [htmlPreviewUrl, setHtmlPreviewUrl] = React.useState('')
+  /** HTML 授权不进入文本缓存，随当前预览 effect 释放。 */
+  const [htmlPreviewState, setHtmlPreviewState] = React.useState<HtmlPreviewLeaseState>({ status: 'loading' })
+  const htmlPreviewUrl = htmlPreviewState.status === 'ready' ? htmlPreviewState.url : ''
   const [htmlSourceMode, setHtmlSourceMode] = React.useState(false)
   const [pdfSrc, setPdfSrc] = React.useState('')
   const [pdfZoom, setPdfZoom] = React.useState(100)
@@ -697,7 +700,6 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
     setOfficeHtml('')
     setOfficeHtmlUrl('')
     setOfficeText('')
-    setHtmlPreviewUrl('')
     setHtmlSourceMode(false)
     setPdfSrc('')
     setPdfZoom(100)
@@ -816,6 +818,16 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
     }))
   }, [updateMarkdownEditorViewState])
 
+  // HTML 渲染与源码读取并行；渲染授权失败不会阻止源码展示和复制。
+  React.useEffect(() => {
+    if (!isHtml) return
+    return startHtmlPreviewLease(
+      () => window.electronAPI.resolveHtmlPreviewPath(filePath, fileAccess),
+      (url) => window.electronAPI.releaseHtmlPreview(url),
+      setHtmlPreviewState,
+    )
+  }, [isHtml, filePath, fileAccess, previewContentVersion])
+
   // 主加载 effect：上下文变化（filePath/dirPath/gitRoot/previewOnly）时触发；
   // 纯预览仅在该文件收到 watcher 事件、焦点校验变化或手动刷新时重新读盘。
   // 命中缓存时跳过 loading 闪烁直接渲染；未命中走 IPC 拉取
@@ -845,7 +857,6 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
       setOfficeHtml(cached.officeHtml ?? '')
       setOfficeHtmlUrl(cached.officeHtmlUrl ?? '')
       setOfficeText(cached.officeText ?? '')
-      setHtmlPreviewUrl(cached.htmlPreviewUrl ?? '')
       setUnsupportedPreviewReason(cached.unsupportedPreviewReason ?? '')
       setPreviewMetadata(cached.previewMetadata)
       setPdfSrc(cached.pdfSrc ?? '')
@@ -868,7 +879,6 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
         setOfficeHtml('')
         setOfficeHtmlUrl('')
         setOfficeText('')
-        setHtmlPreviewUrl('')
         setUnsupportedPreviewReason('')
         setPreviewMetadata(undefined)
         setPdfSrc('')
@@ -901,7 +911,6 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
       try {
         let content = cached?.newContent ?? ''
         let old = cached?.oldContent ?? ''
-        let htmlUrl = cached?.htmlPreviewUrl ?? ''
 
         if (!cached) {
           // 即使从「改动」列表点开，XLSX/PPTX 也应保留原有的 Office 内联预览。
@@ -970,12 +979,6 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
               return
             }
             content = result?.content ?? ''
-            if (isHtml) {
-              const preview = await window.electronAPI.resolveHtmlPreviewPath(filePath, fileAccess)
-              if (cancelled) return
-              htmlUrl = preview?.url ?? ''
-              setHtmlPreviewUrl(htmlUrl)
-            }
           } else {
             const result = await window.electronAPI.getDiffContents({ dirPath, filePath, gitRoot, sessionId, baseRef })
             if (cancelled) return
@@ -991,7 +994,7 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
           setOldContent(old)
           setNewContent(content)
 
-          if (cacheKey) setPreviewContentCache(cacheKey, { oldContent: old, newContent: content, htmlPreviewUrl: htmlUrl || undefined })
+          if (cacheKey) setPreviewContentCache(cacheKey, { oldContent: old, newContent: content })
         }
 
         if (previewOnly && !MD_EXTS.has(ext) && content) {
@@ -2073,8 +2076,14 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
                   referrerPolicy="no-referrer"
                 />
               ) : (
-                <div className="flex h-full items-center justify-center px-6 text-center text-[13px] text-muted-foreground">
-                  无法加载 HTML 预览资源，请切换到源码预览或刷新后重试。
+                <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-[13px] text-muted-foreground" role={htmlPreviewState.status === 'error' ? 'alert' : 'status'}>
+                  <p>{htmlPreviewState.status === 'error' ? htmlPreviewState.error : '正在加载 HTML 预览…'}</p>
+                  {htmlPreviewState.status === 'error' && (
+                    <div className="flex items-center gap-3">
+                      <button type="button" className="rounded px-2 py-1 hover:bg-accent focus-visible:outline focus-visible:outline-ring" onClick={handleManualRefresh}>重新加载</button>
+                      <button type="button" className="rounded px-2 py-1 hover:bg-accent focus-visible:outline focus-visible:outline-ring" onClick={() => setHtmlSourceMode(true)}>查看源码</button>
+                    </div>
+                  )}
                 </div>
               )
             ) : isMarkdown ? (

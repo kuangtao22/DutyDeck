@@ -26,7 +26,26 @@ interface RegisteredBufferEntry {
   retained: boolean
 }
 
-type RegisteredEntry = RegisteredPathEntry | RegisteredBufferEntry
+/** 仅主进程可注册的受控资源读取器；目录能力由调用方绑定稳定身份。 */
+export type PromaResourceReader = (relativePath: string, signal: AbortSignal) => Promise<Buffer | null>
+
+/** 资源服务可公开的分类错误；cause 仅写入主进程诊断，不交给网页。 */
+export class PromaResourceError extends Error {
+  constructor(message: string, readonly status: 403 | 413 | 429 | 503, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'PromaResourceError'
+  }
+}
+
+interface RegisteredResourceEntry {
+  kind: 'resource'
+  read: PromaResourceReader
+  dispose: () => void
+  lastAccessedAt: number
+  retained: true
+}
+
+type RegisteredEntry = RegisteredPathEntry | RegisteredBufferEntry | RegisteredResourceEntry
 
 const ENTRY_TTL_MS = 60 * 60 * 1000
 const MAX_ENTRIES = 500
@@ -64,6 +83,8 @@ function isInsideDirectory(target: string, root: string): boolean {
 
 /** 单个独立的 opaque 本地文件授权 registry。 */
 export interface PromaFileProtocolRegistry {
+  /** 注册按需读取器，调用者负责内容预算；协议负责在途响应预算与释放。 */
+  registerResourceHandler: (read: PromaResourceReader, dispose: () => void) => string
   registerFilePath: (path: string) => string
   registerAuthorizedFile: (canonicalPath: string, content: Buffer) => string
   registerDirectoryPath: (path: string) => string
@@ -178,7 +199,9 @@ export function createPromaFileProtocolRegistry(
       return
     }
     if (parsed.protocol !== 'proma-file:') return
+    const entry = registeredEntries.get(parsed.hostname)
     registeredEntries.delete(parsed.hostname)
+    if (entry?.kind === 'resource') entry.dispose()
   }
 
   /** 将普通滑动 TTL token 提升为显式 release 前持续有效的 lease。 */
@@ -194,6 +217,49 @@ export function createPromaFileProtocolRegistry(
     if (!entry) return false
     entry.retained = true
     return true
+  }
+
+  /** 统一处理稳定快照的 Range、HEAD 与在途内存预算，不再打开磁盘路径。 */
+  function respondWithBuffer(request: Request, content: Buffer, path: string, cors = false): Response {
+    const range = parseByteRange(request.headers.get('range'), content.byteLength)
+    if (range === 'unsatisfiable') {
+      return new Response(null, {
+        status: 416,
+        headers: { 'accept-ranges': 'bytes', 'content-range': `bytes */${content.byteLength}` },
+      })
+    }
+    const start = range?.start ?? 0
+    const end = range?.end ?? content.byteLength - 1
+    const body = content.subarray(start, Math.max(start, end + 1))
+    const headers = new Headers({
+      'accept-ranges': 'bytes',
+      'content-length': String(body.byteLength),
+      'content-type': contentTypeForPath(path),
+    })
+    if (cors) {
+      headers.set('access-control-allow-origin', '*')
+      headers.set('cache-control', 'no-store')
+    }
+    if (range) headers.set('content-range', `bytes ${start}-${end}/${content.byteLength}`)
+    if (request.method === 'HEAD') return new Response(null, { status: range ? 206 : 200, headers })
+    const releaseBudget = reserveActiveResponse(body.byteLength)
+    if (!releaseBudget) return new Response('Too Many Requests', { status: 429 })
+    try {
+      /** 直接对已授权 Buffer 分块取视图，避免为完整响应再复制一份内容。 */
+      return new Response(createBufferStream(body, releaseBudget), { status: range ? 206 : 200, headers })
+    } catch (error) {
+      releaseBudget()
+      throw error
+    }
+  }
+
+  /** 注册必须显式释放的按需资源能力，不受普通文件 token TTL 影响。 */
+  function registerResourceHandler(read: PromaResourceReader, dispose: () => void): string {
+    const currentTime = (dependencies.now ?? Date.now)()
+    reserveEntryCapacity(currentTime, 1)
+    const token = randomUUID()
+    registeredEntries.set(token, { kind: 'resource', read, dispose, lastAccessedAt: currentTime, retained: true })
+    return `proma-file://${token}`
   }
 
   /** 解析并读取单个已授权请求，在成功交给 fetch 前续期 token。 */
@@ -213,35 +279,34 @@ export function createPromaFileProtocolRegistry(
       return new Response('Not Found', { status: 404 })
     }
 
+    if (entry.kind === 'resource') {
+      if (request.method !== 'GET' && request.method !== 'HEAD') return new Response('Method Not Allowed', { status: 405 })
+      let resourcePath: string
+      try {
+        resourcePath = decodeURIComponent(url.pathname.slice(1))
+      } catch {
+        return new Response('Bad Request', { status: 400 })
+      }
+      if (!resourcePath || /[\\:\0]/.test(resourcePath)
+        || resourcePath.split('/').some((segment) => !segment || segment === '.' || segment === '..')) {
+        return new Response('Bad Request', { status: 400 })
+      }
+      return entry.read(resourcePath, request.signal).then((content) => {
+        if (registeredEntries.get(token) !== entry || request.signal.aborted) return new Response('Not Found', { status: 404 })
+        if (content === null) return new Response('Not Found', { status: 404 })
+        return respondWithBuffer(request, content, resourcePath, true)
+      }).catch((error: unknown) => {
+        // 保留 helper 原始原因，避免未来的超时/权限/预算问题再次成为无诊断的空白预览。
+        console.warn('[HTML预览] 资源读取失败:', error)
+        return new Response(error instanceof PromaResourceError ? error.message : 'HTML 资源服务发生错误，请刷新后重试', {
+          status: error instanceof PromaResourceError ? error.status : 500,
+        })
+      })
+    }
     if (entry.kind === 'buffer') {
       if (url.pathname && url.pathname !== '/') return new Response('Not Found', { status: 404 })
-      const range = parseByteRange(request.headers.get('range'), entry.content.byteLength)
-      if (range === 'unsatisfiable') {
-        return new Response(null, {
-          status: 416,
-          headers: { 'accept-ranges': 'bytes', 'content-range': `bytes */${entry.content.byteLength}` },
-        })
-      }
-      const start = range?.start ?? 0
-      const end = range?.end ?? entry.content.byteLength - 1
-      const body = entry.content.subarray(start, Math.max(start, end + 1))
-      const headers = new Headers({
-        'accept-ranges': 'bytes',
-        'content-length': String(body.byteLength),
-        'content-type': contentTypeForPath(entry.canonicalPath),
-      })
-      if (range) headers.set('content-range', `bytes ${start}-${end}/${entry.content.byteLength}`)
       entry.lastAccessedAt = currentTime
-      if (request.method === 'HEAD') return new Response(null, { status: range ? 206 : 200, headers })
-      const releaseBudget = reserveActiveResponse(body.byteLength)
-      if (!releaseBudget) return new Response('Too Many Requests', { status: 429 })
-      try {
-        /** 直接对已授权 Buffer 分块取视图，避免为完整响应再复制一份内容。 */
-        return new Response(createBufferStream(body, releaseBudget), { status: range ? 206 : 200, headers })
-      } catch (error) {
-        releaseBudget()
-        throw error
-      }
+      return respondWithBuffer(request, entry.content, entry.canonicalPath)
     }
 
     let target = entry.root
@@ -318,6 +383,7 @@ export function createPromaFileProtocolRegistry(
   }
 
   return {
+    registerResourceHandler,
     registerFilePath: (path) => registerEntries([{ path, isDirectory: false }], false)[0]!,
     registerAuthorizedFile,
     registerDirectoryPath: (path) => registerEntries([{ path, isDirectory: true }], false)[0]!,
@@ -450,7 +516,7 @@ function contentTypeForPath(path: string): string {
   const contentTypes: Record<string, string> = {
     '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
     '.svg': 'image/svg+xml', '.pdf': 'application/pdf', '.json': 'application/json', '.js': 'text/javascript',
-    '.mjs': 'text/javascript', '.html': 'text/html', '.css': 'text/css', '.txt': 'text/plain', '.woff': 'font/woff',
+    '.mjs': 'text/javascript', '.htm': 'text/html', '.html': 'text/html', '.css': 'text/css', '.txt': 'text/plain', '.woff': 'font/woff',
     '.woff2': 'font/woff2',
   }
   return contentTypes[extension] ?? 'application/octet-stream'
@@ -489,4 +555,9 @@ export function revokePromaPathUrl(url: string): void {
 
 export function handlePromaFileRequest(request: Request): Promise<Response> | Response {
   return defaultRegistry.handleRequest(request)
+}
+
+/** 为 HTML 多文件预览注册受控读取入口，关闭时由调用者撤销 URL。 */
+export function registerPromaResourceHandler(read: PromaResourceReader, dispose: () => void): string {
+  return defaultRegistry.registerResourceHandler(read, dispose)
 }

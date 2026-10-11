@@ -370,3 +370,55 @@ describe('proma-file 目录授权', () => {
     expect(registry.retainPathUrl('proma-file://missing-token')).toBe(false)
   })
 })
+
+describe('HTML 受控资源协议', () => {
+  test('Given 受控资源 lease When 一小时后读取 htm/CSS/模块 Then 保持有效且支持 opaque iframe CORS', async () => {
+    let now = 0
+    const registry = createPromaFileProtocolRegistry({ now: () => now })
+    const requested: string[] = []
+    const url = registry.registerResourceHandler(async (path) => {
+      requested.push(path)
+      return Buffer.from(path)
+    }, () => {})
+    now += 2 * 60 * 60 * 1000
+    const response = await registry.handleRequest(new Request(`${url}/index.htm`))
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('text/html')
+    expect(response.headers.get('access-control-allow-origin')).toBe('*')
+    expect(await response.text()).toBe('index.htm')
+    expect(requested).toEqual(['index.htm'])
+    expect((await registry.handleRequest(new Request(`${url}/app.mjs`, { method: 'HEAD' }))).headers.get('content-type')).toBe('text/javascript')
+  })
+
+  test('Given 资源读取未完成 When 关闭预览 Then 回收一次且迟到内容不可继续暴露', async () => {
+    const registry = createPromaFileProtocolRegistry()
+    let complete!: (content: Buffer) => void
+    let disposed = 0
+    const url = registry.registerResourceHandler(() => new Promise((resolve) => { complete = resolve }), () => { disposed += 1 })
+    const pending = registry.handleRequest(new Request(`${url}/app.js`))
+    registry.revokePathUrl(url)
+    registry.revokePathUrl(url)
+    complete(Buffer.from('late'))
+    expect((await pending).status).toBe(404)
+    expect(disposed).toBe(1)
+  })
+
+  test('Given 非法或越界资源名 When 请求 Then 在资源读取前拒绝', async () => {
+    const registry = createPromaFileProtocolRegistry()
+    let reads = 0
+    const url = registry.registerResourceHandler(async () => { reads += 1; return Buffer.from('secret') }, () => {})
+    for (const path of ['%2e%2e%2fsecret', 'a%5cb', '%00', '%zz', 'C%3a/secret']) {
+      expect((await registry.handleRequest(new Request(`${url}/${path}`))).status).toBe(400)
+    }
+    expect((await registry.handleRequest(new Request(`${url}/index.html`, { method: 'POST' }))).status).toBe(405)
+    expect(reads).toBe(0)
+  })
+})
+
+test('Given 资源后端发生意外错误 When 响应预览 Then 报告服务错误且不泄漏内部路径', async () => {
+  const registry = createPromaFileProtocolRegistry()
+  const url = registry.registerResourceHandler(async () => { throw new Error('helper timeout /private/internal/path') }, () => {})
+  const response = await registry.handleRequest(new Request(`${url}/app.js`))
+  expect(response.status).toBe(500)
+  expect(await response.text()).not.toContain('/private/internal/path')
+})
