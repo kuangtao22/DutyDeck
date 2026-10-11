@@ -94,3 +94,16 @@ describe('Canvas 工作区轻量提示词', () => {
     expect(prompt).toContain('"title":"规范"')
   })
 })
+
+describe('运维资源引用提示词', () => {
+  test('只注入稳定身份和展示标签', () => {
+    const prompt = contextPrompt.buildReferencedServerOpsPrompt([{
+      scope: 'table', projectId: 'project-1', sourceId: 'source-1', database: 'app', table: 'users', label: '订单表',
+    }])
+    expect(prompt).toContain('<referenced_server_ops>')
+    expect(prompt).toContain('"sourceId":"source-1"')
+    expect(prompt).toContain('"table":"users"')
+    expect(prompt).toContain('订单表')
+    expect(prompt).not.toContain('password')
+  })
+})

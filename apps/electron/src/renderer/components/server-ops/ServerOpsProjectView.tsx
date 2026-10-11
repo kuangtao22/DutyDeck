@@ -1,6 +1,6 @@
 import * as React from 'react'
-import { ArrowUpRight, Blocks, ChevronDown, Database, DatabaseZap, FolderInput, FolderOpen, LoaderCircle, MoreHorizontal, Plus, Search, Server, ShieldCheck } from 'lucide-react'
-import type { ServerOpsProject } from '@proma/shared'
+import { ArrowUpRight, Blocks, ChevronDown, Database, DatabaseZap, FolderInput, FolderOpen, Link2, LoaderCircle, MoreHorizontal, Plus, Search, Server, ShieldCheck } from 'lucide-react'
+import type { ServerOpsAgentReference, ServerOpsProject } from '@proma/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { AgentActionHint } from '@/components/agent/AgentActionHint'
@@ -24,6 +24,8 @@ export interface ServerOpsProjectViewProps {
   projectSelector?: React.ReactNode
   /** 数据库卡片内打开禁用表编辑器，不触发连接导航。 */
   onManageDatabasePolicy?: (connection: ServerOpsConnection) => void
+  /** 将服务器、数据库或 Redis 连接引用到当前 Agent 会话。 */
+  onReferenceToSession?: (reference: ServerOpsAgentReference) => void
   /** 当前会话 Agent 生成的待审核连接草稿；项目归属由用户在这里确定。 */
   pendingDrafts?: React.ReactNode
   /** 当前项目；为空表示项目列表尚未就绪。 */
@@ -118,6 +120,7 @@ export function ServerOpsProjectView({
   onFilterKindChange,
   onSearchQueryChange,
   onManageDatabasePolicy,
+  onReferenceToSession,
   pendingDrafts,
   projectSelector,
 }: ServerOpsProjectViewProps): React.ReactElement {
@@ -255,6 +258,10 @@ export function ServerOpsProjectView({
                               <ArrowUpRight className="ml-auto size-3.5 text-foreground/30 transition-colors group-hover/card:text-foreground/60" aria-hidden="true" />
                             </div>
                             <div className="absolute right-2 top-3 flex items-center gap-0.5">
+                            {onReferenceToSession ? <Button type="button" variant="ghost" size="icon-sm" className="z-10 size-7 rounded-md text-muted-foreground focus-visible:ring-2" aria-label={`引用到会话：${connection.label}`} title="引用到会话" data-server-ops-reference-connection={connection.id}
+                              onClick={() => onReferenceToSession(connection.kind === 'ssh'
+                                ? { scope: 'server', projectId: connection.projectId, hostId: connection.hostId ?? '', label: connection.label }
+                                : { scope: 'connection', projectId: connection.projectId, sourceId: connection.sourceId ?? '', label: connection.label })}><Link2 className="size-3.5" aria-hidden="true" /></Button> : null}
                             {canManageDatabasePolicy ? <Button type="button" variant="ghost" size="icon-sm" className="size-7 rounded-md text-muted-foreground focus-visible:ring-2"
                               aria-label={`管理禁用表：${connection.label}`} title="管理禁用表" data-server-ops-database-policy={connection.id}
                               onClick={() => { onManageDatabasePolicy?.(connection) }}><ShieldCheck className="size-3.5" aria-hidden="true" /></Button> : null}

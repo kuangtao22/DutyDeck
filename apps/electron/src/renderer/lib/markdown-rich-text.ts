@@ -494,6 +494,11 @@ function serializeNamedMention(prefix: '&session' | '&todo' | '&calendar_event',
   return label ? `${prefix}:${id}::${encodeURIComponent(label)}` : `${prefix}:${id}`
 }
 
+/** 运维引用节点的 id 已是编码后的稳定身份，标签只用于人类可读回显。 */
+function serializeServerOpsMention(id: string, label: string | null): string {
+  return label ? `&ops:${id}::${encodeURIComponent(label)}` : `&ops:${id}`
+}
+
 function addMentionBoundary(serialized: string, element: HTMLElement): string {
   const nextText = element.nextSibling?.textContent ?? ''
   return nextText.length > 0 && !/^\s/u.test(nextText) ? `${serialized} ` : serialized
@@ -650,6 +655,7 @@ export function htmlToMarkdown(
         if (dataType === 'mention') {
           let serializedMention: string
           if (agentHistoryQuote) serializedMention = `&quote:${agentHistoryQuote}`
+          else if (referenceType === 'server_ops') serializedMention = serializeServerOpsMention(dataId, dataLabel)
           else if (referenceType === 'todo') serializedMention = serializeNamedMention('&todo', dataId, dataLabel)
           else if (referenceType === 'calendar_event') serializedMention = serializeNamedMention('&calendar_event', dataId, dataLabel)
           else if (suggestionChar === '/') serializedMention = `/skill:${dataId}`

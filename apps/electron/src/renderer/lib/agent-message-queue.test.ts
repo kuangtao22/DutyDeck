@@ -269,4 +269,17 @@ describe('queued message @file mention path decoding (Agent 侧真实路径)', (
       { type: 'text', value: ' 后续处理' },
     ])
   })
+
+  test('parses 运维资源引用并从 Agent 文本中移除协议标记', () => {
+    const text = '&ops:%7B%22scope%22%3A%22table%22%2C%22projectId%22%3A%22p%22%2C%22sourceId%22%3A%22s%22%2C%22database%22%3A%22app%22%2C%22table%22%3A%22users%22%7D::app.users 查询这张表'
+    const result = parseQueuedMessageMentions(text)
+    expect(result.cleanedText).toBe('查询这张表')
+    expect(result.mentionedServerOpsReferences).toEqual([{
+      scope: 'table', projectId: 'p', sourceId: 's', database: 'app', table: 'users', label: 'app.users',
+    }])
+    expect(getQueuedMessageDisplayParts(text)).toEqual([
+      { type: 'reference', referenceType: 'server_ops', id: text.split(' ')[0]!, label: 'app.users' },
+      { type: 'text', value: ' 查询这张表' },
+    ])
+  })
 })

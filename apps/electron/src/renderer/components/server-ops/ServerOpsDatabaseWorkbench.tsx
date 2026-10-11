@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { atom, useAtom, useSetAtom, useStore } from 'jotai'
 import { MoreHorizontal, Pencil, PlugZap, Trash2 } from 'lucide-react'
-import type { ServerOpsDataSource } from '@proma/shared'
+import type { ServerOpsAgentReference, ServerOpsDataSource } from '@proma/shared'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -40,13 +40,17 @@ export interface ServerOpsDatabaseWorkbenchProps {
   viewScope: string
   renderHeader: (actions: React.ReactNode) => React.ReactNode
   onSourceMutated?: (change: ServerOpsDataSourceMutation) => void
+  /** 将当前库或表引用到当前 Agent 会话。 */
+  onReferenceToSession?: (reference: ServerOpsAgentReference) => void
+  /** 当前项目稳定身份。 */
+  projectId?: string
 }
 
 /**
  * MySQL 工作台：连接管理、表浏览、实例诊断各有独立控制器。
  * 布局展开只改变父容器，不卸载控制器；全局仅保留轻量导航。
  */
-export function ServerOpsDatabaseWorkbench({ api, source, jumpHost, viewScope, renderHeader, onSourceMutated }: ServerOpsDatabaseWorkbenchProps): React.ReactElement {
+export function ServerOpsDatabaseWorkbench({ api, source, jumpHost, viewScope, renderHeader, onSourceMutated, onReferenceToSession, projectId }: ServerOpsDatabaseWorkbenchProps): React.ReactElement {
   /** SQLite 固定 main 范围，不提供 MySQL 实例级页面。 */
   const sqlite = source.engine === 'sqlite'
   /** 从当前 Jotai store 恢复本 Pane 的轻量导航，测试 Provider 也能隔离。 */
@@ -167,7 +171,7 @@ export function ServerOpsDatabaseWorkbench({ api, source, jumpHost, viewScope, r
           <TabsTrigger className={pageTabClass} value="query">SQL 查询</TabsTrigger>
         </TabsList>
         <TabsContent value="browse" forceMount className={contentClass}>
-          <ServerOpsSchemaBrowserView projection={schema} showDatabaseSelector={false} onSelectDatabase={selectDatabase} onOpenTable={schemaController.openTable} onBackToList={schemaController.backToList} onDetailTabChange={schemaController.setDetailTab} onLoadRows={schemaController.loadRows} onOpenCell={schemaController.openCell} onCloseCell={schemaController.closeCell} onApplyRowFilters={schemaController.applyRowFilters} onLoadFilterFields={schemaController.loadFilterFields} onRefresh={schemaController.refresh} onRefreshTables={schemaController.refreshTables} directoryWidth={navigation.directoryWidth} onDirectoryWidthChange={(directoryWidth) => updateNavigation({ directoryWidth })} />
+          <ServerOpsSchemaBrowserView projection={schema} showDatabaseSelector={false} onSelectDatabase={selectDatabase} onOpenTable={schemaController.openTable} onBackToList={schemaController.backToList} onDetailTabChange={schemaController.setDetailTab} onLoadRows={schemaController.loadRows} onOpenCell={schemaController.openCell} onCloseCell={schemaController.closeCell} onApplyRowFilters={schemaController.applyRowFilters} onLoadFilterFields={schemaController.loadFilterFields} onRefresh={schemaController.refresh} onRefreshTables={schemaController.refreshTables} directoryWidth={navigation.directoryWidth} onDirectoryWidthChange={(directoryWidth) => updateNavigation({ directoryWidth })} onReferenceToDatabase={onReferenceToSession ? (database) => onReferenceToSession({ scope: 'database', projectId: projectId ?? source.projectId ?? '', sourceId: source.id, database, label: `${source.label} · ${database}` }) : undefined} onReferenceToTable={onReferenceToSession ? (database, table) => onReferenceToSession({ scope: 'table', projectId: projectId ?? source.projectId ?? '', sourceId: source.id, database, table, label: `${database}.${table}` }) : undefined} />
         </TabsContent>
         <TabsContent value="query" className={contentClass}>
           <ServerOpsSqlQueryPanel api={api} source={source} sourceId={source.id} database="main" configurationKey={identity} available={readable} dialect="sqlite" />
@@ -181,7 +185,7 @@ export function ServerOpsDatabaseWorkbench({ api, source, jumpHost, viewScope, r
           <TabsTrigger className={`${SERVER_OPS_TAB_CLASS} min-w-14 focus-visible:ring-inset focus-visible:ring-offset-0`} value="database">数据库</TabsTrigger>
         </TabsList>
         {navigation.section === 'database'
-          ? <ServerOpsDatabaseSelector compact projection={schema} onSelectDatabase={selectDatabase} onRefresh={schemaController.refreshTables} />
+          ? <ServerOpsDatabaseSelector compact projection={schema} onSelectDatabase={selectDatabase} onRefresh={schemaController.refreshTables} onReferenceToDatabase={onReferenceToSession ? (database) => onReferenceToSession({ scope: 'database', projectId: projectId ?? source.projectId ?? '', sourceId: source.id, database, label: `${source.label} · ${database}` }) : undefined} />
           : <span className="flex h-8 items-center text-[11px] text-muted-foreground" data-server-ops-database-scope-label>全部数据库</span>}
       </div>
       <TabsContent value="instance" className={contentClass}>
@@ -200,7 +204,7 @@ export function ServerOpsDatabaseWorkbench({ api, source, jumpHost, viewScope, r
             {databasePages.map(([page, label]) => <TabsTrigger key={page} className={pageTabClass} value={page}>{label}</TabsTrigger>)}
           </TabsList> : null}
           <TabsContent value="browse" forceMount className={contentClass}>
-            <ServerOpsSchemaBrowserView projection={schema} showDatabaseSelector={false} onSelectDatabase={selectDatabase} onOpenTable={schemaController.openTable} onBackToList={schemaController.backToList} onDetailTabChange={schemaController.setDetailTab} onLoadRows={schemaController.loadRows} onOpenCell={schemaController.openCell} onCloseCell={schemaController.closeCell} onApplyRowFilters={schemaController.applyRowFilters} onLoadFilterFields={schemaController.loadFilterFields} onRefresh={schemaController.refresh} onRefreshTables={schemaController.refreshTables} directoryWidth={navigation.directoryWidth} onDirectoryWidthChange={(directoryWidth) => updateNavigation({ directoryWidth })} />
+            <ServerOpsSchemaBrowserView projection={schema} showDatabaseSelector={false} onSelectDatabase={selectDatabase} onOpenTable={schemaController.openTable} onBackToList={schemaController.backToList} onDetailTabChange={schemaController.setDetailTab} onLoadRows={schemaController.loadRows} onOpenCell={schemaController.openCell} onCloseCell={schemaController.closeCell} onApplyRowFilters={schemaController.applyRowFilters} onLoadFilterFields={schemaController.loadFilterFields} onRefresh={schemaController.refresh} onRefreshTables={schemaController.refreshTables} directoryWidth={navigation.directoryWidth} onDirectoryWidthChange={(directoryWidth) => updateNavigation({ directoryWidth })} onReferenceToDatabase={onReferenceToSession ? (database) => onReferenceToSession({ scope: 'database', projectId: projectId ?? source.projectId ?? '', sourceId: source.id, database, label: `${source.label} · ${database}` }) : undefined} onReferenceToTable={onReferenceToSession ? (database, table) => onReferenceToSession({ scope: 'table', projectId: projectId ?? source.projectId ?? '', sourceId: source.id, database, table, label: `${database}.${table}` }) : undefined} />
           </TabsContent>
           <TabsContent value="query" className={contentClass}>
             <ServerOpsSqlQueryPanel api={api} source={source} sourceId={source.id} database={schema.database} configurationKey={identity} available={readable && schema.collectedAt !== undefined} dialect={source.engine === 'postgresql' ? 'postgresql' : 'mysql'} />

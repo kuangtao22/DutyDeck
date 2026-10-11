@@ -11,6 +11,7 @@ import {
   Gauge,
   LoaderCircle,
   LogIn,
+  Link2,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -36,6 +37,7 @@ import type {
   ServerOpsAuditListInput,
   ServerOpsAuditListResult,
   ServerOpsAuditRecord,
+  ServerOpsAgentReference,
 } from '@proma/shared'
 import { currentAgentSessionIdAtom } from '@/atoms/agent-atoms'
 import {
@@ -112,6 +114,7 @@ import { ServerOpsDockerConsole } from './ServerOpsDockerConsole'
 import { useServerOpsTransferLeave } from './useServerOpsTransferLeave'
 import { useServerOpsViewPosition } from './useServerOpsViewPosition'
 import { createServerOpsLocalSqliteProbeDraft, importServerOpsLocalSqlite, resolveServerOpsLocalSqliteFileSelection } from './server-ops-local-sqlite-controller'
+import { insertServerOpsReferenceMention } from '@/lib/server-ops-reference'
 
 /** 新建数据源需要的项目服务器上下文。 */
 export interface ServerOpsProjectDataSourceHosts {
@@ -259,6 +262,8 @@ export interface ServerOpsWorkspaceViewProps {
   renderWorkspaceToolbar: (content?: ServerOpsWorkspaceToolbarContent) => React.ReactNode
   /** 当前项目名；用于统一头部返回按钮的提示。 */
   projectLabel?: string
+  /** 当前项目稳定身份，用于服务器引用的主进程复核。 */
+  projectId?: string
   /**
    * 返回项目视图。
    *
@@ -278,6 +283,8 @@ export interface ServerOpsWorkspaceViewProps {
   onAuditActorFilterChange?: (filter: ServerOpsAuditActor | 'all') => void
   onAuditOperationFilterChange?: (filter: ServerOpsAuditOperation | 'all') => void
   onRefreshAudit?: () => void
+  /** 将当前服务器引用到当前 Agent 会话。 */
+  onReferenceToSession?: (reference: ServerOpsAgentReference) => void
 }
 
 /** 生成概览 React 实例身份，使主机或 SSH 连接代次变化时清空内存快照。 */
@@ -492,6 +499,7 @@ export function ServerOpsWorkspaceView({
   renderWorkspaceToolbar,
   onBackToProject,
   projectLabel,
+  projectId,
   onCreateHost,
   onEditHost,
   onDeleteHost,
@@ -504,6 +512,7 @@ export function ServerOpsWorkspaceView({
   onAuditActorFilterChange,
   onAuditOperationFilterChange,
   onRefreshAudit,
+  onReferenceToSession,
 }: ServerOpsWorkspaceViewProps): React.ReactElement {
   /** 当前页签的显示元数据。 */
   const currentSection = SERVER_OPS_SECTIONS.find((section) => section.id === activeSection) ?? SERVER_OPS_OVERVIEW_SECTION
@@ -548,6 +557,7 @@ export function ServerOpsWorkspaceView({
           </div>
         ),
         connectionActions: selectedHost ? <>
+          {onReferenceToSession ? <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-[11px]" aria-label="引用服务器到会话" title="引用到会话" onClick={() => onReferenceToSession({ scope: 'server', projectId: projectId ?? selectedHost.projectId ?? '', hostId: selectedHost.id, label: selectedHost.name })}><Link2 className="size-3.5" />引用</Button> : null}
           <Badge variant="outline" className={cn('shrink-0 px-2 py-0 text-[10px] font-normal', connected ? 'border-emerald-500/40 text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')} data-server-ops-connection-badge>{connectionLabel}</Badge>
           {connected ? (
             <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-[11px]" aria-label="断开 SSH" data-server-ops-connection-action onClick={onDisconnect}>
@@ -1721,6 +1731,15 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
     const target = projectConnections.find((connection) => connection.id === connectionId)
     if (target !== undefined) handleSelectConnection(target)
   }
+  /** 将运维面板的稳定资源身份写入当前 Agent 会话，不把凭据或连接串带入消息。 */
+  const handleReferenceToSession = (reference: ServerOpsAgentReference): void => {
+    if (!paneActive || !currentAgentSessionId) {
+      toast.info('请先打开当前项目的 Agent 会话')
+      return
+    }
+    const inserted = insertServerOpsReferenceMention(currentAgentSessionId, reference)
+    if (!inserted) toast.info('当前会话输入框不可用，请先切换到 Agent 面板')
+  }
   /** 顶部导航由服务器与数据库详情共同复用，并提供当前项目连接切换。 */
   const renderWorkspaceToolbar = (content: ServerOpsWorkspaceToolbarContent = {}): React.ReactNode => (
     <ServerOpsWorkspaceToolbar
@@ -1771,6 +1790,7 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
       onSearchQueryChange={(query) => setProjectBrowseState({ ...projectBrowse, query })}
       onMoveConnection={projectsStatus === 'ready' ? handleMoveConnection : undefined}
       onManageDatabasePolicy={openDatabasePolicy}
+      onReferenceToSession={handleReferenceToSession}
     />
   )
 
@@ -1808,6 +1828,8 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
           auditOperationFilter={auditOperationFilter}
           onBackToProject={handleBackToProject}
           projectLabel={currentProject?.name ?? '未命名项目'}
+          projectId={currentProjectId ?? undefined}
+          onReferenceToSession={handleReferenceToSession}
           onCreateHost={handleCreateHost}
           onEditHost={handleEditHost}
           onDeleteHost={setPendingDeleteHost}
@@ -1830,6 +1852,8 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
           paneActive={paneActive}
           source={selectedDataSource}
           projectLabel={currentProject?.name ?? '未归属项目'}
+          projectId={currentProjectId ?? undefined}
+          onReferenceToSession={handleReferenceToSession}
           jumpHost={selectedDataSourceJumpHost === null ? null : {
             id: selectedDataSourceJumpHost.id,
             label: selectedDataSourceJumpHost.name,

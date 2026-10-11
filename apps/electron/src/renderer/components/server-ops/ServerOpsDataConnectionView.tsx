@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { atom, useAtom } from 'jotai'
 import { ArrowLeft, Database, DatabaseZap, Maximize2, Minimize2 } from 'lucide-react'
-import type { ServerOpsDataSource } from '@proma/shared'
+import type { ServerOpsAgentReference, ServerOpsDataSource } from '@proma/shared'
 import { isServerOpsPlaintextDirectAddress } from '@proma/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -30,6 +30,8 @@ export interface ServerOpsDataConnectionViewProps {
   source: ServerOpsDataSource
   /** 所属项目名，用于工具栏标注连接归属。 */
   projectLabel: string
+  /** 当前项目稳定身份，用于资源引用的主进程复核。 */
+  projectId?: string
   /** 经跳板时用于只读诊断与编辑的跳板主机；本机直连为 null。 */
   jumpHost: ServerOpsDataConnectionJumpHost | null
   /** 会话与 Pane 组成的轻量导航作用域。 */
@@ -43,6 +45,8 @@ export interface ServerOpsDataConnectionViewProps {
   onBackToProject: () => void
   /** 该连接被编辑或删除后由工作区重新读取连接列表。 */
   onSourceMutated?: (change: ServerOpsDataSourceMutation) => void
+  /** 将当前数据库/Redis 连接引用到当前 Agent 会话。 */
+  onReferenceToSession?: (reference: ServerOpsAgentReference) => void
 }
 
 /** 引擎展示名。 */
@@ -63,6 +67,7 @@ export function ServerOpsDataConnectionView({
   api,
   source,
   projectLabel,
+  projectId,
   jumpHost,
   viewScope = 'default',
   paneActive = true,
@@ -70,6 +75,7 @@ export function ServerOpsDataConnectionView({
   onOpenDrawer,
   onBackToProject,
   onSourceMutated,
+  onReferenceToSession,
 }: ServerOpsDataConnectionViewProps): React.ReactElement {
   /** 展开只属于当前挂载 Pane；关闭连接时自然释放，不影响另一个工作台。 */
   const [expandedAtom] = React.useState(() => atom(false))
@@ -167,6 +173,7 @@ export function ServerOpsDataConnectionView({
             </Tooltip>
           </TooltipProvider>
         ) : null}
+        {onReferenceToSession ? <Button type="button" size="sm" variant="ghost" className="h-7 gap-1 px-2 text-[11px]" aria-label="引用到会话" onClick={() => onReferenceToSession({ scope: 'connection', projectId: projectId ?? source.projectId ?? '', sourceId: source.id, label: source.label })}>引用到会话</Button> : null}
         {source.engine !== 'redis' ? <Button type="button" size="icon-sm" variant="ghost" aria-label={expanded ? '还原工作台' : '展开工作台'} onClick={() => setExpanded((previous) => !previous)}>{expanded ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}</Button> : null}
         {actions}
     </>,
@@ -174,7 +181,7 @@ export function ServerOpsDataConnectionView({
   return (
     <div className={cn('server-ops-workspace-container relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-content-area', expanded && 'fixed inset-0 z-[200]')} style={{ paddingTop: titlebarHeight }} data-server-ops-data-connection-view={source.id} data-server-ops-workbench-expanded={expanded}>
       {expanded ? <div className="titlebar-drag-region absolute inset-x-0 top-0" style={{ height: titlebarHeight }} aria-hidden="true" /> : null}
-      {source.engine !== 'redis' ? <ServerOpsDatabaseWorkbench key={`${viewScope}:${source.id}`} api={api} source={source} jumpHost={jumpHost} viewScope={viewScope} renderHeader={renderHeader} onSourceMutated={onSourceMutated} /> : <>
+      {source.engine !== 'redis' ? <ServerOpsDatabaseWorkbench key={`${viewScope}:${source.id}`} api={api} source={source} jumpHost={jumpHost} viewScope={viewScope} renderHeader={renderHeader} onSourceMutated={onSourceMutated} onReferenceToSession={onReferenceToSession} projectId={projectId ?? source.projectId} /> : <>
       {renderHeader()}
       <ServerOpsDataServicesPanel
         api={api}

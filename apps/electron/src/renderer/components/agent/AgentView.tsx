@@ -158,6 +158,7 @@ import {
 import { buildQuotedSelectionBlock, expandAgentHistoryQuoteMentions } from '@/lib/quoted-selection'
 import { INSERT_AGENT_INPUT_QUOTE_EVENT, type InsertAgentInputQuoteDetail } from '@/lib/agent-input-quote'
 import { bindAgentInputText } from '@/lib/agent-input-text'
+import { INSERT_SERVER_OPS_REFERENCE_EVENT, type InsertServerOpsReferenceDetail } from '@/lib/server-ops-reference'
 import { createClipboardPendingFile, createClipboardTextDraft, makeUniqueAttachmentName } from '@/lib/clipboard-text-attachment'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import {
@@ -823,6 +824,16 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
     window.addEventListener(INSERT_AGENT_INPUT_QUOTE_EVENT, handleInsertQuote)
     return () => window.removeEventListener(INSERT_AGENT_INPUT_QUOTE_EVENT, handleInsertQuote)
   }, [sessionId])
+  /** 运维面板点击“引用到会话”后，写入当前 Agent composer。 */
+  React.useEffect(() => {
+    const handleInsertServerOpsReference = (event: Event): void => {
+      const detail = (event as CustomEvent<InsertServerOpsReferenceDetail>).detail
+      if (!detail || detail.targetSessionId !== sessionId) return
+      detail.inserted = richTextInputRef.current?.insertServerOpsReference(detail.reference) ?? false
+    }
+    window.addEventListener(INSERT_SERVER_OPS_REFERENCE_EVENT, handleInsertServerOpsReference)
+    return () => window.removeEventListener(INSERT_SERVER_OPS_REFERENCE_EVENT, handleInsertServerOpsReference)
+  }, [sessionId])
   React.useEffect(() => {
     const handleInsertSessionReference = (event: Event): void => {
       const detail = (event as CustomEvent<InsertSessionReferenceMentionDetail>).detail
@@ -1199,6 +1210,7 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
         mentionedSkills: submittedPayload.mentions.mentionedSkills,
         mentionedMcpServers: submittedPayload.mentions.mentionedMcpServers,
         mentionedSessionIds: submittedPayload.mentions.mentionedSessionIds,
+        mentionedServerOpsReferences: submittedPayload.mentions.mentionedServerOpsReferences,
         mentionedTodoIds: submittedPayload.mentions.mentionedTodoIds,
         mentionedCalendarEventIds: submittedPayload.mentions.mentionedCalendarEventIds,
         ...(mediaAttachments ? { mediaAttachments } : {}),
@@ -2275,6 +2287,7 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
         mentionedSkills: payload.mentions.mentionedSkills,
         mentionedMcpServers: payload.mentions.mentionedMcpServers,
         mentionedSessionIds: payload.mentions.mentionedSessionIds,
+        mentionedServerOpsReferences: payload.mentions.mentionedServerOpsReferences,
         mentionedTodoIds: payload.mentions.mentionedTodoIds,
         mentionedCalendarEventIds: payload.mentions.mentionedCalendarEventIds,
         ...(queuedMediaAttachments
@@ -2490,6 +2503,7 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
       ...(mentions.mentionedSkills.length > 0 && { mentionedSkills: mentions.mentionedSkills }),
       ...(mentions.mentionedMcpServers.length > 0 && { mentionedMcpServers: mentions.mentionedMcpServers }),
       ...(mentions.mentionedSessionIds.length > 0 && { mentionedSessionIds: mentions.mentionedSessionIds }),
+      ...(mentions.mentionedServerOpsReferences.length > 0 && { mentionedServerOpsReferences: mentions.mentionedServerOpsReferences }),
       ...(mentions.mentionedTodoIds.length > 0 && { mentionedTodoIds: mentions.mentionedTodoIds }),
       ...(mentions.mentionedCalendarEventIds.length > 0 && { mentionedCalendarEventIds: mentions.mentionedCalendarEventIds }),
       ...(canvasNodeReferencesSnapshot.length > 0 && { canvasNodeReferences: canvasNodeReferencesSnapshot }),
@@ -2687,6 +2701,7 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
     const lastUserRawMessage = getUserTextFromSDKMessage(lastUserSDKMessage)!
     // 重试重发给 Agent 的消息：@file 路径还原为真实路径（持久化存的是编码原文）
     const lastUserMessage = parseQueuedMessageMentions(lastUserRawMessage).cleanedText
+    const retryMentions = parseQueuedMessageMentions(lastUserRawMessage)
 
     // 与主进程按 UUID 的原子删除同步更新当前 React 状态和 LRU cache，避免旧错误
     // 在下一轮回复开始前仍被页面渲染。旧会话没有 UUID 时保留历史，由主进程幂等处理。
@@ -2742,6 +2757,9 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
             canvasNodeReferences: [...lastUserSDKMessage._canvasNodeReferences],
             canvasNodeReferenceMode: 'exact' as const,
           }
+        : {}),
+      ...(retryMentions.mentionedServerOpsReferences.length > 0
+        ? { mentionedServerOpsReferences: retryMentions.mentionedServerOpsReferences }
         : {}),
     }).catch(console.error)
   }, [persistedSDKMessages, sessionId, agentChannelId, agentModelId, agentChannelProvider, currentWorkspaceId, streaming, setAgentStreamErrors, setStreamingStates, setMessagesCache, permissionMode])

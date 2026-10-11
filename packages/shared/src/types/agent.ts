@@ -1,6 +1,7 @@
 import { isGpt6AstraFamily, isGpt6LunaFamily, isGpt6SolFamily, isGpt61SolFamily } from '../utils/model-family'
 import type { ProviderType } from './channel'
 import type { CanvasNodeReference } from './canvas'
+import type { ServerOpsAgentReference } from './server-ops-agent-reference'
 
 /**
  * Agent 相关类型定义
@@ -1355,6 +1356,8 @@ export interface AgentSendInput {
   mentionedMcpServers?: string[]
   /** 用户通过会话引用 mention 指定的 Agent 会话 ID 列表 */
   mentionedSessionIds?: string[]
+  /** 用户通过 &ops 引用 mention 指定的运维资源身份列表。 */
+  mentionedServerOpsReferences?: ServerOpsAgentReference[]
   /** 用户通过 Todo 引用 mention 指定的 Todo ID 列表 */
   mentionedTodoIds?: string[]
   /** 用户通过日程引用 mention 指定的日程 ID 列表 */
@@ -1486,6 +1489,8 @@ export interface AgentQueueMessageInput {
   mentionedMcpServers?: string[]
   /** 用户通过 &session:xxx 引用的 Agent 会话 ID 列表 */
   mentionedSessionIds?: string[]
+  /** 用户通过 &ops 引用 mention 指定的运维资源身份列表。 */
+  mentionedServerOpsReferences?: ServerOpsAgentReference[]
   /** 用户通过 &todo:xxx 引用的 Todo ID 列表 */
   mentionedTodoIds?: string[]
   /** 用户通过 &calendar_event:xxx 引用的日程 ID 列表 */

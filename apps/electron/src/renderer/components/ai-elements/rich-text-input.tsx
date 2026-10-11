@@ -37,6 +37,7 @@ import {
   markdownToHtml,
 } from '@/lib/markdown-rich-text'
 import type { QuotedSelection } from '@/atoms/preview-atoms'
+import type { ServerOpsAgentReference } from '@proma/shared'
 import {
   buildAgentHistoryQuoteLabel,
   buildQuotedSelectionLabel,
@@ -57,6 +58,7 @@ import {
   getSessionReferenceDragData,
   type SessionReferenceDragItem,
 } from '@/lib/session-reference-drag'
+import { serializeServerOpsReference } from '@/lib/server-ops-reference'
 import {
   createMcpMentionSuggestion,
   createPlanningMentionSuggestion,
@@ -206,6 +208,8 @@ export interface RichTextInputHandle {
   insertFileMentions: (items: FilePanelDragItem[]) => boolean
   /** 在光标处插入会话引用（左侧会话行拖入时调用）。 */
   insertSessionMention: (item: SessionReferenceDragItem) => boolean
+  /** 在光标处插入服务器、数据库、库或表的运维资源引用。 */
+  insertServerOpsReference: (reference: ServerOpsAgentReference) => boolean
   /** 在光标处插入可定位的 Agent 历史引用 chip。 */
   insertAgentHistoryQuoteMention: (quote: QuotedSelection) => boolean
   /** 在光标处插入文件或 Vault 的选区引用 chip；可重复插入、多条并存。 */
@@ -587,10 +591,10 @@ export const RichTextInput = forwardRef<RichTextInputHandle, RichTextInputProps>
                 default: null,
                 parseHTML: (el: HTMLElement) => {
                   const value = el.getAttribute('data-mention-reference-type')
-                  return value === 'todo' || value === 'calendar_event' ? value : null
+                  return value === 'todo' || value === 'calendar_event' || value === 'server_ops' ? value : null
                 },
                 renderHTML: (attrs: Record<string, unknown>) => (
-                  attrs.referenceType === 'todo' || attrs.referenceType === 'calendar_event'
+                    attrs.referenceType === 'todo' || attrs.referenceType === 'calendar_event' || attrs.referenceType === 'server_ops'
                     ? { 'data-mention-reference-type': attrs.referenceType }
                     : {}
                 ),
@@ -649,6 +653,7 @@ export const RichTextInput = forwardRef<RichTextInputHandle, RichTextInputProps>
             if (quotePayload) chipClass = 'agent-history-quote-chip'
             else if (referenceType === 'todo') chipClass = 'todo-mention-chip'
             else if (referenceType === 'calendar_event') chipClass = 'calendar-event-mention-chip'
+            else if (referenceType === 'server_ops') chipClass = 'server-ops-mention-chip'
             else if (char === '/') chipClass = 'skill-mention-chip'
             else if (char === '#') chipClass = 'mcp-mention-chip'
             else if (char === '&') chipClass = 'session-mention-chip'
@@ -659,7 +664,7 @@ export const RichTextInput = forwardRef<RichTextInputHandle, RichTextInputProps>
                 'data-id': node.attrs.id,
                 'data-label': node.attrs.label,
                 'data-mention-suggestion-char': char,
-                ...(referenceType === 'todo' || referenceType === 'calendar_event'
+                ...(referenceType === 'todo' || referenceType === 'calendar_event' || referenceType === 'server_ops'
                   ? { 'data-mention-reference-type': referenceType }
                   : {}),
                 ...(quotePayload ? { 'data-mention-quote': quotePayload } : {}),
@@ -1107,6 +1112,27 @@ export const RichTextInput = forwardRef<RichTextInputHandle, RichTextInputProps>
         })
         .insertContent(' ')
         .run()
+    },
+    insertServerOpsReference(reference: ServerOpsAgentReference): boolean {
+      if (!editor || !editor.isEditable) return false
+      const marker = serializeServerOpsReference(reference)
+      const payload = marker.slice('&ops:'.length)
+      const separator = payload.indexOf('::')
+      if (separator < 0) return false
+      const id = payload.slice(0, separator)
+      editor.chain().focus()
+        .insertContent({
+          type: 'mention',
+          attrs: {
+            id,
+            label: reference.label,
+            mentionSuggestionChar: '&',
+            referenceType: 'server_ops',
+          },
+        })
+        .insertContent(' ')
+        .run()
+      return true
     },
     insertAgentHistoryQuoteMention(quote: QuotedSelection): boolean {
       if (!editor) return false

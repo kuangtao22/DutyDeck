@@ -1,13 +1,15 @@
 import { resolveSkillMentionName, EMPTY_SKILL_MENTION_NAMES } from './skill-mention-name'
 import type { AgentStreamState } from '@/atoms/agent-atoms'
 import type { QuotedSelection } from '@/atoms/preview-atoms'
-import type { CanvasNodeReference } from '@proma/shared'
+import type { CanvasNodeReference, ServerOpsAgentReference } from '@proma/shared'
 import {
   buildQuotedSelectionLabel,
   expandAgentHistoryQuoteMentions,
   parseQuotedSelectionMention,
 } from './quoted-selection'
 import { ENCODED_MENTION_VALUE_PATTERN, PLAIN_MENTION_VALUE_PATTERN } from './mention-patterns'
+import { SERVER_OPS_REFERENCE_VALUE_PATTERN } from './mention-patterns'
+import { parseServerOpsReference } from './server-ops-reference'
 
 export type QueueDropPlacement = 'before' | 'after'
 
@@ -255,6 +257,7 @@ export interface ParsedQueuedMessageMentions {
   mentionedSessionIds: string[]
   mentionedTodoIds: string[]
   mentionedCalendarEventIds: string[]
+  mentionedServerOpsReferences: ServerOpsAgentReference[]
 }
 
 export interface QueuedMessageSendPayload {
@@ -286,7 +289,7 @@ export async function submitQueuedMessagePayload(
 }
 
 /** 队列预览专用片段：保留原始消息用于发送，同时把引用协议渲染为可读芯片。 */
-export type QueuedMessageReferenceType = 'file' | 'skill' | 'mcp' | 'session' | 'todo' | 'calendar_event' | 'quote'
+export type QueuedMessageReferenceType = 'file' | 'skill' | 'mcp' | 'session' | 'todo' | 'calendar_event' | 'server_ops' | 'quote'
 
 export type QueuedMessageDisplayPart =
   | { type: 'text'; value: string }
@@ -354,11 +357,11 @@ export function queuedTextToParagraphHtml(text: string): string {
 }
 
 const REF_PATTERN = new RegExp(
-  String.raw`/skill:(?<skill>${PLAIN_MENTION_VALUE_PATTERN})|#mcp:(?<mcp>${PLAIN_MENTION_VALUE_PATTERN})|&session:(?<session>[A-Za-z0-9-]+)(?:(?:~|::)${ENCODED_MENTION_VALUE_PATTERN})?|&todo:(?<todo>[A-Za-z0-9-]+)(?:(?:~|::)${ENCODED_MENTION_VALUE_PATTERN})?|&calendar_event:(?<calendarEvent>[A-Za-z0-9-]+)(?:(?:~|::)${ENCODED_MENTION_VALUE_PATTERN})?`,
+  String.raw`/skill:(?<skill>${PLAIN_MENTION_VALUE_PATTERN})|#mcp:(?<mcp>${PLAIN_MENTION_VALUE_PATTERN})|&session:(?<session>[A-Za-z0-9-]+)(?:(?:~|::)${ENCODED_MENTION_VALUE_PATTERN})?|&todo:(?<todo>[A-Za-z0-9-]+)(?:(?:~|::)${ENCODED_MENTION_VALUE_PATTERN})?|&calendar_event:(?<calendarEvent>[A-Za-z0-9-]+)(?:(?:~|::)${ENCODED_MENTION_VALUE_PATTERN})?|(?<serverOps>&ops:${SERVER_OPS_REFERENCE_VALUE_PATTERN}(?:::(?:${SERVER_OPS_REFERENCE_VALUE_PATTERN}))?)`,
   'gu',
 )
 const DISPLAY_REFERENCE_PATTERN = new RegExp(
-  String.raw`&quote:(?<quote>[A-Za-z0-9%_.!~*'()-]+)|@file:(?<file>${ENCODED_MENTION_VALUE_PATTERN})|/skill:(?<skill>${PLAIN_MENTION_VALUE_PATTERN})|#mcp:(?<mcp>${PLAIN_MENTION_VALUE_PATTERN})|&session:(?<session>[A-Za-z0-9-]+)(?:(?:~|::)(?<sessionLabel>${ENCODED_MENTION_VALUE_PATTERN}))?|&todo:(?<todo>[A-Za-z0-9-]+)(?:(?:~|::)(?<todoLabel>${ENCODED_MENTION_VALUE_PATTERN}))?|&calendar_event:(?<calendarEvent>[A-Za-z0-9-]+)(?:(?:~|::)(?<calendarEventLabel>${ENCODED_MENTION_VALUE_PATTERN}))?`,
+  String.raw`&quote:(?<quote>[A-Za-z0-9%_.!~*'()-]+)|@file:(?<file>${ENCODED_MENTION_VALUE_PATTERN})|/skill:(?<skill>${PLAIN_MENTION_VALUE_PATTERN})|#mcp:(?<mcp>${PLAIN_MENTION_VALUE_PATTERN})|&session:(?<session>[A-Za-z0-9-]+)(?:(?:~|::)(?<sessionLabel>${ENCODED_MENTION_VALUE_PATTERN}))?|&todo:(?<todo>[A-Za-z0-9-]+)(?:(?:~|::)(?<todoLabel>${ENCODED_MENTION_VALUE_PATTERN}))?|&calendar_event:(?<calendarEvent>[A-Za-z0-9-]+)(?:(?:~|::)(?<calendarEventLabel>${ENCODED_MENTION_VALUE_PATTERN}))?|(?<serverOps>&ops:${SERVER_OPS_REFERENCE_VALUE_PATTERN}(?:::(?:${SERVER_OPS_REFERENCE_VALUE_PATTERN}))?)`,
   'gu',
 )
 
@@ -430,6 +433,16 @@ export function getQueuedMessageDisplayParts(
       referenceType = 'calendar_event'
       id = groups.calendarEvent
       rawLabel = groups.calendarEventLabel
+    } else if (groups.serverOps) {
+      const reference = parseServerOpsReference(groups.serverOps)
+      if (!reference) {
+        parts.push({ type: 'text', value: match[0] })
+        lastIndex = match.index + match[0].length
+        continue
+      }
+      parts.push({ type: 'reference', referenceType: 'server_ops', id: groups.serverOps, label: reference.label })
+      lastIndex = match.index + match[0].length
+      continue
     } else {
       continue
     }
@@ -466,14 +479,19 @@ export function parseQueuedMessageMentions(text: string): ParsedQueuedMessageMen
   const mentionedSessionIds: string[] = []
   const mentionedTodoIds: string[] = []
   const mentionedCalendarEventIds: string[] = []
+  const mentionedServerOpsReferences: ServerOpsAgentReference[] = []
 
   for (const match of text.matchAll(REF_PATTERN)) {
-    const { skill, mcp, session, todo, calendarEvent } = match.groups ?? {}
+    const { skill, mcp, session, todo, calendarEvent, serverOps } = match.groups ?? {}
     if (skill) mentionedSkills.push(skill)
     else if (mcp) mentionedMcpServers.push(mcp)
     else if (session) mentionedSessionIds.push(session)
     else if (todo) mentionedTodoIds.push(todo)
     else if (calendarEvent) mentionedCalendarEventIds.push(calendarEvent)
+    else if (serverOps) {
+      const reference = parseServerOpsReference(serverOps)
+      if (reference) mentionedServerOpsReferences.push(reference)
+    }
   }
 
   return {
@@ -493,6 +511,7 @@ export function parseQueuedMessageMentions(text: string): ParsedQueuedMessageMen
     mentionedSessionIds,
     mentionedTodoIds,
     mentionedCalendarEventIds,
+    mentionedServerOpsReferences,
   }
 }
 

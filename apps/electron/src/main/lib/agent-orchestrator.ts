@@ -21,7 +21,7 @@ import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { accessSync, constants, existsSync, mkdirSync, realpathSync } from 'node:fs'
 import { app } from 'electron'
-import type { AgentSendInput, AgentMessage, AgentGenerateTitleInput, AgentProviderAdapter, AgentSessionMeta, AgentToolMode, AgentActiveSessionSnapshot, AgentMediaAttachment, CanvasNodeReference, CodexOAuthCredentials, XaiOAuthCredentials, TypedError, SDKMessage, SDKAssistantMessage, AgentStreamPayload, AgentAssistantDeltaPayload, RewindSessionResult, SkillActivation } from '@proma/shared'
+import type { AgentSendInput, AgentMessage, AgentGenerateTitleInput, AgentProviderAdapter, AgentSessionMeta, AgentToolMode, AgentActiveSessionSnapshot, AgentMediaAttachment, CanvasNodeReference, CodexOAuthCredentials, XaiOAuthCredentials, TypedError, SDKMessage, SDKAssistantMessage, AgentStreamPayload, AgentAssistantDeltaPayload, RewindSessionResult, SkillActivation, ServerOpsAgentReference } from '@proma/shared'
 import {
   PROMA_DEFAULT_PERMISSION_MODE,
   AGENT_DEFAULT_TOOL_MODE,
@@ -68,7 +68,7 @@ import { getSettings } from './settings-service'
 import { buildSystemPrompt, buildDynamicContext } from './agent-prompt-builder'
 import { resolveProjectInstructions } from './project-instruction-resolver'
 import { combinePromaInstructionFiles } from './adapters/pi-resource-loader-overrides'
-import { MAX_CONTEXT_MESSAGES, buildContextPrompt, buildRecoveryPrompt, buildReferencedSessionsPrompt } from './agent-session-context-prompt'
+import { MAX_CONTEXT_MESSAGES, buildContextPrompt, buildRecoveryPrompt, buildReferencedSessionsPrompt, buildReferencedServerOpsPrompt } from './agent-session-context-prompt'
 import { buildReferencedPlanningPrompt } from './planning-reference-context'
 import { isServerOpsReadOnlyCommand, permissionService, revalidateSingleApprovalResult } from './agent-permission-service'
 import type { PermissionResult, CanUseToolOptions } from './agent-permission-service'
@@ -770,7 +770,7 @@ export class AgentOrchestrator {
     callbacks: SessionCallbacks,
     extensions: AgentRunExtensions = {},
   ): Promise<void> {
-    const { sessionId, userMessage, rawUserMessage, userMessageUuid, channelId, modelId, workspaceId: requestedWorkspaceId, additionalDirectories, permissionModeOverride, mentionedSkills, mentionedMcpServers, mentionedSessionIds, mentionedTodoIds, mentionedCalendarEventIds, automationContext, retryOfErrorUuid, canvasNodeReferences, mediaAttachments } = input
+    const { sessionId, userMessage, rawUserMessage, userMessageUuid, channelId, modelId, workspaceId: requestedWorkspaceId, additionalDirectories, permissionModeOverride, mentionedSkills, mentionedMcpServers, mentionedSessionIds, mentionedServerOpsReferences, mentionedTodoIds, mentionedCalendarEventIds, automationContext, retryOfErrorUuid, canvasNodeReferences, mediaAttachments } = input
     /** 受限内部运行可关闭 Workspace Skills，避免 Pi 把普通 Skill 目录注入系统提示。 */
     const runSkillsEnabled = extensions.skillsMode !== 'disabled'
     // Capture the focus once per turn. Later UI focus changes must not rewrite this reply's attribution.
@@ -1430,6 +1430,11 @@ export class AgentOrchestrator {
       if (referencedSessionsBlock) {
         enrichedMessage = `${referencedSessionsBlock}\n\n${enrichedMessage}`
         console.log(`[Agent 编排] 注入 referenced_sessions: ${mentionedSessionIds?.length ?? 0} sessions`)
+      }
+      const referencedServerOpsBlock = buildReferencedServerOpsPrompt(mentionedServerOpsReferences)
+      if (referencedServerOpsBlock) {
+        enrichedMessage = `${referencedServerOpsBlock}\n\n${enrichedMessage}`
+        console.log(`[Agent 编排] 注入 referenced_server_ops: ${mentionedServerOpsReferences?.length ?? 0} resources`)
       }
       if ((runWorkspaceSkillsEnabled && mentionedSkills?.length) || (runToolMode === 'standard' && mentionedMcpServers?.length)) {
         const toolLines: string[] = ['用户在消息中明确引用了以下工具，请在本次回复中主动调用：']
@@ -3145,6 +3150,7 @@ export class AgentOrchestrator {
     mentionedSkills?: string[],
     mentionedMcpServers?: string[],
     mentionedSessionIds?: string[],
+    mentionedServerOpsReferences?: ServerOpsAgentReference[],
     mentionedTodoIds?: string[],
     mentionedCalendarEventIds?: string[],
     canvasNodeReferences?: CanvasNodeReference[],
@@ -3179,6 +3185,8 @@ export class AgentOrchestrator {
     if (referencedSessionsBlock) {
       enrichedText = `${referencedSessionsBlock}\n\n${enrichedText}`
     }
+    const referencedServerOpsBlock = buildReferencedServerOpsPrompt(mentionedServerOpsReferences)
+    if (referencedServerOpsBlock) enrichedText = `${referencedServerOpsBlock}\n\n${enrichedText}`
     if (mentionedSkills?.length || mentionedMcpServers?.length) {
       const toolLines: string[] = ['用户在消息中明确引用了以下工具，请在本次回复中主动调用：']
       for (const slug of mentionedSkills ?? []) {

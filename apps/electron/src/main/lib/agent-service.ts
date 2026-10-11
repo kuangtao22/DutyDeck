@@ -1050,6 +1050,7 @@ async function queuePreparedAgentMessage(
     resolved.input.mentionedSkills,
     resolved.input.mentionedMcpServers,
     resolved.input.mentionedSessionIds,
+    resolved.input.mentionedServerOpsReferences,
     resolved.input.mentionedTodoIds,
     resolved.input.mentionedCalendarEventIds,
     resolved.references,

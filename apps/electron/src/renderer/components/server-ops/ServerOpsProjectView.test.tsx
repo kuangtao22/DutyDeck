@@ -81,6 +81,20 @@ function findDataElement(
 }
 
 describe('项目视图', () => {
+  test('Given 项目连接卡片 When 点击引用到会话 Then 回传稳定资源身份', () => {
+    const references: unknown[] = []
+    const props = { project, connections, selectedConnectionId: null, onSelectConnection: () => undefined,
+      onOpenDrawer: () => undefined, onAddConnection: () => undefined,
+      onReferenceToSession: (reference: unknown) => references.push(reference) }
+    const html = renderView(props)
+    expect(html).toContain('aria-label="引用到会话：应用服务器"')
+    const tree = ServerOpsProjectView(props)
+    const action = findDataElement(tree, 'data-server-ops-reference-connection', 'ssh:host-1') as React.ReactElement<{ onClick: () => void }> | null
+    expect(action).not.toBeNull()
+    action?.props.onClick()
+    expect(references).toEqual([{ scope: 'server', projectId: 'project-1', hostId: 'host-1', label: '应用服务器' }])
+  })
+
   test('Given 三类连接 When 显示卡片操作 Then 只有数据库显示禁用表按钮', () => {
     /** 策略点击与卡片导航分别记录，防止点击盾牌同时进入工作台。 */
     const managed: string[] = []

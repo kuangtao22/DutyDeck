@@ -179,6 +179,7 @@ const QUEUED_REFERENCE_STYLES = {
   quote: { icon: Quote, className: 'bg-primary/10 text-primary' },
   todo: { icon: ListTodo, className: 'bg-amber-500/15 text-amber-800 dark:text-amber-200' },
   calendar_event: { icon: CalendarDays, className: 'bg-cyan-500/15 text-cyan-800 dark:text-cyan-200' },
+  server_ops: { icon: Server, className: 'bg-emerald-500/15 text-emerald-800 dark:text-emerald-200' },
 } as const
 
 function QueuedMessagePreview({ text }: { text: string }): React.ReactElement {

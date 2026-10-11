@@ -47,6 +47,7 @@ export function createAgentQueueNowInput(candidate: AgentSubmitOrEnqueueInput): 
     mentionedSkills: candidate.mentionedSkills,
     mentionedMcpServers: candidate.mentionedMcpServers,
     mentionedSessionIds: candidate.mentionedSessionIds,
+    mentionedServerOpsReferences: candidate.mentionedServerOpsReferences,
     mentionedTodoIds: candidate.mentionedTodoIds,
     mentionedCalendarEventIds: candidate.mentionedCalendarEventIds,
     ...(Object.prototype.hasOwnProperty.call(candidate, 'mediaAttachments')

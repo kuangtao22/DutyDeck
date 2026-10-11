@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { atom, useAtom } from 'jotai'
-import { ChevronDown, ChevronLeft, ChevronRight, Columns3, Database, KeyRound, ListTree, ListFilter, RefreshCw, Search, Table2 } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Columns3, Database, KeyRound, Link2, ListTree, ListFilter, RefreshCw, Search, Table2 } from 'lucide-react'
 import type { ServerOpsDataRowFilters, ServerOpsDataSchemaCell, ServerOpsDataSchemaTableSummary } from '@proma/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -58,6 +58,9 @@ export interface ServerOpsSchemaBrowserViewProps {
   onDirectoryWidthChange?: (width: number) => void
   /** 工作台库级工具栏统一选库，独立表浏览仍保留自己的入口。 */
   showDatabaseSelector?: boolean
+  /** 将当前库或表引用到 Agent 会话。 */
+  onReferenceToDatabase?: (database: string) => void
+  onReferenceToTable?: (database: string, table: string) => void
 }
 
 /** 错误/刷新提示限制在当前区域；保留正文时明确提示旧数据。 */
@@ -75,12 +78,13 @@ export function ServerOpsDataReadStatus({ state, onRetry }: { state: ServerOpsSc
 }
 
 /** 库级工具栏复用目录投影；compact 仅收紧工作台嵌入形态，独立表浏览保持默认布局。 */
-export function ServerOpsDatabaseSelector({ projection, onSelectDatabase, onRefresh, children, compact = false }: {
+export function ServerOpsDatabaseSelector({ projection, onSelectDatabase, onRefresh, children, compact = false, onReferenceToDatabase }: {
   projection: ServerOpsSchemaBrowserProjection
   onSelectDatabase: (database: string) => void
   onRefresh: () => void
   children?: React.ReactNode
   compact?: boolean
+  onReferenceToDatabase?: (database: string) => void
 }): React.ReactElement {
   /** 选库控件在两种容器中共用，不复制任何请求或错误逻辑。 */
   const controls = <>
@@ -93,6 +97,7 @@ export function ServerOpsDatabaseSelector({ projection, onSelectDatabase, onRefr
         </SelectTrigger>
         <SelectContent className="z-[240]"><div className="max-h-72 overflow-y-auto">{projection.databases.map((database) => <SelectItem key={database} value={database}>{database}</SelectItem>)}</div></SelectContent>
       </Select>
+      {onReferenceToDatabase && projection.database ? <Button type="button" size="icon-sm" variant="ghost" className="shrink-0" aria-label="引用当前数据库到会话" title="引用当前数据库到会话" onClick={() => onReferenceToDatabase(projection.database!)}><Link2 className="size-3.5" /></Button> : null}
       <Button size="icon-sm" variant="ghost" className={compact ? 'size-8 shrink-0 rounded-md text-muted-foreground focus-visible:ring-2 [&_svg]:size-3.5' : undefined} aria-label="刷新数据库目录" title="刷新数据库目录" disabled={projection.status === 'loading'} onClick={onRefresh}><RefreshCw className="size-3.5" aria-hidden="true" /></Button>
       {children}
   </>
@@ -108,7 +113,7 @@ export function ServerOpsDatabaseSelector({ projection, onSelectDatabase, onRefr
 /** 持续表目录与右侧表工作区；窄面板目录通过局部 Dialog 覆盖。 */
 export function ServerOpsSchemaBrowserView({
   projection, onSelectDatabase, onOpenTable, onDetailTabChange, onLoadRows, onOpenCell, onCloseCell, onRefresh,
-  onRefreshTables = onRefresh, onApplyRowFilters, onLoadFilterFields,
+  onRefreshTables = onRefresh, onApplyRowFilters, onLoadFilterFields, onReferenceToDatabase, onReferenceToTable,
   directoryWidth = 190, onDirectoryWidthChange, showDatabaseSelector = true,
 }: ServerOpsSchemaBrowserViewProps): React.ReactElement {
   /** 临时界面状态不持久化业务内容。 */
@@ -136,11 +141,12 @@ export function ServerOpsSchemaBrowserView({
   /** 选择后关闭覆盖层，Radix 恢复触发器焦点。 */
   const selectTable = React.useCallback((table: string): void => { onOpenTable(table); setUi((previous) => ({ ...previous, directoryOpen: false })) }, [onOpenTable, setUi])
   /** 目录条目仅随清单、选中表或点击动作变化，筛选面板和行状态不重建整份列表。 */
-  const directoryEntries = React.useMemo(() => filtered.map((table) => <li key={table.name}>
-    <button type="button" className={cn('flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40', projection.selectedTable === table.name && 'bg-accent/70 font-medium text-accent-foreground')} aria-current={projection.selectedTable === table.name ? 'true' : undefined} data-server-ops-schema-table={table.name} onClick={() => selectTable(table.name)} title={`${table.engine ?? '未知引擎'} · 约 ${formatServerOpsSchemaCount(table.rows)} 行 · ${formatServerOpsSchemaBytes(table.sizeBytes)}`}>
+  const directoryEntries = React.useMemo(() => filtered.map((table) => <li key={table.name} className="flex min-w-0 items-center gap-1">
+    <button type="button" className={cn('flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40', projection.selectedTable === table.name && 'bg-accent/70 font-medium text-accent-foreground')} aria-current={projection.selectedTable === table.name ? 'true' : undefined} data-server-ops-schema-table={table.name} onClick={() => selectTable(table.name)} title={`${table.engine ?? '未知引擎'} · 约 ${formatServerOpsSchemaCount(table.rows)} 行 · ${formatServerOpsSchemaBytes(table.sizeBytes)}`}>
       {table.type === 'view' ? <Columns3 className="size-3.5 shrink-0 text-muted-foreground" /> : <Table2 className="size-3.5 shrink-0 text-muted-foreground" />}<span className="min-w-0 flex-1 truncate">{table.name}</span>
     </button>
-  </li>), [filtered, projection.selectedTable, selectTable])
+    {onReferenceToTable && projection.database ? <Button type="button" size="icon-sm" variant="ghost" className="size-7 shrink-0" aria-label={`引用表 ${table.name} 到会话`} title="引用到会话" onClick={() => onReferenceToTable(projection.database!, table.name)}><Link2 className="size-3" /></Button> : null}
+  </li>), [filtered, projection.database, projection.selectedTable, selectTable, onReferenceToTable])
   /** 限制目录宽度，保障右侧最小可读空间。 */
   const resize = (width: number): void => onDirectoryWidthChange?.(Math.min(240, Math.max(160, width)))
   /** 宽窄模式复用的目录内容。 */
@@ -168,7 +174,7 @@ export function ServerOpsSchemaBrowserView({
   return (
     <div ref={containerRef} className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" style={{ containerType: 'inline-size', containerName: 'db-browser', '--directory-width': `${directoryWidth}px` } as React.CSSProperties} data-server-ops-schema-browser={projection.database ?? 'none'}>
       <style>{'.db-table-directory,.db-directory-resize{display:none}.db-browser-body{display:flex}@container db-browser (min-width:720px){.db-table-directory,.db-directory-resize{display:block}.db-directory-trigger,.db-directory-toolbar{display:none}.db-browser-body{display:grid;grid-template-columns:var(--directory-width) 4px minmax(0,1fr)}}'}</style>
-      {showDatabaseSelector ? <ServerOpsDatabaseSelector projection={projection} onSelectDatabase={onSelectDatabase} onRefresh={onRefreshTables}>{projection.database === null ? null : directoryToggle}</ServerOpsDatabaseSelector>
+      {showDatabaseSelector ? <ServerOpsDatabaseSelector projection={projection} onSelectDatabase={onSelectDatabase} onRefresh={onRefreshTables} onReferenceToDatabase={onReferenceToDatabase}>{projection.database === null ? null : directoryToggle}</ServerOpsDatabaseSelector>
         : projection.database !== null ? <div className={cn(SERVER_OPS_TOOLBAR_CLASS, 'db-directory-toolbar')}>{directoryToggle}<span className="min-w-0 truncate text-xs text-muted-foreground">{projection.tablesTruncated ? '已加载 ' : ''}{projection.tables.length} 张表</span></div> : null}
       <div className={cn('min-h-0 min-w-0 flex-1 overflow-hidden', projection.database === null ? 'flex' : 'db-browser-body')}>
         {projection.database !== null ? <>
@@ -186,6 +192,7 @@ export function ServerOpsSchemaBrowserView({
               {/* 筛选入口复用相邻页签的尺寸、圆角和状态底色，保持同一行控件一致。 */}
               {projection.detailTab === 'data' && onApplyRowFilters && onLoadFilterFields ? <Button type="button" size="sm" variant="ghost" className={cn(SERVER_OPS_TAB_CLASS, 'py-1 active:scale-100 [&_svg]:size-3.5')} data-state={ui.filterOpen || projection.rowFilters !== null ? 'active' : 'inactive'} aria-expanded={ui.filterOpen} aria-controls={filterPanelId} onClick={() => setUi((previous) => ({ ...previous, filterOpen: !previous.filterOpen }))}><ListFilter className="size-3.5" />筛选{projection.rowFilters ? <span className="rounded bg-primary/10 px-1 text-[10px] tabular-nums text-primary">{projection.rowFilters.conditions.length}</span> : null}<ChevronDown className={cn('size-3 transition-transform', ui.filterOpen && 'rotate-180')} /></Button> : null}
               <TabsList className="h-8 shrink-0 justify-start gap-0.5 bg-transparent p-0" aria-label="表详情分区">{([['data', '数据'], ['structure', '结构'], ['indexes', '索引'], ['properties', '属性']] as const).map(([id, label]) => <TabsTrigger key={id} value={id} className={SERVER_OPS_TAB_CLASS} data-server-ops-schema-detail-tab={id}>{label}</TabsTrigger>)}</TabsList>
+              {onReferenceToTable && projection.database && projection.selectedTable ? <Button size="icon-sm" variant="ghost" aria-label="引用当前表到会话" title="引用到会话" onClick={() => onReferenceToTable(projection.database!, projection.selectedTable!)}><Link2 className="size-3.5" /></Button> : null}
               <Button size="icon-sm" variant="ghost" className="ml-auto" aria-label="刷新当前表页面" onClick={onRefresh}><RefreshCw className="size-3.5" /></Button>
             </div>
             <TabsContent value="data" className="m-0 flex min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden">

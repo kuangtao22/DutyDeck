@@ -114,6 +114,7 @@ export * from './vault'
 export * from './server-ops-agent-read'
 export * from './server-ops-database-agent-policy'
 export * from './server-ops-agent-access-impact'
+export * from './server-ops-agent-reference'
 
 export * from './api-workbench'
 export * from './api-workbench-base-url'
