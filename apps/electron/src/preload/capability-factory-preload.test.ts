@@ -37,3 +37,24 @@ describe('编排工厂 preload', () => {
     expect(listener).toBeUndefined()
   })
 })
+
+
+test('Given 模型设置 When preload 调用 Then 完整转发选择和乐观锁', async () => {
+  const calls: unknown[] = []
+  const api = createCapabilityFactoryPreload(async (channel, command) => { calls.push({ channel, command }); return { currentVersion: 2 } })
+  const input = { sessionId: 's', sceneId: 'a', selection: { slots: { main: { channelId: 'c', modelId: 'm' } } }, expectedState: { currentVersion: 1, draft: null } }
+  expect(await api.invoke('setModelSelection', input)).toMatchObject({ currentVersion: 2 })
+  expect(calls).toEqual([{ channel: CAPABILITY_FACTORY_CHANNELS.INVOKE, command: { method: 'setModelSelection', input } }])
+})
+
+
+test('Given 实验命令 When preload 转发 Then 保留会话与冻结版本身份', async () => {
+  const messages: unknown[] = []
+  const api = createCapabilityFactoryPreload(async (_channel, command) => { messages.push(command); return null })
+  await api.invoke('advanceExperiment', { sessionId: 's', sceneId: 'scene', experimentId: 'e', expectedRevision: 2 })
+  await api.invoke('getExperiment', { sessionId: 's', sceneId: 'scene', experimentId: 'e', detailsSplit: 'held-out' })
+  expect(messages).toEqual([
+    { method: 'advanceExperiment', input: { sessionId: 's', sceneId: 'scene', experimentId: 'e', expectedRevision: 2 } },
+    { method: 'getExperiment', input: { sessionId: 's', sceneId: 'scene', experimentId: 'e', detailsSplit: 'held-out' } },
+  ])
+})

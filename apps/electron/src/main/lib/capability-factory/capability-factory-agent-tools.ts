@@ -7,6 +7,7 @@
  */
 import { Type } from 'typebox'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
+import { parseCapabilityFactoryCommand } from '@proma/shared'
 import type { CapabilityFactoryBatchRequest, CapabilitySceneDefinition } from '@proma/shared'
 import type { CapabilityFactoryAgentFacade } from './capability-factory-agent-facade'
 
@@ -24,6 +25,8 @@ export const CAPABILITY_FACTORY_AGENT_READ_TOOL_NAMES = [
   'factory_list_deliveries',
   'factory_list_batches',
   'factory_get_batch',
+  'factory_get_experiment',
+  'factory_list_experiments',
 ] as const
 
 /** 会发起模型调用或长任务的工具；计划模式必须整体拒绝。 */
@@ -31,6 +34,9 @@ export const CAPABILITY_FACTORY_AGENT_RUN_TOOL_NAMES = [
   'factory_run_scene',
   'factory_run_step',
   'factory_run_batch',
+  'factory_create_experiment',
+  'factory_advance_experiment',
+  'factory_cancel_experiment',
 ] as const
 
 /** 两段式修改工具；apply 必须经过宿主真实授权。 */
@@ -76,6 +82,19 @@ export function buildCapabilityFactoryAgentTools(
     expected: Type.Optional(Type.Unknown()),
     fromRunId: Type.Optional(entityId),
   }, { additionalProperties: false })
+  /** 本地模型定位只允许渠道与模型身份，禁止凭据及额外供应商配置。 */
+  const modelReference = Type.Object({
+    channelId: Type.String({ minLength: 1, maxLength: 128, pattern: '\\S' }),
+    modelId: Type.String({ minLength: 1, maxLength: 512, pattern: '\\S' }),
+  }, { additionalProperties: false })
+  /** 工具边界保留本地绑定；槽位名称沿用场景已有格式，允许中文和点号。 */
+  const modelSelection = Type.Object({
+    slots: Type.Record(Type.String(), modelReference, {
+      maxProperties: 256,
+      propertyNames: { minLength: 1, maxLength: 512, pattern: '\\S', not: { enum: ['__proto__', 'constructor', 'prototype'] } },
+    }),
+    review: Type.Optional(modelReference),
+  }, { additionalProperties: false })
   const adoptionProposal = Type.Object({
     problem: Type.String({ minLength: 1, maxLength: 240 }),
     expectedBenefit: Type.String({ minLength: 1, maxLength: 240 }),
@@ -93,7 +112,7 @@ export function buildCapabilityFactoryAgentTools(
     Type.Object({ kind: Type.Literal('deleteScene'), sceneId }, { additionalProperties: false }),
     Type.Object({ kind: Type.Literal('discardDraft'), sceneId }, { additionalProperties: false }),
     Type.Object({
-      kind: Type.Literal('adoptDraft'), sceneId, scope: Type.Optional(adoptionScope), testedBatchId: Type.Optional(entityId),
+      kind: Type.Literal('adoptDraft'), sceneId, scope: Type.Optional(adoptionScope), testedBatchId: Type.Optional(entityId), testedExperimentId: Type.Optional(entityId),
       proposal: adoptionProposal,
     }, { additionalProperties: false }),
     Type.Object({ kind: Type.Literal('rollback'), sceneId, targetVersion: Type.Integer({ minimum: 1 }) }, { additionalProperties: false }),
@@ -135,6 +154,7 @@ export function buildCapabilityFactoryAgentTools(
       name: 'factory_prepare_draft',
       label: '准备场景草案',
       description: 'Step 1 of 2 for changing a scene. Computes exactly what would change and returns a preparedId plus a frozen snapshot; nothing is written yet. A definition identical to the current one is rejected as "no actual change". If the scene changes before you apply, the preparedId becomes invalid and you must prepare again. Continue with factory_apply_draft within the authorized optimization task; draft writes do not require a separate human confirmation and do not change the live version. '
+        + 'For prompt-only optimization, change only step prompts and preserve modelSlots, modelSelection (including execution channels and review model), acceptance and stepAcceptances exactly as read from the scene. '
         + 'Before you shape a definition, apply the rule from your factory guidance: a scene orchestrates only what the model must do (llm/extract steps) — deterministic local logic belongs to the input/output boundary, not to the flow.',
       parameters: Type.Object({
         sceneId,
@@ -161,6 +181,7 @@ export function buildCapabilityFactoryAgentTools(
           steps: Type.Array(Type.Record(Type.String(), Type.Unknown()), { maxItems: 64 }),
           capabilities: Type.Array(Type.Record(Type.String(), Type.Unknown()), { maxItems: 32 }),
           modelSlots: Type.Array(Type.Record(Type.String(), Type.Unknown()), { maxItems: 8 }),
+          modelSelection: Type.Optional(modelSelection),
           acceptance: Type.Object({
             criteria: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 32 }),
             judgePrompt: Type.String({ maxLength: 4000 }),
@@ -290,7 +311,7 @@ export function buildCapabilityFactoryAgentTools(
     sdk.defineTool({
       name: 'factory_prepare_operation',
       label: '准备工厂操作',
-      description: 'Step 1 of 2 for scene lifecycle, draft adoption/discard, rollback, export, dataset changes, or stub deletion. Freezes the exact target state and returns an approval snapshot; writes nothing. For a single-block adoption, explicitly use adoptDraft scope kind=step or kind=stepAcceptance; omitting scope means the WHOLE draft. Unselected draft changes remain pending. Partial scope MUST NOT include testedBatchId because whole-draft evidence cannot prove a partial adoption. Every new adoptDraft request MUST include proposal with a concrete problem and expected benefit; risk is optional. Proposal is an Agent judgment awaiting review, never a test conclusion. The host separately derives verified benefits, current problems, remaining risks, and validation scope only from matching test evidence. Legacy internal calls without proposal remain readable through the exact draft diff and note.',
+      description: 'Step 1 of 2 for scene lifecycle, draft adoption/discard, rollback, export, dataset changes, or stub deletion. Freezes the exact target state and returns an approval snapshot; writes nothing. For a single-block adoption, explicitly use adoptDraft scope kind=step or kind=stepAcceptance; omitting scope means the WHOLE draft. Unselected draft changes remain pending. Partial scope MUST NOT include testedBatchId because whole-draft evidence cannot prove a partial adoption. testedExperimentId may certify a partial adoption only when the host verifies the actual merged definition exactly matches the frozen tested candidate. First save the candidate prompt into the existing draft through its approval flow, preserving other pending blocks; experiments never overwrite drafts. Every new adoptDraft request MUST include proposal with a concrete problem and expected benefit; risk is optional. Proposal is an Agent judgment awaiting review, never a test conclusion. The host separately derives verified benefits, current problems, remaining risks, and validation scope only from matching test evidence. Legacy internal calls without proposal remain readable through the exact draft diff and note.',
       parameters: Type.Object({ operation }, { additionalProperties: false }),
       async execute(_id, input) { return result(facade.prepareOperation(input.operation)) },
     }),
@@ -300,6 +321,55 @@ export function buildCapabilityFactoryAgentTools(
       description: 'Step 2 of 2: apply exactly one prepared operation after host authorization. Only a live preparedId is accepted; changed or missing target snapshots fail closed. Draft adoption ALWAYS waits for an explicit human approval dialog, even in bypassPermissions; do not ask a separate chat confirmation before calling this tool. Dataset preparation can proceed autonomously; destructive operations require approval. testedBatchId adoption is independently verified by the host.',
       parameters: Type.Object({ preparedId: Type.String({ minLength: 1, maxLength: 64 }) }, { additionalProperties: false }),
       async execute(_id, input) { return result(await facade.applyOperation(input.preparedId)) },
+    }),
+    sdk.defineTool({
+      name: 'factory_create_experiment', label: '创建冻结实验',
+      description: 'Freeze one prompt candidate, protocol, source-grouped splits and call/time limits without running models or overwriting the draft. Use complete/partial/unverified labelStatus. Only optimization details are returned by default. Exposure is procedural, not a guarantee against file-tool access.',
+      parameters: Type.Object({
+        sceneId, expectedVersion: Type.Integer({ minimum: 1 }), datasetId: entityId, targetStepId: entityId,
+        candidatePrompt: Type.String({ minLength: 1, maxLength: 100000 }),
+        protocol: Type.Object({
+          protocolVersion: Type.String({ minLength: 1, maxLength: 128 }), scorerVersion: Type.Literal(1),
+          primaryMetric: Type.Union([Type.Literal('f1'), Type.Literal('business-error-rate')]),
+          mode: Type.Union([Type.Literal('exact-value'), Type.Literal('tuple-set')]),
+          outputPath: Type.String({ maxLength: 1024 }), expectedPath: Type.String({ maxLength: 1024 }),
+          tupleFields: Type.Array(Type.String({ maxLength: 1024 }), { maxItems: 128, uniqueItems: true }),
+          normalization: Type.Object({ trim: Type.Boolean(), caseFold: Type.Boolean(), arrayOrder: Type.Union([Type.Literal('ordered'), Type.Literal('set')]) }, { additionalProperties: false }),
+          requireReview: Type.Boolean(),
+        }, { additionalProperties: false }),
+        assignments: Type.Array(Type.Object({ caseId: entityId, sourceGroupId: entityId, split: Type.Union([Type.Literal('optimization'), Type.Literal('validation'), Type.Literal('held-out')]), labelStatus: Type.Union([Type.Literal('complete'), Type.Literal('partial'), Type.Literal('unverified')]) }, { additionalProperties: false }), { minItems: 3, maxItems: 30 }),
+        limits: Type.Object({ maxCalls: Type.Integer({ minimum: 1, maximum: 1000 }), maxTransportAttempts: Type.Integer({ minimum: 1, maximum: 2000 }), durationMs: Type.Integer({ minimum: 1, maximum: 86400000 }) }, { additionalProperties: false }),
+        heldOutExposure: Type.Union([Type.Literal('declared-unseen'), Type.Literal('exposed'), Type.Literal('unknown')]),
+      }, { additionalProperties: false }),
+      async execute(_id, input) {
+        /** 复用 IPC 严格校验，工具层不能伪造协议或宿主字段。 */
+        const command = parseCapabilityFactoryCommand({ method: 'createExperiment', input: { ...input, sessionId: 'agent' } })
+        if (command.method !== 'createExperiment') throw new Error('实验请求无效')
+        const { sessionId: _sessionId, ...request } = command.input
+        return result(facade.createExperiment(request))
+      },
+    }),
+    sdk.defineTool({
+      name: 'factory_get_experiment', label: '读取实验',
+      description: 'Read experiment metadata and optimization details by default. Explicit validation or held-out details mark observable exposure and can invalidate optimization claims.',
+      parameters: Type.Object({ sceneId, experimentId: entityId, detailsSplit: Type.Optional(Type.Union([Type.Literal('optimization'), Type.Literal('validation'), Type.Literal('held-out')])) }, { additionalProperties: false }),
+      async execute(_id, input) { return result(facade.getExperiment(input.sceneId, input.experimentId, input.detailsSplit)) },
+    }),
+    sdk.defineTool({
+      name: 'factory_list_experiments', label: '列出实验', description: 'List persisted experiment summaries without sample labels.',
+      parameters: Type.Object({ sceneId }, { additionalProperties: false }),
+      async execute(_id, input) { return result(facade.listExperiments(input.sceneId)) },
+    }),
+    sdk.defineTool({
+      name: 'factory_advance_experiment', label: '推进一组实验',
+      description: 'Run exactly the next split within the same 3 comparison rounds and 60 run units used by other tools. Only after optimization may candidatePrompt be revised once. Validation freezes it; failures stop later calls. Never automatically adopt or overwrite a draft.',
+      parameters: Type.Object({ sceneId, experimentId: entityId, expectedRevision: Type.Integer({ minimum: 1 }), candidatePrompt: Type.Optional(Type.String({ minLength: 1, maxLength: 100000 })) }, { additionalProperties: false }),
+      async execute(_id, input) { return result(await facade.advanceExperiment(input)) },
+    }),
+    sdk.defineTool({
+      name: 'factory_cancel_experiment', label: '取消实验', description: 'Stop the experiment while preserving spent budget and completed evidence; cancellation does not refund quota.',
+      parameters: Type.Object({ sceneId, experimentId: entityId }, { additionalProperties: false }),
+      async execute(_id, input) { return result(facade.cancelExperiment(input.sceneId, input.experimentId)) },
     }),
     sdk.defineTool({
       name: 'factory_run_batch',

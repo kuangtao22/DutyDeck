@@ -12,8 +12,9 @@ import { getCapabilityFactoryService, shutdownCapabilityFactory } from './lib/ca
 import { createCapabilityFactoryRunner } from './lib/capability-factory/capability-factory-run'
 import { createCapabilityFactoryEvaluator } from './lib/capability-factory/capability-factory-evaluate'
 import {
-  createCapabilityFactoryModelCall, resolveCapabilityFactoryModels,
+  createCapabilityFactoryModelCall, resolveCapabilityFactoryModels, validateCapabilityFactoryModelSelection,
 } from './lib/capability-factory/capability-factory-model-call'
+import { resolveCapabilityFactorySubscriptionCredentials } from './lib/capability-factory/capability-factory-model-credentials'
 import { getApiWorkbenchService, hasActiveApiWorkbenchRequests, setApiWorkbenchEventSink, setApiWorkbenchStreamSink, shutdownApiWorkbench } from './lib/api-workbench/api-workbench-singleton'
 /**
  * IPC 处理器模块
@@ -2431,6 +2432,7 @@ export function registerIpcHandlers(): void {
       callModel: createCapabilityFactoryModelCall({
         listChannels,
         resolveApiKey: resolveChannelRuntimeApiKey,
+        resolveSubscriptionCredentials: resolveCapabilityFactorySubscriptionCredentials,
         resolveProxyUrl: getEffectiveProxyUrl,
         sessionModel: () => sessionModel,
       }),
@@ -2461,6 +2463,15 @@ export function registerIpcHandlers(): void {
       return join(getAgentWorkspacePath(workspace.slug), 'capability-factory')
     },
     getService: (rootDir) => getCapabilityFactoryService(rootDir),
+    validateModelSelection: (selection) => validateCapabilityFactoryModelSelection(selection, listChannels()),
+    getExperimentService: ({ rootDir, sessionId, assertCurrent }) => createCapabilityFactorySessionRuntime({
+      rootDir, sessionId, service: getCapabilityFactoryService(rootDir), assertCurrent,
+      getRunPorts: () => capabilityFactoryRunPorts(sessionId),
+    }).experiments(),
+    runExperiment: ({ rootDir, sessionId, assertCurrent, request }) => createCapabilityFactorySessionRuntime({
+      rootDir, sessionId, service: getCapabilityFactoryService(rootDir), assertCurrent,
+      getRunPorts: () => capabilityFactoryRunPorts(sessionId),
+    }).runExperiment(request),
     getBatchRunner: ({ rootDir, sessionId, signal, assertCurrent, onProgress }) => createCapabilityFactorySessionRuntime({
       rootDir, sessionId, service: getCapabilityFactoryService(rootDir), signal, assertCurrent,
       getRunPorts: () => capabilityFactoryRunPorts(sessionId),

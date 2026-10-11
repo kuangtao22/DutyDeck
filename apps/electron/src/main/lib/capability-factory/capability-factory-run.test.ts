@@ -4,6 +4,8 @@
  * 定义不合法、输入不满足契约；以及三轴（status / valid / 步骤状态）互不污染。
  */
 import { describe, expect, test } from 'bun:test'
+import { createCapabilityFactoryCallLedger, type CapabilityFactoryCallLedger } from './capability-factory-budget'
+import type { CapabilityFactoryModelInvocation } from './capability-factory-model-call'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -59,6 +61,8 @@ function fixture(options: {
   modelText?: string
   signal?: AbortSignal
   assertCurrent?: () => void
+  callLedger?: CapabilityFactoryCallLedger
+  onInvocation?: (invocation: CapabilityFactoryModelInvocation) => void
   onModelCall?: (stepId: string) => void
 } = {}) {
   const rootDir = mkdtempSync(join(tmpdir(), 'cap-factory-run-'))
@@ -76,9 +80,11 @@ function fixture(options: {
   const calls: { prompt: string; formatInstruction?: string; model: string; channelId: string; modelId: string }[] = []
   const runner = createCapabilityFactoryRunner({
     service,
+    callLedger: options.callLedger,
     resolveModels: (sceneDefinition) =>
       resolveCapabilityFactoryModels(sceneDefinition, channels, { channelId: 'ch-1', modelId: 'deepseek-v4-flash' }),
     callModel: async (invocation) => {
+      options.onInvocation?.(invocation)
       options.onModelCall?.(invocation.stepId)
       calls.push({
         prompt: invocation.prompt,
@@ -616,4 +622,19 @@ describe('单步试跑：训练提示词不需要整条链可跑', () => {
     expect(service.listRuns('scene-1', 20, 'step')).toHaveLength(2)
     expect(service.listRuns('scene-1')).toHaveLength(3)
   })
+})
+
+
+test('Given 实验账本 When 执行和自动评审 Then 复用同一账本并标记不同目的', async () => {
+  /** 同一账本跨执行和评审保持身份，不创建阶段级新额度。 */
+  const ledger = createCapabilityFactoryCallLedger({ maxCalls: 10 })
+  /** 观察真实 runner 到模型端口的调用入参。 */
+  const purposes: Array<CapabilityFactoryModelInvocation['purpose']> = []
+  const { service, runner } = fixture({ callLedger: ledger, onInvocation: (invocation) => {
+    expect(invocation.callLedger).toBe(ledger)
+    purposes.push(invocation.purpose)
+  } })
+  service.setStub('corpus.build', { corpus: '正文' })
+  await runner.run('scene-1', { chapterText: '正文' }, { saveTask: false })
+  expect(purposes).toEqual(['execution', 'review'])
 })

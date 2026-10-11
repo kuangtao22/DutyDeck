@@ -102,6 +102,7 @@ import { getCapabilityFactoryMutationPolicy } from './capability-factory/capabil
 import {
   createCapabilityFactoryModelCall, resolveCapabilityFactoryModels,
 } from './capability-factory/capability-factory-model-call'
+import { resolveCapabilityFactorySubscriptionCredentials } from './capability-factory/capability-factory-model-credentials'
 import { createServerOpsAgentFacade } from './server-ops/server-ops-agent-facade'
 import { createServerOpsAgentReadFacade, type ServerOpsWriteApprovalSnapshot } from './server-ops/server-ops-agent-read-facade'
 import { createServerOpsConnectionDraftAgent } from './server-ops/server-ops-connection-draft-agent'
@@ -1353,17 +1354,16 @@ export class AgentOrchestrator {
       const factoryRuntime = factoryAccess ? createCapabilityFactorySessionRuntime({
         rootDir: factoryAccess.rootDir, sessionId, scopeId: `${sessionId}:${runGeneration}`,
         service: getCapabilityFactoryService(factoryAccess.rootDir), signal: runIdentity.signal,
-        assertCurrent: () => {
-          factoryAccess.assertCurrent()
-          /** 长批次途中切换为计划模式时，停止后续模型请求与持久写入。 */
-          if (getPermissionMode() === 'plan') throw new Error('计划模式下不能继续执行编排工厂')
-        },
+        assertCurrent: () => factoryAccess.assertCurrent(),
+        /** 计划模式保留历史读取；所有新增调用独立复核，已完成证据仍可结算。 */
+        canMutate: () => getPermissionMode() !== 'plan',
         getRunPorts: () => {
           const current = getAgentSessionMeta(sessionId)
           const sessionModel = current?.channelId && current.modelId ? { channelId: current.channelId, modelId: current.modelId } : null
           return {
             resolveModels: (definition) => resolveCapabilityFactoryModels(definition, listChannels(), sessionModel),
             callModel: createCapabilityFactoryModelCall({ listChannels, resolveApiKey: resolveChannelRuntimeApiKey,
+              resolveSubscriptionCredentials: resolveCapabilityFactorySubscriptionCredentials,
               resolveProxyUrl: getEffectiveProxyUrl, sessionModel: () => sessionModel }),
           }
         },
@@ -1375,6 +1375,23 @@ export class AgentOrchestrator {
         onChanged: () => publishCapabilityFactoryChanged({ sessionId }),
         runScene: async ({ sceneId, input: sceneInput, ...runOptions }) => factoryRuntime.runner().run(sceneId, sceneInput, runOptions),
         runStep: async ({ sceneId, stepId, input: stepInput }) => factoryRuntime.runner().runStep(sceneId, stepId, stepInput),
+        /** 实验只返回脱敏视图，完整冻结快照留在宿主审批边界。 */
+        createExperiment: (request) => {
+          const experiment = factoryRuntime.experiments().create(request)
+          return factoryRuntime.experiments().view(experiment.sceneId, experiment.id)!
+        },
+        getExperiment: (sceneId, experimentId, detailsSplit) => factoryRuntime.experiments().view(sceneId, experimentId, detailsSplit),
+        listExperiments: (sceneId) => factoryRuntime.experiments().list(sceneId),
+        advanceExperiment: async (request) => {
+          await factoryRuntime.runExperiment(request)
+          return factoryRuntime.experiments().view(request.sceneId, request.experimentId)!
+        },
+        cancelExperiment: (sceneId, experimentId) => {
+          factoryRuntime.experiments().cancel(sceneId, experimentId)
+          return factoryRuntime.experiments().view(sceneId, experimentId)!
+        },
+        assertExperimentAdoptable: (sceneId, experimentId, definition) => factoryRuntime.experiments().assertAdoptable(sceneId, experimentId, definition),
+        markExposureForRead: (request) => factoryRuntime.experiments().markExposureForRead(request),
         runBatch: factoryRuntime.runBatch,
         listBatches: (sceneId) => factoryRuntime.batches().list(sceneId),
         getBatch: (sceneId, batchId) => factoryRuntime.batches().get(sceneId, batchId),

@@ -393,3 +393,19 @@ describe('评测：对一组固定输入跑当前版本', () => {
     await expect(evaluator.evaluate(scene?.id ?? '', 'missing')).rejects.toThrow(/数据集不存在/)
   })
 })
+
+test('Given 冻结完整标签 When 旧评测入口执行 Then 复用独立评分且不污染模型 metrics', async () => {
+  /** 旧入口继续兼容可选协议，未配置协议的历史记录保持原样。 */
+  const context = fixture(() => ({ status: 'succeeded', valid: true }))
+  const dataset = context.service.createDataset('标签集')
+  context.service.addCase(dataset.id, { corpusText: '文本' })
+  const labeled = context.service.listDatasets()[0]!
+  labeled.protocol = { protocolVersion: 'v1', scorerVersion: 1, primaryMetric: 'business-error-rate', mode: 'exact-value', outputPath: '', expectedPath: '', tupleFields: [], normalization: { trim: false, caseFold: false, arrayOrder: 'ordered' }, requireReview: false }
+  labeled.cases[0]!.expected = null
+  labeled.cases[0]!.scoring = { split: 'validation', sourceGroupId: 'book', inputFingerprint: 'input', labelStatus: 'complete' }
+  context.service.listDatasets = () => [structuredClone(labeled)]
+  const result = await context.evaluator.evaluate(context.sceneId, dataset.id)
+  expect(result.caseResults?.[0]?.scoring?.outcome).toBe('passed')
+  expect(result.scoring).toMatchObject({ planned: 1, passed: 1, unknown: 0, errorRateUpper: 0 })
+  expect(result.metrics).toEqual({})
+})

@@ -14,10 +14,12 @@
 import type {
   CapabilityCase, CapabilityEvaluation, CapabilityEvaluationCaseResult, CapabilityRun,
 } from '@proma/shared'
-import { getReviewSteps, getStepAcceptance } from '@proma/shared'
+import { getReviewSteps, getStepAcceptance, validateCapabilityEvaluationProtocol } from '@proma/shared'
 import {
   CapabilityFactoryError, stableCapabilityValueKey, type CapabilityFactoryService,
 } from './capability-factory-service'
+
+import { scoreCapabilityCase, summarizeCapabilityScores } from './capability-factory-scoring'
 
 /** 评测适配器依赖。 */
 export interface CapabilityFactoryEvaluateDeps {
@@ -84,6 +86,7 @@ export function createCapabilityFactoryEvaluator(deps: CapabilityFactoryEvaluate
       if (!currentDataset) throw new CapabilityFactoryError('DATASET_NOT_FOUND', `数据集不存在：${datasetId}`)
       /** 批次开始即冻结用例与版本，后续数据集编辑不影响本轮。 */
       const dataset = structuredClone(currentDataset)
+      if (dataset.protocol) validateCapabilityEvaluationProtocol(dataset.protocol)
 
       const startedAt = now()
       const record = (partial: Omit<CapabilityEvaluation, 'id' | 'sceneId' | 'sceneVersion' | 'datasetId' | 'datasetVersion' | 'startedAt'>): CapabilityEvaluation => {
@@ -91,6 +94,8 @@ export function createCapabilityFactoryEvaluator(deps: CapabilityFactoryEvaluate
         return deps.service.recordEvaluation({
           id: createId(), sceneId, sceneVersion,
           datasetId, datasetVersion: dataset.version, startedAt, ...partial,
+          ...(dataset.protocol ? { scoring: summarizeCapabilityScores(dataset.cases.map((item) => item.id),
+            partial.caseResults?.flatMap((item) => item.scoring ? [item.scoring] : []) ?? []) } : {}),
         })
       }
 
@@ -206,6 +211,7 @@ export function createCapabilityFactoryEvaluator(deps: CapabilityFactoryEvaluate
           result: {
             caseId: item.id,
             caseName: item.name,
+            ...(dataset.protocol && item.scoring ? { scoring: scoreCapabilityCase(dataset.protocol, { ...item.scoring, caseId: item.id, expected: item.expected }, run) } : {}),
             runId: run.id,
             status: run.status,
             valid: passed,

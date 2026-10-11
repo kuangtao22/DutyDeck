@@ -1,3 +1,6 @@
+import type { CapabilityExperimentAdvanceRequest } from '@proma/shared'
+import type { createCapabilityFactorySessionRuntime } from './capability-factory-session-runtime'
+import { resolveCapabilityDraftAdoption } from './capability-factory-draft-adoption'
 /**
  * 编排工厂的 IPC handler（四层契约的第 3 层）。
  *
@@ -10,8 +13,8 @@
  * （可能几十秒），跑完才返回。渲染层因此用"运行中"状态遮住这段时间，
  * 而不是把 runner 搬到渲染层 —— 模型调用与凭据都只能在主进程里发生。
  */
-import { CAPABILITY_FACTORY_CHANNELS, parseCapabilityFactoryCommand } from '@proma/shared'
-import type { CapabilityEvaluation, CapabilityRun, CapabilitySceneDefinition, CapabilityFactoryBatch } from '@proma/shared'
+import { CAPABILITY_FACTORY_CHANNELS, parseCapabilityFactoryCommand, stableCapabilityValueKey } from '@proma/shared'
+import type { CapabilityFactoryModelSelection, CapabilityEvaluation, CapabilityRun, CapabilitySceneDefinition, CapabilityFactoryBatch } from '@proma/shared'
 import type { CapabilityFactoryService } from './capability-factory-service'
 import type { CapabilityFactoryRunOptions } from './capability-factory-run'
 import type { CapabilityFactoryBatchRunner } from './capability-factory-batch'
@@ -40,7 +43,12 @@ export interface CapabilityFactoryIpcDependencies {
   resolveRootDir(workspaceId: string): string
   /** 取得该根目录对应的服务。 */
   getService(rootDir: string): CapabilityFactoryService
+  /** 由宿主复核新选或改选模型属于当前可用渠道；不接触 renderer 凭据。 */
+  validateModelSelection?(selection: CapabilityFactoryModelSelection): void | Promise<void>
   /** UI 与 Agent 共用持久批次；归属、取消和进度都由宿主提供。 */
+  /** 实验服务仅在宿主解析的工作区创建，客户端不能注入冻结定义。 */
+  getExperimentService?(request: { rootDir: string; sessionId: string; assertCurrent: () => void }): ReturnType<ReturnType<typeof createCapabilityFactorySessionRuntime>['experiments']>
+  runExperiment?(request: { rootDir: string; sessionId: string; assertCurrent: () => void; request: CapabilityExperimentAdvanceRequest }): Promise<unknown>
   getBatchRunner?(request: {
     rootDir: string; sessionId: string; signal?: AbortSignal; assertCurrent: () => void
     onProgress?: (batch: CapabilityFactoryBatch) => void
@@ -106,6 +114,9 @@ export function registerCapabilityFactoryIpc(
       }
     }
 
+    /** 延迟构造宿主实验服务，兼容未接入实验的旧测试宿主。 */
+    const experiments = () => dependencies.getExperimentService?.({ rootDir, sessionId: session.id, assertCurrent })
+
     /** 只有发起方声明 requestId 时才开启进度回传，保持旧调用方为单次 invoke。 */
     const requestId = 'requestId' in command.input ? command.input.requestId : undefined
     const progress = requestId
@@ -118,11 +129,36 @@ export function registerCapabilityFactoryIpc(
     /** 统一通知仅在完成命令后触发，具体正文仍由调用者按会话重新读取。 */
     const execute = async (): Promise<unknown> => {
       switch (command.method) {
-        case 'getRun': return service.getRun(command.input.sceneId, command.input.runId)
+        case 'createExperiment': {
+          const host = experiments()
+          if (!host) throw new Error('CAPABILITY_FACTORY_EXPERIMENT_UNAVAILABLE')
+          const { sessionId: _sessionId, ...request } = command.input
+          const created = host.create(request)
+          return host.view(created.sceneId, created.id)
+        }
+        case 'advanceExperiment': {
+          if (!dependencies.runExperiment) throw new Error('CAPABILITY_FACTORY_EXPERIMENT_UNAVAILABLE')
+          const { sessionId: _sessionId, ...request } = command.input
+          await dependencies.runExperiment({ rootDir, sessionId: session.id, assertCurrent, request })
+          assertCurrent()
+          return experiments()?.view(request.sceneId, request.experimentId)
+        }
+        case 'getExperiment': return experiments()?.view(command.input.sceneId, command.input.experimentId, command.input.detailsSplit) ?? null
+        case 'listExperiments': return experiments()?.list(command.input.sceneId) ?? []
+        case 'cancelExperiment': {
+          const host = experiments()
+          if (!host) throw new Error('CAPABILITY_FACTORY_EXPERIMENT_UNAVAILABLE')
+          host.cancel(command.input.sceneId, command.input.experimentId)
+          return host.view(command.input.sceneId, command.input.experimentId)
+        }
+        case 'getRun':
+          experiments()?.markExposureForRead({ kind: 'run', sceneId: command.input.sceneId, runId: command.input.runId })
+          return service.getRun(command.input.sceneId, command.input.runId)
         case 'listBatches':
         case 'getBatch': {
           const batchRunner = dependencies.getBatchRunner?.({ rootDir, sessionId: session.id, assertCurrent })
           if (!batchRunner) throw new Error('CAPABILITY_FACTORY_BATCH_UNAVAILABLE')
+          if (command.method === 'getBatch') experiments()?.markExposureForRead({ kind: 'batch', sceneId: command.input.sceneId, batchId: command.input.batchId })
           return command.method === 'listBatches' ? batchRunner.list(command.input.sceneId)
             : batchRunner.get(command.input.sceneId, command.input.batchId)
         }
@@ -149,6 +185,20 @@ export function registerCapabilityFactoryIpc(
           assertCurrent()
           return result
         }
+        case 'setModelSelection': {
+          /** 允许逐个修复失效的旧引用；完整版本/草案锁仍由服务在写入前复核。 */
+          const previous = service.getScene(command.input.sceneId)?.definition.modelSelection
+          const selection = command.input.selection
+          const changed: CapabilityFactoryModelSelection = {
+            slots: Object.fromEntries(Object.entries(selection.slots).filter(([id, reference]) =>
+              stableCapabilityValueKey(reference) !== stableCapabilityValueKey(previous?.slots[id]))),
+            ...(selection.review && stableCapabilityValueKey(selection.review) !== stableCapabilityValueKey(previous?.review)
+              ? { review: selection.review } : {}),
+          }
+          await dependencies.validateModelSelection?.(changed)
+          assertCurrent()
+          return service.setModelSelection(command.input.sceneId, command.input.selection, command.input.expectedState)
+        }
         case 'saveDraft': {
           const result = service.saveDraft(
             command.input.sceneId, command.input.definition, 'human', command.input.note,
@@ -159,6 +209,12 @@ export function registerCapabilityFactoryIpc(
         }
         case 'discardDraft': return service.discardDraft(command.input.sceneId, command.input.expectedState)
         case 'adoptDraft': {
+          if (command.input.testedExperimentId) {
+            const scene = service.getScene(command.input.sceneId)
+            const host = experiments()
+            if (!scene || !host) throw new Error('CAPABILITY_FACTORY_EXPERIMENT_UNAVAILABLE')
+            host.assertAdoptable(scene.id, command.input.testedExperimentId, resolveCapabilityDraftAdoption(scene, command.input.scope ?? { kind: 'all' }).definition)
+          }
           if (command.input.testedBatchId) {
             const batches = dependencies.getBatchRunner?.({ rootDir, sessionId: session.id, assertCurrent })
             if (!batches) throw new Error('CAPABILITY_FACTORY_BATCH_UNAVAILABLE')
@@ -219,7 +275,9 @@ export function registerCapabilityFactoryIpc(
           assertCurrent()
           return result
         }
-        case 'listRuns': return service.listRuns(command.input.sceneId, command.input.limit, command.input.kind)
+        /** 面板挂载与变更刷新只是人工展示，不表示优化器读取了材料。 */
+        case 'listRuns':
+          return service.listRuns(command.input.sceneId, command.input.limit, command.input.kind)
         case 'listTasks': return service.listTasks(command.input.sceneId)
         case 'revealDelivery': {
           if (!dependencies.revealDelivery) return { revealed: false }
@@ -281,7 +339,7 @@ export function registerCapabilityFactoryIpc(
     }
     const result = await execute()
     assertCurrent()
-    if (!['listScenes', 'getScene', 'listVersions', 'listStubs', 'listRuns', 'getRun', 'listTasks', 'listDatasets', 'listEvaluations', 'listDeliveries', 'listBatches', 'getBatch'].includes(command.method)) {
+    if (!['listScenes', 'getScene', 'listVersions', 'listStubs', 'listRuns', 'getRun', 'listTasks', 'listDatasets', 'listEvaluations', 'listDeliveries', 'listBatches', 'getBatch', 'listExperiments', 'getExperiment'].includes(command.method)) {
       publishCapabilityFactoryChanged({ sessionId: session.id, ...('sceneId' in command.input ? { sceneId: command.input.sceneId } : {}) })
     }
     return result

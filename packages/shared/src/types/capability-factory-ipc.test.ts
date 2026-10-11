@@ -300,3 +300,48 @@ describe('编排工厂 IPC 命令解析', () => {
       .toThrow(/kind/)
   })
 })
+
+
+test('Given 模型选择命令 When 解析 Then 强制完整乐观锁并拒绝任意额外配置', () => {
+  const input = { sessionId: 's', sceneId: 'a', selection: { slots: { main: { channelId: 'c', modelId: 'm' } } }, expectedState: { currentVersion: 1, draft: null } }
+  expect(parse({ method: 'setModelSelection', input })).toEqual({ method: 'setModelSelection', input })
+  for (const selection of [null, {}, { slots: [], review: null }, { slots: { main: { channelId: '', modelId: 'm' } } }, { slots: {}, secret: 'no' }]) {
+    expect(() => parse({ method: 'setModelSelection', input: { ...input, selection } })).toThrow('CAPABILITY_FACTORY_INVALID')
+  }
+  expect(() => parse({ method: 'setModelSelection', input: { ...input, expectedState: undefined } })).toThrow('CAPABILITY_FACTORY_INVALID')
+})
+
+
+test('Given 历史槽位含中文和点号 When 选择模型 Then 保持原有身份格式兼容', () => {
+  const selection = { slots: { '中文.main': { channelId: 'c', modelId: 'm' } } }
+  expect(parse({ method: 'setModelSelection', input: { sessionId: 's', sceneId: 'a', selection, expectedState: { currentVersion: 1, draft: null } } }))
+    .toMatchObject({ input: { selection } })
+})
+
+
+test('Given 实验推进 When 解析 Then 只允许实验身份版本与候选提示词', () => {
+  const input = { sessionId: 's', sceneId: 'scene', experimentId: 'exp', expectedRevision: 1 }
+  expect(parse({ method: 'advanceExperiment', input })).toEqual({ method: 'advanceExperiment', input })
+  expect(parse({ method: 'getExperiment', input: { sessionId: 's', sceneId: 'scene', experimentId: 'exp', detailsSplit: 'validation' } }).method).toBe('getExperiment')
+  for (const extra of [{ approved: true }, { definition: {} }, { status: 'completed' }, { expectedRevision: -1 }]) {
+    expect(() => parse({ method: 'advanceExperiment', input: { ...input, ...extra } })).toThrow()
+  }
+  expect(parse({ method: 'adoptDraft', input: { sessionId: 's', sceneId: 'scene', scope: { kind: 'step', stepId: 'a' }, testedExperimentId: 'exp' } })).toMatchObject({ input: { testedExperimentId: 'exp' } })
+})
+
+test('Given 实验有限预算 When 超过公开上限 Then 在解析阶段拒绝', () => {
+  /** 公开入口与宿主共用同一有限上限，避免工具承诺不可执行的预算。 */
+  const input = { sessionId: 's', sceneId: 'scene', expectedVersion: 1, datasetId: 'data', targetStepId: 'step', candidatePrompt: '候选',
+    protocol: { protocolVersion: 'v1', scorerVersion: 1, primaryMetric: 'f1', mode: 'exact-value', outputPath: '', expectedPath: '', tupleFields: [], normalization: { trim: false, caseFold: false, arrayOrder: 'ordered' }, requireReview: false },
+    assignments: ['optimization', 'validation', 'held-out'].map((split, index) => ({ caseId: `c${index}`, sourceGroupId: `g${index}`, split, labelStatus: 'complete' })),
+    limits: { maxCalls: 1000, maxTransportAttempts: 2000, durationMs: 86400000 }, heldOutExposure: 'declared-unseen',
+  }
+  expect(parse({ method: 'createExperiment', input })).toHaveProperty('method', 'createExperiment')
+  for (const limits of [{ ...input.limits, maxCalls: 1001 }, { ...input.limits, maxTransportAttempts: 2001 }, { ...input.limits, durationMs: 86400001 }]) {
+    expect(() => parse({ method: 'createExperiment', input: { ...input, limits } })).toThrow('INVALID')
+  }
+})
+
+test('Given 数据集列表命令 When 解析 Then 不得误分派为交付列表', () => {
+  expect(parse({ method: 'listDatasets', input: { sessionId: 's' } })).toEqual({ method: 'listDatasets', input: { sessionId: 's' } })
+})

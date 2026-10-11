@@ -1,3 +1,5 @@
+import { createCapabilityFactorySessionRuntime } from './capability-factory-session-runtime'
+import type { CapabilityFactoryExperimentView } from '@proma/shared'
 import { describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -7,9 +9,13 @@ import { CapabilityFactoryStore } from './capability-factory-store'
 import { CapabilityFactoryService } from './capability-factory-service'
 import { registerCapabilityFactoryIpc, type CapabilityFactoryIpcEvent, type CapabilityFactoryIpcDependencies } from './capability-factory-ipc'
 import type { CapabilityFactoryRunOptions } from './capability-factory-run'
+import { validateCapabilityFactoryModelSelection } from './capability-factory-model-call'
 
 /** 用替身 IPC 捕获 handler，直接调用它来验证四层契约的主进程一侧真的能分派。 */
 function fixture(options: {
+  getExperimentService?: CapabilityFactoryIpcDependencies['getExperimentService']
+  runExperiment?: CapabilityFactoryIpcDependencies['runExperiment']
+  validateModelSelection?: CapabilityFactoryIpcDependencies['validateModelSelection']
   authorized?: boolean
   getBatchRunner?: CapabilityFactoryIpcDependencies['getBatchRunner']
   runScene?: (input: {
@@ -29,6 +35,9 @@ function fixture(options: {
       handle: (channel, listener) => { handlers.set(channel, listener) },
       removeHandler: (channel) => { handlers.delete(channel) },
     },
+    validateModelSelection: options.validateModelSelection,
+    getExperimentService: options.getExperimentService,
+    runExperiment: options.runExperiment,
     isAuthorizedSender: () => authorized,
     requireSession: options.requireSession ?? ((sessionId) => ({ id: sessionId, workspaceId: 'w1' })),
     resolveRootDir: () => rootDir,
@@ -382,4 +391,135 @@ describe('编排工厂 IPC handler', () => {
     })).rejects.toThrow(/CAPABILITY_FACTORY_ACCESS_DENIED/)
     expect(sent).toEqual([])
   })
+})
+
+
+test('Given 模型绑定 When 主机拒绝渠道 Then 不写入版本', async () => {
+  const { call } = fixture({ validateModelSelection: () => { throw new Error('渠道已禁用') } })
+  const scene = await call({ method: 'createScene', input: { sessionId: 's', name: '模型' } }) as CapabilityScene
+  await expect(call({ method: 'setModelSelection', input: {
+    sessionId: 's', sceneId: scene.id, selection: { slots: { main: { channelId: 'c', modelId: 'm' } } }, expectedState: { currentVersion: 1, draft: null },
+  } })).rejects.toThrow('渠道已禁用')
+  expect(await call({ method: 'getScene', input: { sessionId: 's', sceneId: scene.id } })).toMatchObject({ currentVersion: 1 })
+})
+
+test('Given 模型验证期间会话迁移 When 验证返回 Then 复核归属并阻止写入', async () => {
+  let workspaceId = 'w1'
+  const { call } = fixture({ requireSession: (id) => ({ id, workspaceId }), validateModelSelection: async () => { workspaceId = 'w2' } })
+  const scene = await call({ method: 'createScene', input: { sessionId: 's', name: '模型' } }) as CapabilityScene
+  await expect(call({ method: 'setModelSelection', input: {
+    sessionId: 's', sceneId: scene.id, selection: { slots: {} }, expectedState: { currentVersion: 1, draft: null },
+  } })).rejects.toThrow('ACCESS_DENIED')
+})
+
+test('Given 合法模型绑定 When IPC 设置 Then 返回生效版本', async () => {
+  const { call } = fixture()
+  const scene = await call({ method: 'createScene', input: { sessionId: 's', name: '模型' } }) as CapabilityScene
+  expect(await call({ method: 'setModelSelection', input: {
+    sessionId: 's', sceneId: scene.id, selection: { slots: { main: { channelId: 'c', modelId: 'm' } } }, expectedState: { currentVersion: 1, draft: null },
+  } })).toMatchObject({ currentVersion: 2, definition: { modelSlots: [{ id: 'main', model: 'm' }] } })
+})
+
+test('Given 两个执行模型和评审模型均失效 When 逐个替换或清除 Then 其余旧配置不阻止保存', async () => {
+  /** 使用真实渠道校验，只有 ready 是本机当前可用渠道。 */
+  const { call, rootDir } = fixture({ validateModelSelection: (selection) => validateCapabilityFactoryModelSelection(selection, [{
+    id: 'ready', name: '可用渠道', provider: 'openai', enabled: true, apiKey: '', baseUrl: 'https://example.invalid',
+    models: [{ id: 'model', name: '模型', enabled: true }], createdAt: 0, updatedAt: 0,
+  }]) })
+  /** 从真实历史数据恢复多个已经删除的模型引用。 */
+  const service = new CapabilityFactoryService({ store: new CapabilityFactoryStore(rootDir) })
+  const created = service.createScene('修复模型选择')
+  const missing = { channelId: 'removed', modelId: 'old' }
+  service.saveDraft(created.id, { ...definition, modelSlots: [{ id: 'first', model: 'old' }, { id: 'second', model: 'old' }],
+    modelSelection: { slots: { first: missing, second: missing }, review: missing },
+  }, 'human', '模拟历史选择')
+  let scene = service.adoptDraft(created.id).scene
+  /** 第一项替换成功时，第二项和评审仍允许保留待修；运行阶段仍会拦住它们。 */
+  scene = await call({ method: 'setModelSelection', input: {
+    sessionId: 's', sceneId: scene.id,
+    selection: { slots: { first: { channelId: 'ready', modelId: 'model' }, second: missing }, review: missing },
+    expectedState: { currentVersion: scene.currentVersion, draft: null },
+  } }) as CapabilityScene
+  expect(scene.definition.modelSelection?.slots.first?.channelId).toBe('ready')
+  /** 第二项恢复自动匹配，失效评审不能锁死这一操作。 */
+  scene = await call({ method: 'setModelSelection', input: {
+    sessionId: 's', sceneId: scene.id,
+    selection: { slots: { first: { channelId: 'ready', modelId: 'model' } }, review: missing },
+    expectedState: { currentVersion: scene.currentVersion, draft: null },
+  } }) as CapabilityScene
+  expect(scene.definition.modelSelection?.slots.second).toBeUndefined()
+  /** 最后清除评审覆盖，原本有效的第一项继续保留。 */
+  scene = await call({ method: 'setModelSelection', input: {
+    sessionId: 's', sceneId: scene.id, selection: { slots: scene.definition.modelSelection!.slots },
+    expectedState: { currentVersion: scene.currentVersion, draft: null },
+  } }) as CapabilityScene
+  expect(scene.definition.modelSelection?.review).toBeUndefined()
+  expect(scene.definition.modelSelection?.slots.first?.channelId).toBe('ready')
+})
+
+
+test('Given 实验推进期间工作区迁移 When 请求完成 Then 拒绝迟到实验结果', async () => {
+  let workspaceId = 'first'
+  const { call } = fixture({ requireSession: (id) => ({ id, workspaceId }),
+    runExperiment: async () => { workspaceId = 'second'; return null },
+  })
+  await expect(call({ method: 'advanceExperiment', input: { sessionId: 's', sceneId: 'scene', experimentId: 'e', expectedRevision: 1 } })).rejects.toThrow('ACCESS_DENIED')
+})
+
+test('Given 实验采纳无宿主证据 When 请求认证 Then 拒绝而不降级普通采纳', async () => {
+  const { call } = fixture()
+  await expect(call({ method: 'adoptDraft', input: { sessionId: 's', sceneId: 'scene', testedExperimentId: 'e' } })).rejects.toThrow('EXPERIMENT_UNAVAILABLE')
+  await expect(call({ method: 'advanceExperiment', input: { sessionId: 's', sceneId: 'scene', experimentId: 'e', expectedRevision: 1, approved: true } })).rejects.toThrow('INVALID')
+})
+
+
+test('Given 真实实验创建并运行 When 面板反复被动刷新列表 Then 留出保持未暴露且优化组可完成', async () => {
+  /** 接真实实验、批次、运行器，只替换模型端口；模拟挂载及模型运行中的 onChanged 刷新。 */
+  let refresh: (() => Promise<void>) | undefined
+  let modelCalls = 0
+  const runtime = (rootDir: string, sessionId: string, assertCurrent: () => void) => createCapabilityFactorySessionRuntime({
+    rootDir, sessionId, assertCurrent, service: new CapabilityFactoryService({ store: new CapabilityFactoryStore(rootDir) }),
+    getRunPorts: () => ({
+      resolveModels: () => ({ bindings: [{ slotId: 'main', declaredModel: 'gpt-5.4', modelId: 'offline', channelId: 'offline', channelName: '离线', substituted: true }] }),
+      callModel: async (invocation) => {
+        modelCalls += 1
+        await refresh?.()
+        return { text: invocation.stepId === '__factory_review__' ? JSON.stringify({ passed: true, summary: '通过', criteria: [{ criterion: '回答有效', passed: true, evidence: 'result' }], metrics: [], suggestions: [] }) : 'result', model: 'offline' }
+      },
+    }),
+  })
+  const f = fixture({
+    getExperimentService: ({ rootDir, sessionId, assertCurrent }) => runtime(rootDir, sessionId, assertCurrent).experiments(),
+    runExperiment: ({ rootDir, sessionId, assertCurrent, request }) => runtime(rootDir, sessionId, assertCurrent).runExperiment(request),
+  })
+  const service = new CapabilityFactoryService({ store: new CapabilityFactoryStore(f.rootDir) })
+  const created = service.createScene('被动刷新')
+  service.saveDraft(created.id, { ...created.definition,
+    stepAcceptances: { answer: { criteria: ['回答有效'], judgePrompt: '检查回答', metrics: [] } },
+    steps: [{ type: 'llm', id: 'answer', title: '回答', modelSlot: 'main', prompt: '旧提示词' }],
+    outputs: [{ name: 'answer', from: { stepId: 'answer' }, shape: 'text' }],
+  }, 'human', '初始化')
+  const scene = service.adoptDraft(created.id).scene
+  let dataset = service.createDataset('三组')
+  for (let index = 0; index < 3; index += 1) dataset = service.addCase(dataset.id, { text: `输入${index}` }, { expected: 'result' })
+  refresh = async () => {
+    expect(await f.call({ method: 'listDatasets', input: { sessionId: 's' } })).toMatchObject([{ id: dataset.id }])
+    await f.call({ method: 'listRuns', input: { sessionId: 's', sceneId: scene.id } })
+  }
+  const experiment = await f.call({ method: 'createExperiment', input: {
+    sessionId: 's', sceneId: scene.id, expectedVersion: scene.currentVersion, datasetId: dataset.id, targetStepId: 'answer', candidatePrompt: '新提示词',
+    protocol: { protocolVersion: 'v1', scorerVersion: 1, primaryMetric: 'business-error-rate', mode: 'exact-value', outputPath: 'answer', expectedPath: '', tupleFields: [], normalization: { trim: false, caseFold: false, arrayOrder: 'ordered' }, requireReview: false },
+    assignments: dataset.cases.map((item, index) => ({ caseId: item.id, sourceGroupId: `source-${index}`, labelStatus: 'complete', split: ['optimization', 'validation', 'held-out'][index] })),
+    limits: { maxCalls: 20, maxTransportAttempts: 20, durationMs: 60000 }, heldOutExposure: 'declared-unseen',
+  } }) as CapabilityFactoryExperimentView
+  await refresh(); await refresh()
+  const before = await f.call({ method: 'getExperiment', input: { sessionId: 's', sceneId: scene.id, experimentId: experiment.id } }) as CapabilityFactoryExperimentView
+  expect(before.heldOutExposure).toBe('declared-unseen')
+  expect(before.revision).toBe(experiment.revision)
+  const advanced = await f.call({ method: 'advanceExperiment', input: { sessionId: 's', sceneId: scene.id, experimentId: before.id, expectedRevision: before.revision } }) as CapabilityFactoryExperimentView
+  expect({ status: advanced.status, reason: advanced.stopReason }).toEqual({ status: 'optimizing', reason: undefined })
+  expect(advanced.running).toBe(false)
+  expect(advanced.heldOutExposure).toBe('declared-unseen')
+  expect(advanced.stages[0]?.pairs).toHaveLength(1)
+  expect(modelCalls).toBe(4)
 })

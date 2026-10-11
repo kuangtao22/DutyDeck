@@ -71,3 +71,11 @@ describe('场景定义差异（审批卡与面板共用同一份措辞）', () =
     expect(diffSceneDefinition(before, after).map((change) => change.detail)).toEqual(['修改 步骤 1 项：scan'])
   })
 })
+
+
+test('Given 仅渠道或评审选择变化 When 生成审批差异 Then 明确显示模型选择变化', () => {
+  const before = createEmptySceneDefinition('模型审批')
+  expect(diffSceneDefinition(before, { ...before, modelSelection: { slots: {}, review: { channelId: 'c', modelId: 'judge' } } }))
+    .toContainEqual({ kind: 'modelSlots', detail: '本地模型选择（执行渠道 / 评审模型）已修改' })
+  expect(diffSceneDefinition(before, { ...before, modelSelection: { slots: {} } })).toEqual([])
+})

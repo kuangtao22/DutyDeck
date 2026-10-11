@@ -1,6 +1,6 @@
 /** 编排工厂工作区：场景、运行与交付分页呈现，评审和优化归运行，场景管理使用覆盖抽屉。 */
 import * as React from 'react'
-import type { CapabilityRun, CapabilityScene, CapabilitySceneVersion } from '@proma/shared'
+import type { CapabilityRun, CapabilityScene, CapabilitySceneVersion, CapabilityFactoryExperimentView } from '@proma/shared'
 import { Blocks, ChevronDown, History, RotateCw } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
@@ -10,10 +10,12 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { WorkspaceEntitySelector } from '@/components/common/WorkspaceEntitySelector'
 import { CapabilityFactorySceneRail } from './CapabilityFactorySceneRail'
 import { CapabilityFactorySceneDialog } from './CapabilityFactorySceneDialog'
+import { CapabilityFactoryExperimentSummary } from './CapabilityFactoryExperimentSummary'
 import { CapabilityFactoryRunSection } from './CapabilityFactoryRunSection'
 import { CapabilityFactoryStepDialog } from './CapabilityFactoryStepDialog'
 import { findSceneStep } from './capability-factory-draft-view'
 import { CapabilityFactoryAcceptanceDialog } from './CapabilityFactoryAcceptanceDialog'
+import { CapabilityFactoryModelSettings } from './CapabilityFactoryModelSettings'
 import { CapabilityFactorySceneDefinition } from './CapabilityFactorySceneDefinition'
 import { CapabilityFactoryVersionList } from './CapabilityFactoryVersionList'
 import { describeRollbackEffect } from './capability-factory-version-view'
@@ -128,6 +130,10 @@ export function CapabilityFactoryPanel({ sessionId, workspaceLabel }: Capability
   const [runHistory, setRunHistory] = React.useState<CapabilityRun[] | null>(null)
   const [runHistoryError, setRunHistoryError] = React.useState<string | null>(null)
   const [historySelectionId, setHistorySelectionId] = React.useState<string | null>(null)
+  /** 随现有场景事件刷新实验摘要，不增加后台轮询或模型请求。 */
+  const [experiments, setExperiments] = React.useState<CapabilityFactoryExperimentView[] | null>(null)
+  /** 读取失败保留明确错误，不把缺失证据当空实验。 */
+  const [experimentError, setExperimentError] = React.useState<string | null>(null)
   /** 顶层会话切换后丢弃旧列表，避免把另一工作区的场景显示回来。 */
   const scope = React.useMemo(() => ({}), [sessionId])
   const currentScope = React.useRef<object | null>(scope)
@@ -177,6 +183,18 @@ export function CapabilityFactoryPanel({ sessionId, workspaceLabel }: Capability
     }, 3000)
     return () => window.clearInterval(timer)
   }, [refresh, sessionId])
+
+  /** 切场景或离开运行页时丢弃旧作用域结果，迟到请求不能覆盖当前实验。 */
+  React.useEffect(() => {
+    let active = true
+    setExperiments(null)
+    setExperimentError(null)
+    if (paneTab !== 'run' || !selectedSceneId) return () => { active = false }
+    void window.electronAPI.capabilityFactory.invoke('listExperiments', { sessionId, sceneId: selectedSceneId })
+      .then((records) => { if (active) setExperiments(records) })
+      .catch((cause: unknown) => { if (active) setExperimentError(errorText(cause)) })
+    return () => { active = false }
+  }, [sessionId, selectedSceneId, paneTab, scenes])
 
   /** 手动刷新：轮询之外再给一个明确的动作，人看到 Agent 的改动后不用等下一轮。 */
   const manualRefresh = React.useCallback(() => {
@@ -326,7 +344,7 @@ export function CapabilityFactoryPanel({ sessionId, workspaceLabel }: Capability
   return (
     /** relative：场景抽屉在自己的面板内绝对定位，不会飞到窗口最左边。 */
     <Tabs value={paneTab} onValueChange={(value) => setPaneTab(value as FactoryPaneTab)} className="titlebar-no-drag relative flex min-h-0 min-w-0 flex-1 flex-col">
-      {/* ① 顶栏：图标 + 模块名 在左，选择器在右（与运维工具栏同构） */}
+      {/* ① 顶栏：模块名在左，模型设置与场景选择器在右。 */}
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/40 px-3 py-3">
         {/*
           场景栏不再单独给按钮：入口只留选择器下拉里的「管理场景」一个。
@@ -335,6 +353,11 @@ export function CapabilityFactoryPanel({ sessionId, workspaceLabel }: Capability
         <div className="flex shrink-0 items-center gap-2.5">
           <Blocks className="size-6 text-foreground/70" aria-hidden="true" />
           <h1 className="text-lg font-semibold text-foreground">编排工厂</h1>
+        </div>
+
+        {/* 设置按需弹出，标题栏按钮紧邻场景选择器，不占用流程正文空间。 */}
+        <div className="ml-auto shrink-0">
+          {current ? <CapabilityFactoryModelSettings key={`${sessionId}:${current.id}`} sessionId={sessionId} scene={current} onSceneChanged={refresh} /> : null}
         </div>
 
         {/*
@@ -356,7 +379,7 @@ export function CapabilityFactoryPanel({ sessionId, workspaceLabel }: Capability
               ref={ref}
               type="button"
               variant="outline"
-              className="ml-auto h-8 min-w-0 max-w-[48%] gap-1.5 border-border/60 bg-background/40 px-2 text-xs font-normal"
+              className="h-8 min-w-0 max-w-[48%] gap-1.5 border-border/60 bg-background/40 px-2 text-xs font-normal"
               aria-label="切换编排场景"
             >
               <span className="flex-1 truncate text-left">{current ? current.definition.name : '选择场景'}</span>
@@ -414,7 +437,12 @@ export function CapabilityFactoryPanel({ sessionId, workspaceLabel }: Capability
       {/* ③ 当前页签：左列已改成抽屉，内容不再被列表挤窄 */}
       <TabsContent value={paneTab} className="mt-0 flex min-h-0 flex-1 flex-col">
       {current && paneTab === 'run' ? (
+        <>
+          <div className="max-h-[40%] shrink-0 overflow-y-auto px-3 pb-2">
+            <CapabilityFactoryExperimentSummary experiments={experiments} error={experimentError} />
+          </div>
         <CapabilityFactoryRunSection key={`${sessionId}:${current.id}:${current.currentVersion}`} sessionId={sessionId} scene={current} onSceneChanged={refresh} historySelectionId={historySelectionId} />
+        </>
       ) : current && paneTab === 'deliver' ? (
         <CapabilityFactoryDeliverySection key={`${current.id}:${current.currentVersion}`} sessionId={sessionId} scene={current} />
       ) : (

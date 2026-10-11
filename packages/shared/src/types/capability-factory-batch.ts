@@ -1,3 +1,4 @@
+import type { CapabilityCaseScore, CapabilityEvaluationProtocol, CapabilityExperimentSample, CapabilityScoreSummary } from './capability-factory-experiment'
 import type { CapabilitySceneDefinition, CapabilityRunStatus } from './capability-factory'
 
 /** 批次用途：普通数据集评测，或当前定义与候选草案的同条件对比。 */
@@ -24,6 +25,8 @@ export interface CapabilityFactoryBatchRequest {
 
 /** 开始执行时冻结的身份与输入集合，防止等待期间混入新版本。 */
 export interface CapabilityFactoryBatchSnapshot {
+  /** 批次启动时冻结的标签协议。 */
+  protocol?: CapabilityEvaluationProtocol
   sceneVersion: number
   datasetId?: string
   datasetVersion?: number
@@ -34,6 +37,12 @@ export interface CapabilityFactoryBatchSnapshot {
 
 /** 一条冻结任务；只保存输入和运行 ID，不复制运行输出与轨迹。 */
 export interface CapabilityFactoryBatchItem {
+  /** 冻结样本标签，仅供宿主评分，不传入模型。 */
+  sample?: CapabilityExperimentSample
+  /** 普通评测或候选的独立机器评分。 */
+  scoring?: CapabilityCaseScore
+  /** 对比基线的独立机器评分。 */
+  baselineScoring?: CapabilityCaseScore
   id: string
   name: string
   input: Record<string, unknown>
@@ -47,6 +56,8 @@ export interface CapabilityFactoryBatchItem {
 
 /** evaluation 批次的质量汇总；评审缺失或失败不会按通过处理。 */
 export interface CapabilityFactoryBatchEvaluationSummary {
+  /** 全计划样本评分汇总。 */
+  scoring?: CapabilityScoreSummary
   total: number
   completed: number
   valid: number
@@ -56,6 +67,9 @@ export interface CapabilityFactoryBatchEvaluationSummary {
 
 /** comparison 批次的可解释汇总，不合成缺少依据的总分。 */
 export interface CapabilityFactoryBatchComparisonSummary {
+  /** 两版标签质量独立展示，不改变旧采纳门槛。 */
+  baselineScoring?: CapabilityScoreSummary
+  candidateScoring?: CapabilityScoreSummary
   comparable: number
   candidatePassed: number
   fixed: string[]

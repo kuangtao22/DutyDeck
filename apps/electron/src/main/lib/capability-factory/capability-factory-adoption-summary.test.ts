@@ -280,3 +280,12 @@ describe('采纳审核摘要', () => {
     expect(tested.adoption.remainingRisks[1]!.length).toBeLessThanOrEqual(240)
   })
 })
+
+
+test('Given 草案仅切换评审渠道 When 生成整份审批摘要 Then 展示真实模型配置变化', () => {
+  const { scene } = fixture()
+  scene.draft!.definition = { ...scene.definition, modelSelection: { slots: {}, review: { channelId: 'review-channel', modelId: 'review-model' } } }
+  const result = createCapabilityFactoryAdoptionSummary({ scene, getRunsByIds: () => [] })
+  expect(JSON.stringify(result.adoption)).toContain('本地模型选择')
+  expect(JSON.stringify(result.adoption)).toContain('review-channel')
+})

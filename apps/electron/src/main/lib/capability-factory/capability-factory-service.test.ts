@@ -481,3 +481,63 @@ describe('编排工厂服务', () => {
       .toThrow(/导出文件名不合法/)
   })
 })
+
+
+describe('模型选择版本契约', () => {
+  test('Given 已有草案 When 切换执行模型 Then 发布版本且保留草案正文并使旧快照失效', () => {
+    const { service } = fixture()
+    const scene = service.createScene('选模型')
+    const draft = service.saveDraft(scene.id, withStep(scene.definition, '候选提示词'), 'human', '候选')
+    const selection = { slots: { main: { channelId: 'channel-a', modelId: 'model-a' } } }
+    const expectedState = { currentVersion: draft.currentVersion, draft: draft.draft }
+    const updated = service.setModelSelection(scene.id, selection, expectedState)
+    expect(updated.currentVersion).toBe(2)
+    expect(updated.definition.modelSlots[0]?.model).toBe('model-a')
+    expect(updated.definition.modelSelection).toEqual(selection)
+    expect(updated.draft?.definition.steps).toEqual(draft.draft?.definition.steps)
+    expect(updated.draft?.definition.modelSlots[0]?.model).toBe('model-a')
+    expect(updated.draft!.createdAt).toBeGreaterThan(draft.draft!.createdAt)
+    expect(() => service.setModelSelection(scene.id, selection, expectedState)).toThrow('草案')
+    const unchanged = service.setModelSelection(scene.id, selection, { currentVersion: 2, draft: updated.draft })
+    expect(unchanged.currentVersion).toBe(2)
+    expect(service.listVersions(scene.id)).toHaveLength(2)
+  })
+
+  test('Given 草案有独立模型 When 仅修改评审选择 Then 不覆盖草案执行模型', () => {
+    const { service } = fixture()
+    const scene = service.createScene('选择')
+    const selection = { slots: { main: { channelId: 'a', modelId: 'current' } } }
+    const selected = service.setModelSelection(scene.id, selection, { currentVersion: 1, draft: null })
+    const draft = service.saveDraft(scene.id, { ...selected.definition, modelSlots: [{ id: 'main', model: 'candidate' }] }, 'human', '新模型')
+    const updated = service.setModelSelection(scene.id, { ...selection, review: { channelId: 'b', modelId: 'review' } }, { currentVersion: 2, draft: draft.draft })
+    expect(updated.draft?.definition.modelSlots[0]?.model).toBe('candidate')
+    expect(updated.draft?.definition.modelSelection?.review?.modelId).toBe('review')
+    expect(() => service.setModelSelection(scene.id, { slots: { missing: { channelId: 'a', modelId: 'x' } } }, { currentVersion: 3, draft: updated.draft })).toThrow()
+    expect(() => service.setModelSelection(scene.id, { slots: { main: { channelId: '', modelId: 'x' } } }, { currentVersion: 3, draft: updated.draft })).toThrow()
+  })
+})
+
+
+test('Given 本地渠道配置 When 导出能力包 Then 只导出模型标识而不泄漏渠道绑定', () => {
+  const { service } = fixture()
+  const scene = service.createScene('导出')
+  service.saveDraft(scene.id, { ...withStep(scene.definition, '回答'), stepAcceptances: { answer: { criteria: ['回答完整'], judgePrompt: '', metrics: [] } }, acceptance: { criteria: ['回答完整'], judgePrompt: '', metrics: [] } }, 'human', '初始')
+  service.adoptDraft(scene.id)
+  service.setModelSelection(scene.id, { slots: { main: { channelId: 'local-channel', modelId: 'model-a' } }, review: { channelId: 'local-review', modelId: 'review-a' } }, { currentVersion: 2, draft: null })
+  const result = service.exportPackage(scene.id, { packageVersion: '1.0.0', fileName: 'model.json' })
+  expect(JSON.stringify(result.package)).not.toContain('local-channel')
+  expect(JSON.stringify(result.package)).not.toContain('local-review')
+  expect(JSON.stringify(result.package)).toContain('model-a')
+})
+
+
+test('Given 当前与草案都有绑定 When 恢复自动选择 Then 两份定义都删除空配置', () => {
+  const { service } = fixture()
+  const scene = service.createScene('恢复默认')
+  const selected = service.setModelSelection(scene.id, { slots: { main: { channelId: 'c', modelId: 'm' } } }, { currentVersion: 1, draft: null })
+  const draft = service.saveDraft(scene.id, withStep(selected.definition, '候选'), 'human', '提示词')
+  const reset = service.setModelSelection(scene.id, { slots: {} }, { currentVersion: 2, draft: draft.draft })
+  expect(reset.definition).not.toHaveProperty('modelSelection')
+  expect(reset.draft?.definition).not.toHaveProperty('modelSelection')
+  expect(reset.draft?.definition.steps).toEqual(draft.draft?.definition.steps)
+})

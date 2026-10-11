@@ -15,6 +15,8 @@ import type { CapabilityPackage, FieldSchema, InputSource, ItemResult, Step } fr
 
 /** 一次模型调用的请求。 */
 export interface ModelRequest {
+  /** 当前步骤本次执行的尝试序号，从 1 开始；map 各项独立计数。 */
+  attempt?: number
   stepId: string
   model: string
   temperature?: number
@@ -251,7 +253,7 @@ async function executeStep(
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       const response = await deps.callModel({
-        stepId: step.id, model: slot.model,
+        stepId: step.id, model: slot.model, attempt,
         ...(slot.temperature === undefined ? {} : { temperature: slot.temperature }),
         ...(slot.maxTokens === undefined ? {} : { maxTokens: slot.maxTokens }),
         prompt,

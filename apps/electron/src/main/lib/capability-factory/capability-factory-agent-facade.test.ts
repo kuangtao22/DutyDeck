@@ -3,7 +3,8 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Value } from 'typebox/value'
-import type { CapabilityFactoryBatch, CapabilitySceneDefinition } from '@proma/shared'
+import { isPromptOnlyOptimization } from '@proma/shared'
+import type { CapabilityFactoryExperimentView, CapabilityFactoryExperiment, CapabilityFactoryBatch, CapabilitySceneDefinition } from '@proma/shared'
 import { CapabilityFactoryStore } from './capability-factory-store'
 import { CapabilityFactoryService } from './capability-factory-service'
 import { createCapabilityFactoryAgentFacade, type CapabilityFactoryAgentApproval } from './capability-factory-agent-facade'
@@ -160,6 +161,7 @@ describe('Agent 操控面（权限边界）', () => {
     expect(CAPABILITY_FACTORY_AGENT_READ_TOOL_NAMES).toContain('factory_list_batches')
     expect(CAPABILITY_FACTORY_AGENT_RUN_TOOL_NAMES).toEqual([
       'factory_run_scene', 'factory_run_step', 'factory_run_batch',
+      'factory_create_experiment', 'factory_advance_experiment', 'factory_cancel_experiment',
     ])
     expect(CAPABILITY_FACTORY_AGENT_APPLY_TOOL_NAMES).toContain('factory_apply_operation')
     expect(new Set(CAPABILITY_FACTORY_AGENT_TOOL_NAMES).size).toBe(CAPABILITY_FACTORY_AGENT_TOOL_NAMES.length)
@@ -829,4 +831,169 @@ describe('Agent 操控面（权限边界）', () => {
     expect(facade.approval('factory_apply_stub', { preparedId: 'nope' })).toBeNull()
     expect(facade.approval('factory_apply_stub', {})).toBeNull()
   })
+})
+
+
+test('Given 场景已有模型绑定 When Agent 经工具 schema 准备并应用纯提示词草案 Then 完整保留模型与标准', () => {
+  /** 使用真实服务和 facade，只有工具注册器是恒等替身。 */
+  const { service, facade } = fixture()
+  const scene = service.createScene('模型保留')
+  service.saveDraft(scene.id, withStep(scene.definition, '原提示词'), 'human', '初始化')
+  service.adoptDraft(scene.id)
+  const selected = service.setModelSelection(scene.id, {
+    slots: { main: { channelId: 'execution', modelId: 'model' } }, review: { channelId: 'judge', modelId: 'review' },
+  }, { currentVersion: 2, draft: null })
+  const sdk = { defineTool: (definition: unknown) => definition } as Parameters<typeof buildCapabilityFactoryAgentTools>[0]
+  const prepare = buildCapabilityFactoryAgentTools(sdk, facade).find((tool) => tool.name === 'factory_prepare_draft')
+  if (!prepare) throw new Error('缺少草案工具')
+  /** 工具输入从 getScene 的完整定义构造，只改提示词。 */
+  const definition = withStep(facade.getScene(scene.id)!.definition, '新提示词')
+  const input = { sceneId: scene.id, note: '纯提示词优化', definition }
+  expect(Value.Check(prepare.parameters, input)).toBe(true)
+  for (const modelSelection of [
+    { slots: {}, token: 'forbidden' },
+    { slots: { main: { channelId: 'c', modelId: 'm', apiKey: 'forbidden' } } },
+    { slots: { main: { channelId: 'c' } } },
+    { slots: {}, review: { channelId: 'c', modelId: '' } },
+  ]) {
+    expect(Value.Check(prepare.parameters, { ...input, definition: { ...definition, modelSelection } })).toBe(false)
+  }
+  const prepared = facade.prepareDraft(input.sceneId, input.definition, input.note)
+  if ('reason' in prepared) throw new Error(prepared.reason)
+  expect(facade.applyDraft(prepared.preparedId).saved).toBe(true)
+  const saved = service.getScene(scene.id)!.draft!.definition
+  expect(saved.modelSelection).toEqual(selected.definition.modelSelection)
+  expect(saved.stepAcceptances).toEqual(selected.definition.stepAcceptances)
+  expect(isPromptOnlyOptimization(selected.definition, saved)).toBe(true)
+})
+
+
+/** 最小宿主视图替身；业务完整性由实验服务测试覆盖。 */
+function experimentView(): CapabilityFactoryExperimentView {
+  return { id: 'experiment', sceneId: 'id-1', revision: 1, status: 'prepared', running: false,
+    samples: Array.from({ length: 10 }, (_, index) => ({ caseId: `c-${index}`, split: 'optimization', sourceGroupId: `g-${index}`, inputFingerprint: `f-${index}`, labelStatus: 'complete' })), stages: [],
+  } as unknown as CapabilityFactoryExperimentView
+}
+
+test('Given 实验与旧比较入口 When 共用回合 Then 三轮后不能再启动实验', async () => {
+  const { service } = fixture()
+  const scene = service.createScene('实验')
+  let starts = 0
+  const facade = createCapabilityFactoryAgentFacade({ service, getExperiment: experimentView,
+    advanceExperiment: async () => { starts += 1; return experimentView() },
+    runBatch: async () => ({ id: 'batch' }) as CapabilityFactoryBatch,
+  })
+  await facade.runBatch({ sceneId: scene.id, kind: 'comparison', taskIds: ['one'] })
+  await facade.advanceExperiment({ sceneId: scene.id, experimentId: 'experiment', expectedRevision: 1 })
+  await facade.advanceExperiment({ sceneId: scene.id, experimentId: 'experiment', expectedRevision: 1 })
+  expect(await facade.advanceExperiment({ sceneId: scene.id, experimentId: 'experiment', expectedRevision: 1 })).toMatchObject({ reason: expect.stringContaining('3 轮') })
+  expect(starts).toBe(2)
+})
+
+test('Given 计划模式或停止信号 When 实验写操作 Then 不启动宿主；完整读取登记暴露', async () => {
+  const { service } = fixture()
+  const exposures: string[] = []
+  const facade = createCapabilityFactoryAgentFacade({ service, canMutate: () => false,
+    markExposureForRead: (request) => exposures.push(request.kind),
+    createExperiment: () => { throw new Error('不应创建') },
+    advanceExperiment: async () => { throw new Error('不应执行') }, cancelExperiment: () => { throw new Error('不应取消') },
+    getBatch: () => null,
+  })
+  expect(await facade.advanceExperiment({ sceneId: 's', experimentId: 'e', expectedRevision: 1 })).toHaveProperty('reason')
+  expect(facade.cancelExperiment('s', 'e')).toHaveProperty('reason')
+  facade.listDatasets(); facade.getRun('s', 'r'); facade.getBatch('s', 'b'); facade.listRuns('s')
+  expect(exposures).toEqual(['datasets', 'run', 'batch', 'runs'])
+})
+
+test('Given 单步实验证据 When 批准前证据变化 Then 拒绝旧审批且不采纳其他草案', async () => {
+  const { service } = fixture()
+  const scene = service.createScene('实验审批')
+  service.saveDraft(scene.id, withTwoSteps(scene.definition), 'human', '初始化')
+  service.adoptDraft(scene.id)
+  const current = service.getScene(scene.id)!
+  const candidate = structuredClone(current.definition)
+  const first = candidate.steps[0]!
+  if (first.type !== 'llm') throw new Error('步骤无效')
+  first.prompt = '实验候选'
+  const draft = structuredClone(candidate)
+  const second = draft.steps[1]!
+  if (second.type !== 'llm') throw new Error('步骤无效')
+  second.prompt = '其他待审改动'
+  service.saveDraft(scene.id, draft, 'agent', '两块修改')
+  let revision = 1
+  const facade = createCapabilityFactoryAgentFacade({ service,
+    assertExperimentAdoptable: (_sceneId, _experimentId, definition) => {
+      expect(definition).toEqual(candidate)
+      return { ...experimentView(), revision } as CapabilityFactoryExperiment
+    },
+  })
+  const prepared = facade.prepareOperation({ kind: 'adoptDraft', sceneId: scene.id, scope: { kind: 'step', stepId: 'first' }, testedExperimentId: 'experiment' })
+  if (!prepared.preparedId || !prepared.approval) throw new Error(prepared.reason)
+  expect(prepared.approval.lines.join(' ')).toContain('验证实验')
+  revision += 1
+  expect(await facade.applyOperation(prepared.preparedId)).toMatchObject({ applied: false, reason: expect.stringContaining('证据已变化') })
+  expect(service.getScene(scene.id)?.definition).toEqual(current.definition)
+  /** 重新批准最新证据后，仅实验对应步骤生效，其他草案继续待审。 */
+  const fresh = facade.prepareOperation({ kind: 'adoptDraft', sceneId: scene.id, scope: { kind: 'step', stepId: 'first' }, testedExperimentId: 'experiment' })
+  if (!fresh.preparedId) throw new Error(fresh.reason)
+  expect(await facade.applyOperation(fresh.preparedId)).toMatchObject({ applied: true })
+  expect(service.getScene(scene.id)?.definition).toEqual(candidate)
+  expect(service.getScene(scene.id)?.draft?.definition).toEqual(draft)
+})
+
+
+test('Given 普通运行已消耗 41 次 When 实验需要 20 次 Then 拒绝且不花比较轮次', async () => {
+  const { service } = fixture()
+  const scene = service.createScene('额度')
+  let starts = 0
+  const facade = createCapabilityFactoryAgentFacade({ service, getExperiment: experimentView,
+    advanceExperiment: async () => { starts += 1; return experimentView() },
+    runStep: async () => ({ id: 'run', sceneId: scene.id, sceneVersion: 1, kind: 'step', stepId: 'answer', status: 'succeeded', valid: true, input: {}, outputs: {}, steps: [], startedAt: 1, finishedAt: 2 }),
+    runBatch: async () => ({ id: 'batch' }) as CapabilityFactoryBatch,
+  })
+  for (let index = 0; index < 41; index += 1) await facade.runStep(scene.id, 'answer', {})
+  expect(await facade.advanceExperiment({ sceneId: scene.id, experimentId: 'experiment', expectedRevision: 1 })).toMatchObject({ reason: expect.stringContaining('60 次') })
+  expect(starts).toBe(0)
+  for (let index = 0; index < 3; index += 1) expect(await facade.runBatch({ sceneId: scene.id, kind: 'comparison', taskIds: ['one'] })).toHaveProperty('id')
+})
+
+test('Given 实验冻结阶段或停止回合 When 修订或取消 Then 不到宿主执行口', async () => {
+  const { service } = fixture()
+  const controller = new AbortController()
+  const facade = createCapabilityFactoryAgentFacade({ service, signal: controller.signal,
+    getExperiment: () => ({ ...experimentView(), status: 'validating' }),
+    advanceExperiment: async () => { throw new Error('不应执行') },
+    cancelExperiment: () => { throw new Error('不应执行') },
+  })
+  expect(await facade.advanceExperiment({ sceneId: 's', experimentId: 'e', expectedRevision: 1, candidatePrompt: '后改' })).toMatchObject({ reason: expect.stringContaining('只有优化完成后') })
+  controller.abort()
+  expect(() => facade.cancelExperiment('s', 'e')).toThrow('当前 Agent 回合已停止')
+})
+
+
+test('Given 直接工具调用 When 伪造推进阶段和批准字段 Then schema 拒绝且实验仍不可直接采纳', () => {
+  const sdk = { defineTool: (definition: unknown) => definition } as Parameters<typeof buildCapabilityFactoryAgentTools>[0]
+  const tools = buildCapabilityFactoryAgentTools(sdk, fixture().facade)
+  const advance = tools.find((tool) => tool.name === 'factory_advance_experiment')!
+  const input = { sceneId: 'scene', experimentId: 'experiment', expectedRevision: 1 }
+  expect(Value.Check(advance.parameters, input)).toBe(true)
+  for (const extra of [{ approved: true }, { status: 'completed' }, { definition: {} }, { expectedRevision: 0 }]) {
+    expect(Value.Check(advance.parameters, { ...input, ...extra })).toBe(false)
+  }
+  expect(tools.some((tool) => tool.name === 'factory_adopt_experiment')).toBe(false)
+})
+
+
+test('Given Agent 读取最近运行 When 登记暴露 Then 只传实际返回的 ID 并保留数据集显式暴露', () => {
+  const { service } = fixture()
+  const scene = service.createScene('真实可见范围')
+  for (let index = 0; index < 22; index += 1) service.recordRun({ id: `run-${index}`, sceneId: scene.id, sceneVersion: 1, kind: 'full', status: 'succeeded', valid: true, input: {}, outputs: {}, steps: [], startedAt: index, finishedAt: index })
+  /** 宿主应接收返回清单，不得凭场景 ID 无条件污染未展示的验证轨迹。 */
+  const requests: unknown[] = []
+  const facade = createCapabilityFactoryAgentFacade({ service, markExposureForRead: (request) => requests.push(request) })
+  const runs = facade.listRuns(scene.id, 'full')
+  expect(runs).toHaveLength(20)
+  expect(requests).toEqual([{ kind: 'runs', sceneId: scene.id, runIds: runs.map((run) => run.id) }])
+  facade.listDatasets()
+  expect(requests.at(-1)).toEqual({ kind: 'datasets' })
 })

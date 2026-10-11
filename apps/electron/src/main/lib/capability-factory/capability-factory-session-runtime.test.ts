@@ -216,3 +216,63 @@ describe('能力工厂会话运行层集成', () => {
     expect(setup.service.listRuns(setup.sceneId)).toEqual([])
   })
 })
+
+test('Given 独立实验候选 When 三阶段走真实参考runner Then 不覆盖草案且批次与运行证据可复核', async () => {
+  const setup = fixture()
+  const baseline = setup.service.getScene(setup.sceneId)!
+  const draft = setup.service.saveDraft(setup.sceneId, { ...baseline.definition, description: '保留未批准改动' }, 'human', '用户草案').draft
+  const dataset = setup.service.createDataset('三组标签')
+  for (const text of ['来源一', '来源二', '来源三']) setup.service.addCase(dataset.id, { text }, { expected: { answer: '候选结果' }, source: 'human' })
+  const cases = setup.service.listDatasets().find((item) => item.id === dataset.id)!.cases
+  const experiments = setup.runtime.experiments()
+  let record = experiments.create({ sceneId: setup.sceneId, expectedVersion: baseline.currentVersion, datasetId: dataset.id,
+    targetStepId: 'answer', candidatePrompt: '候选回答', heldOutExposure: 'declared-unseen',
+    protocol: { protocolVersion: 'v1', scorerVersion: 1, primaryMetric: 'business-error-rate', mode: 'exact-value',
+      outputPath: 'answer', expectedPath: 'answer', tupleFields: [], normalization: { trim: false, caseFold: false, arrayOrder: 'ordered' }, requireReview: true },
+    assignments: cases.map((item, index) => ({ caseId: item.id, sourceGroupId: `book-${index}`, labelStatus: 'complete', split: (['optimization', 'validation', 'held-out'] as const)[index]! })),
+    limits: { maxCalls: 20, maxTransportAttempts: 30, durationMs: 60000 },
+  })
+  for (let phase = 0; phase < 3; phase += 1) record = await setup.runtime.runExperiment({ sceneId: setup.sceneId, experimentId: record.id, expectedRevision: record.revision })
+  expect(record.status).toBe('completed')
+  expect(record.stages[2]?.quality?.adoptionEligible).toBe(true)
+  expect(setup.service.getScene(setup.sceneId)?.draft).toEqual(draft)
+  expect(setup.service.listRuns(setup.sceneId)).toHaveLength(6)
+  expect(setup.runtime.batches().list(setup.sceneId)).toHaveLength(3)
+  expect(experiments.assertAdoptable(setup.sceneId, record.id, record.candidates[0]!.definition).id).toBe(record.id)
+})
+
+test('Given 实验模型返回时用户取消 When 收尾 Then 保留真实取消轨迹和半对运行引用', async () => {
+  const controller = new AbortController()
+  const setup = fixture({ signal: controller.signal, onModelCall: (stepId) => {
+    if (stepId !== '__factory_review__') controller.abort(new Error('用户取消'))
+  } })
+  const scene = setup.service.getScene(setup.sceneId)!
+  const dataset = setup.service.createDataset('取消实验')
+  for (const text of ['一', '二', '三']) setup.service.addCase(dataset.id, { text }, { expected: { answer: '候选结果' }, source: 'human' })
+  const cases = setup.service.listDatasets().find((item) => item.id === dataset.id)!.cases
+  const record = setup.runtime.experiments().create({ sceneId: scene.id, expectedVersion: scene.currentVersion,
+    datasetId: dataset.id, targetStepId: 'answer', candidatePrompt: '候选回答', heldOutExposure: 'declared-unseen',
+    protocol: { protocolVersion: 'v1', scorerVersion: 1, primaryMetric: 'business-error-rate', mode: 'exact-value',
+      outputPath: 'answer', expectedPath: 'answer', tupleFields: [], normalization: { trim: false, caseFold: false, arrayOrder: 'ordered' }, requireReview: true },
+    assignments: cases.map((item, index) => ({ caseId: item.id, sourceGroupId: `book-${index}`, labelStatus: 'complete', split: (['optimization', 'validation', 'held-out'] as const)[index]! })),
+    limits: { maxCalls: 20, maxTransportAttempts: 30, durationMs: 60000 },
+  })
+  const stopped = await setup.runtime.runExperiment({ sceneId: scene.id, experimentId: record.id, expectedRevision: record.revision })
+  expect(stopped.status).toBe('cancelled')
+  const runId = stopped.stages[0]?.pairs[0]?.baselineRunId
+  expect(runId).toBeDefined()
+  expect(setup.service.getRun(scene.id, runId!)?.status).toBe('cancelled')
+  expect(setup.service.listRuns(scene.id)).toHaveLength(1)
+})
+
+test('Given 计划模式 When 读取实验与尝试创建或运行 Then 只读可用且模型调用被拒绝', async () => {
+  const setup = fixture()
+  const readonly = createCapabilityFactorySessionRuntime({ rootDir: setup.rootDir, sessionId: 'read-only', service: setup.service,
+    assertCurrent: () => undefined, canMutate: () => false,
+    getRunPorts: () => { throw new Error('计划模式不应初始化模型端口') },
+  })
+  expect(readonly.experiments().list(setup.sceneId)).toEqual([])
+  expect(() => readonly.experiments().markExposureForRead({ kind: 'datasets' })).not.toThrow()
+  expect(() => readonly.runner()).toThrow('计划模式')
+  await expect(readonly.runBatch({ sceneId: setup.sceneId, kind: 'comparison', taskIds: setup.taskIds })).rejects.toThrow('计划模式')
+})

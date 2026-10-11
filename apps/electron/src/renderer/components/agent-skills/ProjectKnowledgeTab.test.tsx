@@ -16,7 +16,7 @@ import {
   ProjectKnowledgeTabShell,
   selectKnowledgeMaintenanceSession,
 } from './ProjectKnowledgeTab'
-import { buildKnowledgePlanSelection, KnowledgeWorkflowPanel } from './KnowledgeWorkflowPanel'
+import { buildKnowledgePlanSelection, KnowledgeWorkflowPanel, KnowledgeWorkflowDialog } from './KnowledgeWorkflowPanel'
 
 /** 创建固定知识条目，测试只覆盖用户可观察的目录信息。 */
 function createEntry(overrides: Partial<KnowledgeEntry> = {}): KnowledgeEntry {
@@ -156,6 +156,18 @@ describe('项目知识库两步工作流', () => {
     }
   }
 
+  test('Given 已确认分组 When 返回阅读页面 Then 整理流程只显示弹窗入口而不再堆放第二份目录', () => {
+    /** 进度详情在用户打开弹窗后展示，阅读首页不包含大纲正文。 */
+    const html = renderToStaticMarkup(<KnowledgeWorkflowDialog
+      workflow={createWorkflow({ proposal: undefined, approved: { ...createWorkflow().proposal!, confirmedAt: 2 } })}
+      entries={[]} pendingAction={null} error={null} onConfirm={noop} onPause={noop} onSelectEntryId={noop} onRequestAdjustment={noop}
+    />)
+    expect(html).toContain('整理进度')
+    expect(html).toContain('aria-haspopup="dialog"')
+    expect(html).not.toContain('知识库大纲')
+    expect(html).not.toContain('暂停生成')
+  })
+
   test('Given 用户取消一个分组并修改另一个名称 When 构造确认选择 Then 只提交选中分组和新名称', () => {
     const proposal = createWorkflow().proposal!
     expect(buildKnowledgePlanSelection(
@@ -187,14 +199,17 @@ describe('项目知识库两步工作流', () => {
     expect(html).toContain('产品说明')
     expect(html).toContain('docs/product.md')
     expect(html).toContain('未核对')
+    expect(html).toContain('这是一份待确认的整理计划，还不是最终知识库内容')
+    expect(html).toContain('点击“确认所选范围”后，才会继续生成大纲和 Markdown 正文')
     expect(html).toContain('调整清单')
     expect(html).toContain('缺少退款说明')
     expect(html).toContain('产品规则.md')
     expect(html).toContain('知识库')
+    expect(html).not.toContain('<details')
     expect(confirmCalls).toBe(0)
   })
 
-  test('Given 大纲包含各种状态及首页外条目 When 展示目录 Then 仅可读取状态按 entryId 打开', () => {
+  test('Given 已确认大纲包含各种状态及首页外条目 When 展示目录 Then 汇总状态且仅可读取项提供打开入口', () => {
     const readyEntry = createEntry({ id: 'entry-ready', title: '发布流程' })
     const workflow = createWorkflow({
       proposal: undefined,
@@ -214,6 +229,10 @@ describe('项目知识库两步工作流', () => {
     expect(html).toContain('产品')
     expect(html).toContain('运维')
     expect(html).toContain('等待生成')
+    expect(html).toContain('2 项已生成')
+    expect(html).toContain('1 项部分完成')
+    expect(html).toContain('1 项等待生成')
+    expect(html).toContain('1 项缺少依据')
     expect(html).toContain('打开发布流程')
     expect(html).toContain('打开首页外文档')
     expect(html).toContain('打开部分文档')
@@ -259,6 +278,48 @@ describe('项目知识库两步工作流', () => {
 })
 
 describe('项目知识库知识与来源视图', () => {
+  test('Given 已有大纲但尚未生成正文 When 浏览目录 Then 保留文件夹与待生成文件而非空目录提示', () => {
+    /** 大纲只提供目录位置和状态，不把未生成文件变成正文链接。 */
+    const snapshot = createSnapshot({ workflow: { paused: false, outline: {
+      revision: 1, planRevision: 1, relativePath: '索引.md', items: [
+        { id: 'todo', groupId: 'product', title: '待补需求', relativePath: '产品/待补需求.md', summary: '', sections: [], status: 'pending' },
+      ],
+    } } })
+    /** 未生成阶段仍使用与阅读页相同的布局。 */
+    const html = renderToStaticMarkup(<ProjectKnowledgeResourcesView
+      scope="knowledge" snapshot={snapshot} result={createSearchResult([])} selectedRead={null}
+      loading={false} searching={false} reading={false} actionPending={false} error={null} query="" category="all"
+      onQueryChange={noop} onCategoryChange={noop} onScan={noop} onCancelScan={noop} onRetry={noop}
+      onSelectEntry={noop} onLoadMore={noop} onLoadMoreContent={noop} onClosePreview={noop}
+    />)
+    expect(html).toContain('待补需求.md')
+    expect(html).toContain('等待生成')
+    expect(html).not.toContain('尚未提炼知识')
+    expect(html).not.toContain('aria-label="打开待补需求.md"')
+  })
+
+  test('Given 知识具有真实文件路径 When 浏览知识库 Then 左侧显示文件结构而不是摘要卡片并保留右侧正文', () => {
+    /** 文件名与标题不同，验证导航采用真实文件结构。 */
+    const entry = createEntry({
+      title: '产品路线图标题', summary: '不应该再铺在左侧的摘要卡片',
+      document: { topicKey: 'roadmap', groupId: 'product', rootRelativePath: '知识库', relativePath: '产品/规划/路线图.md', contentRevision: 'r1' },
+      source: { kind: 'managed', id: 'internal-document-id', revision: 'r1' },
+    })
+    /** 使用与实际面板一致的受控阅读状态。 */
+    const html = renderToStaticMarkup(<ProjectKnowledgeResourcesView
+      scope="knowledge" snapshot={createSnapshot({ knowledgeCount: 1 })} result={createSearchResult([entry])}
+      selectedRead={{ entry, content: '# 正文', status: 'readable', offset: 0, truncated: false }}
+      loading={false} searching={false} reading={false} actionPending={false} error={null} query="" category="all"
+      onQueryChange={noop} onCategoryChange={noop} onScan={noop} onCancelScan={noop} onRetry={noop}
+      onSelectEntry={noop} onLoadMore={noop} onLoadMoreContent={noop} onClosePreview={noop}
+    />)
+    expect(html).toContain('aria-label="知识库文件目录"')
+    expect(html).toContain('路线图.md')
+    expect(html).toContain('资料正文预览')
+    expect(html).not.toContain(entry.summary)
+    expect(html).not.toContain('internal-document-id')
+  })
+
   test('Given 打开项目知识库 When 渲染统一容器 Then 顶部提供独立知识库和记忆Tabs', () => {
     const html = renderToStaticMarkup(
       <ProjectKnowledgeTabShell
@@ -345,6 +406,7 @@ describe('项目知识库知识与来源视图', () => {
     expect(html).toContain('新建当前项目的 Agent 对话')
     expect(html).toContain('知识维护 Skill')
     expect(html).toContain('待确认知识方案')
+    expect(html).toContain('data-testid="project-knowledge-scroll"')
     expect(html).not.toContain('知识库操作')
     expect(html).not.toContain('整理受管资料')
     expect(html).not.toContain('预览记忆整理建议')
@@ -749,6 +811,66 @@ describe('项目知识库知识与来源视图', () => {
     expect(html).not.toContain('已确认')
     expect(html).not.toContain('确认资料')
     expect(html).not.toContain('排除条目')
+  })
+
+  /** 覆盖文档身份、来源和状态组合，防止正式草稿与旧候选混用审核入口。 */
+  test.each([
+    ['managed', 'draft', true],
+    ['managed', 'confirmed', true],
+    ['conversation', 'draft', true],
+    ['conversation', 'confirmed', true],
+    ['managed', 'draft', false],
+    ['managed', 'confirmed', false],
+    ['conversation', 'draft', false],
+    ['conversation', 'confirmed', false],
+  ] as const)('Given 来源 %s 状态 %s 正式文档 %p When 打开正文 Then 仅旧候选提供审核并保留依据', (sourceKind, state, isDocument) => {
+    /** 相同正文与依据，仅改变文档身份、来源和状态以验证操作边界。 */
+    const entry = createEntry({
+      state,
+      source: { kind: sourceKind, id: 'product-principles', revision: 'source-r1' },
+      document: isDocument ? {
+        topicKey: 'product-principles',
+        groupId: 'group-product',
+        rootRelativePath: '知识库',
+        relativePath: '产品/产品原则.md',
+        contentRevision: 'content-r1',
+      } : undefined,
+      evidence: [{ entryId: 'source-1', revision: 'source-r1', quote: '业务数据优先保存在本地。' }],
+    })
+    /** 提供真实审核回调入口，避免因回调缺省掩盖错误的按钮显示条件。 */
+    const html = renderToStaticMarkup(
+      <ProjectKnowledgeResourcesView
+        scope="knowledge"
+        snapshot={createSnapshot({ entries: [entry], totalEntries: 1, knowledgeCount: 1 })}
+        result={createSearchResult([entry])}
+        selectedRead={{ entry, content: '本地优先架构说明。', status: 'readable', offset: 0, truncated: false }}
+        loading={false}
+        searching={false}
+        reading={false}
+        actionPending={false}
+        error={null}
+        query=""
+        category="all"
+        onQueryChange={noop}
+        onCategoryChange={noop}
+        onScan={noop}
+        onCancelScan={noop}
+        onRetry={noop}
+        onSelectEntry={noop}
+        onLoadMore={noop}
+        onLoadMoreContent={noop}
+        onClosePreview={noop}
+        onReviewEntry={noop}
+        onSelectEvidence={noop}
+      />,
+    )
+
+    expect(html.includes('确认资料')).toBe(!isDocument && state === 'draft')
+    expect(html.includes('排除条目')).toBe(!isDocument)
+    expect(html.includes('此文档由知识库大纲维护，无需逐篇确认。调整内容请使用“更新知识库”。')).toBe(isDocument)
+    expect(html).toContain('提炼依据')
+    expect(html).toContain('业务数据优先保存在本地。')
+    expect(html).toContain('live-markdown-editor')
   })
 
   test('Given 用户切换到记忆文件 When 渲染统一容器 Then 原记忆入口仍然可达', () => {

@@ -2,7 +2,7 @@
  * ModelSelector - 模型选择器（锚定 Popover + 搜索）
  *
  * 现代化设计：
- * - 非模态 Popover 锚定触发按钮，向上展开（右对齐），避免 Dialog 全屏遮罩
+ * - 工具栏使用非模态菜单；表单使用嵌套模态菜单，兼容 Dialog 内的滚动锁
  * - 按渠道分组，标题与模型项使用统一栅格对齐
  * - 选中项使用柔和底色与右侧勾选标记
  * - 触发按钮：模型 logo + 模型名 + Chevron
@@ -31,6 +31,7 @@ import {
 import { useConversationModelOptional } from '@/hooks/useConversationSettings'
 import { useConversationIdOptional } from '@/contexts/session-context'
 import { inputToolbarControlHeightClass } from '@/components/ai-elements/input-toolbar-styles'
+import { buttonVariants } from '@/components/ui/button'
 import { getModelLogo, getChannelLogo, DefaultLogo } from '@/lib/model-logo'
 import { cn } from '@/lib/utils'
 import type { Channel, ModelOption, ProviderType } from '@proma/shared'
@@ -118,6 +119,12 @@ interface ModelSelectorProps {
   excludedProviders?: readonly ProviderType[]
   /** 是否使用全局 modelSelectorOpenAtom 控制打开状态（用于外部拉起，如错误提示按钮） */
   useSharedOpenState?: boolean
+  /** 工具栏保持紧凑文字按钮；表单使用项目统一的全宽描边控件。 */
+  triggerVariant?: 'toolbar' | 'form'
+  /** 表单字段关联的标签 ID 目标；仅设置触发按钮 id。 */
+  triggerId?: string
+  /** 没有显式模型时展示的默认规则，例如自动匹配或跟随运行模型。 */
+  placeholder?: string
 }
 
 export function ModelSelector({
@@ -128,6 +135,9 @@ export function ModelSelector({
   showChannelInTrigger = false,
   excludedProviders,
   useSharedOpenState = false,
+  triggerVariant = 'toolbar',
+  triggerId,
+  placeholder = '选择模型',
 }: ModelSelectorProps = {}): React.ReactElement {
   const [conversationModel, setConversationModel] = useConversationModelOptional()
   const conversationId = useConversationIdOptional()
@@ -280,7 +290,8 @@ export function ModelSelector({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    // 表单菜单可位于 Dialog 内；使用嵌套模态滚动边界，避免 body Portal 被外层滚动锁拦截。
+    <Popover open={open} onOpenChange={setOpen} modal={triggerVariant === 'form'}>
       {/* 触发按钮 */}
       <Tooltip
         open={tooltipOpen}
@@ -290,10 +301,16 @@ export function ModelSelector({
           <PopoverTrigger asChild>
             <button
               type="button"
+              id={triggerId}
               className={cn(
-                'model-selector-trigger flex items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors',
-                'hover:bg-accent hover:text-foreground focus:outline-none focus-visible:bg-accent focus-visible:text-foreground',
-                inputToolbarControlHeightClass,
+                'model-selector-trigger',
+                triggerVariant === 'form'
+                  ? buttonVariants({ variant: 'outline', className: 'w-full min-w-0 justify-start bg-background/40 px-3 font-normal' })
+                  : cn(
+                    'flex items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors',
+                    'hover:bg-accent hover:text-foreground focus:outline-none focus-visible:bg-accent focus-visible:text-foreground',
+                    inputToolbarControlHeightClass,
+                  ),
               )}
             >
               {displayModelInfo ? (
@@ -305,10 +322,10 @@ export function ModelSelector({
               ) : (
                 <Cpu className="size-3.5" />
               )}
-              <span className="max-w-[200px] truncate">
+              <span className={triggerVariant === 'form' ? 'min-w-0 flex-1 truncate text-left' : 'max-w-[200px] truncate'}>
                 {displayModelInfo
                   ? (showChannelInTrigger ? `${displayModelInfo.channelName} · ${displayModelInfo.modelName}` : displayModelInfo.modelName)
-                  : '选择模型'}
+                  : placeholder}
               </span>
               <ChevronDown className="size-3" />
             </button>
@@ -317,18 +334,18 @@ export function ModelSelector({
         <TooltipContent side="top">渠道：{displayModelInfo?.channelName}</TooltipContent>
       </Tooltip>
 
-      {/* 模型选择 Popover — 锚定触发按钮，向上展开（end 对齐，内容向左上延伸）。
-          宽度优先让模型名称完整显示，并在窄窗口内保留 12px 的安全边距。 */}
+      {/* 工具栏菜单向上展开；表单菜单向下、左对齐并跟随字段宽度，统一复用搜索与分组。 */}
       <PopoverContent
-        side="top"
-        align="end"
+        side={triggerVariant === 'form' ? 'bottom' : 'top'}
+        align={triggerVariant === 'form' ? 'start' : 'end'}
         sideOffset={8}
         collisionPadding={12}
-        className="w-[min(400px,calc(100vw-24px))] p-0"
+        // 按 Radix 实际可用高度收缩列表；仅限制 vh 会让窄窗口中的末尾模型越出屏幕。
+        className={cn('flex max-h-[var(--radix-popover-content-available-height)] w-[min(400px,calc(100vw-24px))] flex-col overflow-hidden p-0', triggerVariant === 'form' && 'w-[var(--radix-popover-trigger-width)]')}
         aria-label="选择模型"
       >
         {/* 搜索栏 */}
-        <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-border/60">
+        <div className="flex shrink-0 items-center gap-2 px-3.5 py-2.5 border-b border-border/60">
           <Search className="size-4 text-muted-foreground/60 flex-shrink-0" />
           <input
             type="text"
@@ -342,7 +359,7 @@ export function ModelSelector({
         </div>
 
         {/* 模型列表 */}
-        <div className="max-h-[min(360px,55vh)] overflow-y-auto scrollbar-thin">
+        <div className="min-h-0 max-h-[min(360px,55vh)] overflow-y-auto overscroll-contain scrollbar-thin">
           {filteredGrouped.size === 0 ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
               未找到模型

@@ -13,6 +13,8 @@
 import { randomUUID } from 'node:crypto'
 import {
   buildCapabilityPackage,
+  parseCapabilityFactoryModelSelection,
+  type CapabilityFactoryModelSelection,
   stableCapabilityValueKey,
   createEmptySceneDefinition,
   describePackageReadiness,
@@ -68,7 +70,7 @@ export class CapabilityFactoryError extends Error {
 
 /** 草案结构白名单；完整可运行性仍由 runner / 导出器的严格 parser 判断。 */
 const DRAFT_DEFINITION_KEYS = [
-  'name', 'description', 'inputs', 'outputs', 'steps', 'capabilities', 'modelSlots', 'acceptance', 'stepAcceptances',
+  'name', 'description', 'inputs', 'outputs', 'steps', 'capabilities', 'modelSlots', 'acceptance', 'stepAcceptances', 'modelSelection',
 ] as const
 
 /** 不同步骤类型允许的字段，保持与 capability-runner 的严格 parser 一致。 */
@@ -169,6 +171,7 @@ function validateDraftAcceptance(value: unknown, where: string): void {
 export function validateCapabilitySceneDraft(definition: unknown): void {
   const draft = draftRecord(definition, 'definition')
   assertDraftKeys(draft, 'definition', DRAFT_DEFINITION_KEYS)
+  if (draft.modelSelection !== undefined) parseCapabilityFactoryModelSelection(draft.modelSelection)
   if (draft.inputs !== undefined) validateDraftArray(draft.inputs, 'inputs', validateDraftField)
   if (draft.outputs !== undefined) {
     validateDraftArray(draft.outputs, 'outputs', (item, where) => {
@@ -524,6 +527,71 @@ export class CapabilityFactoryService {
       })
     }
     return [...explicit, ...legacy.values()].sort((left, right) => right.updatedAt - left.updatedAt)
+  }
+
+  /** 输入本地模型选择与完整旧快照，发布新版本；仅同步明确改变的槽位，保留草案正文。 */
+  setModelSelection(sceneId: string, selection: CapabilityFactoryModelSelection, expectedState: CapabilityDraftExpectedState): CapabilityScene {
+    /** 服务入口同样做校验，不依赖 IPC 调用方。 */
+    const parsed = parseCapabilityFactoryModelSelection(selection)
+    /** 同步读取整份索引，持久化时保持其他场景不变。 */
+    const scenes = this.store.listScenes()
+    const index = scenes.findIndex((item) => item.id === sceneId)
+    if (index < 0) throw new CapabilityFactoryError('SCENE_NOT_FOUND', `场景不存在：${sceneId}`)
+    const scene = scenes[index] as CapabilityScene
+    this.assertDraftExpectedState(scene, expectedState)
+    /** 绑定只能指向当前版本已声明的槽位。 */
+    const knownSlots = new Set(scene.definition.modelSlots.map((slot) => slot.id))
+    for (const slotId of Object.keys(parsed.slots)) {
+      if (!knownSlots.has(slotId)) throw new CapabilityFactoryError('MODEL_SLOT_NOT_FOUND', `模型槽位不存在：${slotId}`)
+    }
+    /** 空配置等同自动匹配，重复设置不发布版本。 */
+    const previous = scene.definition.modelSelection ?? { slots: {} }
+    if (stableCapabilityValueKey(previous) === stableCapabilityValueKey(parsed)) return scene
+    /** 仅同步本次用户修改的槽位；未修改的草案模型可能是候选实验，必须保留。 */
+    const changedSlots = new Set([...Object.keys(previous.slots), ...Object.keys(parsed.slots)]
+      .filter((id) => stableCapabilityValueKey(previous.slots[id]) !== stableCapabilityValueKey(parsed.slots[id])))
+    /** 评审覆盖单独比较，避免覆盖草案的其他候选选择。 */
+    const reviewChanged = stableCapabilityValueKey(previous.review) !== stableCapabilityValueKey(parsed.review)
+    /** 生效定义保留全部流程，只更新本地绑定和包内模型声明。 */
+    const definition: CapabilitySceneDefinition = {
+      ...scene.definition, modelSelection: parsed,
+      modelSlots: scene.definition.modelSlots.map((slot) => parsed.slots[slot.id] ? { ...slot, model: parsed.slots[slot.id]!.modelId } : slot),
+    }
+    if (Object.keys(parsed.slots).length === 0 && parsed.review === undefined) delete definition.modelSelection
+    /** 本次变更共用时钟；草案锁额外保证时间单调递增。 */
+    const timestamp = this.now()
+    let draft = scene.draft
+    if (draft) {
+      /** 从草案自身配置出发，仅补齐用户此次明确修改的字段。 */
+      const draftSelection = structuredClone(draft.definition.modelSelection ?? { slots: {} })
+      const draftSlotIds = new Set(draft.definition.modelSlots.map((slot) => slot.id))
+      for (const id of changedSlots) {
+        if (parsed.slots[id] && draftSlotIds.has(id)) draftSelection.slots[id] = parsed.slots[id]!
+        else delete draftSelection.slots[id]
+      }
+      if (reviewChanged) {
+        if (parsed.review) draftSelection.review = parsed.review
+        else delete draftSelection.review
+      }
+      /** 构建独立草案快照，提示词、标准与候选槽位保持原值。 */
+      const draftDefinition: CapabilitySceneDefinition = {
+        ...draft.definition,
+        modelSelection: draftSelection,
+        modelSlots: draft.definition.modelSlots.map((slot) => changedSlots.has(slot.id) && parsed.slots[slot.id]
+          ? { ...slot, model: parsed.slots[slot.id]!.modelId } : slot),
+      }
+      if (Object.keys(draftSelection.slots).length === 0 && draftSelection.review === undefined) delete draftDefinition.modelSelection
+      if (stableCapabilityValueKey(draftDefinition) !== stableCapabilityValueKey(draft.definition)) {
+        draft = { ...draft, definition: draftDefinition, createdAt: Math.max(timestamp, draft.createdAt + 1) }
+      }
+    }
+    /** 版本号与定义一一对应，旧运行证据不会误用于新选择。 */
+    const version: CapabilitySceneVersion = { sceneId, version: scene.currentVersion + 1, definition, source: 'human', note: '修改模型选择', createdAt: timestamp }
+    const updated: CapabilityScene = { ...scene, definition, currentVersion: version.version, draft, updatedAt: timestamp }
+    scenes[index] = updated
+    this.store.saveScenes(scenes)
+    this.store.appendVersion(version)
+    return updated
   }
 
   /**

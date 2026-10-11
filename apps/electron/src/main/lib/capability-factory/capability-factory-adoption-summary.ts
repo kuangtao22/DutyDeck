@@ -404,6 +404,12 @@ function describeStructuralChanges(before: CapabilitySceneDefinition, after: Cap
   if (stableCapabilityValueKey(before.modelSlots) !== stableCapabilityValueKey(after.modelSlots)) {
     details.push(`模型配置：${describeTextChange(JSON.stringify(before.modelSlots), JSON.stringify(after.modelSlots))}`)
   }
+  /** 渠道和评审也影响推理结果，即使包内 modelSlots 未变化也必须提示。 */
+  const previousSelection = before.modelSelection ?? { slots: {} }
+  const nextSelection = after.modelSelection ?? { slots: {} }
+  if (stableCapabilityValueKey(previousSelection) !== stableCapabilityValueKey(nextSelection)) {
+    details.push(`本地模型选择：${describeTextChange(JSON.stringify(previousSelection), JSON.stringify(nextSelection))}`)
+  }
   return details
 }
 

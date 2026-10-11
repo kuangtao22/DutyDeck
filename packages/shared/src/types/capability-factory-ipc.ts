@@ -1,3 +1,5 @@
+import type { CapabilityExperimentCreateRequest, CapabilityExperimentAdvanceRequest, CapabilityFactoryExperimentView } from './capability-factory-experiment-record'
+import { validateCapabilityEvaluationProtocol } from './capability-factory-experiment'
 /**
  * 编排工厂的 IPC 契约（四层契约的第 1 层）。
  *
@@ -9,7 +11,7 @@
  * **拒绝调用方自行声明 workspace**（workspace 由主进程按 session 反查）。
  */
 import type {
-  CapabilityDataset, CapabilityDelivery, CapabilityDraftAdoptionScope, CapabilityEvaluation, CapabilityPackage, CapabilityRun, CapabilitySavedTask,
+  CapabilityFactoryModelReference, CapabilityFactoryModelSelection, CapabilityDataset, CapabilityDelivery, CapabilityDraftAdoptionScope, CapabilityEvaluation, CapabilityPackage, CapabilityRun, CapabilitySavedTask,
   CapabilityScene, CapabilitySceneDefinition, CapabilitySceneVersion, CapabilityStub, CapabilityStubSource,
 } from './capability-factory'
 import type { CapabilityFactoryBatch, CapabilityFactoryBatchRequest, CapabilityFactoryBatchSummary } from './capability-factory-batch'
@@ -34,10 +36,23 @@ export interface CapabilityDraftExpectedState {
 
 /** 命令输入映射。 */
 export interface CapabilityFactoryCommandInputs {
+  /** 实验身份由宿主冻结，不允许执行调用方自带的场景定义。 */
+  createExperiment: CapabilityExperimentCreateRequest & { sessionId: string }
+  advanceExperiment: CapabilityExperimentAdvanceRequest & { sessionId: string }
+  getExperiment: { sessionId: string; sceneId: string; experimentId: string; detailsSplit?: 'optimization' | 'validation' | 'held-out' }
+  listExperiments: { sessionId: string; sceneId: string }
+  cancelExperiment: { sessionId: string; sceneId: string; experimentId: string }
   listScenes: { sessionId: string }
   getScene: { sessionId: string; sceneId: string }
   createScene: { sessionId: string; name: string }
   renameScene: { sessionId: string; sceneId: string; name: string }
+  setModelSelection: {
+    sessionId: string
+    sceneId: string
+    selection: CapabilityFactoryModelSelection
+    /** 修改模型也必须基于用户看到的完整草案和版本。 */
+    expectedState: CapabilityDraftExpectedState
+  }
   deleteScene: { sessionId: string; sceneId: string }
   saveDraft: {
     sessionId: string
@@ -63,6 +78,8 @@ export interface CapabilityFactoryCommandInputs {
     expectedDraftDefinition?: CapabilitySceneDefinition
     /** 采纳已测试草案必须复核持久批次，不能仅信前端 passed 标记。 */
     testedBatchId?: string
+    /** 实验认证实际合并快照，允许单步骤范围。 */
+    testedExperimentId?: string
   }
   listVersions: { sessionId: string; sceneId: string }
   rollback: { sessionId: string; sceneId: string; targetVersion: number }
@@ -136,10 +153,16 @@ export interface CapabilityFactoryCommandInputs {
 
 /** 命令返回值映射。 */
 export interface CapabilityFactoryCommandResults {
+  createExperiment: CapabilityFactoryExperimentView
+  advanceExperiment: CapabilityFactoryExperimentView
+  getExperiment: CapabilityFactoryExperimentView | null
+  listExperiments: CapabilityFactoryExperimentView[]
+  cancelExperiment: CapabilityFactoryExperimentView
   listScenes: CapabilityScene[]
   getScene: CapabilityScene | null
   createScene: CapabilityScene
   renameScene: { scene: CapabilityScene; version: CapabilitySceneVersion | null }
+  setModelSelection: CapabilityScene
   deleteScene: { deleted: boolean }
   saveDraft: CapabilityScene
   discardDraft: CapabilityScene
@@ -291,16 +314,41 @@ function checkAcceptance(value: unknown, path: string): void {
   }
 }
 
+/** 输入不可信本地选择，返回严格校验后的渠道和模型映射。 */
+export function parseCapabilityFactoryModelSelection(value: unknown, path = 'modelSelection'): CapabilityFactoryModelSelection {
+  /** 配置只允许执行槽位和评审，不接受凭据或任意供应商参数。 */
+  const selection = record(value, ['slots', 'review'], path)
+  if (typeof selection.slots !== 'object' || selection.slots === null || Array.isArray(selection.slots)) return bad(`${path}.slots`)
+  /** 每个引用均验证非空身份，防止空值静默回退会话模型。 */
+  const reference = (item: unknown, where: string): CapabilityFactoryModelReference => {
+    const ref = record(item, ['channelId', 'modelId'], where)
+    const channelId = str(ref.channelId, `${where}.channelId`, 128)
+    const modelId = str(ref.modelId, `${where}.modelId`, 512)
+    if (!channelId.trim() || !modelId.trim()) return bad(where)
+    return { channelId, modelId }
+  }
+  /** 限制配置规模，并拒绝原型键。 */
+  const entries = Object.entries(selection.slots)
+  if (entries.length > 256) return bad(`${path}.slots`)
+  const slots: Record<string, CapabilityFactoryModelReference> = {}
+  for (const [slotId, item] of entries) {
+    if (!slotId.trim() || slotId.length > 512 || ['__proto__', 'constructor', 'prototype'].includes(slotId)) return bad(`${path}.slots`)
+    slots[slotId] = reference(item, `${path}.slots.${slotId}`)
+  }
+  return { slots, ...(selection.review === undefined ? {} : { review: reference(selection.review, `${path}.review`) }) }
+}
+
 /** 浅校验可编辑定义；path 让嵌套快照返回准确的非法字段位置。 */
 function looseDefinition(value: unknown, path = 'definition'): CapabilitySceneDefinition {
   const definition = record(value,
-    ['name', 'description', 'inputs', 'outputs', 'steps', 'capabilities', 'modelSlots', 'acceptance', 'stepAcceptances'], path)
+    ['name', 'description', 'inputs', 'outputs', 'steps', 'capabilities', 'modelSlots', 'acceptance', 'stepAcceptances', 'modelSelection'], path)
   str(definition.name, `${path}.name`, 200)
   if (typeof definition.description !== 'string') return bad(`${path}.description`)
   if (!Array.isArray(definition.steps)) return bad(`${path}.steps`)
   for (const key of ['inputs', 'outputs', 'capabilities', 'modelSlots'] as const) {
     if (!Array.isArray(definition[key])) return bad(`${path}.${key}`)
   }
+  if (definition.modelSelection !== undefined) parseCapabilityFactoryModelSelection(definition.modelSelection, `${path}.modelSelection`)
   checkAcceptance(definition.acceptance, `${path}.acceptance`)
   if (definition.stepAcceptances !== undefined) {
     if (typeof definition.stepAcceptances !== 'object' || definition.stepAcceptances === null || Array.isArray(definition.stepAcceptances)) {
@@ -344,14 +392,60 @@ function draftExpectedState(value: unknown): CapabilityDraftExpectedState {
 export function parseCapabilityFactoryCommand(value: unknown): CapabilityFactoryCommand {
   const root = record(value, ['method', 'input'], 'command')
   const method = root.method
-  const allowed = ['listScenes', 'getScene', 'createScene', 'renameScene', 'deleteScene', 'saveDraft',
+  const allowed = ['setModelSelection', 'listScenes', 'getScene', 'createScene', 'renameScene', 'deleteScene', 'saveDraft',
     'discardDraft', 'adoptDraft', 'listVersions', 'rollback', 'exportPackage', 'listDeliveries',
     'listStubs', 'setStub', 'deleteStub', 'runScene', 'runStep', 'listRuns', 'listTasks', 'revealDelivery',
     'listDatasets', 'createDataset', 'addCase', 'deleteCase', 'runEvaluation', 'listEvaluations',
-    'runBatch', 'listBatches', 'getBatch', 'cancelBatch', 'getRun']
+    'runBatch', 'listBatches', 'getBatch', 'cancelBatch', 'getRun', 'createExperiment', 'advanceExperiment', 'getExperiment', 'listExperiments', 'cancelExperiment']
   if (typeof method !== 'string' || !allowed.includes(method)) return bad('method')
 
   switch (method) {
+    case 'createExperiment': {
+      const input = record(root.input, ['sessionId', 'sceneId', 'expectedVersion', 'datasetId', 'targetStepId', 'candidatePrompt', 'protocol', 'assignments', 'limits', 'heldOutExposure'], 'input')
+      const limits = record(input.limits, ['maxCalls', 'maxTransportAttempts', 'durationMs'], 'input.limits')
+      if (!Array.isArray(input.assignments) || input.assignments.length < 3 || input.assignments.length > 30) return bad('input.assignments')
+      const assignments = input.assignments.map((value) => {
+        const assignment = record(value, ['caseId', 'split', 'sourceGroupId', 'labelStatus'], 'input.assignments')
+        if (!['optimization', 'validation', 'held-out'].includes(String(assignment.split))) return bad('input.assignments.split')
+        if (!['complete', 'partial', 'unverified'].includes(String(assignment.labelStatus))) return bad('input.assignments.labelStatus')
+        return { caseId: str(assignment.caseId, 'caseId', 128), sourceGroupId: str(assignment.sourceGroupId, 'sourceGroupId', 128), split: assignment.split, labelStatus: assignment.labelStatus }
+      }) as CapabilityExperimentCreateRequest['assignments']
+      if (!['declared-unseen', 'exposed', 'unknown'].includes(String(input.heldOutExposure))) return bad('input.heldOutExposure')
+      return { method, input: {
+        sessionId: str(input.sessionId, 'input.sessionId', 128), sceneId: str(input.sceneId, 'input.sceneId', 128),
+        expectedVersion: positiveInteger(input.expectedVersion, 'input.expectedVersion'),
+        datasetId: str(input.datasetId, 'input.datasetId', 128), targetStepId: str(input.targetStepId, 'input.targetStepId', 128),
+        candidatePrompt: str(input.candidatePrompt, 'input.candidatePrompt', 100000),
+        protocol: validateCapabilityEvaluationProtocol(input.protocol), assignments,
+        limits: { maxCalls: positiveInteger(limits.maxCalls, 'limits.maxCalls', 1000), maxTransportAttempts: positiveInteger(limits.maxTransportAttempts, 'limits.maxTransportAttempts', 2000), durationMs: positiveInteger(limits.durationMs, 'limits.durationMs', 86400000) },
+        heldOutExposure: input.heldOutExposure as CapabilityExperimentCreateRequest['heldOutExposure'],
+      } }
+    }
+    case 'advanceExperiment': {
+      const input = record(root.input, ['sessionId', 'sceneId', 'experimentId', 'expectedRevision', 'candidatePrompt'], 'input')
+      return { method, input: {
+        sessionId: str(input.sessionId, 'input.sessionId', 128), sceneId: str(input.sceneId, 'input.sceneId', 128),
+        experimentId: str(input.experimentId, 'input.experimentId', 128), expectedRevision: positiveInteger(input.expectedRevision, 'input.expectedRevision'),
+        ...(input.candidatePrompt === undefined ? {} : { candidatePrompt: str(input.candidatePrompt, 'input.candidatePrompt', 100000) }),
+      } }
+    }
+    case 'getExperiment':
+    case 'cancelExperiment': {
+      const input = record(root.input, ['sessionId', 'sceneId', 'experimentId', ...(method === 'getExperiment' ? ['detailsSplit'] : [])], 'input')
+      if (input.detailsSplit !== undefined && !['optimization', 'validation', 'held-out'].includes(String(input.detailsSplit))) return bad('input.detailsSplit')
+      return { method, input: { sessionId: str(input.sessionId, 'input.sessionId', 128), sceneId: str(input.sceneId, 'input.sceneId', 128), experimentId: str(input.experimentId, 'input.experimentId', 128),
+        ...(input.detailsSplit === undefined ? {} : { detailsSplit: input.detailsSplit as 'optimization' | 'validation' | 'held-out' }),
+      } }
+    }
+    case 'setModelSelection': {
+      const input = record(root.input, ['sessionId', 'sceneId', 'selection', 'expectedState'], 'input')
+      return { method, input: {
+        sessionId: str(input.sessionId, 'input.sessionId', 128),
+        sceneId: str(input.sceneId, 'input.sceneId', 128),
+        selection: parseCapabilityFactoryModelSelection(input.selection, 'input.selection'),
+        expectedState: draftExpectedState(input.expectedState),
+      } }
+    }
     case 'runBatch': {
       const input = record(root.input, ['sessionId', 'sceneId', 'kind', 'datasetId', 'taskIds', 'caseIds', 'expectedVersion', 'expectedDraftCreatedAt', 'expectedDraftDefinition'], 'input')
       if (input.kind !== 'evaluation' && input.kind !== 'comparison') return bad('input.kind')
@@ -383,10 +477,12 @@ export function parseCapabilityFactoryCommand(value: unknown): CapabilityFactory
         ? { method, input: { ...identity, runId: str(input.runId, 'input.runId', 128) } }
         : { method, input: { ...identity, batchId: str(input.batchId, 'input.batchId', 128) } }
     }
+    case 'listDatasets':
     case 'listScenes': {
       const input = record(root.input, ['sessionId'], 'input')
       return { method, input: { sessionId: str(input.sessionId, 'input.sessionId', 128) } }
     }
+    case 'listExperiments':
     case 'getScene':
     case 'listBatches':
     case 'deleteScene':
@@ -407,7 +503,7 @@ export function parseCapabilityFactoryCommand(value: unknown): CapabilityFactory
     }
     case 'adoptDraft': {
       const input = record(root.input, [
-        'sessionId', 'sceneId', 'scope', 'expectedVersion', 'expectedDraftCreatedAt', 'expectedDraftDefinition', 'testedBatchId',
+        'sessionId', 'sceneId', 'scope', 'expectedVersion', 'expectedDraftCreatedAt', 'expectedDraftDefinition', 'testedBatchId', 'testedExperimentId',
       ], 'input')
       /** 整份候选的批次不能认证局部混合版本，必须重新测试实际生效快照。 */
       const scope = input.scope === undefined ? undefined : adoptionScope(input.scope)
@@ -430,6 +526,7 @@ export function parseCapabilityFactoryCommand(value: unknown): CapabilityFactory
         sceneId: str(input.sceneId, 'input.sceneId', 128),
         ...(scope === undefined ? {} : { scope }),
         ...(input.testedBatchId === undefined ? {} : { testedBatchId: str(input.testedBatchId, 'input.testedBatchId', 128) }),
+        ...(input.testedExperimentId === undefined ? {} : { testedExperimentId: str(input.testedExperimentId, 'input.testedExperimentId', 128) }),
         ...(expectedVersion === undefined ? {} : { expectedVersion }),
         ...(expectedDraftCreatedAt === undefined ? {} : { expectedDraftCreatedAt }),
         ...(input.expectedDraftDefinition === undefined
@@ -644,4 +741,10 @@ export function parseCapabilityFactoryCommand(value: unknown): CapabilityFactory
       return { method: resolved, input: { sessionId: str(input.sessionId, 'input.sessionId', 128) } }
     }
   }
+}
+
+/** 验证宿主版本和预算整数，拒绝非有限值与零额度。 */
+function positiveInteger(value: unknown, path: string, max = Number.MAX_SAFE_INTEGER): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > max) return bad(path)
+  return value
 }

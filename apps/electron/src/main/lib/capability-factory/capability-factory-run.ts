@@ -31,6 +31,7 @@ import {
 import type { CapabilityFactoryModelCall } from './capability-factory-model-call'
 import type { CapabilityFactoryModelResolution } from './capability-factory-model-call'
 import { reviewCapabilityRun } from './capability-factory-review'
+import type { CapabilityFactoryCallLedger } from './capability-factory-budget'
 import { validateCapabilityEvidence } from './capability-factory-evidence'
 
 /** 运行适配器依赖：全部注入，离线可测。 */
@@ -38,6 +39,8 @@ export interface CapabilityFactoryRunDeps {
   service: CapabilityFactoryService
   /** 模型端口；已在外部完成"声明模型 → 实际渠道"的解析。 */
   callModel: CapabilityFactoryModelCall
+  /** 整个实验所有整链、map 并发、重试和评审共享账本。 */
+  callLedger?: CapabilityFactoryCallLedger
   /**
    * 解析模型绑定。传函数而不是结果：解析要读当前渠道与会话，属于宿主事实，
    * 每次运行都该重新取一次（用户可能刚在设置里加了渠道）。
@@ -98,7 +101,12 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
     deps.signal === undefined ? localSignal : AbortSignal.any([localSignal, deps.signal])
 
   /** 执行结果先落盘，再自动评审；评审异常不丢输出，不改场景或版本。 */
-  const finish = async (run: CapabilityRun, definition: CapabilitySceneDefinition): Promise<CapabilityRun> => {
+  const finish = async (
+    run: CapabilityRun,
+    definition: CapabilitySceneDefinition,
+    /** 执行开始前冻结的独立评审模型；不重新读取可能已变化的场景设置。 */
+    reviewBinding?: CapabilityRunModelBinding,
+  ): Promise<CapabilityRun> => {
     /** 同一步在并行组内可执行多次；按定义 ID 汇集全部轨迹，不能让最后一项覆盖前面的证据。 */
     const reviewSteps = getReviewSteps(definition.steps).filter((step) => run.steps.some((trace) => trace.stepId === step.id))
     const acceptances = new Map(reviewSteps.map((step) => [step.id, getStepAcceptance(definition, step.id)]))
@@ -121,8 +129,8 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
       })
     }
     /** 优先复用当前步骤的执行模型，整链采用本轮已解析的第一个模型。 */
-    const currentModel = run.kind === 'step' ? run.steps[0]?.model : undefined
-    const binding = run.modelBindings?.find((item) => item.modelId === currentModel) ?? run.modelBindings?.[0]
+    const currentSlot = run.kind === 'step' ? reviewSteps.find((step) => step.id === run.stepId)?.modelSlot : undefined
+    const binding = reviewBinding ?? run.modelBindings?.find((item) => item.slotId === currentSlot) ?? run.modelBindings?.[0]
     const reason = (run.placeholderCapabilities?.length ?? 0) > 0
         ? '本轮含空占位数据，不能据此评定内容质量。'
         : configured.length === 0
@@ -150,7 +158,7 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
       const acceptance = acceptances.get(step.id)
       if (!acceptance) continue
       /** 按声明槽位选模型，避免不同渠道同名模型时误选；评审只带当前步骤材料。 */
-      const stepBinding = run.modelBindings?.find((item) => item.slotId === step.modelSlot) ?? binding
+      const stepBinding = reviewBinding ?? run.modelBindings?.find((item) => item.slotId === step.modelSlot) ?? binding
       const traces = run.steps.filter((trace) => trace.stepId === step.id)
       if (traces.some((trace) => trace.status !== 'succeeded')) {
         stepReviews[step.id] = { ...base, acceptance: structuredClone(acceptance),
@@ -170,7 +178,7 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
         callModel: async (invocation) => {
           assertCurrent()
           deps.signal?.throwIfAborted()
-          const response = await deps.callModel({ ...invocation, signal: combineSignal(invocation.signal) })
+          const response = await deps.callModel({ ...invocation, callLedger: deps.callLedger, purpose: 'review', signal: combineSignal(invocation.signal) })
           assertCurrent()
           deps.signal?.throwIfAborted()
           return response
@@ -231,6 +239,8 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
     pkg: CapabilityPackage
     runner: ReturnType<typeof createCapabilityRunner>
     bindings: CapabilityRunModelBinding[]
+    /** 与执行绑定一并冻结的评审模型。 */
+    reviewBinding?: CapabilityRunModelBinding
     placeholders: string[]
     acceptances: Record<string, SceneAcceptance>
   } => {
@@ -276,15 +286,18 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
      * runner 传给模型端口的只有**声明值**（`slot.model`），而声明值可能只是模板默认值。
      * 这里按 `resolveModels` 的结果把它翻成实际渠道 + 模型，端口才找得到东西。
      */
-    const bindingByDeclared = new Map(resolution.bindings.map((binding) => [binding.declaredModel, binding]))
+    const bindingBySlot = new Map(resolution.bindings.map((binding) => [binding.slotId, binding]))
+    /** 步骤 ID 到槽位的索引覆盖并行组，声明相同模型名也不会互相覆盖渠道。 */
+    const slotByStep = new Map(getReviewSteps(definition.steps).map((step) => [step.id, step.modelSlot]))
     const runner = createCapabilityRunner({
       callModel: async (request) => {
-        const binding = bindingByDeclared.get(request.model)
+        const binding = bindingBySlot.get(slotByStep.get(request.stepId) ?? '')
         if (!binding) throw new Error(`模型槽位声明的模型「${request.model}」没有被解析到任何渠道`)
         assertCurrent()
         deps.signal?.throwIfAborted()
         const response = await deps.callModel({
           stepId: request.stepId, model: request.model,
+          callLedger: deps.callLedger, purpose: (request.attempt ?? 1) > 1 ? 'retry' : 'execution',
           channelId: binding.channelId, modelId: binding.modelId,
           ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
           ...(request.maxTokens === undefined ? {} : { maxTokens: request.maxTokens }),
@@ -300,7 +313,7 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
       ...(onStepProgress ? { onStepProgress } : {}),
     })
 
-    return { scene, pkg, runner, bindings: resolution.bindings, placeholders, acceptances }
+    return { scene, pkg, runner, bindings: resolution.bindings, reviewBinding: resolution.reviewBinding, placeholders, acceptances }
   }
 
   return {
@@ -495,7 +508,7 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
         ...(evidenceIssues.length === 0 ? {} : { evidenceIssues }),
         ...(failureText === undefined ? {} : { error: failureText }),
         finishedAt: result.finishedAt,
-      }, definition!)
+      }, definition!, prepared.reviewBinding)
     },
 
     /**
@@ -597,7 +610,7 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
         ...(evidenceIssues.length === 0 ? {} : { evidenceIssues }),
         // 单步输入完全来自调用方，没有执行其他步骤的占位桩，不能继承整链占位标签。
         finishedAt: outcome.step.finishedAt,
-      }, definition!)
+      }, definition!, prepared.reviewBinding)
     },
   }
 }

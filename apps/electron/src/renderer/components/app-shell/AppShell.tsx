@@ -416,11 +416,16 @@ export function AppShell(): React.ReactElement {
                 {/* 拖拽手柄 */}
                 {isPanelOpen && (
                   <div
-                    className={cn(
-                      'absolute left-0 top-0 bottom-0 w-[8px] -translate-x-1/2 cursor-col-resize active:bg-primary/50 transition-colors z-20'
-                    )}
+                    className="group absolute left-0 top-0 bottom-0 z-20 w-3 -translate-x-1/2 cursor-col-resize titlebar-no-drag"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="调整右侧面板宽度"
+                    title="拖动调整右侧面板宽度"
                     onMouseDown={handleMouseDown}
-                  />
+                  >
+                    <span className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border/80 transition-colors group-hover:bg-primary/70 group-active:bg-primary" />
+                    <span className="pointer-events-none absolute left-1/2 top-1/2 h-10 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-foreground/25 opacity-0 transition-opacity group-hover:opacity-100 group-active:opacity-100" />
+                  </div>
                 )}
                 <RightSidePanel
                   width={displayedRightPanelWidth}

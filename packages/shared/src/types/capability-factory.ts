@@ -1,3 +1,4 @@
+import type { CapabilityCaseScore, CapabilityEvaluationProtocol, CapabilityExperimentSample, CapabilityScoreSummary } from './capability-factory-experiment'
 /**
  * 提示词编排工厂的领域类型（DutyDeck 侧）。
  *
@@ -68,6 +69,18 @@ export function getStepAcceptance(definition: CapabilitySceneDefinition, stepId:
   return legacy.criteria.length > 0 || legacy.judgePrompt.trim() || legacy.metrics.length > 0 ? legacy : null
 }
 
+/** 工厂内部的模型定位：渠道用于凭据解析，模型标识用于实际推理。 */
+export interface CapabilityFactoryModelReference {
+  channelId: string
+  modelId: string
+}
+
+/** 场景的本地模型选择；缺省槽位按模型声明自动匹配，无法匹配时回退会话；评审默认跟随对应步骤执行模型，不随能力包导出。 */
+export interface CapabilityFactoryModelSelection {
+  slots: Record<string, CapabilityFactoryModelReference>
+  review?: CapabilityFactoryModelReference
+}
+
 /** 场景定义快照：**不可变**，是版本的全部内容。改场景 = 产生新快照。 */
 export interface CapabilitySceneDefinition {
   name: string
@@ -77,6 +90,8 @@ export interface CapabilitySceneDefinition {
   steps: Step[]
   capabilities: CapabilityDeclaration[]
   modelSlots: ModelSlot[]
+  /** 本地渠道绑定，不进入可移植能力包。 */
+  modelSelection?: CapabilityFactoryModelSelection
   acceptance: SceneAcceptance
   /** 工厂内部按流程步骤保存的内容评审标准；旧场景缺失时回退到 acceptance。 */
   stepAcceptances?: Record<string, SceneAcceptance>
@@ -304,6 +319,8 @@ export interface CapabilityJudgeResult {
 
 /** 一次评测。四个版本字段缺一不可，否则差异不可归因。 */
 export interface CapabilityEvaluation {
+  /** 冻结标签评分汇总；旧记录缺失表示未配置。 */
+  scoring?: CapabilityScoreSummary
   id: string
   sceneId: string
   sceneVersion: number
@@ -336,6 +353,8 @@ export interface CapabilityEvaluation {
 
 /** 一条用例在这次评测里的结果。 */
 export interface CapabilityEvaluationCaseResult {
+  /** 与模型评审分开保存的机器评分。 */
+  scoring?: CapabilityCaseScore
   caseId: string
   caseName: string
   /** 这次运行记录 id；为 null 表示没跑成（例如输入不满足契约）。 */
@@ -358,6 +377,8 @@ export type CapabilityCaseSource = 'human' | 'agent' | 'regression'
 
 /** 数据集里的一条用例。 */
 export interface CapabilityCase {
+  /** 已核对的实验身份；旧 expected 不自动升级为完整标签。 */
+  scoring?: Omit<CapabilityExperimentSample, 'caseId' | 'expected'>
   id: string
   name: string
   input: Record<string, unknown>
@@ -370,6 +391,8 @@ export interface CapabilityCase {
 
 /** 数据集：v1 只做最小形态（一个列表 + 加用例 / 从失败回灌两个动作）。 */
 export interface CapabilityDataset {
+  /** 可选冻结评分协议；旧数据集保持无协议兼容。 */
+  protocol?: CapabilityEvaluationProtocol
   id: string
   name: string
   version: number
@@ -533,6 +556,10 @@ export function diffSceneDefinition(
   }
   for (const detail of diffById(before.modelSlots, after.modelSlots, '模型槽位')) {
     changes.push({ kind: 'modelSlots', detail })
+  }
+
+  if (stableCapabilityValueKey(before.modelSelection ?? { slots: {} }) !== stableCapabilityValueKey(after.modelSelection ?? { slots: {} })) {
+    changes.push({ kind: 'modelSlots', detail: '本地模型选择（执行渠道 / 评审模型）已修改' })
   }
 
   const names = (list: { name?: string }[]): string => list.map((item) => item.name ?? '').filter(Boolean).join('、')

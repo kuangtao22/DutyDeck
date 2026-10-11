@@ -245,6 +245,8 @@ describe('参考 runner', () => {
 
   test('抽取第一次不合法、第二次合法时按 attempts 记录重试', async () => {
     let calls = 0
+    /** 端口可准确区分重试与 map 中另一个首轮调用。 */
+    const attempts: Array<number | undefined> = []
     const pkg = parseCapabilityPackageValue({
       kind: 'proma-ai-capability-package', specVersion: 1, packageVersion: '1.0.0',
       name: 'retry', exportedAt: 1,
@@ -255,13 +257,15 @@ describe('参考 runner', () => {
       capabilities: [], modelSlots: [{ id: 'main', model: 'fake' }],
       acceptance: { criteria: ['c'] },
     })
-    const runner = createCapabilityRunner({ callModel: async () => {
+    const runner = createCapabilityRunner({ callModel: async (request) => {
+      attempts.push(request.attempt)
       calls += 1
       return { text: calls === 1 ? '抱歉' : '{"id":"ok"}' }
     } })
     const result = await runner.run(pkg, { text: 'x' })
     expect(result.steps[0]?.status).toBe('succeeded')
     expect(result.steps[0]?.attempts).toBe(2)
+    expect(attempts).toEqual([1, 2])
   })
 })
 

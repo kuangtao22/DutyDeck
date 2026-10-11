@@ -3,6 +3,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readF
 import { join, resolve } from 'node:path'
 import type {
   CapabilityDataset,
+  CapabilityExperimentSample,
   CapabilityFactoryBatch,
   CapabilityFactoryBatchItem,
   CapabilityFactoryBatchRequest,
@@ -18,7 +19,9 @@ import {
   isPromptOnlyOptimization,
   optimizationKey,
   sceneStandardsKey,
+  validateCapabilityEvaluationProtocol,
 } from '@proma/shared'
+import { scoreCapabilityCase, summarizeCapabilityScores } from './capability-factory-scoring'
 import { ensureDirectoryDurable, writeJsonFileAtomicSecure } from '../safe-file'
 
 /** 同一进程中的真实活动批次；其它 runner 读取时不能把它误判为中断。 */
@@ -126,10 +129,11 @@ function readBatchFileReadOnly(filePath: string): CapabilityFactoryBatchFile | n
 }
 
 /** 把运行事实汇总成 evaluation 质量轴；未知评审不会按通过计数。 */
-function evaluationSummary(items: readonly CapabilityFactoryBatchItem[], service: CapabilityFactoryBatchService, sceneId: string) {
+function evaluationSummary(items: readonly CapabilityFactoryBatchItem[], service: CapabilityFactoryBatchService, sceneId: string, hasProtocol = false) {
   const runIds = items.flatMap((item) => item.runId ? [item.runId] : [])
   const runs = service.getRunsByIds(sceneId, runIds)
   return {
+    ...(hasProtocol ? { scoring: summarizeCapabilityScores(items.map((item) => item.id), items.flatMap((item) => item.scoring ? [item.scoring] : [])) } : {}),
     total: items.length,
     completed: items.filter((item) => item.status === 'succeeded' || item.status === 'failed').length,
     valid: runs.filter((run) => run.status === 'succeeded' && run.valid).length,
@@ -286,11 +290,12 @@ export function createCapabilityFactoryBatchRunner(options: CapabilityFactoryBat
     if (request.expectedVersion !== undefined && request.expectedVersion !== scene.currentVersion) throw new Error('场景版本已变化')
 
     let dataset: CapabilityDataset | undefined
-    let sources: Array<{ id: string; name: string; input: Record<string, unknown> }>
+    let sources: Array<{ id: string; name: string; input: Record<string, unknown>; sample?: CapabilityExperimentSample }>
     if (request.datasetId !== undefined) {
       assertSafeId(request.datasetId, '数据集')
       dataset = options.service.listDatasets().find((item) => item.id === request.datasetId)
       if (!dataset) throw new Error(`数据集不存在：${request.datasetId}`)
+      if (dataset.protocol) validateCapabilityEvaluationProtocol(dataset.protocol)
       if (request.caseIds !== undefined) {
         if (request.caseIds.length === 0) throw new Error('至少选择 1 条数据集用例')
         if (new Set(request.caseIds).size !== request.caseIds.length) throw new Error('用例选择包含重复标识')
@@ -298,10 +303,10 @@ export function createCapabilityFactoryBatchRunner(options: CapabilityFactoryBat
         sources = request.caseIds.map((id) => {
           const item = cases.get(id)
           if (!item) throw new Error(`数据集用例不存在：${id}`)
-          return { id: item.id, name: item.name, input: structuredClone(item.input) }
+          return { id: item.id, name: item.name, input: structuredClone(item.input), ...(item.scoring ? { sample: structuredClone({ ...item.scoring, caseId: item.id, expected: item.expected }) } : {}) }
         })
       } else {
-        sources = dataset.cases.map((item) => ({ id: item.id, name: item.name, input: structuredClone(item.input) }))
+        sources = dataset.cases.map((item) => ({ id: item.id, name: item.name, input: structuredClone(item.input), ...(item.scoring ? { sample: structuredClone({ ...item.scoring, caseId: item.id, expected: item.expected }) } : {}) }))
       }
     } else {
       if (request.kind === 'evaluation') throw new Error('evaluation 批次必须指定数据集')
@@ -341,6 +346,7 @@ export function createCapabilityFactoryBatchRunner(options: CapabilityFactoryBat
       status: 'running',
       snapshot: {
         sceneVersion: scene.currentVersion,
+        ...(dataset?.protocol ? { protocol: structuredClone(dataset.protocol) } : {}),
         ...(dataset ? { datasetId: dataset.id, datasetVersion: dataset.version } : {}),
         ...(draftCreatedAt === undefined ? {} : { draftCreatedAt }),
         ...(draftDefinition === undefined ? {} : { draftDefinition: structuredClone(draftDefinition) }),
@@ -367,6 +373,10 @@ export function createCapabilityFactoryBatchRunner(options: CapabilityFactoryBat
       return baseline && candidate ? [compareOptimizationPair(baseline, candidate)] : []
     })
     batch.comparison = {
+      ...(batch.snapshot.protocol ? {
+        baselineScoring: summarizeCapabilityScores(batch.items.map((item) => item.id), batch.items.flatMap((item) => item.baselineScoring ? [item.baselineScoring] : [])),
+        candidateScoring: summarizeCapabilityScores(batch.items.map((item) => item.id), batch.items.flatMap((item) => item.scoring ? [item.scoring] : [])),
+      } : {}),
       comparable: comparisons.filter((item) => item.comparable).length,
       candidatePassed: comparisons.filter((item) => item.candidatePassed).length,
       fixed: comparisons.flatMap((item) => item.fixed),
@@ -409,9 +419,10 @@ export function createCapabilityFactoryBatchRunner(options: CapabilityFactoryBat
             expectedVersion: batch.snapshot.sceneVersion,
           })
           item.runId = result.id
+          if (batch.snapshot.protocol && item.sample) item.scoring = scoreCapabilityCase(batch.snapshot.protocol, item.sample, result)
           item.status = result.status === 'succeeded' && result.valid ? 'succeeded' : 'failed'
           if (item.status === 'failed') item.error = result.error ?? '运行或格式约束未通过'
-          batch.evaluation = evaluationSummary(batch.items, options.service, batch.sceneId)
+          batch.evaluation = evaluationSummary(batch.items, options.service, batch.sceneId, !!batch.snapshot.protocol)
           await persist(batch)
           continue
         }
@@ -427,6 +438,7 @@ export function createCapabilityFactoryBatchRunner(options: CapabilityFactoryBat
           comparisonRole: 'baseline',
         })
         item.baselineRunId = baseline.id
+        if (batch.snapshot.protocol && item.sample) item.baselineScoring = scoreCapabilityCase(batch.snapshot.protocol, item.sample, baseline)
         await persist(batch)
         if (options.signal?.aborted) {
           item.status = 'cancelled'
@@ -446,6 +458,7 @@ export function createCapabilityFactoryBatchRunner(options: CapabilityFactoryBat
           comparisonRole: 'candidate',
         })
         item.candidateRunId = candidate.id
+        if (batch.snapshot.protocol && item.sample) item.scoring = scoreCapabilityCase(batch.snapshot.protocol, item.sample, candidate)
         item.status = candidate.status === 'succeeded' && candidate.valid && candidate.review?.status === 'succeeded'
           ? 'succeeded' : 'failed'
         if (item.status === 'failed') item.error = candidate.error ?? '候选执行、格式校验或评审未通过'
@@ -474,7 +487,7 @@ export function createCapabilityFactoryBatchRunner(options: CapabilityFactoryBat
       try {
         if (ownershipFailure === undefined) {
           batch.finishedAt = now()
-          if (batch.kind === 'evaluation') batch.evaluation = evaluationSummary(batch.items, options.service, batch.sceneId)
+          if (batch.kind === 'evaluation') batch.evaluation = evaluationSummary(batch.items, options.service, batch.sceneId, !!batch.snapshot.protocol)
           if (batch.kind === 'comparison') updateComparison(batch)
           await persist(batch)
         }

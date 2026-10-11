@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type {
   CapabilityDataset,
+  CapabilityFactoryExperiment,
+  CapabilitySceneDefinition,
   CapabilityFactoryBatch,
   CapabilityFactoryBatchSummary,
   CapabilityDraftAdoptionScope,
@@ -29,6 +31,8 @@ export type CapabilityFactoryAgentOperation =
     sceneId: string
     scope?: CapabilityDraftAdoptionScope
     testedBatchId?: string
+    /** 精确绑定本次合并定义的持久实验证据。 */
+    testedExperimentId?: string
     proposal?: CapabilityFactoryAdoptionProposal
   }
   | { kind: 'rollback'; sceneId: string; targetVersion: number }
@@ -71,6 +75,7 @@ interface PreparedOperation {
 export interface CapabilityFactoryAgentOperationOptions {
   service: CapabilityFactoryService
   maxPrepared: number
+  assertExperimentAdoptable?: (sceneId: string, experimentId: string, definition: CapabilitySceneDefinition) => CapabilityFactoryExperiment
   assertAdoptable?: (sceneId: string, batchId: string) => unknown
   listBatches?: (sceneId: string) => CapabilityFactoryBatchSummary[]
   getBatch?: (sceneId: string, batchId: string) => CapabilityFactoryBatch | null
@@ -238,6 +243,13 @@ function inspect(options: CapabilityFactoryAgentOperationOptions, operation: Cap
       /** 缺省继续代表整份草案，保证旧调用行为不变。 */
       const scope = operation.scope === undefined ? { kind: 'all' as const } : operation.scope
       const adoption = resolveCapabilityDraftAdoption(scene, scope)
+      /** 宿主复核完整候选与既有采纳门槛；不能使用模型自报的资格。 */
+      const experiment = operation.testedExperimentId === undefined ? undefined : (() => {
+        if (!options.assertExperimentAdoptable) throw new Error('当前会话不能校验实验采纳证据')
+        return options.assertExperimentAdoptable(operation.sceneId, operation.testedExperimentId, adoption.definition)
+      })()
+      /** 轨迹不复制进实验文件，因此审批另行绑定所有引用的最新运行。 */
+      const experimentRuns = experiment ? service.getRunsByIds(operation.sceneId, experiment.stages.flatMap((stage) => stage.pairs.flatMap((pair) => [pair.baselineRunId, pair.candidateRunId].filter((id): id is string => id !== undefined)))) : []
       const partial = scope.kind !== 'all'
       if (partial && operation.testedBatchId !== undefined) {
         throw new Error('局部采纳不能使用整份草案的验证批次')
@@ -255,6 +267,15 @@ function inspect(options: CapabilityFactoryAgentOperationOptions, operation: Cap
       ]
       if (partial) lines.push('其余草案改动继续待审')
       if (operation.testedBatchId !== undefined) lines.push(`验证批次：${operation.testedBatchId}`)
+      if (experiment) {
+        lines.push(`验证实验：${experiment.id}；候选与实际采纳快照一致`, '仅为流程留出；小样本不能证明泛化，未知费用不按零计算')
+        /** 收益来自宿主重算的各组指标，不把提案描述当成测量结论。 */
+        for (const stage of experiment.stages) {
+          const quality = stage.quality
+          if (!quality) continue
+          lines.push(`${stage.split}：完整配对 ${quality.paired}/${quality.planned}，F1 变化 ${quality.f1Delta === null ? '未知' : `${(quality.f1Delta * 100).toFixed(1)} 个百分点`}，业务失败 ${quality.baselineFailures} → ${quality.candidateFailures}，未知 ${quality.unknown}`)
+        }
+      }
       const summary = createCapabilityFactoryAdoptionSummary({
         scene: previewScene,
         ...(operation.proposal === undefined ? {} : { proposal: operation.proposal }),
@@ -263,7 +284,8 @@ function inspect(options: CapabilityFactoryAgentOperationOptions, operation: Cap
         ...(!partial && options.getBatch !== undefined ? { getBatch: options.getBatch } : {}),
         getRunsByIds: (sceneId, runIds) => service.getRunsByIds(sceneId, runIds),
       })
-      if (partial) summary.adoption.validation = '局部采纳未复用整份草案测试证据'
+      if (experiment) summary.adoption.validation = `实验 ${experiment.id} 已验证精确合并快照；${experiment.samples.filter((sample) => sample.split === 'held-out').length} 条留出，仅为小样本初步结果`
+      else if (partial) summary.adoption.validation = '局部采纳未复用整份草案测试证据'
       return {
         approval: {
           kind: 'operation', tool: 'factory_apply_operation', operation: operation.kind,
@@ -272,7 +294,7 @@ function inspect(options: CapabilityFactoryAgentOperationOptions, operation: Cap
           adoption: summary.adoption,
         },
         expectedKey: key(scene),
-        evidenceKey: summary.evidenceKey,
+        evidenceKey: experiment ? stableCapabilityValueKey({ experiment, runs: experimentRuns, existing: summary.evidenceKey }) : summary.evidenceKey,
       }
     }
     case 'rollback': {

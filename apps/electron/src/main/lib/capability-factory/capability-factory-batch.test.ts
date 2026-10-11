@@ -426,3 +426,20 @@ describe('能力工厂持久批次', () => {
     expect(() => runner.assertAdoptable(scene.id, batch.id)).toThrow('身份')
   })
 })
+
+test('Given 数据集冻结标签 When 批次评测 Then 与旧入口使用相同评分并持久化', async () => {
+  /** 在既有运行夹具上附加明确标签，不改变原 review 及采纳规则。 */
+  const fixture = createFixture()
+  const dataset = fixture.service.listDatasets()[0]!
+  dataset.protocol = { protocolVersion: 'v1', scorerVersion: 1, primaryMetric: 'business-error-rate', mode: 'exact-value', outputPath: '', expectedPath: '', tupleFields: [], normalization: { trim: false, caseFold: false, arrayOrder: 'ordered' }, requireReview: false }
+  for (const item of dataset.cases) {
+    item.expected = {}
+    item.scoring = { split: 'validation', sourceGroupId: item.id, inputFingerprint: item.id, labelStatus: 'complete' }
+  }
+  fixture.service.listDatasets = () => [structuredClone(dataset)]
+  const runner = createCapabilityFactoryBatchRunner({ service: fixture.service, rootDir: fixture.rootDir, run: fixture.run })
+  const result = await runner.run({ sceneId: fixture.getScene().id, datasetId: dataset.id, kind: 'evaluation' })
+  expect(result.evaluation?.scoring).toMatchObject({ planned: 2, passed: 2, unknown: 0 })
+  expect(result.items[0]?.scoring?.protocolVersion).toBe('v1')
+  expect(runner.get(result.sceneId, result.id)?.items[0]?.scoring).toEqual(result.items[0]?.scoring)
+})

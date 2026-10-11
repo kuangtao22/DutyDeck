@@ -1,3 +1,4 @@
+import type { CapabilityExperimentCreateRequest, CapabilityExperimentAdvanceRequest, CapabilityFactoryExperiment, CapabilityFactoryExperimentView } from '@proma/shared'
 /**
  * Agent 操控面。
  *
@@ -99,6 +100,15 @@ export interface CapabilityFactoryAgentFacadeOptions {
   canMutate?: () => boolean
   /** 用户停止 Agent 回合后，中止后续写入与模型调用。 */
   signal?: AbortSignal
+  /** 实验接口仅接受受控请求，完整冻结定义由宿主生成。 */
+  createExperiment?: (request: CapabilityExperimentCreateRequest) => CapabilityFactoryExperimentView
+  getExperiment?: (sceneId: string, experimentId: string, detailsSplit?: 'optimization' | 'validation' | 'held-out') => CapabilityFactoryExperimentView | null
+  listExperiments?: (sceneId: string) => CapabilityFactoryExperimentView[]
+  advanceExperiment?: (request: CapabilityExperimentAdvanceRequest) => Promise<CapabilityFactoryExperimentView>
+  cancelExperiment?: (sceneId: string, experimentId: string) => CapabilityFactoryExperimentView
+  assertExperimentAdoptable?: (sceneId: string, experimentId: string, definition: CapabilitySceneDefinition) => CapabilityFactoryExperiment
+  /** 显式完整读取会污染关联实验；不能宣称文件工具旁路也被隔离。 */
+  markExposureForRead?: (request: { kind: 'datasets' | 'run' | 'batch' | 'runs'; sceneId?: string; runId?: string; runIds?: readonly string[]; batchId?: string }) => void
   runBatch?: (request: CapabilityFactoryBatchRequest) => Promise<CapabilityFactoryBatch>
   listBatches?: (sceneId: string) => CapabilityFactoryBatchSummary[]
   getBatch?: (sceneId: string, batchId: string) => CapabilityFactoryBatch | null
@@ -179,6 +189,7 @@ export function createCapabilityFactoryAgentFacade(options: CapabilityFactoryAge
     assertCurrent,
     canMutate,
     assertNotAborted,
+    ...(options.assertExperimentAdoptable === undefined ? {} : { assertExperimentAdoptable: options.assertExperimentAdoptable }),
     ...(options.assertAdoptable === undefined ? {} : { assertAdoptable: options.assertAdoptable }),
     ...(options.listBatches === undefined ? {} : { listBatches: options.listBatches }),
     ...(options.getBatch === undefined ? {} : { getBatch: options.getBatch }),
@@ -218,12 +229,16 @@ export function createCapabilityFactoryAgentFacade(options: CapabilityFactoryAge
      */
     listRuns(sceneId: string, kind?: 'full' | 'step'): CapabilityRun[] {
       assertCurrent()
-      return service.listRuns(sceneId, 20, kind)
+      /** 仅实际返回的有限列表进入 Agent 上下文，不能污染未展示的验证记录。 */
+      const runs = service.listRuns(sceneId, 20, kind)
+      options.markExposureForRead?.({ kind: 'runs', sceneId, runIds: runs.map((run) => run.id) })
+      return runs
     },
 
     /** 按运行 ID 精确读取一条记录，避免历史超过 20 条后 Agent 误读其它运行。 */
     getRun(sceneId: string, runId: string): CapabilityRun | null {
       assertCurrent()
+      options.markExposureForRead?.({ kind: 'run', sceneId, runId })
       return service.getRun(sceneId, runId)
     },
 
@@ -236,6 +251,7 @@ export function createCapabilityFactoryAgentFacade(options: CapabilityFactoryAge
     /** 读取测试数据集；完整输入仅在明确读取时进入上下文。 */
     listDatasets(): CapabilityDataset[] {
       assertCurrent()
+      options.markExposureForRead?.({ kind: 'datasets' })
       return service.listDatasets()
     },
 
@@ -261,7 +277,60 @@ export function createCapabilityFactoryAgentFacade(options: CapabilityFactoryAge
     getBatch(sceneId: string, batchId: string): CapabilityFactoryBatch | { reason: string } | null {
       assertCurrent()
       if (!options.getBatch) return { reason: '当前会话没有批次读取能力' }
+      options.markExposureForRead?.({ kind: 'batch', sceneId, batchId })
       return options.getBatch(sceneId, batchId)
+    },
+
+    /** 创建实验只冻结材料，不调用模型或覆盖用户草案。 */
+    createExperiment(request: CapabilityExperimentCreateRequest) {
+      assertCurrent()
+      if (!canMutate()) return { reason: '当前模式不允许修改编排工厂' }
+      assertNotAborted()
+      if (!options.createExperiment) return { reason: '当前会话没有实验能力' }
+      const experiment = options.createExperiment(structuredClone(request))
+      options.onChanged?.()
+      return experiment
+    },
+    /** 默认仅返回优化材料；其他划分必须显式读取并记录暴露。 */
+    getExperiment(sceneId: string, experimentId: string, detailsSplit?: 'optimization' | 'validation' | 'held-out') {
+      assertCurrent()
+      return options.getExperiment?.(sceneId, experimentId, detailsSplit) ?? null
+    },
+    /** 列表为宿主脱敏视图，不返回标签正文。 */
+    listExperiments(sceneId: string) {
+      assertCurrent()
+      return options.listExperiments?.(sceneId) ?? []
+    },
+    /** 推进与普通测试共用回合额度，预检全部通过后同步扣款。 */
+    async advanceExperiment(request: CapabilityExperimentAdvanceRequest) {
+      assertCurrent()
+      if (!canMutate()) return { reason: '当前模式不允许运行编排工厂' }
+      assertNotAborted()
+      if (!options.advanceExperiment || !options.getExperiment) return { reason: '当前会话没有实验能力' }
+      const experiment = options.getExperiment(request.sceneId, request.experimentId)
+      if (!experiment || experiment.running || experiment.revision !== request.expectedRevision) return { reason: '实验不存在、正在运行或版本已变化' }
+      const split = experiment.status === 'prepared' ? 'optimization' : experiment.status === 'optimizing' ? 'validation' : experiment.status === 'validating' ? 'held-out' : null
+      if (!split) return { reason: '实验已经终止，不能继续' }
+      if (request.candidatePrompt !== undefined && experiment.status !== 'optimizing') return { reason: '只有优化完成后允许修订候选' }
+      const units = experiment.samples.filter((sample) => sample.split === split).length * 2
+      if (units < 2 || units > 20) return { reason: '实验划分必须包含 1 到 10 条用例' }
+      if (comparisonRoundsUsed >= 3) return { reason: '当前 Agent 回合最多运行 3 轮优化对比' }
+      if (!consumeRunUnits(units)) return { reason: '当前 Agent 回合最多发起 60 次场景运行' }
+      comparisonRoundsUsed += 1
+      const result = await options.advanceExperiment(structuredClone(request))
+      assertCurrent()
+      options.onChanged?.()
+      return result
+    },
+    /** 取消保留已花额度和证据，不能通过取消获得新配额。 */
+    cancelExperiment(sceneId: string, experimentId: string) {
+      assertCurrent()
+      if (!canMutate()) return { reason: '当前模式不允许修改编排工厂' }
+      assertNotAborted()
+      if (!options.cancelExperiment) return { reason: '当前会话没有实验能力' }
+      const result = options.cancelExperiment(sceneId, experimentId)
+      options.onChanged?.()
+      return result
     },
 
     async runBatch(request: CapabilityFactoryBatchRequest): Promise<CapabilityFactoryBatch | { reason: string }> {

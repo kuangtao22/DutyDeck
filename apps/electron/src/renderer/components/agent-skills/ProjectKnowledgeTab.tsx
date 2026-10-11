@@ -40,7 +40,8 @@ import { useCreateSession } from '@/hooks/useCreateSession'
 import { useOpenSession } from '@/hooks/useOpenSession'
 import { cn } from '@/lib/utils'
 import { WorkspaceMemoryTab } from './WorkspaceMemoryTab'
-import { KnowledgeWorkflowPanel } from './KnowledgeWorkflowPanel'
+import { KnowledgeWorkflowDialog } from './KnowledgeWorkflowPanel'
+import { KnowledgeFileTree } from './KnowledgeFileTree'
 import type { KnowledgePlanSelection } from './KnowledgeWorkflowPanel'
 import { startKnowledgePolling, waitForKnowledgeScan } from './project-knowledge-poll'
 
@@ -354,8 +355,10 @@ function KnowledgeContentPreview({
   onReview?: (entry: KnowledgeEntry, action: 'confirm' | 'reject') => void
 }): React.ReactElement {
   const { entry } = readResult
-  const sourceLocation = entry.source.relativePath ?? entry.source.id
+  const sourceLocation = entry.document ? `${entry.document.rootRelativePath}/${entry.document.relativePath}` : entry.source.relativePath ?? entry.title
   const isDistilledKnowledge = scope === 'knowledge' && (entry.source.kind === 'managed' || entry.source.kind === 'conversation')
+  /** 正式文档由大纲维护；即使仍是 draft，也不能使用旧候选的逐篇审核接口。 */
+  const isLegacyReviewable = isDistilledKnowledge && !entry.document
   /** 同一来源版本可以保留多段引文；仅折叠三字段完全相同的重复项。 */
   const uniqueEvidence = entry.evidence
     ? [...new Map(entry.evidence.map((evidence) => (
@@ -371,7 +374,7 @@ function KnowledgeContentPreview({
         : null
 
   return (
-    <article className="flex min-h-0 flex-col border-l border-border bg-background" aria-label="资料正文预览">
+    <article className="project-knowledge-preview flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-border bg-background" aria-label="资料正文预览">
       <header className="flex shrink-0 items-start gap-2 border-b border-border px-3 py-2.5">
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-sm font-semibold text-foreground">{entry.title}</h3>
@@ -385,26 +388,30 @@ function KnowledgeContentPreview({
           <X aria-hidden="true" />
         </Button>
       </header>
-      {isDistilledKnowledge && onReview && (
+      {scope === 'knowledge' && entry.document && (
+        <p className="shrink-0 border-b border-border px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+          此文档由知识库大纲维护，无需逐篇确认。调整内容请使用“更新知识库”。
+        </p>
+      )}
+      {isLegacyReviewable && onReview && (
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
-          {entry.state === 'draft' && onReview && (
+          {entry.state === 'draft' && (
             <Button type="button" size="sm" disabled={Boolean(pendingAction)} onClick={() => onReview(entry, 'confirm')}>
               {pendingAction === `confirm:${entry.id}` ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Check aria-hidden="true" />}
               确认资料
             </Button>
           )}
-          {onReview && (
-            <Button type="button" variant="outline" size="sm" disabled={Boolean(pendingAction)} onClick={() => onReview(entry, 'reject')}>
-              {pendingAction === `reject:${entry.id}` ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Ban aria-hidden="true" />}
-              排除条目
-            </Button>
-          )}
+          <Button type="button" variant="outline" size="sm" disabled={Boolean(pendingAction)} onClick={() => onReview(entry, 'reject')}>
+            {pendingAction === `reject:${entry.id}` ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Ban aria-hidden="true" />}
+            排除条目
+          </Button>
           {actionError && <p className="basis-full text-xs text-destructive" role="alert">{actionError}</p>}
         </div>
       )}
       {isDistilledKnowledge && uniqueEvidence.length > 0 && (
-        <div className="shrink-0 space-y-1.5 border-b border-border px-3 py-2" aria-label="提炼依据">
-          <p className="text-[11px] font-medium text-foreground">提炼依据</p>
+        <details className="shrink-0 border-b border-border px-3 py-2" aria-label="提炼依据">
+          <summary className="cursor-pointer text-[11px] font-medium text-foreground">提炼依据 · {uniqueEvidence.length} 条</summary>
+          <div className="mt-2 max-h-40 space-y-1.5 overflow-y-auto">
           {entry.truncated && (
             <p className="rounded-md border border-border bg-muted/40 px-2.5 py-2 text-[11px] leading-4 text-muted-foreground" role="status">
               部分依据仅分析了前段，可查看来源全文。
@@ -420,7 +427,8 @@ function KnowledgeContentPreview({
               “{evidence.quote}”
             </button>
           ))}
-        </div>
+          </div>
+        </details>
       )}
       {statusMessage && (
         <div className="m-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs leading-5 text-muted-foreground" role="status">
@@ -489,35 +497,51 @@ export function ProjectKnowledgeResourcesView({
   const showDirectoryEmpty = snapshot?.initialized === true && !searching && !directoryRefreshing && entries.length === 0
   const hasFilter = Boolean(query.trim())
   const isKnowledgeView = scope === 'knowledge'
+  /** 已确认大纲里的待补文件也属于目录，但不冒充可读取正文。 */
+  const hasOutline = isKnowledgeView && !hasFilter && Boolean(snapshot?.workflow?.outline?.items.some((item) => !item.entryId && (item.status === 'pending' || item.status === 'missing')))
   const hasKnownKnowledge = (snapshot?.knowledgeCount ?? 0) > 0
   const knowledgeEmptyTitle = hasKnownKnowledge ? '已有知识待核验' : '尚未提炼知识'
   const knowledgeEmptyDescription = hasKnownKnowledge
     ? '当前目录没有可展示的知识；更新知识库后可重新核验来源。'
     : '点击“更新知识库”后，会新建当前项目的 Agent 对话，调用知识维护 Skill 按需读取来源并提炼知识。'
 
+  /** 搜索框在知识页属于文件树，来源页保留独立的原文检索。 */
+  const directorySearch = (
+    <div className="relative min-w-44 flex-1">
+      <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+      <Input
+        value={query}
+        onChange={(event) => onQueryChange(event.target.value)}
+        placeholder={isKnowledgeView ? '搜索提炼知识' : '搜索来源资料'}
+        aria-label={isKnowledgeView ? '搜索提炼知识' : '搜索来源资料'}
+        className="pl-8"
+      />
+    </div>
+  )
+
   return (
-    <div className="flex h-full min-h-0 flex-col" style={{ containerType: 'inline-size', containerName: 'knowledge' }}>
+    <div className="flex h-full min-h-0 overflow-hidden flex-col" style={{ containerType: 'inline-size', containerName: 'knowledge' }}>
       <style>{`
+        @container knowledge (min-width: 640px) {
+          .project-knowledge-body[data-scope="knowledge"] { grid-template-columns: 238px minmax(0, 1fr); }
+          .project-knowledge-body[data-scope="knowledge"] .project-knowledge-empty-preview { display: flex; }
+        }
+        @container knowledge (max-width: 639px) {
+          .project-knowledge-body[data-scope="knowledge"][data-preview-open="true"] { grid-template-rows: minmax(0, 190px) minmax(0, 1fr); }
+          .project-knowledge-body[data-scope="knowledge"] .project-knowledge-preview { border-left-width: 0; border-top-width: 1px; }
+        }
         @container knowledge (min-width: 760px) {
-          .project-knowledge-body { grid-template-columns: minmax(18rem, 0.9fr) minmax(20rem, 1.1fr); }
-          .project-knowledge-empty-preview { display: flex; }
+          .project-knowledge-body[data-scope="sources"] { grid-template-columns: minmax(18rem, 0.9fr) minmax(20rem, 1.1fr); }
+          .project-knowledge-body[data-scope="sources"] .project-knowledge-empty-preview { display: flex; }
         }
         @container knowledge (max-width: 759px) {
-          .project-knowledge-directory[data-preview-open="true"] { display: none; }
+          .project-knowledge-body[data-scope="sources"][data-preview-open="true"] .project-knowledge-directory { display: none; }
         }
       `}</style>
       <div className="shrink-0 space-y-2 border-b border-border px-3 py-3">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="relative min-w-44 flex-1">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-            <Input
-              value={query}
-              onChange={(event) => onQueryChange(event.target.value)}
-              placeholder={isKnowledgeView ? '搜索提炼知识' : '搜索来源资料'}
-              aria-label={isKnowledgeView ? '搜索提炼知识' : '搜索来源资料'}
-              className="pl-8"
-            />
-          </div>
+          {isKnowledgeView ? <span className="mr-auto text-sm font-medium text-foreground">文档目录</span> : directorySearch}
+          {isKnowledgeView && workflow}
           {scanRunning ? (
             <Button type="button" variant="outline" size="sm" disabled={actionPending} onClick={onCancelScan}>
               {actionPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Square aria-hidden="true" />}
@@ -549,98 +573,110 @@ export function ProjectKnowledgeResourcesView({
           </div>
         )}
       </div>
-      {workflow}
-
-      {loading ? (
-        <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-xs text-muted-foreground" role="status">
-          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-          正在读取{isKnowledgeView ? '知识' : '来源资料'}
-        </div>
-      ) : error ? (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center" role="alert">
-          <AlertTriangle className="size-6 text-destructive" aria-hidden="true" />
-          <p className="max-w-md text-sm text-destructive">{error}</p>
-          <Button type="button" variant="outline" size="sm" onClick={onRetry}>重试</Button>
-        </div>
-      ) : showInitialEmpty ? (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-          <FileSearch className="size-8 text-muted-foreground" aria-hidden="true" />
-          <h3 className="text-sm font-medium text-foreground">尚未建立项目知识库</h3>
-          <p className="max-w-md text-xs leading-5 text-muted-foreground">
-            扫描只登记项目文档、资产与记忆来源；当前项目 Agent 会通过知识维护 Skill 按需读取并提炼知识。
-          </p>
-        </div>
-      ) : (
-        <div className="project-knowledge-body grid min-h-0 flex-1 grid-cols-1">
-          <div className="project-knowledge-directory min-h-0 overflow-auto p-3" data-preview-open={Boolean(selectedRead)} aria-label={isKnowledgeView ? '知识目录' : '来源目录'}>
-            {reading && !selectedRead ? (
-              <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground" role="status">
-                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                正在读取正文
-              </div>
-            ) : null}
-            {directoryRefreshing && entries.length > 0 && (
-              <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground" role="status">
-                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                正在更新{isKnowledgeView ? '知识' : '来源资料'}
-              </div>
-            )}
-            {(searching || directoryRefreshing) && entries.length === 0 ? (
-              <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground" role="status">
-                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                {directoryRefreshing ? `正在更新${isKnowledgeView ? '知识' : '来源资料'}` : `正在搜索${isKnowledgeView ? '知识' : '来源资料'}`}
-              </div>
-            ) : showDirectoryEmpty ? (
-              <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
-                <FileSearch className="size-7 text-muted-foreground" aria-hidden="true" />
-                <p className="text-sm text-foreground">{hasFilter
-                  ? `没有匹配的${isKnowledgeView ? '知识' : '来源资料'}`
-                  : isKnowledgeView ? knowledgeEmptyTitle : '暂无来源资料'}</p>
-                <p className="max-w-sm text-xs leading-5 text-muted-foreground">{hasFilter
-                  ? '尝试调整搜索词。'
-                  : isKnowledgeView
-                    ? knowledgeEmptyDescription
-                    : '更新来源以发现新增或发生变化的项目资料。'}</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {entries.map(({ entry }) => (
-                  <KnowledgeEntryButton
-                    key={`${entry.id}:${entry.revision}`}
-                    entry={entry}
-                    scope={scope}
-                    selected={entry.id === selectedEntryId}
-                    onSelect={onSelectEntry}
-                  />
-                ))}
-                {result?.nextOffset !== undefined && (
-                  <Button type="button" variant="outline" size="sm" className="w-full" disabled={searching} onClick={onLoadMore}>
-                    {searching && <Loader2 className="animate-spin" aria-hidden="true" />}
-                    加载更多{isKnowledgeView ? '知识' : '来源'}
-                  </Button>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {loading ? (
+          <div className="flex min-h-[16rem] flex-1 items-center justify-center gap-2 text-xs text-muted-foreground" role="status">
+            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            正在读取{isKnowledgeView ? '知识' : '来源资料'}
+          </div>
+        ) : error ? (
+          <div className="flex min-h-[16rem] flex-1 flex-col items-center justify-center gap-3 px-6 text-center" role="alert">
+            <AlertTriangle className="size-6 text-destructive" aria-hidden="true" />
+            <p className="max-w-md text-sm text-destructive">{error}</p>
+            <Button type="button" variant="outline" size="sm" onClick={onRetry}>重试</Button>
+          </div>
+        ) : showInitialEmpty ? (
+          <div className="flex min-h-[16rem] flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+            <FileSearch className="size-8 text-muted-foreground" aria-hidden="true" />
+            <h3 className="text-sm font-medium text-foreground">尚未建立项目知识库</h3>
+            <p className="max-w-md text-xs leading-5 text-muted-foreground">
+              扫描只登记项目文档、资产与记忆来源；当前项目 Agent 会通过知识维护 Skill 按需读取并提炼知识。
+            </p>
+          </div>
+        ) : (
+          <div className="project-knowledge-body grid min-h-0 flex-1 grid-cols-1 overflow-hidden" data-scope={scope} data-preview-open={Boolean(selectedRead)}>
+            <div className="project-knowledge-directory flex min-h-0 min-w-0 flex-col overflow-hidden" aria-label={isKnowledgeView ? '知识目录' : '来源目录'}>
+              {isKnowledgeView && <div className="shrink-0 border-b border-border p-2">{directorySearch}</div>}
+              <div className="min-h-0 flex-1 overflow-auto scrollbar-thin p-2" data-testid="project-knowledge-scroll">
+                {reading && !selectedRead ? (
+                  <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground" role="status">
+                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                    正在读取正文
+                  </div>
+                ) : null}
+                {directoryRefreshing && entries.length > 0 && (
+                  <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground" role="status">
+                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                    正在更新{isKnowledgeView ? '知识' : '来源资料'}
+                  </div>
                 )}
+                {(searching || directoryRefreshing) && entries.length === 0 && !hasOutline ? (
+                  <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground" role="status">
+                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                    {directoryRefreshing ? `正在更新${isKnowledgeView ? '知识' : '来源资料'}` : `正在搜索${isKnowledgeView ? '知识' : '来源资料'}`}
+                  </div>
+                ) : showDirectoryEmpty && !hasOutline ? (
+                  <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
+                    <FileSearch className="size-7 text-muted-foreground" aria-hidden="true" />
+                    <p className="text-sm text-foreground">{hasFilter
+                      ? `没有匹配的${isKnowledgeView ? '知识' : '来源资料'}`
+                      : isKnowledgeView ? knowledgeEmptyTitle : '暂无来源资料'}</p>
+                    <p className="max-w-sm text-xs leading-5 text-muted-foreground">{hasFilter
+                      ? '尝试调整搜索词。'
+                      : isKnowledgeView
+                        ? knowledgeEmptyDescription
+                        : '更新来源以发现新增或发生变化的项目资料。'}</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {isKnowledgeView ? (
+                      <KnowledgeFileTree
+                        entries={entries.map(({ entry }) => entry)}
+                        outline={snapshot?.workflow?.outline}
+                        rootRelativePath={snapshot?.workflow?.approved?.rootRelativePath}
+                        query={query}
+                        selectedEntryId={selectedEntryId}
+                        onSelectEntry={onSelectEntry}
+                      />
+                    ) : entries.map(({ entry }) => (
+                      <KnowledgeEntryButton
+                        key={`${entry.id}:${entry.revision}`}
+                        entry={entry}
+                        scope={scope}
+                        selected={entry.id === selectedEntryId}
+                        onSelect={onSelectEntry}
+                      />
+                    ))}
+                    {result?.nextOffset !== undefined && (
+                      <Button type="button" variant="outline" size="sm" className="w-full" disabled={searching} onClick={onLoadMore}>
+                        {searching && <Loader2 className="animate-spin" aria-hidden="true" />}
+                        加载更多{isKnowledgeView ? '知识' : '来源'}
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+            {selectedRead ? (
+              <KnowledgeContentPreview
+                readResult={selectedRead}
+                scope={scope}
+                reading={reading}
+                pendingAction={pendingKnowledgeAction}
+                actionError={knowledgeActionError}
+                onLoadMoreContent={onLoadMoreContent}
+                onClose={onClosePreview}
+                onSelectEvidence={onSelectEvidence}
+                onReview={isKnowledgeView ? onReviewEntry : undefined}
+              />
+            ) : (
+              <div className="project-knowledge-empty-preview hidden min-h-0 items-center justify-center border-l border-border px-6 text-center text-xs text-muted-foreground">
+                从左侧选择{isKnowledgeView ? '知识' : '来源'}，查看正文与追溯信息。
               </div>
             )}
           </div>
-          {selectedRead ? (
-            <KnowledgeContentPreview
-              readResult={selectedRead}
-              scope={scope}
-              reading={reading}
-              pendingAction={pendingKnowledgeAction}
-              actionError={knowledgeActionError}
-              onLoadMoreContent={onLoadMoreContent}
-              onClose={onClosePreview}
-              onSelectEvidence={onSelectEvidence}
-              onReview={isKnowledgeView ? onReviewEntry : undefined}
-            />
-          ) : (
-            <div className="project-knowledge-empty-preview hidden min-h-0 items-center justify-center border-l border-border px-6 text-center text-xs text-muted-foreground">
-              从左侧选择{isKnowledgeView ? '知识' : '来源'}，查看正文与追溯信息。
-            </div>
-          )}
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }
@@ -1141,12 +1177,12 @@ export function ProjectKnowledgeTab({
     }
   }, [dispatchKnowledgeWorkflow, executeKnowledgeAction, workspaceId])
 
-  /** 按用户所见 revision 确认或排除当前资料。 */
+  /** 按用户所见 revision 审核旧候选；正式文档只能通过大纲维护，不能派发旧审核 IPC。 */
   const handleReviewEntry = React.useCallback(async (
     entry: KnowledgeEntry,
     action: 'confirm' | 'reject',
   ): Promise<void> => {
-    if (!workspaceId) return
+    if (!workspaceId || entry.document) return
     const nextSnapshot = await executeKnowledgeAction(
       `${action}:${entry.id}`,
       action === 'confirm' ? '确认资料失败' : '排除资料失败',
@@ -1169,9 +1205,9 @@ export function ProjectKnowledgeTab({
     for (const item of result?.items ?? []) entriesById.set(item.entry.id, item.entry)
     return [...entriesById.values()]
   }, [result?.items, snapshot?.entries])
-  /** 仅在存在用户待处理计划时展示知识库工作流。 */
+  /** 整理流程只通过工具栏弹窗入口展示，主区域始终留给目录和正文。 */
   const workflow = snapshot?.initialized && snapshot.workflow ? (
-    <KnowledgeWorkflowPanel
+    <KnowledgeWorkflowDialog
       workflow={snapshot.workflow}
       entries={workflowEntries}
       pendingAction={combinedKnowledgeAction}
