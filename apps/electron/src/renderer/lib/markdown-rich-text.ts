@@ -499,6 +499,12 @@ function serializeServerOpsMention(id: string, label: string | null): string {
   return label ? `&ops:${id}::${encodeURIComponent(label)}` : `&ops:${id}`
 }
 
+/** 媒体模型引用只把稳定 modelRef 和可读名称写入草稿，不携带地址或凭据。 */
+function serializeMediaModelMention(id: string, label: string | null): string {
+  const encodedRef = encodeURIComponent(id)
+  return label ? `/model:${encodedRef}::${encodeURIComponent(label)}` : `/model:${encodedRef}`
+}
+
 function addMentionBoundary(serialized: string, element: HTMLElement): string {
   const nextText = element.nextSibling?.textContent ?? ''
   return nextText.length > 0 && !/^\s/u.test(nextText) ? `${serialized} ` : serialized
@@ -658,6 +664,7 @@ export function htmlToMarkdown(
           else if (referenceType === 'server_ops') serializedMention = serializeServerOpsMention(dataId, dataLabel)
           else if (referenceType === 'todo') serializedMention = serializeNamedMention('&todo', dataId, dataLabel)
           else if (referenceType === 'calendar_event') serializedMention = serializeNamedMention('&calendar_event', dataId, dataLabel)
+          else if (referenceType === 'media_model') serializedMention = serializeMediaModelMention(dataId, dataLabel)
           else if (suggestionChar === '/') serializedMention = `/skill:${dataId}`
           else if (suggestionChar === '#') serializedMention = `#mcp:${dataId}`
           else if (suggestionChar === '&') serializedMention = serializeNamedMention('&session', dataId, dataLabel)

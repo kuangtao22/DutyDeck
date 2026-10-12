@@ -22,7 +22,7 @@ import Markdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
-import { CalendarDays, ChevronDown, ChevronUp, Paperclip, FileText, ListTodo, Sparkles, Server, Download, MessageSquareText, Quote, Workflow, X } from 'lucide-react'
+import { CalendarDays, ChevronDown, ChevronUp, Paperclip, FileText, ListTodo, Sparkles, Server, Download, MessageSquareText, Quote, Workflow, X, Clapperboard } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { shouldInspectMermaidCodeBlock, shouldRenderMermaidCodeBlock } from '@/lib/mermaid-detection'
 import { normalizeLatexDelimiters } from '@/lib/normalize-latex'
@@ -262,7 +262,7 @@ function walkMdastText(
 
 // ----- MentionChip 组件 -----
 
-type MentionType = 'file' | 'skill' | 'mcp' | 'session' | 'todo' | 'calendar_event' | 'quote'
+type MentionType = 'file' | 'skill' | 'mcp' | 'session' | 'todo' | 'calendar_event' | 'media_model' | 'quote'
 
 const MENTION_STYLES: Record<MentionType, { icon: typeof FileText; className: string }> = {
   file: { icon: FileText, className: 'bg-primary/10 text-primary' },
@@ -271,6 +271,7 @@ const MENTION_STYLES: Record<MentionType, { icon: typeof FileText; className: st
   session: { icon: MessageSquareText, className: 'bg-[hsl(200_80%_50%/0.14)] text-[hsl(200_80%_40%)]' },
   todo: { icon: ListTodo, className: 'bg-amber-500/15 text-amber-800 dark:text-amber-200' },
   calendar_event: { icon: CalendarDays, className: 'bg-cyan-500/15 text-cyan-800 dark:text-cyan-200' },
+  media_model: { icon: Clapperboard, className: 'bg-amber-500/15 text-amber-800 dark:text-amber-200' },
   quote: { icon: Quote, className: 'bg-primary/10 text-primary' },
 }
 
@@ -458,7 +459,7 @@ function MentionChip({ type, value }: { type: MentionType; value: string }): Rea
     return <FilePathChip filePath={decoded} basePaths={contextBasePaths} />
   }
 
-  const isNamedReference = type === 'session' || type === 'todo' || type === 'calendar_event'
+  const isNamedReference = type === 'session' || type === 'todo' || type === 'calendar_event' || type === 'media_model'
   const [referenceId = '', ...labelParts] = isNamedReference ? decoded.split('::') : [decoded]
   const label = labelParts.length > 0 ? labelParts.join('::') : undefined
   const display = type === 'file'
@@ -469,6 +470,8 @@ function MentionChip({ type, value }: { type: MentionType; value: string }): Rea
         ? (label || `Todo ${referenceId.slice(0, 8)}`)
         : type === 'calendar_event'
           ? (label || `日程 ${referenceId.slice(0, 8)}`)
+        : type === 'media_model'
+          ? (label || referenceId)
           : decoded
   return (
     <span
@@ -484,7 +487,7 @@ function MentionChip({ type, value }: { type: MentionType; value: string }): Rea
   )
 }
 
-// ----- remarkMentions：将 @file: /skill: #mcp: &session: &todo: &calendar_event: 转为 mention:// link 节点 -----
+// ----- remarkMentions：将文件、Skill、媒体模型等引用转为 mention:// link 节点 -----
 
 export function remarkMentions() {
   return (tree: MdastParent) => {
@@ -514,11 +517,13 @@ export function remarkMentions() {
                 ? 'session'
                 : m[6]
                   ? 'todo'
-                  : m[8]
+                : m[8]
                     ? 'calendar_event'
+                  : m[12]
+                    ? 'media_model'
                     : 'quote'
-        const referenceId = m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[6] ?? m[8] ?? m[10] ?? ''
-        const encodedLabel = m[5] ?? m[7] ?? m[9]
+        const referenceId = m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[6] ?? m[8] ?? m[10] ?? m[12] ?? ''
+        const encodedLabel = m[5] ?? m[7] ?? m[9] ?? m[13]
         const rawValue = encodedLabel ? `${referenceId}::${safeDecode(encodedLabel)}` : referenceId
         // 文件/Skill/MCP 旧消息可能已经编码；带标题的 named reference 始终重新编码整个值。
         const alreadyEncoded = !encodedLabel && /%[0-9A-Fa-f]{2}/.test(referenceId)
@@ -604,7 +609,7 @@ function mentionUrlTransform(url: string): string {
 // ===== Memo'd Markdown 子组件（稳定引用，避免 react-markdown 每帧重建组件映射） =====
 
 /** mention:// URL 匹配 */
-const MENTION_URL_RE = /^mention:\/\/(file|skill|mcp|session|todo|calendar_event|quote)\/(.+)$/
+const MENTION_URL_RE = /^mention:\/\/(file|skill|mcp|session|todo|calendar_event|media_model|quote)\/(.+)$/
 
 /** 外部链接 / mention chip 渲染器 */
 const MarkdownLink = React.memo(function MarkdownLink({

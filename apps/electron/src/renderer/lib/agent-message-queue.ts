@@ -1,13 +1,14 @@
 import { resolveSkillMentionName, EMPTY_SKILL_MENTION_NAMES } from './skill-mention-name'
 import type { AgentStreamState } from '@/atoms/agent-atoms'
 import type { QuotedSelection } from '@/atoms/preview-atoms'
+import { parseMediaModelRef } from '@proma/shared'
 import type { CanvasNodeReference, ServerOpsAgentReference } from '@proma/shared'
 import {
   buildQuotedSelectionLabel,
   expandAgentHistoryQuoteMentions,
   parseQuotedSelectionMention,
 } from './quoted-selection'
-import { ENCODED_MENTION_VALUE_PATTERN, PLAIN_MENTION_VALUE_PATTERN } from './mention-patterns'
+import { ENCODED_MENTION_VALUE_PATTERN, MEDIA_MODEL_MENTION_VALUE_PATTERN, PLAIN_MENTION_VALUE_PATTERN } from './mention-patterns'
 import { SERVER_OPS_REFERENCE_VALUE_PATTERN } from './mention-patterns'
 import { parseServerOpsReference } from './server-ops-reference'
 
@@ -257,6 +258,8 @@ export interface ParsedQueuedMessageMentions {
   mentionedSessionIds: string[]
   mentionedTodoIds: string[]
   mentionedCalendarEventIds: string[]
+  /** 用户通过 `/model` 选择的稳定媒体模型引用。 */
+  mentionedMediaModelRefs: string[]
   mentionedServerOpsReferences: ServerOpsAgentReference[]
 }
 
@@ -289,7 +292,7 @@ export async function submitQueuedMessagePayload(
 }
 
 /** 队列预览专用片段：保留原始消息用于发送，同时把引用协议渲染为可读芯片。 */
-export type QueuedMessageReferenceType = 'file' | 'skill' | 'mcp' | 'session' | 'todo' | 'calendar_event' | 'server_ops' | 'quote'
+export type QueuedMessageReferenceType = 'file' | 'skill' | 'mcp' | 'session' | 'todo' | 'calendar_event' | 'media_model' | 'server_ops' | 'quote'
 
 export type QueuedMessageDisplayPart =
   | { type: 'text'; value: string }
@@ -360,8 +363,12 @@ const REF_PATTERN = new RegExp(
   String.raw`/skill:(?<skill>${PLAIN_MENTION_VALUE_PATTERN})|#mcp:(?<mcp>${PLAIN_MENTION_VALUE_PATTERN})|&session:(?<session>[A-Za-z0-9-]+)(?:(?:~|::)${ENCODED_MENTION_VALUE_PATTERN})?|&todo:(?<todo>[A-Za-z0-9-]+)(?:(?:~|::)${ENCODED_MENTION_VALUE_PATTERN})?|&calendar_event:(?<calendarEvent>[A-Za-z0-9-]+)(?:(?:~|::)${ENCODED_MENTION_VALUE_PATTERN})?|(?<serverOps>&ops:${SERVER_OPS_REFERENCE_VALUE_PATTERN}(?:::(?:${SERVER_OPS_REFERENCE_VALUE_PATTERN}))?)`,
   'gu',
 )
+const MEDIA_MODEL_REFERENCE_PATTERN = new RegExp(
+  String.raw`/model:(?<mediaModel>${MEDIA_MODEL_MENTION_VALUE_PATTERN})(?:::${ENCODED_MENTION_VALUE_PATTERN})?`,
+  'gu',
+)
 const DISPLAY_REFERENCE_PATTERN = new RegExp(
-  String.raw`&quote:(?<quote>[A-Za-z0-9%_.!~*'()-]+)|@file:(?<file>${ENCODED_MENTION_VALUE_PATTERN})|/skill:(?<skill>${PLAIN_MENTION_VALUE_PATTERN})|#mcp:(?<mcp>${PLAIN_MENTION_VALUE_PATTERN})|&session:(?<session>[A-Za-z0-9-]+)(?:(?:~|::)(?<sessionLabel>${ENCODED_MENTION_VALUE_PATTERN}))?|&todo:(?<todo>[A-Za-z0-9-]+)(?:(?:~|::)(?<todoLabel>${ENCODED_MENTION_VALUE_PATTERN}))?|&calendar_event:(?<calendarEvent>[A-Za-z0-9-]+)(?:(?:~|::)(?<calendarEventLabel>${ENCODED_MENTION_VALUE_PATTERN}))?|(?<serverOps>&ops:${SERVER_OPS_REFERENCE_VALUE_PATTERN}(?:::(?:${SERVER_OPS_REFERENCE_VALUE_PATTERN}))?)`,
+  String.raw`&quote:(?<quote>[A-Za-z0-9%_.!~*'()-]+)|@file:(?<file>${ENCODED_MENTION_VALUE_PATTERN})|/skill:(?<skill>${PLAIN_MENTION_VALUE_PATTERN})|#mcp:(?<mcp>${PLAIN_MENTION_VALUE_PATTERN})|&session:(?<session>[A-Za-z0-9-]+)(?:(?:~|::)(?<sessionLabel>${ENCODED_MENTION_VALUE_PATTERN}))?|&todo:(?<todo>[A-Za-z0-9-]+)(?:(?:~|::)(?<todoLabel>${ENCODED_MENTION_VALUE_PATTERN}))?|&calendar_event:(?<calendarEvent>[A-Za-z0-9-]+)(?:(?:~|::)(?<calendarEventLabel>${ENCODED_MENTION_VALUE_PATTERN}))?|(?<serverOps>&ops:${SERVER_OPS_REFERENCE_VALUE_PATTERN}(?:::(?:${SERVER_OPS_REFERENCE_VALUE_PATTERN}))?)|/model:(?<mediaModel>${MEDIA_MODEL_MENTION_VALUE_PATTERN})(?:::(?<mediaModelLabel>${ENCODED_MENTION_VALUE_PATTERN}))?`,
   'gu',
 )
 
@@ -433,6 +440,10 @@ export function getQueuedMessageDisplayParts(
       referenceType = 'calendar_event'
       id = groups.calendarEvent
       rawLabel = groups.calendarEventLabel
+    } else if (groups.mediaModel) {
+      referenceType = 'media_model'
+      id = groups.mediaModel
+      rawLabel = groups.mediaModelLabel
     } else if (groups.serverOps) {
       const reference = parseServerOpsReference(groups.serverOps)
       if (!reference) {
@@ -458,6 +469,8 @@ export function getQueuedMessageDisplayParts(
             ? `Todo ${id.slice(0, 8)}`
             : referenceType === 'calendar_event'
               ? `日程 ${id.slice(0, 8)}`
+              : referenceType === 'media_model'
+                ? decodedId
               : referenceType === 'skill'
                 ? resolveSkillMentionName(decodedId, skillNames)
                 : decodedId
@@ -479,6 +492,7 @@ export function parseQueuedMessageMentions(text: string): ParsedQueuedMessageMen
   const mentionedSessionIds: string[] = []
   const mentionedTodoIds: string[] = []
   const mentionedCalendarEventIds: string[] = []
+  const mentionedMediaModelRefs: string[] = []
   const mentionedServerOpsReferences: ServerOpsAgentReference[] = []
 
   for (const match of text.matchAll(REF_PATTERN)) {
@@ -494,9 +508,25 @@ export function parseQueuedMessageMentions(text: string): ParsedQueuedMessageMen
     }
   }
 
+  /** 媒体模型引用单独解析，非法稳定引用保留在正文中并不会进入 Agent 工具指令。 */
+  const validMediaModelTokens = new Set<string>()
+  for (const match of text.matchAll(MEDIA_MODEL_REFERENCE_PATTERN)) {
+    const token = match[0]
+    const encodedRef = match.groups?.mediaModel
+    if (!encodedRef) continue
+    try {
+      parseMediaModelRef(decodeReferenceLabel(encodedRef))
+      mentionedMediaModelRefs.push(decodeReferenceLabel(encodedRef))
+      validMediaModelTokens.add(token)
+    } catch {
+      // 保留非法 token 作为普通文本，避免用户输入被静默吞掉。
+    }
+  }
+
   return {
     cleanedText: text
       .replace(REF_PATTERN, '')
+      .replace(MEDIA_MODEL_REFERENCE_PATTERN, (token) => validMediaModelTokens.has(token) ? '' : token)
       // @file: 路径在 htmlToMarkdown 序列化时已 encodeURIComponent（路径可能含空格），
       // 这里还原为真实路径，保证 Agent 侧读取的是可访问的完整路径；
       // 仅当含百分号编码时解码，避免破坏旧的未编码路径。
@@ -511,6 +541,7 @@ export function parseQueuedMessageMentions(text: string): ParsedQueuedMessageMen
     mentionedSessionIds,
     mentionedTodoIds,
     mentionedCalendarEventIds,
+    mentionedMediaModelRefs,
     mentionedServerOpsReferences,
   }
 }

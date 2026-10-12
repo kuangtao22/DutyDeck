@@ -389,6 +389,7 @@ export const MEDIA_IPC_CHANNELS = {
   DREAMINA_LOGIN_POLL: 'media:dreamina-login-poll',
   DREAMINA_LOGIN_CANCEL: 'media:dreamina-login-cancel',
   DREAMINA_LOGOUT: 'media:dreamina-logout',
+  LIST_UNIFIED_MODELS: 'media:list-unified-models',
 } as const
 
 /** 四层 IPC 的公开接口；运行写入口由 Canvas/Agent 授权 Host 接线。 */
@@ -420,6 +421,8 @@ export interface MediaPreloadApi {
   mediaFetchAudioGenerationCatalog(input: AudioGenerationCatalogFetchInput): Promise<AudioGenerationCatalogFetchResult>
   /** 读取独立生图目录及只读旧配置摘要。 */
   mediaGetImageGenerationSettings(): Promise<ImageGenerationSettingsResult>
+  /** 读取当前已配置且已接入执行器的统一媒体模型；不返回地址或凭据。 */
+  mediaListUnifiedModels(): Promise<import('./media-generation').UnifiedMediaModelOption[]>
   /** 以 catalog revision 完整替换独立生图配置。 */
   mediaReplaceImageGenerationCatalog(input: ReplaceImageGenerationCatalogRequest): Promise<ImageGenerationSettingsResult>
   /** 从生图供应商拉取可用模型（同时充当连接测试）。 */

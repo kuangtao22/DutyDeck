@@ -1362,6 +1362,8 @@ export interface AgentSendInput {
   mentionedTodoIds?: string[]
   /** 用户通过日程引用 mention 指定的日程 ID 列表 */
   mentionedCalendarEventIds?: string[]
+  /** 用户通过 `/model` 选择的稳定媒体模型引用列表 */
+  mentionedMediaModelRefs?: string[]
   /** 渲染进程生成的流式开始时间戳，主进程原样回传到 STREAM_COMPLETE，确保竞态保护比较的是同一个值 */
   startedAt?: number
   /** 用户点击错误消息的重试时，指向本轮开始前应删除的错误 UUID。 */
@@ -1495,6 +1497,8 @@ export interface AgentQueueMessageInput {
   mentionedTodoIds?: string[]
   /** 用户通过 &calendar_event:xxx 引用的日程 ID 列表 */
   mentionedCalendarEventIds?: string[]
+  /** 用户通过 `/model` 选择的稳定媒体模型引用列表 */
+  mentionedMediaModelRefs?: string[]
   /** 本次队列消息显式携带的 Canvas 节点引用快照。 */
   canvasNodeReferences?: CanvasNodeReference[]
   /** 本次队列消息显式携带的媒体附件。 */

@@ -500,6 +500,9 @@ import { MediaSourceService } from './lib/media/media-source-service'
 import { createMediaDeliveryInspectionService } from './lib/media/media-delivery-inspection-service'
 import { assertMediaProbeAvailable } from './lib/media/media-file-probe'
 import { createMediaToolRun } from './lib/media/media-tool-provider'
+import { UnifiedMediaModelCatalog } from './lib/media/unified-media-model-catalog'
+import { UnifiedMediaGenerationService } from './lib/media/unified-media-generation-service'
+import { createUnifiedMediaHttpAdapters } from './lib/media/unified-media-http-adapters'
 import { createMediaImageCatalog } from './lib/media/media-image-catalog'
 import { createMediaDesignImageExecution } from './lib/media/media-design-execution'
 import { ServerOpsAgentAccessStore } from './lib/server-ops/server-ops-agent-access-store'
@@ -2262,6 +2265,8 @@ export function registerIpcHandlers(): void {
     resources: mediaResources,
     audioGeneration: getAudioGenerationIpcService(),
     imageGeneration: getImageGenerationIpcService(),
+    /** 输入框只读展示统一媒体目录；目录本身不含地址、凭据或原始供应商响应。 */
+    listUnifiedModels: () => unifiedMediaCatalog.list(''),
     onBackgroundError: (message, error) => console.error(message, error),
     listAssets: (projectId) => mediaAssets.list(projectId),
     readAssetThumbnail: async (projectId, asset) => mediaAssetThumbnails.read(projectId, asset),
@@ -3004,6 +3009,19 @@ export function registerIpcHandlers(): void {
   const mediaAssets = new MediaAssetService({ pathResolver: designPathResolver, store: designStore, images: mediaImages,
     resolveImagePath: (projectId, assetId) => designAssetService.resolveAssetPath(projectId, assetId),
     runWorkspaceWrite: (projectId, effect) => workspaceOperationGuard.runWorkspaceWrite(projectId, effect) })
+  /** 统一模型目录只组合独立图片/音频配置，凭据仍按运行时单条解密。 */
+  const unifiedMediaCatalog = new UnifiedMediaModelCatalog({
+    readImageCatalog: () => getImageGenerationStore().readPublic(),
+    readAudioCatalog: () => getAudioGenerationStore().readPublic(),
+    resolveImageApiKey: (profileId) => getImageGenerationStore().resolveApiKey(profileId),
+    resolveAudioApiKey: (profileId) => getAudioGenerationStore().resolveApiKey(profileId),
+  })
+  /** Agent 与未来 Canvas 统一复用的媒体运行 Facade；产物走同一媒体资产事务。 */
+  const unifiedMediaGeneration = new UnifiedMediaGenerationService({
+    resolveModel: (modelRef) => unifiedMediaCatalog.resolve(modelRef),
+    adapters: createUnifiedMediaHttpAdapters({ readAsset: (projectId, asset) => mediaAssets.read(projectId, asset) }),
+    registerOutput: (projectId, operationId, bytes, contentType, origin, expectedMediaKind) => mediaAssets.register(projectId, operationId, bytes, contentType, origin, expectedMediaKind),
+  })
   /** Renderer 缩略图读取复用统一素材引用校验和现有受管图片缩略图。 */
   const mediaAssetThumbnails = new MediaAssetThumbnailService({ assets: mediaAssets, thumbnails: designAssetService })
   /** 懒初始化晚于数据根 gate；每个副作用阶段都重新核对项目和发起主体。 */
@@ -4125,6 +4143,14 @@ export function registerIpcHandlers(): void {
     },
     mediaTools: (context) => createMediaToolRun({
       configuration: getMediaConfiguration(), resources: mediaResources, runs: mediaRuns, supervisor: mediaSupervisor,
+      generation: {
+        listModels: (projectId) => unifiedMediaCatalog.list(projectId),
+        prepare: (ownerSessionId, input) => unifiedMediaGeneration.prepare(ownerSessionId, input),
+        execute: (ownerSessionId, runId, expectedRevision) => unifiedMediaGeneration.execute(ownerSessionId, runId, expectedRevision),
+        get: (ownerSessionId, runId) => unifiedMediaGeneration.get(ownerSessionId, runId),
+        wait: (ownerSessionId, runId, timeoutMs, afterRevision, signal) => unifiedMediaGeneration.wait(ownerSessionId, runId, timeoutMs, afterRevision, signal),
+        cancel: (ownerSessionId, runId) => unifiedMediaGeneration.cancel(ownerSessionId, runId),
+      },
       authorize: (current, operation) => {
         canvasToolAccess.authorizeRead(current)
         if (current.canvasAgentTarget) canvasToolAccess.requireLinkedCanvas(current, current.canvasAgentTarget.canvasId)

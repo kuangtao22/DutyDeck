@@ -1,5 +1,9 @@
 # MEMORY.md
 
+- 2026-10-12（`/` 菜单引用媒体模型）：Agent 输入框的 `/` 菜单同时展示已启用 Skill 与当前 `available: true` 的图片、音频、视频模型；模型使用编码后的 `/model:<encoded modelRef>::<encoded name>` mention，内部稳定引用仍为 `media:<kind>:<provider>:<profileId>:<modelId>`。发送、排队和 queue-now 均透传 `mentionedMediaModelRefs`，主进程只注入模型引用并继续通过既有媒体工具执行；该引用链路仅传递模型摘要与引用，不携带地址或凭据。
+
+- 2026-10-12（统一媒体模型与 Agent 调用）：统一模型引用固定为 `media:<kind>:<provider>:<profileId>:<modelId>`，Agent 通过 `media_list_models`、`media_prepare_generation`、`media_execute_generation`、`media_get_generation`、`media_wait_generation`、`media_cancel_generation` 调用图片、音频和视频；音频执行器覆盖小米 TTS 与 MiniMax Speech，视频执行器覆盖 MiniMax 提交、轮询和下载，OpenAI Images 与 MiniMax Image 复用图片配置。凭据只在主进程按 profile 解密，Agent 只收到模型引用和媒体资产引用，产物统一登记到 MediaAssetService；旧媒体工具继续兼容。视频取消当前只停止本地等待，远端 MiniMax 任务可能继续运行，后续需单独接入远端取消合同。定向统一媒体测试通过；全量媒体测试中 ComfyUI HTTP 测试受受限沙箱禁止监听 `127.0.0.1:0` 的 `EPERM` 阻断，不能视为本次改动失败。Nowledge Mem 定向检索不可用，未同步跨工具记忆。
+
 - 2026-10-11（全部改动提交前复验）：用户明确要求提交当前全部代码；在 `codex/factory-measured-optimization` 上复验工厂、知识库、面板及共享协议相关测试 690 项全部通过，8 个工作区 `bun run typecheck` 全部通过，此前计划记录中的 `AgentView.tsx` 类型检查阻塞已不再出现。本轮只执行离线验证与本地提交，未运行真实模型实验；Nowledge Mem 定向检索在本机服务端口返回连接拒绝，未同步跨工具记忆。
 
 ## 2026-10-11（运维资源引用到 Agent 会话）

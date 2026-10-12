@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { formatMediaModelRef } from '@proma/shared'
 import type { CanvasNodeReference } from '@proma/shared'
 import { runAgentMessageInvoke } from '../../main/lib/agent-canvas-message-preparation'
 import { CanvasReferenceInvalidError } from '../../main/lib/design/canvas-node-reference-resolver'
@@ -280,6 +281,20 @@ describe('queued message @file mention path decoding (Agent 侧真实路径)', (
     expect(getQueuedMessageDisplayParts(text)).toEqual([
       { type: 'reference', referenceType: 'server_ops', id: text.split(' ')[0]!, label: 'app.users' },
       { type: 'text', value: ' 查询这张表' },
+    ])
+  })
+
+  test('parses encoded media model references with colons and removes only valid protocol text', () => {
+    const modelRef = formatMediaModelRef({ kind: 'audio', provider: 'minimax', profileId: 'audio-main', modelId: 'speech-2.8-hd' })
+    const text = `请用 /model:${encodeURIComponent(modelRef)}::${encodeURIComponent('MiniMax Speech · speech-2.8-hd')} 生成语音`
+    const result = parseQueuedMessageMentions(text)
+
+    expect(result.mentionedMediaModelRefs).toEqual([modelRef])
+    expect(result.cleanedText).toBe('请用  生成语音')
+    expect(getQueuedMessageDisplayParts(text)).toEqual([
+      { type: 'text', value: '请用 ' },
+      { type: 'reference', referenceType: 'media_model', id: encodeURIComponent(modelRef), label: 'MiniMax Speech · speech-2.8-hd' },
+      { type: 'text', value: ' 生成语音' },
     ])
   })
 })

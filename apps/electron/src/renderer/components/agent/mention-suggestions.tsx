@@ -12,7 +12,7 @@ import { CalendarDays, ListTodo, MessageSquareText, Sparkles, Server } from 'luc
 import { MentionList } from './MentionList'
 import type { MentionListRef } from './MentionList'
 import { createDebouncedSuggestionLoader, createLatestSuggestionRequestGuard, createMentionPopup, positionPopup, isSuggestionTriggerPresent, shouldSuppressEscTrigger, shouldClearEscSuppressionOnExit, type EscSuppressedTrigger } from './mention-popup-utils'
-import type { AgentSessionReferenceSearchResult, WorkspaceCapabilities } from '@proma/shared'
+import type { AgentSessionReferenceSearchResult, UnifiedMediaModelOption, WorkspaceCapabilities } from '@proma/shared'
 import { shouldAllowMentionTrigger, shouldShowMentionSuggestion } from '@/components/ai-elements/mention-utils'
 import {
   buildPlanningReferenceItems,
@@ -40,7 +40,7 @@ interface MentionSuggestionConfig<T> {
   /** 渲染列表项 */
   renderItem: (item: T) => React.ReactNode
   /** 选中后传给 command 的 Mention 属性 */
-  toCommand: (item: T) => { id: string; label: string; referenceType?: PlanningReferenceType }
+  toCommand: (item: T) => { id: string; label: string; referenceType?: PlanningReferenceType | 'media_model' }
 }
 
 function createMentionSuggestion<T>(
@@ -216,34 +216,61 @@ export interface SkillMentionItem {
   description?: string
 }
 
+/** `/` 菜单中的统一媒体模型条目；只保留主进程返回的脱敏目录摘要。 */
+export interface MediaModelMentionItem {
+  id: string
+  name: string
+  model: UnifiedMediaModelOption
+}
+
+type SlashMentionItem = SkillMentionItem | MediaModelMentionItem
+
+function isMediaModelMentionItem(item: SlashMentionItem): item is MediaModelMentionItem {
+  return 'model' in item
+}
+
 export function createSkillMentionSuggestion(
   workspaceSlugRef: React.RefObject<string | null>,
   mentionActiveRef: React.MutableRefObject<boolean>,
   mentionItemCountRef: React.MutableRefObject<number>,
 ) {
-  return createMentionSuggestion<SkillMentionItem>(
+  return createMentionSuggestion<SlashMentionItem>(
     {
       char: '/',
-      headerLabel: '调用 skill',
-      emptyText: '无匹配 Skill',
+      headerLabel: '调用 Skill / 媒体模型',
+      emptyText: '无匹配 Skill 或可用媒体模型',
       fetchItems: async (slug, q) => {
-        const caps = await window.electronAPI.getWorkspaceCapabilities(slug)
-        return caps.skills
+        const [caps, models] = await Promise.all([
+          window.electronAPI.getWorkspaceCapabilities(slug),
+          window.electronAPI.mediaListUnifiedModels().catch(() => [] as UnifiedMediaModelOption[]),
+        ])
+        const skillItems: SlashMentionItem[] = caps.skills
           .filter((s) => s.enabled)
           .filter((s) => !q || s.name.toLowerCase().includes(q) || (s.slug ?? '').toLowerCase().includes(q))
           .map((s) => ({ id: s.slug, name: s.name, description: s.description }))
+        const mediaItems: SlashMentionItem[] = models
+          .filter((model) => model.available)
+          .filter((model) => !q || model.name.toLowerCase().includes(q) || model.modelId.toLowerCase().includes(q))
+          .map((model) => ({ id: model.ref, name: model.name, model }))
+        return [...skillItems, ...mediaItems]
       },
-      keyExtractor: (item) => item.id,
+      keyExtractor: (item) => isMediaModelMentionItem(item) ? `media:${item.id}` : `skill:${item.id}`,
       renderItem: (item) => (
         <>
-          <Sparkles className="size-3.5 text-violet-500 flex-shrink-0" />
+          {isMediaModelMentionItem(item)
+            ? <Sparkles className="size-3.5 text-amber-500 flex-shrink-0" />
+            : <Sparkles className="size-3.5 text-violet-500 flex-shrink-0" />}
           <span className="truncate font-medium flex-1 min-w-0">{item.name}</span>
-          {item.description && (
+          {isMediaModelMentionItem(item) ? (
+            <span className="truncate text-[10px] text-muted-foreground/50 max-w-[96px]">{item.model.kind}</span>
+          ) : item.description && (
             <span className="truncate text-[10px] text-muted-foreground/50 max-w-[120px]">{item.description}</span>
           )}
         </>
       ),
-      toCommand: (item) => ({ id: item.id, label: item.name }),
+      toCommand: (item) => isMediaModelMentionItem(item)
+        ? { id: item.model.ref, label: item.model.name, referenceType: 'media_model' }
+        : { id: item.id, label: item.name },
     },
     workspaceSlugRef,
     mentionActiveRef,

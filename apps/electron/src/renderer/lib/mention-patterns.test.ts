@@ -29,4 +29,14 @@ describe('mention token boundaries', () => {
     ])
     expect(matches[1]?.[3]).toBe('中文服务器')
   })
+
+  test('keeps encoded media model references with colon segments intact', () => {
+    const modelRef = 'media:audio:minimax:audio-main:speech-2.8-hd'
+    const text = `/model:${encodeURIComponent(modelRef)}::${encodeURIComponent('MiniMax Speech')} 生成语音`
+    const matches = Array.from(text.matchAll(createMentionPattern()))
+
+    expect(matches).toHaveLength(1)
+    expect(matches[0]?.[12]).toBe(encodeURIComponent(modelRef))
+    expect(matches[0]?.[13]).toBe(encodeURIComponent('MiniMax Speech'))
+  })
 })

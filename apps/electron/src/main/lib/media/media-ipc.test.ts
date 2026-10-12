@@ -101,6 +101,28 @@ function createMediaOptions(
 }
 
 describe('媒体设置 IPC 授权', () => {
+  test('Given 已授权窗口 When 读取统一媒体模型目录 Then 只返回脱敏可用模型且拒绝额外参数', () => {
+    const handlers = new Map<string, (event: IpcMainInvokeEvent, input?: unknown) => unknown>()
+    const models = [{
+      ref: 'media:audio:minimax:audio-main:speech-2.8-hd',
+      name: 'MiniMax Speech · speech-2.8-hd',
+      kind: 'audio' as const,
+      provider: 'minimax',
+      profileId: 'audio-main',
+      modelId: 'speech-2.8-hd',
+      capabilities: ['text-to-speech' as const],
+      available: true,
+      adapterId: 'minimax-speech',
+    }]
+    registerMediaIpcHandlers({
+      ...createMediaOptions(handlers, unusedAudioGenerationService),
+      listUnifiedModels: () => models,
+    })
+
+    expect(handlers.get(MEDIA_IPC_CHANNELS.LIST_UNIFIED_MODELS)!({ sender: {} } as IpcMainInvokeEvent)).toEqual(models)
+    expect(() => handlers.get(MEDIA_IPC_CHANNELS.LIST_UNIFIED_MODELS)!({ sender: {} } as IpcMainInvokeEvent, {})).toThrow('MEDIA_IPC_INPUT_INVALID')
+  })
+
   test('Given 当前项目图片引用 When 读取本地缩略图 Then 返回受控图片字节并复核项目', async () => {
     const handlers = new Map<string, (event: IpcMainInvokeEvent, input?: unknown) => unknown>()
     const projectChecks: string[] = []

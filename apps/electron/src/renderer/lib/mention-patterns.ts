@@ -14,10 +14,13 @@ export const PLAIN_MENTION_VALUE_PATTERN = String.raw`\S+`
 /** 运维引用的身份 JSON 与展示标签均经过 encodeURIComponent，不能包含冒号。 */
 export const SERVER_OPS_REFERENCE_VALUE_PATTERN = String.raw`[A-Za-z0-9%_.!~*'()-]+`
 
+/** modelRef 经 encodeURIComponent 后只允许这些字符，冒号必须保持为 `%3A`。 */
+export const MEDIA_MODEL_MENTION_VALUE_PATTERN = String.raw`[A-Za-z0-9%_.!~*'()-]+`
+
 /** Create a fresh instance because mention parsing uses a global regexp. */
 export function createMentionPattern(): RegExp {
   return new RegExp(
-    String.raw`@file:(${ENCODED_MENTION_VALUE_PATTERN})|/skill:(${PLAIN_MENTION_VALUE_PATTERN})|#mcp:(${PLAIN_MENTION_VALUE_PATTERN})|&session:([A-Za-z0-9-]+)(?:(?:~|::)(${ENCODED_MENTION_VALUE_PATTERN}))?|&todo:([A-Za-z0-9-]+)(?:(?:~|::)(${ENCODED_MENTION_VALUE_PATTERN}))?|&calendar_event:([A-Za-z0-9-]+)(?:(?:~|::)(${ENCODED_MENTION_VALUE_PATTERN}))?|&ops:(${SERVER_OPS_REFERENCE_VALUE_PATTERN})(?:::(?:${SERVER_OPS_REFERENCE_VALUE_PATTERN}))?|&quote:([A-Za-z0-9%_.!~*'()-]+)`,
+    String.raw`@file:(${ENCODED_MENTION_VALUE_PATTERN})|/skill:(${PLAIN_MENTION_VALUE_PATTERN})|#mcp:(${PLAIN_MENTION_VALUE_PATTERN})|&session:([A-Za-z0-9-]+)(?:(?:~|::)(${ENCODED_MENTION_VALUE_PATTERN}))?|&todo:([A-Za-z0-9-]+)(?:(?:~|::)(${ENCODED_MENTION_VALUE_PATTERN}))?|&calendar_event:([A-Za-z0-9-]+)(?:(?:~|::)(${ENCODED_MENTION_VALUE_PATTERN}))?|&ops:(${SERVER_OPS_REFERENCE_VALUE_PATTERN})(?:::(?:${SERVER_OPS_REFERENCE_VALUE_PATTERN}))?|&quote:([A-Za-z0-9%_.!~*'()-]+)|/model:(${MEDIA_MODEL_MENTION_VALUE_PATTERN})(?:::(${ENCODED_MENTION_VALUE_PATTERN}))?`,
     'gu',
   )
 }

@@ -591,10 +591,10 @@ export const RichTextInput = forwardRef<RichTextInputHandle, RichTextInputProps>
                 default: null,
                 parseHTML: (el: HTMLElement) => {
                   const value = el.getAttribute('data-mention-reference-type')
-                  return value === 'todo' || value === 'calendar_event' || value === 'server_ops' ? value : null
+                  return value === 'todo' || value === 'calendar_event' || value === 'server_ops' || value === 'media_model' ? value : null
                 },
                 renderHTML: (attrs: Record<string, unknown>) => (
-                    attrs.referenceType === 'todo' || attrs.referenceType === 'calendar_event' || attrs.referenceType === 'server_ops'
+                    attrs.referenceType === 'todo' || attrs.referenceType === 'calendar_event' || attrs.referenceType === 'server_ops' || attrs.referenceType === 'media_model'
                     ? { 'data-mention-reference-type': attrs.referenceType }
                     : {}
                 ),
@@ -654,6 +654,7 @@ export const RichTextInput = forwardRef<RichTextInputHandle, RichTextInputProps>
             else if (referenceType === 'todo') chipClass = 'todo-mention-chip'
             else if (referenceType === 'calendar_event') chipClass = 'calendar-event-mention-chip'
             else if (referenceType === 'server_ops') chipClass = 'server-ops-mention-chip'
+            else if (referenceType === 'media_model') chipClass = 'media-model-mention-chip'
             else if (char === '/') chipClass = 'skill-mention-chip'
             else if (char === '#') chipClass = 'mcp-mention-chip'
             else if (char === '&') chipClass = 'session-mention-chip'
@@ -664,7 +665,7 @@ export const RichTextInput = forwardRef<RichTextInputHandle, RichTextInputProps>
                 'data-id': node.attrs.id,
                 'data-label': node.attrs.label,
                 'data-mention-suggestion-char': char,
-                ...(referenceType === 'todo' || referenceType === 'calendar_event' || referenceType === 'server_ops'
+                ...(referenceType === 'todo' || referenceType === 'calendar_event' || referenceType === 'server_ops' || referenceType === 'media_model'
                   ? { 'data-mention-reference-type': referenceType }
                   : {}),
                 ...(quotePayload ? { 'data-mention-quote': quotePayload } : {}),
@@ -1454,6 +1455,30 @@ export const RichTextInput = forwardRef<RichTextInputHandle, RichTextInputProps>
           height: 12px;
           background-color: currentColor;
           mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='20' height='8' x='2' y='2' rx='2' ry='2'/%3E%3Crect width='20' height='8' x='2' y='14' rx='2' ry='2'/%3E%3Cline x1='6' x2='6.01' y1='6' y2='6'/%3E%3Cline x1='6' x2='6.01' y1='18' y2='18'/%3E%3C/svg%3E");
+          mask-size: contain;
+          mask-repeat: no-repeat;
+          flex-shrink: 0;
+        }
+        .media-model-mention-chip {
+          background-color: hsl(42 90% 55% / 0.16);
+          color: hsl(32 80% 38%);
+          border-radius: 4px;
+          padding: 1px 4px 1px 2px;
+          font-size: 13px;
+          font-weight: 500;
+          white-space: nowrap;
+          display: inline-flex;
+          align-items: center;
+          gap: 2px;
+          vertical-align: baseline;
+        }
+        .media-model-mention-chip::before {
+          content: '';
+          display: inline-block;
+          width: 12px;
+          height: 12px;
+          background-color: currentColor;
+          mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m15 4 5 5'/%3E%3Cpath d='M13 6 3 16v5h5L18 11'/%3E%3Cpath d='m16 3 5 5'/%3E%3C/svg%3E");
           mask-size: contain;
           mask-repeat: no-repeat;
           flex-shrink: 0;

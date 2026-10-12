@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
-import type { ComfyObjectInfo, MediaAssetRecord, MediaAssetRef, MediaProjectCatalog, MediaRemoteDescriptor, MediaRunSnapshot, MediaWorkflowDefinition, MediaWorkflowVersion } from '@proma/shared'
+import type { ComfyObjectInfo, MediaAssetRecord, MediaAssetRef, MediaGenerationSnapshot, MediaProjectCatalog, MediaRemoteDescriptor, MediaRunSnapshot, MediaWorkflowDefinition, MediaWorkflowVersion } from '@proma/shared'
 import type { CanvasToolRunContext } from '../design/canvas-tool-provider'
 import { createMediaToolRun, MEDIA_TOOL_NAMES, type MediaToolProviderDependencies } from './media-tool-provider'
 import { MediaWorkflowValidationError } from './media-workflow-error'
@@ -195,6 +195,26 @@ function fixture(options: { largeResources?: boolean; withSources?: boolean; wit
 }
 
 describe('媒体 Agent 工具提供器', () => {
+  test('Given Host 注入统一媒体 Facade When Agent 会话调用 Then 暴露目录与准备执行等待取消工具', async () => {
+    const f = fixture()
+    let current: MediaGenerationSnapshot = { id: 'generation-1', projectId: 'project-1', revision: 0, phase: 'prepared', modelRef: 'media:audio:minimax:audio:speech', mediaKind: 'audio', createdAt: 1, updatedAt: 1, outputs: [], error: null }
+    f.dependencies.generation = {
+      listModels: () => [{ ref: current.modelRef, name: 'Speech', kind: 'audio', provider: 'minimax', profileId: 'audio', modelId: 'speech', capabilities: ['text-to-speech'], available: true, adapterId: 'minimax-speech' }],
+      prepare: () => current,
+      execute: async () => { current = { ...current, revision: 1, phase: 'running' }; return current },
+      get: () => current,
+      wait: async () => { current = { ...current, revision: 2, phase: 'succeeded', outputs: [{ outputKey: 'output-1', asset: { assetId: 'asset-audio', revision: 1, hash: 'a'.repeat(64), mediaKind: 'audio' } }] }; return current },
+      cancel: () => { current = { ...current, revision: 3, phase: 'cancelled' }; return current },
+    }
+    const run = createMediaToolRun(f.dependencies, context)
+    expect(run.allowedToolNames).toEqual(expect.arrayContaining(['media_list_models', 'media_prepare_generation', 'media_execute_generation', 'media_wait_generation', 'media_cancel_generation']))
+    expect((await executeTool(run.piCustomTools, 'media_list_models', {})).details).toMatchObject({ models: [{ ref: current.modelRef }] })
+    const prepared = await executeTool(run.piCustomTools, 'media_prepare_generation', { modelRef: current.modelRef, prompt: '你好', inputs: {} })
+    expect(prepared.details).toMatchObject({ phase: 'prepared', availableActions: ['media_execute_generation'] })
+    expect((await executeTool(run.piCustomTools, 'media_execute_generation', { runId: current.id, expectedRevision: 0 })).details).toMatchObject({ phase: 'running' })
+    expect((await executeTool(run.piCustomTools, 'media_wait_generation', { runId: current.id, afterRevision: 1 })).details).toMatchObject({ phase: 'succeeded' })
+  })
+
   test('Given 用户切换生成授权 When 同一 Agent 再次调用 Then 仅媒体与画布运行工具读取最新策略', () => {
     /** 同轮修改设置，验证工具策略不是启动时的旧快照。 */
     const f = fixture()
@@ -882,7 +902,7 @@ describe('媒体 Agent 工具提供器', () => {
     const prepared = await executeTool(run.piCustomTools, 'media_prepare_run', { operationId: 'untrusted', profileId: 'profile', profileRevision: 1, inputs: {} })
     const runId = (prepared.details as MediaRunSnapshot).id
     expect(runId).toMatch(/^run-[a-f0-9]{64}$/)
-    expect(prepared.details).toMatchObject({ phase: 'prepared' })
+    expect(prepared.details).toMatchObject({ phase: 'prepared', availableActions: ['media_execute_run'] })
     const executed = await executeTool(run.piCustomTools, 'media_execute_run', { runId, expectedRevision: 0 })
     expect(executed.details).toMatchObject({ id: runId })
     expect(f.calls.map((item) => item.operation)).toEqual(['draft', 'draft', 'publish', 'publish', 'prepare', 'prepare', 'execute', 'execute'])

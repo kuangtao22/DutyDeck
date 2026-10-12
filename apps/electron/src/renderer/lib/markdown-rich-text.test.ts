@@ -223,6 +223,17 @@ describe('Agent mention serialization', () => {
       `&session:session-789::${encodeURIComponent('修复引用显示')}`,
     ].join(' '))
   })
+
+  test('serializes media model mentions with an encoded stable reference and display label', () => {
+    const modelRef = 'media:audio:minimax:audio-main:speech-2.8-hd'
+    const markdown = withHtmlDocument(() => htmlToMarkdown([
+      '<p>',
+      `<span data-type="mention" data-id="${modelRef}" data-label="MiniMax Speech · speech-2.8-hd" data-mention-suggestion-char="/" data-mention-reference-type="media_model">MiniMax Speech · speech-2.8-hd</span>`,
+      '</p>',
+    ].join('')))
+
+    expect(markdown).toBe(`/model:${encodeURIComponent(modelRef)}::${encodeURIComponent('MiniMax Speech · speech-2.8-hd')}`)
+  })
 })
 
 describe('Clipboard 纯文本序列化', () => {

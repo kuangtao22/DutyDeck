@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useSkillMentionNames } from './SkillMentionNamesProvider'
-import { CalendarDays, Clock3, CornerDownLeft, FileText, GripVertical, ListTodo, MessageSquareText, Paperclip, Quote, Server, Sparkles, Trash2, Undo2 } from 'lucide-react'
+import { CalendarDays, Clock3, Clapperboard, CornerDownLeft, FileText, GripVertical, ListTodo, MessageSquareText, Paperclip, Quote, Server, Sparkles, Trash2, Undo2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
@@ -179,6 +179,7 @@ const QUEUED_REFERENCE_STYLES = {
   quote: { icon: Quote, className: 'bg-primary/10 text-primary' },
   todo: { icon: ListTodo, className: 'bg-amber-500/15 text-amber-800 dark:text-amber-200' },
   calendar_event: { icon: CalendarDays, className: 'bg-cyan-500/15 text-cyan-800 dark:text-cyan-200' },
+  media_model: { icon: Clapperboard, className: 'bg-amber-500/15 text-amber-800 dark:text-amber-200' },
   server_ops: { icon: Server, className: 'bg-emerald-500/15 text-emerald-800 dark:text-emerald-200' },
 } as const
 

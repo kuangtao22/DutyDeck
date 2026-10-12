@@ -50,6 +50,7 @@ export function createAgentQueueNowInput(candidate: AgentSubmitOrEnqueueInput): 
     mentionedServerOpsReferences: candidate.mentionedServerOpsReferences,
     mentionedTodoIds: candidate.mentionedTodoIds,
     mentionedCalendarEventIds: candidate.mentionedCalendarEventIds,
+    mentionedMediaModelRefs: candidate.mentionedMediaModelRefs,
     ...(Object.prototype.hasOwnProperty.call(candidate, 'mediaAttachments')
       ? { mediaAttachments: candidate.mediaAttachments }
       : {}),

@@ -37,6 +37,7 @@ import {
   inferContextWindow,
   inferReasoningTransport,
   resolveReasoningProfile,
+  parseMediaModelRef,
   collectSkillActivations,
   mergeSkillActivations,
 } from '@proma/shared'
@@ -206,6 +207,29 @@ function errorMessageOf(error: unknown): string {
 
 function isMissingActiveQueueChannelError(error: unknown): boolean {
   return isStaleActiveQueueError(error)
+}
+
+/** 把用户在 `/model` 中选择的稳定引用转换为受限提示块；最终执行仍由媒体工具重新校验。 */
+function buildReferencedMediaModelsPrompt(modelRefs?: string[]): string | undefined {
+  const refs = [...new Set((modelRefs ?? []).filter((ref): ref is string => {
+    if (typeof ref !== 'string') return false
+    return ref.trim().length > 0
+  }))]
+    .filter((ref) => {
+      try {
+        parseMediaModelRef(ref)
+        return true
+      } catch {
+        return false
+      }
+    })
+  if (refs.length === 0) return undefined
+  return [
+    '<mentioned_media_models>',
+    '用户已明确选择以下媒体模型。需要生成媒体时，优先使用对应 modelRef 调用 media_prepare_generation；工具会再次校验模型当前是否可用。',
+    ...refs.map((ref) => `- modelRef: ${ref}`),
+    '</mentioned_media_models>',
+  ].join('\n')
 }
 
 function isPartialSDKMessage(message: SDKMessage): boolean {
@@ -771,7 +795,7 @@ export class AgentOrchestrator {
     callbacks: SessionCallbacks,
     extensions: AgentRunExtensions = {},
   ): Promise<void> {
-    const { sessionId, userMessage, rawUserMessage, userMessageUuid, channelId, modelId, workspaceId: requestedWorkspaceId, additionalDirectories, permissionModeOverride, mentionedSkills, mentionedMcpServers, mentionedSessionIds, mentionedServerOpsReferences, mentionedTodoIds, mentionedCalendarEventIds, automationContext, retryOfErrorUuid, canvasNodeReferences, mediaAttachments } = input
+    const { sessionId, userMessage, rawUserMessage, userMessageUuid, channelId, modelId, workspaceId: requestedWorkspaceId, additionalDirectories, permissionModeOverride, mentionedSkills, mentionedMcpServers, mentionedSessionIds, mentionedServerOpsReferences, mentionedTodoIds, mentionedCalendarEventIds, mentionedMediaModelRefs, automationContext, retryOfErrorUuid, canvasNodeReferences, mediaAttachments } = input
     /** 受限内部运行可关闭 Workspace Skills，避免 Pi 把普通 Skill 目录注入系统提示。 */
     const runSkillsEnabled = extensions.skillsMode !== 'disabled'
     // Capture the focus once per turn. Later UI focus changes must not rewrite this reply's attribution.
@@ -1475,6 +1499,11 @@ export class AgentOrchestrator {
       if (referencedPlanningBlock) {
         enrichedMessage = `${referencedPlanningBlock}\n\n${enrichedMessage}`
         console.log(`[Agent 编排] 注入 referenced_planning: ${mentionedTodoIds?.length ?? 0} todos, ${mentionedCalendarEventIds?.length ?? 0} calendar events`)
+      }
+      const referencedMediaModelsBlock = buildReferencedMediaModelsPrompt(mentionedMediaModelRefs)
+      if (referencedMediaModelsBlock) {
+        enrichedMessage = `${referencedMediaModelsBlock}\n\n${enrichedMessage}`
+        console.log(`[Agent 编排] 注入 mentioned_media_models: ${mentionedMediaModelRefs?.length ?? 0} models`)
       }
 
       /** 本地知识检索不扫描项目、不调用付费模型，资料仅作为用户上下文而非系统指令。 */
@@ -3170,6 +3199,7 @@ export class AgentOrchestrator {
     mentionedServerOpsReferences?: ServerOpsAgentReference[],
     mentionedTodoIds?: string[],
     mentionedCalendarEventIds?: string[],
+    mentionedMediaModelRefs?: string[],
     canvasNodeReferences?: CanvasNodeReference[],
     mediaAttachments?: AgentMediaAttachment[],
     canvasWorkspacePrompt?: string,
@@ -3226,6 +3256,8 @@ export class AgentOrchestrator {
     if (referencedPlanningBlock) {
       enrichedText = `${referencedPlanningBlock}\n\n${enrichedText}`
     }
+    const referencedMediaModelsBlock = buildReferencedMediaModelsPrompt(mentionedMediaModelRefs)
+    if (referencedMediaModelsBlock) enrichedText = `${referencedMediaModelsBlock}\n\n${enrichedText}`
 
     const uuid = presetUuid || randomUUID()
 

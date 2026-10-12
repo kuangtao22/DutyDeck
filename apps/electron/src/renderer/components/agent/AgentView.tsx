@@ -1213,6 +1213,7 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
         mentionedServerOpsReferences: submittedPayload.mentions.mentionedServerOpsReferences,
         mentionedTodoIds: submittedPayload.mentions.mentionedTodoIds,
         mentionedCalendarEventIds: submittedPayload.mentions.mentionedCalendarEventIds,
+        mentionedMediaModelRefs: submittedPayload.mentions.mentionedMediaModelRefs,
         ...(mediaAttachments ? { mediaAttachments } : {}),
         ...(submittedPayload.canvasNodeReferences && submittedPayload.canvasNodeReferences.length > 0
           ? { canvasNodeReferences: submittedPayload.canvasNodeReferences }
@@ -2290,6 +2291,7 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
         mentionedServerOpsReferences: payload.mentions.mentionedServerOpsReferences,
         mentionedTodoIds: payload.mentions.mentionedTodoIds,
         mentionedCalendarEventIds: payload.mentions.mentionedCalendarEventIds,
+        mentionedMediaModelRefs: payload.mentions.mentionedMediaModelRefs,
         ...(queuedMediaAttachments
           ? { mediaAttachments: queuedMediaAttachments }
           : {}),
@@ -2506,6 +2508,7 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
       ...(mentions.mentionedServerOpsReferences.length > 0 && { mentionedServerOpsReferences: mentions.mentionedServerOpsReferences }),
       ...(mentions.mentionedTodoIds.length > 0 && { mentionedTodoIds: mentions.mentionedTodoIds }),
       ...(mentions.mentionedCalendarEventIds.length > 0 && { mentionedCalendarEventIds: mentions.mentionedCalendarEventIds }),
+      ...(mentions.mentionedMediaModelRefs.length > 0 && { mentionedMediaModelRefs: mentions.mentionedMediaModelRefs }),
       ...(canvasNodeReferencesSnapshot.length > 0 && { canvasNodeReferences: canvasNodeReferencesSnapshot }),
       ...(mediaAttachments && { mediaAttachments }),
     }

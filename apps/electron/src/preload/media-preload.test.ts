@@ -17,6 +17,18 @@ function createAudioProfile() {
 }
 
 describe('媒体 preload 合同', () => {
+  test('Given Agent 输入框读取模型 When 通过 preload Then 只调用统一目录只读通道', async () => {
+    const calls: Array<{ channel: string; input: unknown }> = []
+    const api = createMediaPreloadApi(
+      async (channel, input) => { calls.push({ channel, input }); return [] },
+      () => () => undefined,
+    )
+
+    await api.mediaListUnifiedModels()
+
+    expect(calls).toEqual([{ channel: MEDIA_IPC_CHANNELS.LIST_UNIFIED_MODELS, input: undefined }])
+  })
+
   test('Given 本地图片引用 When 请求缩略图 Then 仅向固定通道发送项目与四字段引用', async () => {
     const calls: Array<{ channel: string; input: unknown }> = []
     const api = createMediaPreloadApi(

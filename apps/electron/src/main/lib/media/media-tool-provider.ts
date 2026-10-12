@@ -9,6 +9,7 @@ import type {
   MediaConfiguration,
   MediaInputValue,
   MediaKind,
+  MediaGenerationSnapshot,
   MediaProjectCatalog,
   MediaRemoteDescriptor,
   MediaRemoteWorkflow,
@@ -41,7 +42,7 @@ const IDENTIFIER_PATTERN = '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
 
 /** 用户媒体自主策略只覆盖生成与工作流运行控制，不放宽其它工具的强制审批。 */
 const MEDIA_AUTOMATION_TOOL_NAMES: ReadonlySet<string> = new Set([
-  'media_execute_run', 'media_cancel_run', 'canvas_run_nodes', 'canvas_run_workflow',
+  'media_execute_run', 'media_cancel_run', 'media_execute_generation', 'media_cancel_generation', 'canvas_run_nodes', 'canvas_run_workflow',
   'canvas_retry_task', 'canvas_resume_workflow', 'canvas_cancel_workflow', 'canvas_cancel_media_run',
 ])
 
@@ -73,6 +74,21 @@ export const MEDIA_TOOL_NAMES = [
   'media_cancel_run',
   'media_list_assets',
 ] as const
+
+/** 统一模型 Facade 按需追加的工具名；旧调用方的媒体工具常量保持兼容。 */
+const MEDIA_GENERATION_TOOL_NAMES = [
+  'media_list_models', 'media_prepare_generation', 'media_execute_generation',
+  'media_get_generation', 'media_wait_generation', 'media_cancel_generation',
+] as const
+
+/** 统一媒体运行快照对应的后续动作；与旧 ComfyUI 运行动作分开，避免 Agent 混用 runId。 */
+const MEDIA_GENERATION_ACTIONS: Readonly<Record<string, string[]>> = {
+  prepared: ['media_execute_generation'],
+  running: ['media_wait_generation', 'media_cancel_generation'],
+  succeeded: ['media_list_assets'],
+  failed: ['media_prepare_generation'],
+  cancelled: ['media_prepare_generation'],
+}
 
 export type MediaToolOperation = 'read' | 'draft' | 'publish' | 'prepare' | 'execute' | 'cancel'
 
@@ -118,6 +134,15 @@ export interface MediaToolProviderDependencies {
   getCanvasConnection?(context: CanvasToolRunContext, canvasId: string): string | null
   /** 父编排 child 准备只能登记到原工作流计划内的精确媒体目标。 */
   prepareParentRun?(context: CanvasToolRunContext, input: PrepareCanvasMediaHandoffInput, origin: MediaRunOrigin): Promise<MediaRunSnapshot>
+  /** 统一图片/音频/视频模型目录和 Agent 运行 Facade；未注入时保留旧媒体工具。 */
+  generation?: {
+    listModels(projectId: string): import('@proma/shared').UnifiedMediaModelOption[]
+    prepare(ownerSessionId: string, input: import('@proma/shared').MediaGenerationRequest): MediaGenerationSnapshot
+    execute(ownerSessionId: string, runId: string, expectedRevision: number): Promise<MediaGenerationSnapshot>
+    get(ownerSessionId: string, runId: string): MediaGenerationSnapshot
+    wait(ownerSessionId: string, runId: string, timeoutMs?: number, afterRevision?: number, signal?: AbortSignal): Promise<MediaGenerationSnapshot>
+    cancel(ownerSessionId: string, runId: string): MediaGenerationSnapshot
+  }
 }
 
 interface WorkflowSelector {
@@ -194,17 +219,16 @@ function defineTool<TParams extends TSchema, TDetails = unknown>(tool: ToolDefin
 }
 
 /** 返回紧凑 JSON，避免工具结果格式化空白吞噬上下文预算。 */
-function toolResult(details: Record<string, unknown>): AgentToolResult<unknown> {
-  const actions: Record<string, string[]> = {
-    prepared: ['media_execute_run'], uploading: ['media_execute_run'], compiling: ['media_execute_run'],
-    submitting: ['media_wait_run'], 'submission-unknown': ['media_wait_run', 'media_get_run'],
-    queued: ['media_wait_run', 'media_cancel_run'], running: ['media_wait_run', 'media_cancel_run'],
-    collecting: ['media_wait_run'], 'collection-failed': ['media_wait_run'],
-    succeeded: ['media_list_assets'], failed: ['media_inspect_workflow', 'media_prepare_run'], cancelled: ['media_prepare_run'],
-    'cancel-requested': ['media_wait_run'],
-  }
-  const bounded = boundDetails(typeof details.phase === 'string' && actions[details.phase]
-    ? { ...details, availableActions: actions[details.phase] } : details)
+function toolResult(details: Record<string, unknown>, actionMap: Readonly<Record<string, string[]>> = {
+  prepared: ['media_execute_run'], uploading: ['media_execute_run'], compiling: ['media_execute_run'],
+  submitting: ['media_wait_run'], 'submission-unknown': ['media_wait_run', 'media_get_run'],
+  queued: ['media_wait_run', 'media_cancel_run'], running: ['media_wait_run', 'media_cancel_run'],
+  collecting: ['media_wait_run'], 'collection-failed': ['media_wait_run'],
+  succeeded: ['media_list_assets'], failed: ['media_inspect_workflow', 'media_prepare_run'], cancelled: ['media_prepare_run'],
+  'cancel-requested': ['media_wait_run'],
+}): AgentToolResult<unknown> {
+  const bounded = boundDetails(typeof details.phase === 'string' && actionMap[details.phase]
+    ? { ...details, availableActions: actionMap[details.phase] } : details)
   return { content: [{ type: 'text', text: JSON.stringify(bounded) }], details: bounded }
 }
 
@@ -717,6 +741,19 @@ export function createMediaToolRun(dependencies: MediaToolProviderDependencies, 
             ...('channelId' in candidate ? { channelId: candidate.channelId } : {}),
             ...(candidate.unavailableReason ? { unavailableReason: candidate.unavailableReason } : {}),
           }))
+        const unifiedCandidates = dependencies.generation?.listModels(context.projectId)
+          .filter((candidate) => candidate.kind !== 'image')
+          .map((candidate) => ({
+            profileId: candidate.ref, name: candidate.name, modelId: candidate.modelId,
+            executor: candidate.adapterId ?? candidate.provider, mediaKind: candidate.kind,
+            available: candidate.available,
+            capabilities: candidate.capabilities,
+            support: candidate.available && candidate.adapterId
+              ? { state: 'supported' as const, adapterId: candidate.adapterId }
+              : { state: 'unavailable' as const, reason: candidate.unavailableReason ?? '执行器尚未接入' },
+            ...(candidate.unavailableReason ? { unavailableReason: candidate.unavailableReason } : {}),
+          })) ?? []
+        candidates.push(...unifiedCandidates)
         const offset = params.offset ?? 0
         return pageResult('models', candidates.slice(offset, offset + (params.limit ?? 30)), offset, candidates.length,
           { selectedModelId: null })
@@ -1119,13 +1156,86 @@ export function createMediaToolRun(dependencies: MediaToolProviderDependencies, 
     }))
   }
 
+  /** 新统一模型入口只在 Host 注入运行 Facade 时暴露，旧版本仍只看到兼容工具。 */
+  if (dependencies.generation) {
+    const generation = dependencies.generation
+    tools.push(
+      defineTool({
+        name: 'media_list_models', label: '列出统一媒体模型',
+        description: '列出当前配置目录中的图片、音频和视频模型；返回稳定 modelRef 与执行能力，不返回地址或凭据。',
+        parameters: Type.Object({ offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })) }),
+        execute: async (_toolCallId, params) => {
+          authorize(dependencies, context, 'read')
+          const models = generation.listModels(context.projectId)
+          const offset = params.offset ?? 0
+          return pageResult('models', models.slice(offset, offset + (params.limit ?? 30)), offset, models.length)
+        },
+      }),
+      defineTool({
+        name: 'media_prepare_generation', label: '准备统一媒体生成',
+        description: '按稳定 modelRef 准备一次图片、音频或视频生成；只校验配置和参数，不发送供应商请求。',
+        parameters: Type.Object({
+          modelRef: Type.String({ minLength: 1, maxLength: 640 }),
+          prompt: Type.String({ minLength: 1, maxLength: 16_384 }),
+          inputs: Type.Record(Type.String({ pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$' }), Type.Unknown()),
+        }, { additionalProperties: false }),
+        execute: async (toolCallId, params) => {
+          authorize(dependencies, context, 'prepare')
+          const operationId = createHash('sha256').update(JSON.stringify([context.sessionId, context.runStartedAt, toolCallId])).digest('hex')
+          const snapshot = generation.prepare(context.sessionId, {
+            projectId: context.projectId, operationId, modelRef: params.modelRef, prompt: params.prompt,
+            inputs: params.inputs as Record<string, MediaInputValue>,
+          })
+          return toolResult(snapshot as unknown as Record<string, unknown>, MEDIA_GENERATION_ACTIONS)
+        },
+      }),
+      defineTool({
+        name: 'media_execute_generation', label: '执行统一媒体生成',
+        description: '启动已准备的统一媒体生成任务；需要执行权限并遵守媒体自主策略。',
+        parameters: Type.Object({ runId: Type.String({ minLength: 1, maxLength: 128 }), expectedRevision: Type.Integer({ minimum: 0 }) }),
+        execute: async (_toolCallId, params) => {
+          authorize(dependencies, context, 'execute', params.runId)
+          return toolResult(await generation.execute(context.sessionId, params.runId, params.expectedRevision) as unknown as Record<string, unknown>, MEDIA_GENERATION_ACTIONS)
+        },
+      }),
+      defineTool({
+        name: 'media_get_generation', label: '查询统一媒体生成',
+        description: '读取当前 Agent 会话持有的统一媒体任务快照，不触发新的供应商请求。',
+        parameters: Type.Object({ runId: Type.String({ minLength: 1, maxLength: 128 }) }),
+        execute: async (_toolCallId, params) => {
+          authorize(dependencies, context, 'read', params.runId)
+          return toolResult(generation.get(context.sessionId, params.runId) as unknown as Record<string, unknown>, MEDIA_GENERATION_ACTIONS)
+        },
+      }),
+      defineTool({
+        name: 'media_wait_generation', label: '等待统一媒体生成',
+        description: '等待统一媒体任务 revision 变化或终态；超时只返回当前快照，不取消远端任务。',
+        parameters: Type.Object({ runId: Type.String({ minLength: 1, maxLength: 128 }), afterRevision: Type.Optional(Type.Integer({ minimum: 0 })), timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 30_000 })) }),
+        execute: async (_toolCallId, params, signal) => {
+          authorize(dependencies, context, 'read', params.runId)
+          return toolResult(await generation.wait(context.sessionId, params.runId, params.timeoutMs, params.afterRevision, signal) as unknown as Record<string, unknown>, MEDIA_GENERATION_ACTIONS)
+        },
+      }),
+      defineTool({
+        name: 'media_cancel_generation', label: '取消统一媒体生成',
+        description: '明确取消当前 Agent 会话持有的统一媒体任务；迟到响应不会复活已取消任务。',
+        parameters: Type.Object({ runId: Type.String({ minLength: 1, maxLength: 128 }), cancelIntent: Type.Literal('explicit') }),
+        execute: async (_toolCallId, params) => {
+          if (params.cancelIntent !== 'explicit') throw new Error('MEDIA_CANCEL_INTENT_REQUIRED')
+          authorize(dependencies, context, 'cancel', params.runId)
+          return toolResult(generation.cancel(context.sessionId, params.runId) as unknown as Record<string, unknown>, MEDIA_GENERATION_ACTIONS)
+        },
+      }),
+    )
+  }
+
   /** 稳定工具顺序把资源、公共工作流和 API 模型放在旧 profile 兼容入口之前。 */
-  const toolOrder = new Map<string, number>(MEDIA_TOOL_NAMES.map((name, index) => [name, index]))
+  const toolOrder = new Map<string, number>([...MEDIA_TOOL_NAMES, ...MEDIA_GENERATION_TOOL_NAMES].map((name, index) => [name, index]))
   tools.sort((left, right) => (toolOrder.get(left.name) ?? Number.MAX_SAFE_INTEGER)
     - (toolOrder.get(right.name) ?? Number.MAX_SAFE_INTEGER))
 
   /** schema 可见性和运行时守卫使用同一模式投影；未来新增工具默认不会进入列表。 */
-  const executionOnlyTools = ['media_execute_run', 'media_cancel_run', 'media_publish_workflow', 'media_save_local_workflow', 'media_save_profile', 'media_import_local_file']
+  const executionOnlyTools = ['media_execute_run', 'media_cancel_run', 'media_execute_generation', 'media_cancel_generation', 'media_publish_workflow', 'media_save_local_workflow', 'media_save_profile', 'media_import_local_file']
   const visible = tools.filter((tool) => (
     (isExecutionCapable || !executionOnlyTools.includes(tool.name))
     && (context.canvasAgentMode !== 'parent-orchestrated' || tool.name !== 'media_get_asset_file')

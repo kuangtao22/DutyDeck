@@ -22,6 +22,7 @@ export function createMediaPreloadApi(invoke: (channel: string, input?: unknown)
     mediaTestAudioGeneration: (input) => invoke(MEDIA_IPC_CHANNELS.TEST_AUDIO_GENERATION, input) as ReturnType<MediaPreloadApi['mediaTestAudioGeneration']>,
     mediaFetchAudioGenerationCatalog: (input) => invoke(MEDIA_IPC_CHANNELS.FETCH_AUDIO_GENERATION_CATALOG, input) as ReturnType<MediaPreloadApi['mediaFetchAudioGenerationCatalog']>,
     mediaGetImageGenerationSettings: () => invoke(MEDIA_IPC_CHANNELS.GET_IMAGE_GENERATION_SETTINGS) as ReturnType<MediaPreloadApi['mediaGetImageGenerationSettings']>,
+    mediaListUnifiedModels: () => invoke(MEDIA_IPC_CHANNELS.LIST_UNIFIED_MODELS) as ReturnType<MediaPreloadApi['mediaListUnifiedModels']>,
     mediaReplaceImageGenerationCatalog: (input) => invoke(MEDIA_IPC_CHANNELS.REPLACE_IMAGE_GENERATION_CATALOG, input) as ReturnType<MediaPreloadApi['mediaReplaceImageGenerationCatalog']>,
     mediaFetchImageGenerationCatalog: (input) => invoke(MEDIA_IPC_CHANNELS.FETCH_IMAGE_GENERATION_CATALOG, input) as ReturnType<MediaPreloadApi['mediaFetchImageGenerationCatalog']>,
     mediaRevealImageGenerationCredential: (profileId) => invoke(MEDIA_IPC_CHANNELS.REVEAL_IMAGE_GENERATION_CREDENTIAL, { profileId }) as ReturnType<MediaPreloadApi['mediaRevealImageGenerationCredential']>,

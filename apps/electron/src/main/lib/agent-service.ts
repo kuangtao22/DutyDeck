@@ -1053,6 +1053,7 @@ async function queuePreparedAgentMessage(
     resolved.input.mentionedServerOpsReferences,
     resolved.input.mentionedTodoIds,
     resolved.input.mentionedCalendarEventIds,
+    resolved.input.mentionedMediaModelRefs,
     resolved.references,
     resolved.input.mediaAttachments,
     resolved.canvasWorkspacePrompt,

@@ -42,6 +42,7 @@ import type {
   MediaRunEvent,
   MediaRunSnapshot,
   MediaSettingsSnapshot,
+  UnifiedMediaModelOption,
   ReplaceAudioGenerationCatalogRequest,
 } from '@proma/shared'
 import type { AudioGenerationConfigStore } from './audio-generation-config-store'
@@ -214,6 +215,8 @@ export interface MediaIpcOptions {
   importLocalAsset?(event: IpcMainInvokeEvent, projectId: string, kind: MediaKind): Promise<MediaAssetRecord | null>
   listAssets?(projectId: string): Promise<MediaAssetRecord[]>
   readAssetThumbnail?(projectId: string, asset: MediaAssetRef): Promise<{ bytes: Uint8Array; contentType: string }>
+  /** 返回脱敏后的统一媒体模型目录，供 Agent 输入框只读展示。 */
+  listUnifiedModels?(): UnifiedMediaModelOption[]
   getRun(projectId: string, runId: string): MediaRunSnapshot
   getJobRun?(projectId: string, jobId: string): MediaRunSnapshot | null
 }
@@ -340,6 +343,10 @@ export function registerMediaIpcHandlers(options: MediaIpcOptions): { dispose():
     } catch (error) {
       throwStableImageError(error, 'IMAGE_GENERATION_CONFIG_READ_FAILED')
     }
+  })
+  handle(MEDIA_IPC_CHANNELS.LIST_UNIFIED_MODELS, (value) => {
+    if (value !== undefined) throw new Error('MEDIA_IPC_INPUT_INVALID')
+    return options.listUnifiedModels?.() ?? []
   })
   handle(MEDIA_IPC_CHANNELS.REPLACE_IMAGE_GENERATION_CATALOG, (value) => {
     const input = parseReplaceImageGenerationCatalogRequest(value)
