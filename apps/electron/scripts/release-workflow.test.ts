@@ -101,6 +101,17 @@ function workflowCommands(job: WorkflowJob | undefined): string[] {
     .filter((command): command is string => typeof command === 'string') ?? []
 }
 
+/** 输入 Windows job，将聚合准备脚本展开为有序命令，返回用于检查依赖安装和打包先后关系的列表。 */
+function windowsPreparationCommands(job: WorkflowJob | undefined): string[] {
+  /** 正式发布使用的聚合入口；独立预检会把同样的步骤拆开执行。 */
+  const aggregateCommand = "bun run --filter='@proma/electron' package:prepare:win"
+  /** 聚合入口对应的实际脚本，缺失时保留为空并由调用处断言失败。 */
+  const aggregateScript = readElectronPackageMetadata().scripts?.['package:prepare:win'] ?? ''
+  return workflowCommands(job).flatMap((command) => (
+    command === aggregateCommand ? aggregateScript : command
+  ).split(' && ').map((step) => step.trim()))
+}
+
 /** 返回 Electron workspace 的包元数据。 */
 function readElectronPackageMetadata(): ElectronPackageMetadata {
   /** 当前测试脚本到 Electron package.json 的路径。 */
@@ -192,8 +203,14 @@ test('Windows 打包先安装并校验 win32-x64 Sharp 运行时依赖', () => {
 
   for (const source of [readReleaseWorkflow(), readWindowsBuildWorkflow()]) {
     /** 当前工作流 Windows job 的全部 shell 命令。 */
-    const commands = workflowCommands((Bun.YAML.parse(source) as ReleaseWorkflow).jobs?.['build-windows-x64'])
-    expect(commands).toContain("bun run --filter='@proma/electron' package:prepare:win")
+    const commands = windowsPreparationCommands((Bun.YAML.parse(source) as ReleaseWorkflow).jobs?.['build-windows-x64'])
+    expect(commands).toContain('bun run rebuild:node-pty')
+    expect(commands).toContain(installWindowsDependencies)
+    expect(commands).toContain(syncWindowsDependencies)
+    expect(commands).toContain('bun run builder --win --x64 --publish never')
+    expect(commands.indexOf('bun run rebuild:node-pty')).toBeLessThan(commands.indexOf(installWindowsDependencies))
+    expect(commands.indexOf(installWindowsDependencies)).toBeLessThan(commands.indexOf(syncWindowsDependencies))
+    expect(commands.indexOf(syncWindowsDependencies)).toBeLessThan(commands.indexOf('bun run builder --win --x64 --publish never'))
     expect(commands).not.toContain("bun run --filter='@proma/electron' package:prepare")
   }
 })
@@ -290,8 +307,8 @@ test('稳定目录 helper 进入三平台资源并纳入 macOS 签名', () => {
 test('Windows 构建与发布在打包前执行稳定目录原生回归', () => {
   /** Windows 上必须真实运行的 helper/host 定向测试命令。 */
   const stableDirectoryTests = 'bun test apps/electron/src/main/lib/stable-directory-native-host.test.ts apps/electron/scripts/build-stable-directory-native.test.ts'
-  /** 完成应用构建并清理 workspace 开发依赖的资源准备命令。 */
-  const packagePrepare = "bun run --filter='@proma/electron' package:prepare:win"
+  /** Windows 准备流程的首个构建步骤；原生测试必须在此之前完成。 */
+  const packagePrepare = 'bun run build'
   /** 独立 Windows 构建工作流。 */
   const buildWorkflow = Bun.YAML.parse(readWindowsBuildWorkflow()) as ReleaseWorkflow
   /** 正式发布工作流。 */
@@ -299,8 +316,9 @@ test('Windows 构建与发布在打包前执行稳定目录原生回归', () => 
 
   for (const workflow of [buildWorkflow, releaseWorkflow]) {
     /** 当前 Windows job 的全部 shell 命令。 */
-    const commands = workflowCommands(workflow.jobs?.['build-windows-x64'])
+    const commands = windowsPreparationCommands(workflow.jobs?.['build-windows-x64'])
     expect(commands).toContain(stableDirectoryTests)
+    expect(commands).toContain(packagePrepare)
     expect(commands.indexOf(stableDirectoryTests)).toBeLessThan(commands.indexOf(packagePrepare))
   }
 })
