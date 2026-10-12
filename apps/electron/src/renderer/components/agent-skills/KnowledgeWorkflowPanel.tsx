@@ -20,6 +20,8 @@ export interface KnowledgeWorkflowPanelProps {
   error: string | null
   onConfirm: (groups: KnowledgePlanSelection[]) => void
   onPause: (paused: boolean) => void
+  /** 仅重新处理用户选中的大纲项。 */
+  onRetryItem?: (itemId: string) => void
   onSelectEntryId: (entryId: string, expectedRevision?: string) => void
   onRequestAdjustment: (instruction: string) => void
 }
@@ -136,6 +138,7 @@ function KnowledgeWorkflowPanelView({
   error,
   onConfirm,
   onPause,
+  onRetryItem,
   onSelectEntryId,
   onRequestAdjustment,
   draft,
@@ -155,6 +158,23 @@ function KnowledgeWorkflowPanelView({
   }, [workflow.outline])
   const selectedGroups = proposal ? buildKnowledgePlanSelection(proposal, selectedIds, titles) : []
   const busy = pendingAction !== null
+  /** 只有宿主确认排队或运行时才允许显示暂停动作。 */
+  const running = workflow.execution?.status === 'running' || workflow.execution?.status === 'queued'
+  /** 旧工作流不据 paused=false 推断模型还在运行。 */
+  const executionLabel = workflow.execution ? ({ queued: '等待执行', running: '正在生成', paused: '已暂停', blocked: '已阻塞', interrupted: '已中断', finished: '本次处理完成' }[workflow.execution.status]) : workflow.paused ? '已暂停' : '未运行'
+  /** 将宿主稳定错误分类转为用户可以采取行动的说明。 */
+  const executionReasons: Record<string, string> = {
+    budget_exhausted: '本段额度已用完，可继续处理剩余项',
+    dispatch_failed: '任务准备或提交失败，可重试继续处理',
+    queue_cancelled: '排队任务已取消，可继续处理剩余项',
+    process_restarted: '应用重启中断了任务，已保存正文保留，可继续处理',
+    paused: '已暂停后续处理',
+    user_stopped: '已停止本次处理，可继续剩余项',
+    run_failed: '本轮处理失败，已保存正文保留，可重试',
+    no_progress: '本轮没有新增依据或正文，请检查条目缺口后重试',
+  }
+  /** 未知分类不直接暴露内部代码。 */
+  const executionReason = workflow.execution?.reason ? executionReasons[workflow.execution.reason] ?? '处理已停止，请检查条目详情后重试' : undefined
   /** 汇总已确认大纲状态，说明当前生成进度。 */
   const outlineStatus = React.useMemo(() => {
     const items = workflow.outline?.items ?? []
@@ -166,6 +186,16 @@ function KnowledgeWorkflowPanelView({
       missing: items.filter((item) => item.status === 'missing').length,
     }
   }, [workflow.outline])
+  /** 只对已保存正文统计内容准入，文件完成不等于事实可自动使用。 */
+  const admissionStatus = React.useMemo(() => {
+    const saved = (workflow.outline?.items ?? []).filter((item) => item.status === 'ready' || item.status === 'partial')
+    const statuses = saved.map((item) => entries.find((entry) => entry.id === item.entryId)?.admission?.status)
+    return {
+      eligible: statuses.filter((status) => status === 'eligible').length,
+      needsEvidence: statuses.filter((status) => status === 'needs_evidence').length,
+      unassessed: statuses.filter((status) => status !== 'eligible' && status !== 'needs_evidence').length,
+    }
+  }, [workflow.outline, entries])
 
   return (
     <section className="space-y-3 border-b border-border bg-muted/10 px-3 py-3" aria-label="知识库生成流程">
@@ -217,7 +247,7 @@ function KnowledgeWorkflowPanelView({
                     <div className="space-y-1" aria-label={`${group.title} 来源`}>
                       {group.sources.map((source) => {
                         const description = describePlanSource(source, entries)
-                        return <p key={`${source.entryId}:${source.revision}`} className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground"><span className="break-all">{description.label}</span><Badge variant="outline">{description.status}</Badge></p>
+                        return <div key={`${source.entryId}:${source.revision}`} className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground"><span className="break-all">{description.label}</span><Badge variant="outline">{description.status}</Badge></div>
                       })}
                     </div>
                   )}
@@ -255,22 +285,24 @@ function KnowledgeWorkflowPanelView({
               <p className="truncate text-xs text-muted-foreground">{workflow.approved.rootRelativePath} · 已确认 {workflow.approved.groups.length} 个分组</p>
               {workflow.outline && (
                 <p className="mt-1 text-xs text-muted-foreground">
-                  共 {outlineStatus.total} 项
+                  已保存 {outlineStatus.ready + outlineStatus.partial}/{outlineStatus.total} 篇 · 共 {outlineStatus.total} 项
                   {outlineStatus.ready > 0 && ` · ${outlineStatus.ready} 项已生成`}
                   {outlineStatus.partial > 0 && ` · ${outlineStatus.partial} 项部分完成`}
                   {outlineStatus.pending > 0 && ` · ${outlineStatus.pending} 项等待生成`}
-                  {outlineStatus.missing > 0 && ` · ${outlineStatus.missing} 项缺少依据`}
+                  {outlineStatus.missing > 0 && ` · ${outlineStatus.missing} 项文件已删除`}
                 </p>
               )}
+              {workflow.outline && <p className="mt-1 text-xs text-muted-foreground">内容达标 {admissionStatus.eligible} 篇 · 待补依据 {admissionStatus.needsEvidence} 篇 · 尚未评估或已失效 {admissionStatus.unassessed} 篇</p>}
             </div>
-            <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => onPause(!workflow.paused)}>
-              {pendingAction === 'pause-workflow' ? <Loader2 className="animate-spin" aria-hidden="true" /> : workflow.paused ? <Play aria-hidden="true" /> : <Pause aria-hidden="true" />}
-              {workflow.paused ? '继续生成' : '暂停生成'}
+            <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => onPause(running)}>
+              {pendingAction === 'pause-workflow' ? <Loader2 className="animate-spin" aria-hidden="true" /> : running ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
+              {running ? '暂停生成' : '继续处理'}
             </Button>
           </div>
+          <p className="text-xs text-muted-foreground" role="status">{executionLabel}{executionReason ? ` · ${executionReason}` : ''}</p>
           {workflow.paused && <p className="text-xs text-amber-600 dark:text-amber-400">生成已暂停；已写入文件仍可阅读，后续 Agent 发布会被拒绝。</p>}
           {!workflow.outline ? (
-            <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">正在等待 Agent 保存大纲。</p>
+            <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">尚未保存大纲；启动处理后将在此显示。</p>
           ) : (
               <div className="space-y-3 border-t border-border/70 px-3 py-3">
                 {outlineGroups.map(([folder, items]) => (
@@ -280,14 +312,39 @@ function KnowledgeWorkflowPanelView({
                       {items.map((item) => {
                         const entry = item.entryId ? entries.find((candidate) => candidate.id === item.entryId) : undefined
                         const readable = Boolean(item.entryId) && (item.status === 'ready' || item.status === 'partial')
-                        const statusLabel = item.status === 'ready' ? '已生成' : item.status === 'partial' ? '部分完成' : item.status === 'missing' ? '缺少依据' : '等待生成'
-                        return readable && item.entryId ? (
-                          <button key={item.id} type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`打开${item.title}`} onClick={() => onSelectEntryId(item.entryId!, entry?.revision)}>
-                            <FileText className="size-3.5 shrink-0" aria-hidden="true" /><span className="min-w-0 flex-1 truncate">{item.title}</span><Badge variant={item.status === 'ready' ? 'secondary' : 'outline'}>{statusLabel}</Badge>
-                          </button>
-                        ) : (
-                          <div key={item.id} className="flex items-center gap-2 px-2 py-1.5 text-xs text-muted-foreground">
-                            <FileText className="size-3.5 shrink-0" aria-hidden="true" /><span className="min-w-0 flex-1 truncate">{item.title}</span><Badge variant="outline">{statusLabel}</Badge>
+                        const statusLabel = item.status === 'ready' ? '已生成' : item.status === 'partial' ? '部分完成' : item.status === 'missing' ? '文件已删除' : '等待生成'
+                        /** 内容准入独立于文件是否写入成功。 */
+                        const admissionLabel = entry?.admission?.status === 'eligible' ? '内容达标' : entry?.admission?.status === 'needs_evidence' ? '待补依据' : entry?.admission?.status === 'invalidated' ? '评估已失效' : '尚未评估'
+                        /** 单项失败说明由宿主持久化，关闭弹窗不会丢失。 */
+                        const failure = workflow.execution?.failures[item.id]
+                        return (
+                          <div key={item.id} className="rounded border border-border/50 p-2 text-xs">
+                            <div className="flex items-center gap-2">
+                              <FileText className="size-3.5 shrink-0" aria-hidden="true" />
+                              {readable && item.entryId ? <button type="button" className="min-w-0 flex-1 truncate text-left hover:underline focus-visible:ring-2 focus-visible:ring-ring" aria-label={`打开${item.title}`} onClick={() => onSelectEntryId(item.entryId!, entry?.revision)}>{item.title}</button> : <span className="min-w-0 flex-1 truncate">{item.title}</span>}
+                              <Badge variant="outline">{statusLabel}</Badge>
+                            </div>
+                            <p className="mt-1 text-muted-foreground">{admissionLabel}</p>
+                            {failure && <p className="mt-1 text-destructive">{failure.message}</p>}
+                            <details className="mt-2 text-muted-foreground">
+                              <summary className="cursor-pointer">用途、来源与内容评估</summary>
+                              <div className="mt-2 space-y-1 break-words">
+                                <p>用途：{item.summary}</p>
+                                {entry?.admission?.purpose && <p>业务价值：{entry.admission.purpose}</p>}
+                                {entry?.admission && <>
+                                  <p>内容性质：{({ fact: '事实', rule: '业务规则', decision: '决策', procedure: '操作流程', plan: '计划', hypothesis: '假设', history: '历史记录' })[entry.admission.contentType]}</p>
+                                  <p>重要程度：{entry.admission.importance === 'high' ? '重要' : '普通'}</p>
+                                  {entry.admission.asOf && <p>截至时间：{entry.admission.asOf}</p>}
+                                </>}
+                                <p>适用范围：{item.scope || entry?.admission?.scope || '尚未说明'}</p>
+                                <p>章节：{item.sections.join('、') || '尚未规划'}</p>
+                                <p>来源：{item.sources?.map((source) => `${describePlanSource(source, entries).label}（${describePlanSource(source, entries).status}）`).join('；') || '尚未登记逐项来源'}</p>
+                                <p>缺口：{item.gaps?.join('；') || '暂无已登记缺口'}</p>
+                                {entry?.admission?.issues.map((issue, index) => <p key={index}>待核实：{issue}</p>)}
+                                {entry?.admission?.coverage.map((coverage, index) => <p key={index}>{coverage.topic}：{coverage.reason}</p>)}
+                              </div>
+                            </details>
+                            {onRetryItem && (failure || item.status !== 'ready' || admissionLabel !== '内容达标') && <Button type="button" variant="ghost" size="sm" disabled={busy || running} onClick={() => onRetryItem(item.id)}>仅重试此项</Button>}
                           </div>
                         )
                       })}

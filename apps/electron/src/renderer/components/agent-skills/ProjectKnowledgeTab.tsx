@@ -45,6 +45,32 @@ import { KnowledgeFileTree } from './KnowledgeFileTree'
 import type { KnowledgePlanSelection } from './KnowledgeWorkflowPanel'
 import { startKnowledgePolling, waitForKnowledgeScan } from './project-knowledge-poll'
 
+/** 扫描完成后沿用统一会话选择入口；正文生成必须携带宿主执行参数。 */
+interface KnowledgeWorkflowDispatch {
+  (createPrompt: (sessionId: string) => AgentPendingPrompt, isCurrent: () => boolean, sessionMode: 'new' | 'continue', execution?: { planRevision: number; itemIds?: string[] }): Promise<void>
+}
+
+/**
+ * 根据扫描后的权威工作流选择规划或正文执行。
+ * @param snapshot 已结束扫描的快照；新提案存在时仍须先规划确认。
+ * @param dispatch 统一会话选择与宿主派发入口。
+ * @param isCurrent 当前项目和操作代次检查。
+ */
+export async function dispatchScannedKnowledge(snapshot: KnowledgeSnapshot, dispatch: KnowledgeWorkflowDispatch, isCurrent: () => boolean): Promise<void> {
+  if (!isCurrent()) return
+  /** 扫描部分失败只影响可用来源，保留明确说明供规划使用。 */
+  const scanMessage = snapshot.scan.status === 'failed'
+    ? snapshot.scan.message || '部分来源扫描失败，以下提炼仅基于当前可用来源。'
+    : snapshot.scan.skipped > 0 ? snapshot.scan.message : undefined
+  /** 已批准且无待审提案时直接进入宿主管理的有界执行。 */
+  const approvedPlan = snapshot.workflow?.approved
+  if (approvedPlan && !snapshot.workflow?.proposal) {
+    await dispatch((sessionId) => buildKnowledgeGenerationPendingPrompt(sessionId, approvedPlan.revision), isCurrent, 'continue', { planRevision: approvedPlan.revision })
+  } else {
+    await dispatch((sessionId) => buildKnowledgeMaintenancePendingPrompt(sessionId, scanMessage), isCurrent, 'new')
+  }
+}
+
 type ProjectKnowledgeView = 'knowledge' | 'sources' | 'memory'
 type ProjectKnowledgeScope = 'knowledge' | 'sources'
 type KnowledgeCategoryFilter = KnowledgeCategory | 'all'
@@ -806,6 +832,7 @@ export function ProjectKnowledgeTab({
         query,
         category: category === 'all' ? undefined : category,
         scope,
+        includeUnassessed: true,
         offset: 0,
         limit: KNOWLEDGE_PAGE_SIZE,
       }).then((nextResult) => {
@@ -845,17 +872,39 @@ export function ProjectKnowledgeTab({
     }
   }, [snapshot?.initialized, snapshot?.scan.status, workspaceId, actionPending, knowledgeActionPending])
 
+  /** 宿主通知仅触发当前项目刷新，迟到响应不能倒退任务代次或快照版本。 */
+  React.useEffect(() => {
+    if (!workspaceId) return
+    let disposed = false
+    const unsubscribe = window.electronAPI.onProjectKnowledgeChanged((event) => {
+      if (event.workspaceId !== workspaceId || disposed) return
+      const generation = snapshotGenerationRef.current
+      void window.electronAPI.getProjectKnowledgeSnapshot(workspaceId).then((nextSnapshot) => {
+        if (disposed || generation !== snapshotGenerationRef.current) return
+        setSnapshot((current) => {
+          if (current && (current.revision > nextSnapshot.revision || (current.workflow?.execution?.generation ?? 0) > (nextSnapshot.workflow?.execution?.generation ?? 0))) return current
+          return nextSnapshot
+        })
+      }).catch(() => { /* 低频轮询补偿通知读取失败，避免事件覆盖操作错误。 */ })
+    })
+    return () => { disposed = true; unsubscribe() }
+  }, [workspaceId])
+
   /** 按入口新建或续接项目整理会话，并防止覆盖尚未消费的输入。 */
   const dispatchKnowledgeWorkflow = React.useCallback(async (
     createPrompt: (sessionId: string) => AgentPendingPrompt,
     isCurrent: () => boolean,
     /** 更新入口使用 new；清单调整、确认和恢复使用 continue。 */
     sessionMode: 'new' | 'continue' = 'continue',
+    /** 正文生成由宿主入队，renderer 不重复发送 prompt。 */
+    execution?: { planRevision: number; itemIds?: string[] },
   ): Promise<void> => {
     if (!workspaceId || !isCurrent()) return
     if (store.get(agentPendingPromptAtom)) throw new Error('已有 Agent 输入任务尚未处理，请稍后重试')
     const currentSessions = store.get(agentSessionsAtom)
-    const preferredSessionId = (sessionMode === 'continue' ? knowledgeWorkflowSessionIdRef.current : null) ?? sessionId ?? currentAgentSessionId
+    /** 续接同版计划才复用持久任务会话；新计划确认沿本次规划会话。 */
+    const persistedSessionId = execution?.planRevision === snapshot?.workflow?.execution?.planRevision ? snapshot?.workflow?.execution?.sessionId : undefined
+    const preferredSessionId = (sessionMode === 'continue' ? persistedSessionId ?? knowledgeWorkflowSessionIdRef.current : null) ?? sessionId ?? currentAgentSessionId
     const preferredSession = currentSessions.find((candidate) => candidate.id === preferredSessionId)
     let targetSessionId = sessionMode === 'new' ? null : selectKnowledgeMaintenanceSession(currentSessions, preferredSessionId, workspaceId)
     if (!targetSessionId) {
@@ -871,10 +920,16 @@ export function ProjectKnowledgeTab({
     if (!targetSessionId) throw new Error('无法创建项目知识整理会话')
     if (store.get(agentPendingPromptAtom)) throw new Error('已有 Agent 输入任务尚未处理，请稍后重试')
     knowledgeWorkflowSessionIdRef.current = targetSessionId
-    setPendingPrompt(createPrompt(targetSessionId))
+    if (execution) {
+      const nextSnapshot = await window.electronAPI.startProjectKnowledgeExecution({ workspaceId, sessionId: targetSessionId, ...execution })
+      if (!isCurrent()) return
+      setSnapshot((current) => current && current.revision > nextSnapshot.revision ? current : nextSnapshot)
+    } else {
+      setPendingPrompt(createPrompt(targetSessionId))
+    }
     const targetSession = store.get(agentSessionsAtom).find((candidate) => candidate.id === targetSessionId)
     openSession('agent', targetSessionId, targetSession?.title ?? '项目知识整理')
-  }, [createAgent, currentAgentSessionId, openSession, sessionId, setPendingPrompt, store, workspaceId])
+  }, [createAgent, currentAgentSessionId, openSession, sessionId, setPendingPrompt, store, workspaceId, snapshot?.workflow?.execution?.sessionId, snapshot?.workflow?.execution?.planRevision])
 
   /** 发起扫描；知识页随后调度 Agent 提炼，来源页只更新来源索引。 */
   const handleScan = React.useCallback(async (): Promise<void> => {
@@ -897,16 +952,7 @@ export function ProjectKnowledgeTab({
           onSnapshot: (currentSnapshot) => { setSnapshot(currentSnapshot) },
         })
         if (generation !== snapshotGenerationRef.current) return
-        const scanMessage = completedSnapshot.scan.status === 'failed'
-          ? completedSnapshot.scan.message || '部分来源扫描失败，以下提炼仅基于当前可用来源。'
-          : completedSnapshot.scan.skipped > 0
-            ? completedSnapshot.scan.message
-            : undefined
-        const approvedPlan = completedSnapshot.workflow?.approved
-        const createPrompt = approvedPlan && !completedSnapshot.workflow?.proposal
-          ? (targetSessionId: string) => buildKnowledgeGenerationPendingPrompt(targetSessionId, approvedPlan.revision)
-          : (targetSessionId: string) => buildKnowledgeMaintenancePendingPrompt(targetSessionId, scanMessage)
-        await dispatchKnowledgeWorkflow(createPrompt, () => generation === snapshotGenerationRef.current, 'new')
+        await dispatchScannedKnowledge(completedSnapshot, dispatchKnowledgeWorkflow, () => generation === snapshotGenerationRef.current)
       }
     } catch (nextError) {
       if (generation !== snapshotGenerationRef.current) return
@@ -976,6 +1022,7 @@ export function ProjectKnowledgeTab({
         query,
         category: category === 'all' ? undefined : category,
         scope,
+        includeUnassessed: true,
         offset: result.nextOffset,
         limit: KNOWLEDGE_PAGE_SIZE,
       })
@@ -1120,16 +1167,21 @@ export function ProjectKnowledgeTab({
       }),
     )
     if (!nextSnapshot?.workflow?.approved || generation !== knowledgeActionGenerationRef.current) return
+    setKnowledgeActionPending('start-execution')
     try {
       const approvedRevision = nextSnapshot.workflow.approved.revision
       await dispatchKnowledgeWorkflow(
         (targetSessionId) => buildKnowledgeGenerationPendingPrompt(targetSessionId, approvedRevision),
         () => generation === knowledgeActionGenerationRef.current,
+        'continue',
+        { planRevision: approvedRevision },
       )
     } catch (nextError) {
       if (generation === knowledgeActionGenerationRef.current) {
         setKnowledgeActionError(knowledgeErrorMessage(nextError, '知识范围已确认，但提交生成任务失败'))
       }
+    } finally {
+      if (generation === knowledgeActionGenerationRef.current) setKnowledgeActionPending(null)
     }
   }, [dispatchKnowledgeWorkflow, executeKnowledgeAction, snapshot?.workflow?.proposal, workspaceId])
 
@@ -1163,19 +1215,45 @@ export function ProjectKnowledgeTab({
       () => window.electronAPI.pauseProjectKnowledgeWorkflow({ workspaceId, paused }),
     )
     if (paused || !nextSnapshot?.workflow?.approved || generation !== knowledgeActionGenerationRef.current) return
+    setKnowledgeActionPending('start-execution')
     try {
       /** 恢复权限后主动续接已有大纲，后台没有隐式模型队列。 */
       const approvedRevision = nextSnapshot.workflow.approved.revision
       await dispatchKnowledgeWorkflow(
         (targetSessionId) => buildKnowledgeGenerationPendingPrompt(targetSessionId, approvedRevision),
         () => generation === knowledgeActionGenerationRef.current,
+        'continue',
+        { planRevision: approvedRevision },
       )
     } catch (nextError) {
       if (generation === knowledgeActionGenerationRef.current) {
         setKnowledgeActionError(knowledgeErrorMessage(nextError, '已解除暂停，但提交继续任务失败'))
       }
+    } finally {
+      if (generation === knowledgeActionGenerationRef.current) setKnowledgeActionPending(null)
     }
   }, [dispatchKnowledgeWorkflow, executeKnowledgeAction, workspaceId])
+
+  /** 只对用户指定条目授予新一段执行额度，复用持久化整理会话。 */
+  const handleRetryKnowledgeItem = React.useCallback(async (itemId: string): Promise<void> => {
+    const approvedRevision = snapshot?.workflow?.approved?.revision
+    if (approvedRevision === undefined) return
+    const generation = ++knowledgeActionGenerationRef.current
+    setKnowledgeActionPending(`retry:${itemId}`)
+    setKnowledgeActionError(null)
+    try {
+      await dispatchKnowledgeWorkflow(
+        (targetSessionId) => buildKnowledgeGenerationPendingPrompt(targetSessionId, approvedRevision),
+        () => generation === knowledgeActionGenerationRef.current,
+        'continue',
+        { planRevision: approvedRevision, itemIds: [itemId] },
+      )
+    } catch (nextError) {
+      if (generation === knowledgeActionGenerationRef.current) setKnowledgeActionError(knowledgeErrorMessage(nextError, '重试知识条目失败'))
+    } finally {
+      if (generation === knowledgeActionGenerationRef.current) setKnowledgeActionPending(null)
+    }
+  }, [dispatchKnowledgeWorkflow, snapshot?.workflow?.approved?.revision])
 
   /** 按用户所见 revision 审核旧候选；正式文档只能通过大纲维护，不能派发旧审核 IPC。 */
   const handleReviewEntry = React.useCallback(async (
@@ -1213,6 +1291,7 @@ export function ProjectKnowledgeTab({
       pendingAction={combinedKnowledgeAction}
       error={knowledgeActionError}
       onConfirm={(groups) => { void handleConfirmKnowledgePlan(groups) }}
+      onRetryItem={(itemId) => { void handleRetryKnowledgeItem(itemId) }}
       onPause={(paused) => { void handlePauseKnowledgeWorkflow(paused) }}
       onSelectEntryId={(entryId, expectedRevision) => { void handleSelectEntryById(entryId, expectedRevision) }}
       onRequestAdjustment={(instruction) => { void handleRequestKnowledgePlanAdjustment(instruction) }}

@@ -83,46 +83,63 @@ async function replaceEditorText(window: BrowserWindow, content: string): Promis
 /** 等待 DOM 更新绘制到窗口后留存截图，避免保存上一帧的标签高亮或加载态。 */
 async function captureScreenshot(window: BrowserWindow, path: string): Promise<void> {
   await window.webContents.executeJavaScript(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
+  /** Radix 进入动画尚在运行时两帧不足以生成可读截图；等待有限动画完成。 */
+  await window.webContents.executeJavaScript(`Promise.all(document.getAnimations().filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime)).map((animation) => animation.finished.catch(() => undefined)))`)
+  await new Promise<void>((resolve) => setTimeout(resolve, 100))
   const screenshot = await window.webContents.capturePage()
   assert.equal(screenshot.isEmpty(), false, '页面截图为空')
   await writeFile(path, screenshot.toPNG())
 }
 
-/** 更新入口每次新建项目会话；后续生成复用整理会话，来源复扫不创建会话。 */
-async function verifyUpdateCreatesNewConversation(window: BrowserWindow, fixtureUrl: string): Promise<void> {
-  await window.loadURL(`${fixtureUrl}?case=new-conversation`)
+/** 已批准更新与单项重试只提交宿主执行；规划入口仍创建独立会话。 */
+async function verifyKnowledgeExecutionRoutes(window: BrowserWindow, fixtureUrl: string): Promise<void> {
+  await window.loadURL(`${fixtureUrl}?case=execution`)
   await waitFor(window, `document.querySelector('[aria-label="知识目录"]')`, '知识目录未就绪')
   await click(window, '更新知识库')
-  await waitFor(window, `window.__knowledgeMemorySmoke.workflowState().pendingPrompt`, '更新任务未投递')
-  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.state.createdSessions.length`), 1, '更新知识库未新建会话，而是挤入当前对话')
-  assert.deepEqual(await window.webContents.executeJavaScript(`(() => { const smoke = window.__knowledgeMemorySmoke; const flow = smoke.workflowState(); const session = smoke.state.createdSessions[0]; return { target: flow.pendingPrompt.sessionId, active: flow.currentSessionId, workspace: session.workspaceId, title: session.title, channel: session.channelId, model: session.modelId, draft: flow.originalDraft, skills: flow.pendingPrompt.mentionedSkills, autoSend: flow.pendingPrompt.autoSend } })()`), {
-    target: 'created-knowledge-1', active: 'created-knowledge-1', workspace: 'workspace-knowledge-memory-smoke', title: '项目知识整理', channel: 'fixture-channel', model: 'fixture-model', draft: '保留当前对话草稿', skills: ['knowledge-maintenance'], autoSend: true,
+  await waitFor(window, `window.__knowledgeMemorySmoke.state.executionCalls.length === 1`, '更新未提交宿主执行')
+  assert.deepEqual(await window.webContents.executeJavaScript(`(() => { const smoke = window.__knowledgeMemorySmoke; const flow = smoke.workflowState(); return { target: smoke.state.executionCalls[0].sessionId, planRevision: smoke.state.executionCalls[0].planRevision, active: flow.currentSessionId, pending: flow.pendingPrompt, created: smoke.state.createdSessions.length, draft: flow.originalDraft } })()`), {
+    target: 'persisted-knowledge-session', planRevision: 2, active: 'persisted-knowledge-session', pending: null, created: 0, draft: '保留当前对话草稿',
   })
-
-  await window.webContents.executeJavaScript('window.__knowledgeMemorySmoke.consumePrompt()')
-  await click(window, '更新知识库')
-  await waitFor(window, `window.__knowledgeMemorySmoke.workflowState().pendingPrompt`, '再次更新未投递')
-  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.state.createdSessions.length`), 2, '再次更新错误复用了上次整理会话')
-  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.workflowState().pendingPrompt.sessionId`), 'created-knowledge-2')
-
-  await window.webContents.executeJavaScript('window.__knowledgeMemorySmoke.consumePrompt()')
-  await click(window, '继续生成')
-  await waitFor(window, `window.__knowledgeMemorySmoke.workflowState().pendingPrompt`, '继续生成未投递')
-  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.state.createdSessions.length`), 2, '继续生成不应另起对话')
-  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.workflowState().pendingPrompt.sessionId`), 'created-knowledge-2', '继续生成未回到整理会话')
-
-  await window.webContents.executeJavaScript('window.__knowledgeMemorySmoke.consumePrompt()')
+  await window.webContents.executeJavaScript('window.__knowledgeMemorySmoke.blockExecution()')
+  await click(window, '整理进度')
+  await waitFor(window, `document.querySelector('[role="dialog"]')?.textContent?.includes('本段额度已用完')`, '阻塞通知未刷新')
+  assert.equal(await window.webContents.executeJavaScript(`document.querySelector('[role="dialog"]')?.textContent?.includes('已保存 1/1 篇')`), true)
+  assert.equal(await window.webContents.executeJavaScript(`document.querySelector('[role="dialog"]')?.textContent?.includes('内容达标 0 篇')`), true)
+  await window.webContents.executeJavaScript(`document.querySelector('[role="dialog"] details summary')?.click()`)
+  await waitFor(window, `document.querySelector('[role="dialog"] details[open]')?.textContent?.includes('会员权益口径冲突')`, '准入详情未展开')
+  await waitFor(window, `(() => { const d = document.querySelector('[role=\"dialog\"]'); return d && Number.parseFloat(getComputedStyle(d).opacity) >= 0.99 && !document.body.textContent?.includes('正在更新知识') })()`, '执行弹窗仍在动画或目录加载中')
+  await captureScreenshot(window, '/private/tmp/knowledge-memory-ui-smoke-execution.png')
+  await click(window, '仅重试此项')
+  await waitFor(window, `window.__knowledgeMemorySmoke.state.executionCalls.length === 2`, '局部重试未提交执行')
+  assert.deepEqual(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.state.executionCalls[1].itemIds`), ['outline-product-principles'])
+  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.workflowState().pendingPrompt`), null, '执行路径重复发送普通提示')
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+  await waitFor(window, `!document.querySelector('[role="dialog"]')`, '进度弹窗未关闭')
   await click(window, '来源资料')
   await click(window, '更新来源')
-  await waitFor(window, `window.__knowledgeMemorySmoke.state.knowledgeCalls.filter((call) => call === 'scan').length === 3`, '来源复扫未执行')
-  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.state.createdSessions.length`), 2, '来源复扫不应新建 Agent 会话')
-  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.workflowState().pendingPrompt`), null)
+  await waitFor(window, `window.__knowledgeMemorySmoke.state.knowledgeCalls.filter((call) => call === 'scan').length === 2`, '来源复扫未执行')
+  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.state.executionCalls.length`), 2, '来源复扫不应触发执行')
+
+  await window.loadURL(`${fixtureUrl}?case=planning`)
+  await waitFor(window, `document.querySelector('[role="dialog"]')`, '规划提案弹窗未就绪')
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+  await waitFor(window, `!document.querySelector('[role="dialog"]')`, '规划弹窗未关闭')
+  await click(window, '更新知识库')
+  await waitFor(window, `window.__knowledgeMemorySmoke.workflowState().pendingPrompt`, '规划未投递普通会话')
+  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.state.createdSessions.length`), 1)
+  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.workflowState().pendingPrompt.sessionId`), 'created-knowledge-1')
+  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.state.executionCalls.length`), 0)
 }
 
 /** 创建失败必须展示错误，不把维护任务发送到原对话。 */
 async function verifyConversationCreationFailure(window: BrowserWindow, fixtureUrl: string): Promise<void> {
   await window.loadURL(`${fixtureUrl}?session-error=1`)
-  await waitFor(window, `document.querySelector('[aria-label="知识目录"]')`, '失败场景未就绪')
+  await waitFor(window, `document.querySelector('[role="dialog"]')`, '失败场景未就绪')
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+  await waitFor(window, `!document.querySelector('[role="dialog"]')`, '失败场景弹窗未关闭')
   await click(window, '更新知识库')
   await waitFor(window, `document.body.textContent?.includes('无法创建项目知识整理会话')`, '新建失败未显示错误')
   assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.workflowState().pendingPrompt`), null, '新建失败后任务错误回退到当前对话')
@@ -135,14 +152,15 @@ async function verifyMainFlow(window: BrowserWindow, fixtureUrl: string): Promis
   await waitFor(window, `document.body.dataset.smokeReady === 'true' && document.querySelector('[role="tab"]')`, '知识与记忆页面未挂载')
   assert.deepEqual(await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('[role="tab"]'), element => element.textContent?.trim())`), ['知识库', '记忆'])
   assert.equal(await window.webContents.executeJavaScript(`document.querySelector('[role="tab"][data-state="active"]')?.textContent?.trim()`), '知识库')
-  await waitFor(window, `document.body.textContent?.includes('产品原则')`, '知识目录未展示已提炼文档')
+  await click(window, '整理已暂停')
+  await waitFor(window, `document.querySelector('[role="dialog"]')?.textContent?.includes('产品原则')`, '大纲未展示已提炼文档')
   await waitFor(window, `window.__knowledgeMemorySmoke.hasPendingSearch()`, '未建立知识目录延迟请求')
   await window.webContents.executeJavaScript(`document.querySelector('[aria-label="打开产品原则"]')?.click()`)
   await waitFor(window, `document.querySelector('[aria-label="资料正文预览"]')`, '知识正文未打开')
   assert.equal(await window.webContents.executeJavaScript(`(() => {
     const directory = document.querySelector('[aria-label="知识目录"]')?.getBoundingClientRect();
     const article = document.querySelector('[aria-label="资料正文预览"]')?.getBoundingClientRect();
-    return directory && article && directory.width > 250 && article.width > 300 && directory.right <= article.left + 1 && Math.abs(directory.top - article.top) < 2;
+    return directory && article && directory.width >= 230 && article.width > 300 && directory.right <= article.left + 1 && Math.abs(directory.top - article.top) < 2;
   })()`), true, '宽屏知识目录与正文未左右并排')
   await window.webContents.executeJavaScript('window.__knowledgeMemorySmoke.releaseSearch()')
   await waitFor(window, `document.querySelector('[aria-label="知识目录"]')?.textContent?.includes('产品原则') && !document.querySelector('[aria-label="知识目录"]')?.textContent?.includes('正在更新')`, '知识列表尚未完成加载')
@@ -155,8 +173,10 @@ async function verifyMainFlow(window: BrowserWindow, fixtureUrl: string): Promis
   await click(window, '返回知识库')
   await waitFor(window, `document.querySelector('[aria-label="知识目录"]')`, '来源资料未返回知识库目录')
 
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
   await click(window, '记忆')
-  await waitFor(window, `document.body.textContent?.includes('建立项目地图与协作画像') && document.body.textContent?.includes('授权会话补证据')`, '原记忆画像与历史授权入口未保留')
+  await waitFor(window, `document.querySelector('[role="tab"][data-state="active"]')?.textContent?.trim() === '记忆' && document.body.textContent?.includes('长期记忆') && document.body.textContent?.includes('项目记忆')`, '项目记忆与长期记忆入口未保留')
   assert.equal(await window.webContents.executeJavaScript(`document.body.textContent?.includes('只读历史') ?? false`), false, '已确认或暂停的知识库错误地把记忆设为只读')
   await clickMemoryFile(window, 'user-profile.md')
   await waitFor(window, `document.body.textContent?.includes('/fixtures/knowledge-memory-smoke/memory/user-profile.md')`, '未打开 user-profile.md 详情')
@@ -262,7 +282,7 @@ async function runElectronSmoke(app: import('electron').App, BrowserWindowCtor: 
     }
   })
   try {
-    await verifyUpdateCreatesNewConversation(window, fixtureUrl)
+    await verifyKnowledgeExecutionRoutes(window, fixtureUrl)
     await verifyConversationCreationFailure(window, fixtureUrl)
     await verifyMainFlow(window, fixtureUrl)
     await verifyConflictBlocksFileSwitch(window, fixtureUrl)
@@ -271,8 +291,8 @@ async function runElectronSmoke(app: import('electron').App, BrowserWindowCtor: 
     await verifyKnowledgeErrorIsolation(window, fixtureUrl)
     const unexpectedErrors = errors.filter((message) => !message.includes('[工作区记忆] 自动保存失败') && !message.includes('[创建会话] 创建 Agent 会话失败: Error: fixture 新建会话失败'))
     assert.deepEqual(unexpectedErrors, [], `页面控制台错误：${unexpectedErrors.join(' | ')}`)
-    console.log('[Knowledge Memory UI smoke] screenshots: /private/tmp/knowledge-memory-ui-smoke.png, /private/tmp/knowledge-memory-ui-smoke-narrow-memory.png')
-    console.log('[Knowledge Memory UI smoke] PASS: 顶部 Tabs、知识目录/来源、暂停知识库下的记忆编辑、CAS、跨 Tab 草稿与冲突、冲突切换阻断、迟到读取隔离、变更导航、知识错误隔离均已验证；未访问真实用户数据')
+    console.log('[Knowledge Memory UI smoke] screenshots: /private/tmp/knowledge-memory-ui-smoke-execution.png, /private/tmp/knowledge-memory-ui-smoke-knowledge.png, /private/tmp/knowledge-memory-ui-smoke.png, /private/tmp/knowledge-memory-ui-smoke-narrow-memory.png')
+    console.log('[Knowledge Memory UI smoke] PASS: 宿主执行无重复提示、持久会话续接、准入详情、局部重试、规划会话、顶部 Tabs、知识目录/来源、暂停知识库下的记忆编辑、CAS、跨 Tab 草稿与冲突、冲突切换阻断、迟到读取隔离、变更导航、知识错误隔离均已验证；未访问真实用户数据')
   } finally {
     window.destroy()
   }

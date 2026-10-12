@@ -39,7 +39,7 @@ mock.module('./agent-session-manager', () => ({
   readPersistedAgentEvidence: (id: string) => ({ sessionId: id, records: userEvidence ? [userEvidence] : [], truncated: false, skipped: 0 }),
 }))
 
-const { getProjectKnowledgeService, recoverProjectKnowledge, getProjectKnowledgeBinding } = await import('./project-knowledge-runtime')
+const { getProjectKnowledgeService, recoverProjectKnowledge, getProjectKnowledgeBinding, registerKnowledgeExecutionHost } = await import('./project-knowledge-runtime')
 const { createProjectKnowledgeAgent } = await import('./project-knowledge-agent')
 
 beforeEach(() => {
@@ -93,6 +93,9 @@ describe('知识库 runtime 与当前 Agent Skill 链路', () => {
       itemId: 'project-rules', expectedRevision: null, content: '# 项目规则\n\n项目使用本地 JSON 文件保存数据。',
       summary: '本地存储规则', complete: true,
       evidence: [{ entryId: ref.id, revision: ref.revision, quote: '项目数据保存在本地，使用 JSON 文件。' }],
+      admission: { contentType: 'rule', importance: 'high', purpose: '确定数据保存方式', scope: '当前项目',
+        claims: [{ statement: '项目使用本地 JSON 文件保存数据。', evidenceIndexes: [0] }],
+        coverage: [{ topic: '存储方式', status: 'covered', reason: '来源明确本地JSON' }], issues: [], outcome: 'eligible' },
     })
     expect((await currentAgent().agent.search('本地')).items[0]?.entry.source.kind).toBe('managed')
     expect(leases).toBe(0)
@@ -142,5 +145,49 @@ describe('知识库 runtime 与当前 Agent Skill 链路', () => {
     await recoverProjectKnowledge('w1')
     expect(store.readManifest(project)?.revision).toBe(retired.revision)
     await expect(getProjectKnowledgeService().retryMaintenance('w1')).rejects.toThrow('Agent')
+  })
+
+  test('Given 原始用户事实与宿主控制消息 When 自动续接 Then 只引用登记原话并复验变化', async () => {
+    const { service, agent } = currentAgent()
+    const messages: string[] = []
+    registerKnowledgeExecutionHost({ enqueue: async (_sessionId, prompt) => { messages.push(prompt) }, changed: () => undefined })
+    await service.startScan('w1'); await service.waitForScan('w1')
+    const proposed = await agent.proposeKnowledgePlan!({ title: '规则', rootRelativePath: 'knowledge',
+      groups: [{ id: 'g', title: '规则', summary: '用户数据决定', sources: [], gaps: [], outputs: ['数据决定'] }] })
+    await service.confirmPlan({ workspaceId: 'w1', planId: proposed.proposal!.id, expectedRevision: 1, groups: [{ id: 'g', title: '规则' }] })
+    await service.startExecution({ workspaceId: 'w1', sessionId: 's1', planRevision: 1 })
+    await expect(agent.saveKnowledgeOutline!({ planRevision: 1, expectedRevision: 0, items: [] })).rejects.toThrow('权限')
+    const run = (await service.claimExecution('s1', messages[0]!, 1, () => undefined))!
+    const resumed = createProjectKnowledgeAgent({ sessionId: 's1', toolMode: 'standard', getSession: () => session,
+      getBinding: getProjectKnowledgeBinding, assertRunActive: () => undefined, service,
+      taskUserEvidence: () => service.getTaskUserEvidence('s1'),
+      maintenance: () => service.createAgentMaintenance({ sessionId: 's1', userMessageId: 'control-message',
+        execution: run, assertRunActive: () => undefined, canMutate: () => true }),
+    })!
+    const context = await resumed.buildContext('数据规则')
+    expect(context).toContain('决定：项目数据保存在本地。')
+    const outlined = await resumed.saveKnowledgeOutline!({ planRevision: 1, expectedRevision: 0,
+      items: [{ id: 'rules', groupId: 'g', title: '规则', relativePath: 'rules.md', summary: '数据位置', sections: ['存储'],
+        dependencyState: 'known', userEvidenceIds: ['u1'], sources: [] }] })
+    await resumed.writeKnowledgeDocument!({ planRevision: 1, outlineRevision: outlined.outline!.revision,
+      itemId: 'rules', expectedRevision: null, content: '项目数据保存在本地。', summary: '数据位置', complete: true,
+      evidence: [], userEvidenceId: 'u1', userQuote: '项目数据保存在本地。',
+      admission: { contentType: 'decision', importance: 'high', purpose: '保存数据决定', scope: '当前项目',
+        claims: [{ statement: '项目数据保存在本地。', evidenceIndexes: [], usesUserEvidence: true }],
+        coverage: [{ topic: '数据位置', status: 'covered', reason: '用户明确决定' }], issues: [], outcome: 'eligible' },
+    })
+    const written = (await service.getSnapshot('w1')).entries.find((entry) => entry.document)
+    expect(written?.userEvidence?.messageId).toBe('u1')
+    expect(written?.admission?.status).toBe('eligible')
+    expect((await service.search({ workspaceId: 'w1', query: '本地' })).items).toHaveLength(1)
+    userEvidence = { ...userEvidence!, sha256: 'changed' }
+    expect(service.getTaskUserEvidence('s1')).toEqual([])
+    userEvidence = { ...userEvidence, text: '决定：改为云端保存。' }
+    expect((await service.read({ workspaceId: 'w1', entryId: written!.id })).entry.admission?.status).toBe('invalidated')
+    expect((await service.search({ workspaceId: 'w1', query: '本地' })).items).toHaveLength(0)
+    await service.pauseWorkflow({ workspaceId: 'w1', paused: true })
+    await run.finish({ stopped: true })
+    expect((await service.getSnapshot('w1')).workflow?.execution?.status).toBe('paused')
+    expect(leases).toBe(0)
   })
 })

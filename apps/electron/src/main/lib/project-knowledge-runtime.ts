@@ -1,11 +1,12 @@
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { getAgentWorkspace } from './agent-workspace-manager'
 import { getConfigDir, resolveWorkspaceFilesDir } from './config-paths'
 import { acquireWorkspaceWriteLease, getWorkspaceOperationBlockReason } from './workspace-operation-lock'
 import { isWorkspaceSlug } from './workspace-slug'
 import { createProjectKnowledgeService } from './project-knowledge/service'
 import { isOrdinaryTopLevelAgentSession } from '@proma/shared'
-import type { KnowledgeSnapshot } from '@proma/shared'
+import type { KnowledgeExecution, KnowledgeExecutionStartInput, KnowledgeSnapshot } from '@proma/shared'
 import type { ProjectKnowledgeIpcService } from './project-knowledge-ipc'
 import type { ResolvedKnowledgeProject } from './project-knowledge/types'
 import { getAgentSessionMeta, getPersistedAgentMessageReceipt, isAgentSessionDeleting, readPersistedAgentEvidence } from './agent-session-manager'
@@ -13,11 +14,24 @@ import { createProjectKnowledgeAgentMaintenance } from './project-knowledge-agen
 import type { ProjectKnowledgeAgentMaintenance } from './project-knowledge-agent-maintenance'
 import type { ProjectKnowledgeSources } from './project-knowledge-sources'
 import { previewKnowledgeMemory } from './project-knowledge-memory-preview'
+import { createKnowledgeExecutionController, isKnowledgeControlPrompt } from './project-knowledge-execution'
+import type { KnowledgeExecutionRun } from './project-knowledge-execution'
 
 /** 每个数据根独立的服务实例，避免数据根切换后误用旧索引。 */
 const services = new Map<string, ProjectKnowledgeRuntime>()
 /** Canvas 依赖在 IPC 组合完成后注入，检索服务始终通过已授权业务服务读取。 */
 let controlledSources: ProjectKnowledgeSources | undefined
+/** 应用启动时注册普通会话队列与状态通知，运行时不依赖 Electron。 */
+let executionHost: {
+  enqueue(sessionId: string, prompt: string, dispatchId: string, model: KnowledgeExecution['model']): Promise<void>
+  cancel?(sessionId: string, dispatchId: string): Promise<void>
+  changed(workspaceId: string, generation: number): void
+} | undefined
+
+/** 绑定宿主已有会话队列，禁止另建后台模型执行器。 */
+export function registerKnowledgeExecutionHost(host: NonNullable<typeof executionHost>): void {
+  executionHost = host
+}
 
 /** 绑定由宿主持有的 Canvas/API 服务，不暴露可替换文件路径。 */
 export function registerProjectKnowledgeSources(sources: ProjectKnowledgeSources): void {
@@ -26,6 +40,11 @@ export function registerProjectKnowledgeSources(sources: ProjectKnowledgeSources
 
 /** 运行时公开已授权的读写端口，底层 store 仅供宿主内部调用。 */
 interface ProjectKnowledgeRuntime extends ProjectKnowledgeIpcService {
+  startExecution(input: KnowledgeExecutionStartInput): Promise<KnowledgeSnapshot>
+  claimExecution(sessionId: string, message: string, runGeneration: number, abort: () => void): Promise<KnowledgeExecutionRun | undefined>
+  recoverExecution(workspaceId: string): Promise<void>
+  discardExecutionDispatch(workspaceId: string, sessionId: string, dispatchId: string, reason: 'queue_cancelled' | 'dispatch_failed'): Promise<void>
+  getTaskUserEvidence(sessionId: string): Array<{ id: string; text: string }>
   /** 扫描后台完成句柄。 */
   waitForScan(workspaceId: string): Promise<void>
   /** 当前 Agent 的受控写入端口，模型和 Skill 由当前回合负责。 */
@@ -40,6 +59,8 @@ interface AgentKnowledgeMaintenanceInput {
   userMessageId: string
   assertRunActive(): void
   canMutate(): boolean
+  /** 已由宿主派发并领取的任务能力。 */
+  execution?: KnowledgeExecutionRun
 }
 
 /** 验证项目归属；返回指纹供异步 IPC 前后复核。 */
@@ -71,6 +92,18 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
     }
   const service = createProjectKnowledgeService({
     resolveProject,
+    revalidateUserEvidence: async (workspaceId, evidence) => {
+      /** 仅精确重读已登记原消息；不检索或扫描会话历史。 */
+      const owner = getAgentSessionMeta(evidence.sessionId)
+      if (!isOrdinaryTopLevelAgentSession(owner) || owner.workspaceId !== workspaceId || owner.archived
+        || isAgentSessionDeleting(evidence.sessionId)) return 'unavailable'
+      const receipt = getPersistedAgentMessageReceipt(evidence.sessionId, evidence.messageId)
+      if (!receipt) return 'unavailable'
+      const message = readPersistedAgentEvidence(evidence.sessionId, [receipt]).records.find((record) => record.uuid === evidence.messageId)
+      if (!message || message.role !== 'user' || isKnowledgeControlPrompt(message.text)) return 'unavailable'
+      const fingerprint = createHash('sha256').update(message.text, 'utf8').digest('hex')
+      return fingerprint === evidence.sha256 && message.text.includes(evidence.quote) ? 'current' : 'changed'
+    },
     controlledSources: {
       list: async (projectId) => {
         getProjectKnowledgeBinding(projectId)
@@ -87,6 +120,73 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
       if (reason) throw new Error(reason)
     },
   })
+  /** 每次派发/续接均复核会话归属和模式。 */
+  const assertExecutionSession = (workspaceId: string, sessionId: string): void => {
+    const session = getAgentSessionMeta(sessionId)
+    if (!isOrdinaryTopLevelAgentSession(session) || session.archived || session.workspaceId !== workspaceId
+      || session.explorationParentSessionId || (session.toolMode ?? 'standard') !== 'standard'
+      || session.permissionMode === 'plan' || isAgentSessionDeleting(sessionId)) throw new Error('知识整理会话已失效或当前只允许规划')
+    getProjectKnowledgeBinding(workspaceId)
+  }
+  /** 状态事务复用原写租约与 manifest 原子写，不另建任务数据库。 */
+  const execution = createKnowledgeExecutionController({
+    read: (workspaceId) => service.store.readManifest(resolveProject(workspaceId))?.workflow,
+    update: async (workspaceId, mutate) => {
+      const release = acquireWorkspaceWriteLease(workspaceId)
+      try {
+        const manifest = await service.store.transact(resolveProject(workspaceId), workspaceId, ({ manifest }) => {
+          const previous = manifest.workflow ?? { paused: false }
+          const next = mutate(previous)
+          return next === previous ? {} : { workflow: next }
+        })
+        return manifest.workflow ?? { paused: false }
+      } finally { release() }
+    },
+    assertSession: assertExecutionSession,
+    getModel: (sessionId) => {
+      const session = getAgentSessionMeta(sessionId)
+      return { channelId: session?.channelId, modelId: session?.modelId }
+    },
+    enqueue: async (sessionId, prompt, dispatchId, model) => {
+      if (!executionHost) throw new Error('普通会话队列尚未就绪')
+      await executionHost.enqueue(sessionId, prompt, dispatchId, model)
+    },
+    cancel: async (sessionId, dispatchId) => { await executionHost?.cancel?.(sessionId, dispatchId) },
+    eligibleItemIds: async (workspaceId) => {
+      const workflow = service.store.readManifest(resolveProject(workspaceId))?.workflow
+      const task = workflow?.execution
+      const items = (workflow?.outline?.items ?? []).filter((item) => item.status === 'ready' && item.entryId
+        && (!task?.itemIds.length || task.itemIds.includes(item.id)))
+      const eligible = new Set<string>()
+      /** 最多四份并行复验，不能从最多200条的目录快照推断全部正文。 */
+      for (let offset = 0; offset < items.length; offset += 4) {
+        const results = await Promise.allSettled(items.slice(offset, offset + 4).map(async (item) => {
+          const result = await service.read({ workspaceId, entryId: item.entryId!, offset: 0 })
+          if (result.status === 'readable' && result.entry.admission?.status === 'eligible') eligible.add(item.id)
+        }))
+        for (const result of results) if (result.status === 'rejected') console.warn('[知识任务] 正文准入复核失败:', result.reason)
+      }
+      return eligible
+    },
+    changed: (workspaceId, generation) => executionHost?.changed(workspaceId, generation),
+  })
+  /** 按任务登记身份重读原文；内容变化、删除、跨工作区或控制提示均失效。 */
+  const resolveTaskEvidence = (sessionId: string, id: string) => {
+    const session = getAgentSessionMeta(sessionId)
+    if (!session?.workspaceId) return undefined
+    assertExecutionSession(session.workspaceId, sessionId)
+    const task = service.store.readManifest(resolveProject(session.workspaceId))?.workflow?.execution
+    if (task?.sessionId !== sessionId || task.status !== 'running') return undefined
+    const identity = task.userEvidence.find((candidate) => candidate.id === id)
+    if (!identity) return undefined
+    const owner = getAgentSessionMeta(identity.sessionId)
+    if (!isOrdinaryTopLevelAgentSession(owner) || owner.workspaceId !== session.workspaceId || owner.archived) return undefined
+    const receipt = getPersistedAgentMessageReceipt(identity.sessionId, identity.messageId)
+    if (!receipt) return undefined
+    const message = readPersistedAgentEvidence(identity.sessionId, [receipt]).records.find((candidate) => candidate.uuid === identity.messageId)
+    if (!message || message.role !== 'user' || message.sha256 !== identity.sha256 || isKnowledgeControlPrompt(message.text)) return undefined
+    return { sessionId: identity.sessionId, message }
+  }
   /** 每次扫描持有迁移租约直到后台任务结束，IPC 返回 running 不释放租约。 */
   const startScan = service.startScan.bind(service)
   service.startScan = async (workspaceId: string): Promise<KnowledgeSnapshot> => {
@@ -111,6 +211,7 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
     /** 每次读取及事务发布重新校验归属和运行代次。 */
     const assertCurrent = (): void => {
       input.assertRunActive()
+      input.execution?.assertCurrent()
       const current = getAgentSessionMeta(input.sessionId)
       if (getConfigDir() !== configRoot || isAgentSessionDeleting(input.sessionId)
         || !isOrdinaryTopLevelAgentSession(current) || current.archived
@@ -119,15 +220,32 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
         || getProjectKnowledgeBinding(workspaceId) !== binding) throw new Error('知识维护会话或项目归属已变化')
     }
     assertCurrent()
+    /** 同一断言在调用入口与事务真正提交时执行，阻止等待期间撤权的旧写入。 */
+    const assertMutable = (): void => {
+      assertCurrent()
+      const task = service.store.readManifest(resolveProject(workspaceId))?.workflow?.execution
+      if (!input.canMutate() || (!input.execution && task && ['queued', 'running'].includes(task.status))) throw new Error('当前模式没有项目知识写入权限')
+    }
     return createProjectKnowledgeAgentMaintenance({
       workspaceId, sessionId: input.sessionId, userMessageId: input.userMessageId,
       store: service.store, resolveProject, readSource: service.read,
-      assertCurrent, canMutate: input.canMutate,
+      assertCurrent,
+      canMutate: () => {
+        if (!input.canMutate()) return false
+        /** 活跃任务期间只允许持有其能力的执行者写入，普通聊天仍可读取。 */
+        const task = service.store.readManifest(resolveProject(workspaceId))?.workflow?.execution
+        return Boolean(input.execution) || !task || !['queued', 'running'].includes(task.status)
+      },
       readUserEvidence: () => {
         assertCurrent()
         const receipt = getPersistedAgentMessageReceipt(input.sessionId, input.userMessageId)
-        return receipt ? readPersistedAgentEvidence(input.sessionId, [receipt]).records
+        const evidence = receipt ? readPersistedAgentEvidence(input.sessionId, [receipt]).records
           .find((record) => record.uuid === input.userMessageId && record.role === 'user') : undefined
+        return evidence && !isKnowledgeControlPrompt(evidence.text) ? evidence : undefined
+      },
+      resolveTaskUserEvidence: (id) => {
+        assertCurrent()
+        return input.execution ? resolveTaskEvidence(input.sessionId, id) : undefined
       },
       runWorkspaceWrite: async (effect) => {
         assertCurrent()
@@ -137,10 +255,39 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
       },
       workflow: {
         getSnapshot: service.getSnapshot,
-        proposePlan: service.proposePlan,
-        saveOutline: service.saveOutline,
-        writeDocument: service.writeDocument,
+        proposePlan: async (proposal) => {
+          await service.proposePlan(proposal, assertMutable)
+          const receipt = getPersistedAgentMessageReceipt(input.sessionId, input.userMessageId)
+          const evidence = receipt ? readPersistedAgentEvidence(input.sessionId, [receipt]).records
+            .find((record) => record.uuid === input.userMessageId && record.role === 'user') : undefined
+          if (evidence && !isKnowledgeControlPrompt(evidence.text)) {
+            assertCurrent()
+            await service.store.transact(resolveProject(workspaceId), workspaceId, ({ manifest }) => {
+              assertMutable()
+              const workflow = manifest.workflow ?? { paused: false }
+              const identity = { id: evidence.uuid, sessionId: input.sessionId, messageId: evidence.uuid, sha256: evidence.sha256 }
+              const previous = (workflow.userEvidence ?? []).filter((entry) => entry.id !== identity.id)
+              return { workflow: { ...workflow, userEvidence: [...previous, identity].slice(-8) } }
+            })
+          }
+          return service.getSnapshot(workspaceId)
+        },
+        saveOutline: (outline) => service.saveOutline(outline, assertMutable),
+        writeDocument: async (document) => {
+          if (input.execution) {
+            const task = service.store.readManifest(resolveProject(workspaceId))?.workflow?.execution
+            if (task?.itemIds.length && !task.itemIds.includes(document.itemId)) throw new Error('文档不属于本次重试范围')
+          }
+          /** 忽略运行短引用，以持久正文/证据版本识别同一失败输入。 */
+          const signature = createHash('sha256').update(JSON.stringify({ itemId: document.itemId,
+            expectedRevision: document.expectedRevision, content: document.content, evidence: document.evidence,
+            userEvidence: document.userEvidence, admission: document.admission })).digest('hex')
+          input.execution?.assertDocumentAttempt(signature)
+          try { return await service.writeDocument(document, assertMutable) }
+          catch (error) { await input.execution?.onDocumentRejected(signature); throw error }
+        },
         copyAsset: service.copyAsset,
+        refreshSources: (projectId, sources) => service.refreshSources(projectId, sources, assertMutable),
       },
     })
   }
@@ -159,6 +306,22 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
         maintenance: { ...snapshot.maintenance, enabled: false, channelId: undefined, modelId: undefined } }
     },
     createAgentMaintenance,
+    startExecution: async (input) => { await execution.start(input); return runtime.getSnapshot(input.workspaceId) },
+    claimExecution: async (sessionId, message, runGeneration, abort) => {
+      const session = getAgentSessionMeta(sessionId)
+      return session?.workspaceId ? execution.claim(session.workspaceId, sessionId, message, runGeneration, abort) : undefined
+    },
+    recoverExecution: execution.recover,
+    discardExecutionDispatch: execution.discard,
+    getTaskUserEvidence: (sessionId) => {
+      const session = getAgentSessionMeta(sessionId)
+      const task = session?.workspaceId ? service.store.readManifest(resolveProject(session.workspaceId))?.workflow?.execution : undefined
+      if (!task || task.sessionId !== sessionId) return []
+      return task.userEvidence.flatMap((identity) => {
+        const evidence = resolveTaskEvidence(sessionId, identity.id)
+        return evidence && evidence.message.text.length <= 4000 ? [{ id: identity.id, text: evidence.message.text }] : []
+      })
+    },
     retireLegacyMaintenance: async (workspaceId) => {
       const project = resolveProject(workspaceId)
       const previous = service.store.readManifest(project)?.maintenance
@@ -178,7 +341,10 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
     retryMaintenance: async () => { throw new Error('请通过更新知识库在 Agent 中重新执行知识维护 Skill') },
     reviewEntry: (input) => mutate(input.workspaceId, () => service.reviewEntry(input)),
     confirmPlan: (input) => mutate(input.workspaceId, () => service.confirmPlan(input)),
-    pauseWorkflow: (input) => mutate(input.workspaceId, () => service.pauseWorkflow(input)),
+    pauseWorkflow: (input) => mutate(input.workspaceId, async () => {
+      if (input.paused) await execution.pause(input.workspaceId)
+      else await service.pauseWorkflow(input)
+    }),
     organize: (workspaceId) => mutate(workspaceId, () => service.organize(workspaceId)),
     undo: (workspaceId, operationId) => mutate(workspaceId, () => service.undo(workspaceId, operationId)),
     excludeSession: async () => { throw new Error('当前知识提炼仅使用当前用户回合，不再扫描历史会话队列') },
@@ -193,4 +359,5 @@ export async function recoverProjectKnowledge(workspaceId: string): Promise<void
   const service = getProjectKnowledgeService()
   if (!(await service.getSnapshot(workspaceId)).initialized) return
   await service.retireLegacyMaintenance(workspaceId)
+  await service.recoverExecution(workspaceId)
 }

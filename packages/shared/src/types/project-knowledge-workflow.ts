@@ -1,3 +1,6 @@
+import type { KnowledgeAdmissionInput } from './project-knowledge-admission'
+import type { KnowledgeExecution, KnowledgeUserEvidenceIdentity } from './project-knowledge-execution'
+
 /** 计划中引用的来源版本；发现来源不等于已读取正文。 */
 export interface KnowledgePlanSource {
   /** 已登记的来源身份。 */
@@ -60,6 +63,16 @@ export interface KnowledgeOutlineItem {
   summary: string
   /** 自由章节大纲。 */
   sections: string[]
+  /** 当前文档实际依赖的来源，不能用整个分组代替。 */
+  sources?: KnowledgePlanSource[]
+  /** 未确定依赖时不能猜测与失败来源无关。 */
+  dependencyState?: 'known' | 'unknown'
+  /** 宿主登记的原始用户事实身份。 */
+  userEvidenceIds?: string[]
+  /** 内容适用的对象、版本或时期。 */
+  scope?: string
+  /** 尚未解决的内容缺口。 */
+  gaps?: string[]
   /** 正文真实保存后才关联条目。 */
   entryId?: string
   /** 执行进度与事实确认状态无关。 */
@@ -80,6 +93,10 @@ export interface KnowledgeOutline {
 
 /** 与知识 manifest 一起持久化的两步流程。 */
 export interface KnowledgeWorkflow {
+  /** 宿主记录的执行状态，与正文生成和事实确认分别管理。 */
+  execution?: KnowledgeExecution
+  /** 在规划时精确登记的真实用户事实，不包含界面控制提示。 */
+  userEvidence?: KnowledgeUserEvidenceIdentity[]
   /** 尚待用户确认的最新清单，不能自行成为已确认范围。 */
   proposal?: KnowledgePlan
   /** 当前可维护的范围；新提案不撤销原范围。 */
@@ -142,6 +159,8 @@ export interface KnowledgeDocumentLocation {
 
 /** Agent 提交有依据的正文；来源与当前用户引文由运行时验证。 */
 export interface KnowledgeDocumentWriteInput {
+  /** 内容准入检查输入，最终状态与指纹由宿主生成。 */
+  admission?: KnowledgeAdmissionInput
   /** 宿主绑定的项目。 */
   workspaceId: string
   /** 已确认计划版本。 */
@@ -163,7 +182,7 @@ export interface KnowledgeDocumentWriteInput {
   /** 可选当前用户原话，由宿主验证，不接受伪造会话身份。 */
   userQuote?: string
   /** 宿主校验当前用户原话后补入，模型工具不得提供。 */
-  userEvidence?: { sessionId: string; messageId: string; quote: string }
+  userEvidence?: { sessionId: string; messageId: string; quote: string; /** 原始用户消息完整文本指纹；旧资料缺失时不能自动准入。 */ sha256?: string }
 }
 
 /** 用户暂停或继续当前已确认范围。 */

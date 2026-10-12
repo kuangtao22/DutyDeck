@@ -22,6 +22,7 @@ function knowledgeFixture(): ProjectKnowledgeAgent {
       },
       content: '', status: 'readable', offset: 0, truncated: false,
     }),
+    readReference: async (input) => ({ ...await knowledgeFixture().read(input.entryId ?? 'source'), sourceRef: input.sourceRef ?? 'src_test' }),
     buildContext: async () => '',
   }
 }
@@ -71,4 +72,15 @@ describe('Agent 项目知识工具注册', () => {
     expect(schemas.every((schema) => !schema.includes('workspaceId'))).toBe(true)
     expect(schemas.join('\n')).not.toContain('overview","planning","business')
   })
+})
+
+test('Given 正文存在人工修改 When 工具拒绝 Then 结构化返回target_conflict并保留中文原因', async () => {
+  const knowledge = knowledgeFixture()
+  knowledge.search = async () => { throw new Error('知识正文存在外部修改，拒绝覆盖') }
+  const tool = buildProjectKnowledgeTools(sdkFixture(), knowledge)[0]!
+  const receipt = await tool.execute('call', { query: 'test' }, undefined, undefined, {} as Parameters<ToolDefinition['execute']>[4])
+  const text = receipt.content[0]?.type === 'text' ? receipt.content[0].text : ''
+  expect(text).toContain('target_conflict')
+  expect(text).toContain('知识正文存在外部修改，拒绝覆盖')
+  expect(text).toContain('review_target_preserve_edits')
 })

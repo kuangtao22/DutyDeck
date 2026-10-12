@@ -16,6 +16,8 @@ export interface ProjectKnowledgeServiceDependencies {
   resolveProject: (workspaceId: string) => ResolvedKnowledgeProject
   /** 在正式发布前复核工作区仍可写。 */
   assertWritable?: (workspaceId: string) => void | Promise<void>
+  /** 宿主按精确消息身份、项目归属与指纹复验用户证据，不扫描会话历史。 */
+  revalidateUserEvidence?: (workspaceId: string, evidence: NonNullable<KnowledgeEntry['userEvidence']>) => Promise<'current' | 'changed' | 'unavailable'>
   /** 可注入时钟用于稳定测试。 */
   now?: () => number
   /** 仅通过现有服务纯读 API 暴露的 Canvas/API 业务来源。 */

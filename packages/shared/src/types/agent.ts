@@ -1456,7 +1456,7 @@ export interface AgentSubmitOrEnqueueResult {
 }
 
 /** Agent 消息接管阶段允许跨 IPC 暴露的稳定错误码。 */
-export type AgentMessagePublicErrorCode = 'CANVAS_REFERENCE_INVALID'
+export type AgentMessagePublicErrorCode = 'CANVAS_REFERENCE_INVALID' | 'AGENT_RUN_FAILED'
 
 /** Agent 消息接管失败的安全公开错误。 */
 export interface AgentMessagePublicError {

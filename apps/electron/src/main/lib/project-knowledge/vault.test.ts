@@ -78,6 +78,57 @@ afterEach(() => {
 })
 
 describe('项目知识资料库文件流程', () => {
+  test('Given 未知或空的已知依赖 When 保存大纲 Then 拒绝伪造按项来源关系', async () => {
+    const fixture = createFixture()
+    await prepareOutline(fixture)
+    const workflow = fixture.store.readManifest(fixture.project)!.workflow!
+    const base = { workspaceId: 'workspace-1', planRevision: workflow.approved!.revision, expectedRevision: workflow.outline!.revision }
+    const item = { id: 'topic-a', groupId: 'group-a', title: '运行架构', relativePath: '架构/运行架构.md', summary: '说明', sections: ['边界'] }
+    await expect(fixture.vault.saveOutline({ ...base, items: [{ ...item, dependencyState: 'known', sources: [] }] })).rejects.toThrow('不能为空')
+    await expect(fixture.vault.saveOutline({ ...base, items: [{ ...item, sources: [{ entryId: 'a'.repeat(32), revision: 'b'.repeat(64) }] }] })).rejects.toThrow('依赖版本')
+    await expect(fixture.vault.saveOutline({ ...base, items: [{ ...item, userEvidenceIds: ['invented'] }] })).rejects.toThrow('宿主登记')
+  })
+
+  test('Given 历史用户证据仍保留 When 新评估没有当轮重验却引用它 Then 拒绝继承背书', async () => {
+    const fixture = createFixture()
+    await prepareOutline(fixture)
+    const workflow = fixture.store.readManifest(fixture.project)!.workflow!
+    const input = { workspaceId: 'workspace-1', planRevision: workflow.approved!.revision,
+      outlineRevision: workflow.outline!.revision, itemId: 'topic-a', expectedRevision: null,
+      content: '业务规则。', summary: '规则', complete: true, evidence: [],
+      userEvidence: { sessionId: 'session', messageId: 'message', quote: '业务规则。' } }
+    await fixture.vault.writeDocument(input)
+    const manifest = fixture.store.readManifest(fixture.project)!
+    const entry = fixture.store.readEntries(fixture.project, manifest)[0]!
+    await expect(fixture.vault.writeDocument({ ...input, userEvidence: undefined,
+      outlineRevision: manifest.workflow!.outline!.revision, expectedRevision: entry.revision,
+      admission: { contentType: 'rule', importance: 'high', purpose: '规则复用', scope: '当前项目',
+        claims: [{ statement: '业务规则。', evidenceIndexes: [], usesUserEvidence: true }],
+        coverage: [{ topic: '业务', status: 'covered', reason: '原用户说明' }], issues: [], outcome: 'eligible' },
+    })).rejects.toThrow('本次用户证据')
+  })
+
+  test('Given 旧运行正文事务排队 When 暂停后新代次恢复 Then 锁内守卫拒绝旧写入', async () => {
+    const fixture = createFixture()
+    await prepareOutline(fixture)
+    const workflow = fixture.store.readManifest(fixture.project)!.workflow!
+    /** 模拟事务等待期间旧运行失效，但 workflow.paused 已经被新运行清除。 */
+    let current = true
+    let release!: () => void
+    const waiting = new Promise<void>((resolve) => { release = resolve })
+    const original = fixture.store.transact
+    fixture.store.transact = async (...args) => { await waiting; return original(...args) }
+    const writing = fixture.vault.writeDocument({ workspaceId: 'workspace-1', planRevision: workflow.approved!.revision,
+      outlineRevision: workflow.outline!.revision, itemId: 'topic-a', expectedRevision: null,
+      content: '旧运行正文', summary: '旧正文', complete: true, evidence: [],
+    }, () => { if (!current) throw new Error('旧运行代次失效') })
+    current = false
+    release()
+    await expect(writing).rejects.toThrow('旧运行代次失效')
+    expect(existsSync(join(fixture.projectRoot, 'docs/knowledge/架构/运行架构.md'))).toBe(false)
+    expect(fixture.store.readManifest(fixture.project)!.workflow!.outline!.items[0]!.status).toBe('pending')
+  })
+
   test('Given Store 事务生命周期 hook When 发布成功或失败 Then 都在返回前完成收尾', async () => {
     const fixture = createFixture()
     await fixture.vault.proposePlan({

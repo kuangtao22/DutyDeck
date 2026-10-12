@@ -118,7 +118,7 @@ describe('项目知识库受管正文与整理', () => {
     expect(existsSync(cacheRoot)).toBe(false)
     expect(service.store.readContent(getProject(), service.store.readManifest(getProject())!, entry.id)).toBe(content)
     /** 无缓存时从受管正文执行的检索。 */
-    const search = await service.search({ workspaceId: 'workspace-1', query: 'token 鉴权', includeHistory: true })
+    const search = await service.search({ workspaceId: 'workspace-1', query: 'token 鉴权', includeHistory: true, includeUnassessed: true })
     /** 受管正文的分页读取。 */
     const read = await service.read({ workspaceId: 'workspace-1', entryId: entry.id })
     expect(search.indexStatus).toBe('missing')
@@ -129,7 +129,7 @@ describe('项目知识库受管正文与整理', () => {
     await service.startScan('workspace-1')
     await service.waitForScan('workspace-1')
     /** 扫描重建缓存后受管正文仍可检索。 */
-    const rebuilt = await service.search({ workspaceId: 'workspace-1', query: 'token 鉴权', includeHistory: true })
+    const rebuilt = await service.search({ workspaceId: 'workspace-1', query: 'token 鉴权', includeHistory: true, includeUnassessed: true })
     expect(rebuilt.indexStatus).toBe('ready')
     expect(rebuilt.items[0]?.entry.id).toBe(entry.id)
   })

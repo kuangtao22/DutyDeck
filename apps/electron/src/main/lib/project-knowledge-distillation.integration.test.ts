@@ -12,7 +12,7 @@ const fixtureRoots: string[] = []
 afterEach(() => { for (const root of fixtureRoots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 describe('真实项目文件到提炼知识闭环', () => {
-  test('Given 真实文档和代码 When 扫描并启用提炼 Then 新对话读取带原文依据的知识且源变更重新提炼', async () => {
+  test('Given 真实文档和代码 When 扫描并启用提炼 Then 人工检索可读且未评估知识不自动注入，源变更重新提炼', async () => {
     /** 与用户项目完全隔离的临时目录。 */
     const root = mkdtempSync(join(tmpdir(), 'knowledge-distillation-integration-'))
     fixtureRoots.push(root)
@@ -27,7 +27,7 @@ describe('真实项目文件到提炼知识闭环', () => {
     const service = createProjectKnowledgeService({ resolveProject: () => project })
     await service.startScan(project.projectId)
     await service.waitForScan(project.projectId)
-    expect((await service.search({ workspaceId: project.projectId, query: '', scope: 'knowledge' })).items).toHaveLength(0)
+    expect((await service.search({ workspaceId: project.projectId, query: '', scope: 'knowledge', includeUnassessed: true })).items).toHaveLength(0)
     /** 只替代远端模型调用，引用来自真实模型输入，不预造来源版本。 */
     let modelCalls = 0
     const maintenance = createKnowledgeMaintenance({
@@ -55,22 +55,22 @@ describe('真实项目文件到提炼知识闭环', () => {
     })
     await maintenance.updateSettings({ workspaceId: project.projectId, enabled: true, channelId: 'fixture', modelId: 'deterministic', dailyJobLimit: 10 })
     await maintenance.wait(project.projectId)
-    /** 默认知识结果只有提炼内容，原代码仍在来源目录可按需查找。 */
-    const knowledge = await service.search({ workspaceId: project.projectId, query: '退款', scope: 'knowledge' })
+    /** 显式待核结果只有提炼内容，原代码仍在来源目录可按需查找。 */
+    const knowledge = await service.search({ workspaceId: project.projectId, query: '退款', scope: 'knowledge', includeUnassessed: true })
     expect(knowledge.total).toBe(1)
     expect(knowledge.items[0]?.entry).toMatchObject({ state: 'draft', source: { kind: 'managed' } })
     expect(knowledge.items[0]?.entry.evidence).toHaveLength(1)
     const entry = knowledge.items[0]!.entry
     expect((await service.read({ workspaceId: project.projectId, entryId: entry.id })).content).toContain('核对订单状态')
     expect((await service.search({ workspaceId: project.projectId, query: '', scope: 'sources' })).total).toBe(2)
-    /** 新普通会话只获取提炼知识片段和有界引用。 */
+    /** 旧提炼路径未提供准入评估，新普通会话不能自动注入其结论。 */
     const agent = createProjectKnowledgeAgent({
       sessionId: 'new-session', toolMode: 'standard', getBinding: () => project.projectRoot,
       getSession: () => ({ id: 'new-session', workspaceId: project.projectId, title: '新会话', createdAt: 1, updatedAt: 1 }),
       assertRunActive: () => undefined, service,
     })!
     const context = await agent.buildContext('退款有哪些规则')
-    expect(context).toContain('处理退款前应核对订单状态')
+    expect(context).not.toContain('处理退款前应核对订单状态')
     expect(context).not.toContain('internalCodeOnly')
     await maintenance.enqueueSources(project.projectId)
     await maintenance.wait(project.projectId)
@@ -84,6 +84,6 @@ describe('真实项目文件到提炼知识闭环', () => {
     await maintenance.wait(project.projectId)
     expect(modelCalls).toBe(2)
     expect((await service.read({ workspaceId: project.projectId, entryId: entry.id })).status).toBe('readable')
-    expect((await service.search({ workspaceId: project.projectId, query: '退款', scope: 'knowledge' })).total).toBe(1)
+    expect((await service.search({ workspaceId: project.projectId, query: '退款', scope: 'knowledge', includeUnassessed: true })).total).toBe(1)
   })
 })

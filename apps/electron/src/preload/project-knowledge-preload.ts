@@ -4,8 +4,12 @@ import type { KnowledgeMemoryOrganizationPreview, KnowledgeReadResult, Knowledge
 /** 创建知识库窄桥接；参数合法性与访问范围由主进程核验。 */
 export function createProjectKnowledgePreload(
   invoke: (channel: string, input: unknown) => Promise<unknown>,
+  /** 订阅固定知识状态事件，返回释放监听器的函数。 */
+  subscribe?: (listener: (event: { workspaceId: string; generation?: number }) => void) => () => void,
 ): ProjectKnowledgeApi {
   return {
+    startProjectKnowledgeExecution: (input) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.START_EXECUTION, input) as Promise<KnowledgeSnapshot>,
+    onProjectKnowledgeChanged: (listener) => subscribe?.(listener) ?? (() => undefined),
     confirmProjectKnowledgePlan: (input) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.CONFIRM_PLAN, input) as Promise<KnowledgeSnapshot>,
     pauseProjectKnowledgeWorkflow: (input) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.PAUSE_WORKFLOW, input) as Promise<KnowledgeSnapshot>,
     getProjectKnowledgeSnapshot: (workspaceId) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.SNAPSHOT, { workspaceId }) as Promise<KnowledgeSnapshot>,

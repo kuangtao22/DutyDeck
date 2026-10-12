@@ -1,3 +1,5 @@
+import type { KnowledgeAdmissionRecord } from './project-knowledge-admission'
+import type { KnowledgeExecutionStartInput } from './project-knowledge-execution'
 import type { KnowledgeDocumentLocation, KnowledgePlanConfirmInput, KnowledgeWorkflow, KnowledgeWorkflowPauseInput } from './project-knowledge-workflow'
 
 /** 项目自由分组；旧分类字符串继续可读，不限制新场景。 */
@@ -36,6 +38,8 @@ export interface KnowledgeSource {
 
 /** 可供目录展示与检索排序的知识条目头。 */
 export interface KnowledgeEntry {
+  /** 内容准入评估；缺失表示旧内容尚未评估。 */
+  admission?: KnowledgeAdmissionRecord
   /** 新版文档的权威文件定位；未提供时兼容旧不可变正文。 */
   document?: KnowledgeDocumentLocation
   /** 重命名和目录整理后仍保持稳定的条目 ID。 */
@@ -59,7 +63,7 @@ export interface KnowledgeEntry {
   /** 提炼依据指向来源条目的固定版本；逐字引文由宿主校验。 */
   evidence?: Array<{ entryId: string; revision: string; quote: string }>
   /** 当前用户原话的可信会话来源；仅由宿主在校验后写入。 */
-  userEvidence?: { sessionId: string; messageId: string; quote: string }
+  userEvidence?: { sessionId: string; messageId: string; quote: string; /** 原始用户消息完整文本指纹；旧资料缺失时不能自动准入。 */ sha256?: string }
   /** 来源总字节数；未知的外部来源使用零。 */
   byteSize: number
   /** 实际已提取的 UTF-8 字节数。 */
@@ -230,6 +234,8 @@ export interface KnowledgeSearchInput {
   category?: KnowledgeCategory
   /** 历史内容仅在显式请求时参与检索。 */
   includeHistory?: boolean
+  /** 显式查看未评估、待补或已失效知识，不作为默认事实使用。 */
+  includeUnassessed?: boolean
   /** 从第几个结果继续读取。 */
   offset?: number
   /** 默认 6，目录浏览可申请最多 100。 */
@@ -292,6 +298,7 @@ export interface KnowledgeReadResult {
 
 /** 四层共享的知识库固定 IPC 通道。 */
 export const PROJECT_KNOWLEDGE_IPC_CHANNELS = {
+  START_EXECUTION: 'project-knowledge:start-execution',
   CONFIRM_PLAN: 'project-knowledge:confirm-plan',
   PAUSE_WORKFLOW: 'project-knowledge:pause-workflow',
   SNAPSHOT: 'project-knowledge:snapshot',
@@ -310,6 +317,10 @@ export const PROJECT_KNOWLEDGE_IPC_CHANNELS = {
 
 /** Renderer 仅能通过项目身份访问知识库，不接触文件系统和模型凭据。 */
 export interface ProjectKnowledgeApi {
+  /** 用户发起或恢复宿主管理的知识任务。 */
+  startProjectKnowledgeExecution(input: KnowledgeExecutionStartInput): Promise<KnowledgeSnapshot>
+  /** 状态事件只携带项目与任务代次，不包含正文。 */
+  onProjectKnowledgeChanged(listener: (event: { workspaceId: string; generation?: number }) => void): () => void
   /** 用户确认当前分组清单；Agent 没有对应确认工具。 */
   confirmProjectKnowledgePlan(input: KnowledgePlanConfirmInput): Promise<KnowledgeSnapshot>
   /** 暂停或继续已确认的知识生成。 */

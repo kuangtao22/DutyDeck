@@ -23,6 +23,7 @@ import type {
 import { ensureDirectoryDurable, writeJsonFileAtomic, writeTextFileAtomic } from '../safe-file'
 import { getKnowledgeRoot, validateResolvedProject } from './paths'
 import { containsKnowledgeSecret } from './sensitive-text'
+import { assessKnowledgeAdmission } from './admission'
 import type {
   KnowledgeTransactionCurrent,
   ProjectKnowledgeServiceDependencies,
@@ -47,10 +48,10 @@ const activeRefreshes = new Map<string, Promise<void>>()
 
 /** 资料库流程公开给 service/facade 的最小写接口。 */
 export interface KnowledgeVault {
-  proposePlan(input: KnowledgePlanProposalInput): Promise<void>
+  proposePlan(input: KnowledgePlanProposalInput, assertCurrent?: () => void): Promise<void>
   confirmPlan(input: KnowledgePlanConfirmInput): Promise<void>
-  saveOutline(input: KnowledgeOutlineInput): Promise<void>
-  writeDocument(input: KnowledgeDocumentWriteInput): Promise<void>
+  saveOutline(input: KnowledgeOutlineInput, assertCurrent?: () => void): Promise<void>
+  writeDocument(input: KnowledgeDocumentWriteInput, assertCurrent?: () => void): Promise<void>
   pauseWorkflow(input: KnowledgeWorkflowPauseInput): Promise<void>
   refresh(workspaceId: string): Promise<void>
 }
@@ -398,15 +399,18 @@ export function createKnowledgeVault(
   }
 
   /** Agent 只提交待确认计划，不创建用户资料库目录。 */
-  async function proposePlan(input: KnowledgePlanProposalInput): Promise<void> {
+  async function proposePlan(input: KnowledgePlanProposalInput, assertCurrent?: () => void): Promise<void> {
     assertSafePayload(input, '知识库提案', 512 * 1024)
     normalizeRelativePath(input.rootRelativePath, '资料库根目录')
     if (input.groups.length === 0 || new Set(input.groups.map((group) => group.id)).size !== input.groups.length) {
       throw new Error('知识库提案分组非法')
     }
+    assertCurrent?.()
     const project = resolveProject(input.workspaceId)
     if (!store.readManifest(project)) await store.initialize(project, input.workspaceId)
     await store.transact(project, input.workspaceId, (current) => {
+      /** 锁等待后重新核验宿主运行，暂停再继续不能复活旧事务。 */
+      assertCurrent?.()
       recoverPendingJournal(project, current.manifest.vaultCommitId)
       const workflow = currentWorkflow(current)
       const entries = new Map(current.entries.map((entry) => [entry.id, entry]))
@@ -480,12 +484,15 @@ export function createKnowledgeVault(
   }
 
   /** 在已确认自由分组内保存大纲，并生成真实索引 Markdown。 */
-  async function saveOutline(input: KnowledgeOutlineInput): Promise<void> {
+  async function saveOutline(input: KnowledgeOutlineInput, assertCurrent?: () => void): Promise<void> {
     assertSafePayload(input, '知识库大纲', 512 * 1024)
+    assertCurrent?.()
     const project = resolveProject(input.workspaceId)
     let journal: VaultJournal | null = null
     try {
       await store.transact(project, input.workspaceId, (current) => {
+        /** 锁等待后重新核验宿主运行，暂停再继续不能复活旧事务。 */
+        assertCurrent?.()
         recoverPendingJournal(project, current.manifest.vaultCommitId)
         const workflow = currentWorkflow(current)
         if (workflow.paused) throw new Error('知识库流程已暂停')
@@ -505,6 +512,23 @@ export function createKnowledgeVault(
             throw new Error('大纲文档路径非法或重复')
           }
           paths.add(relativePath)
+          /** 按项依赖只接受已登记、当前且未排除的原始来源。 */
+          if (item.dependencyState !== undefined && !['known', 'unknown'].includes(item.dependencyState)) throw new Error('大纲依赖状态非法')
+          if (item.sources !== undefined && (!Array.isArray(item.sources) || item.sources.length > 8)) throw new Error('大纲来源依赖非法')
+          const sourceIds = new Set<string>()
+          for (const source of item.sources ?? []) {
+            const entry = current.entries.find((candidate) => candidate.id === source.entryId)
+            if (!entry || entry.revision !== source.revision || entry.document) throw new Error('大纲来源依赖版本或身份非法')
+            if (entry.state === 'archived' || entry.freshness === 'unavailable'
+              || (current.manifest.excludedSources ?? []).includes(entry.source.id)) throw new Error('大纲来源依赖已排除或不可用')
+            if (sourceIds.has(source.entryId)) throw new Error('大纲来源依赖重复')
+            sourceIds.add(source.entryId)
+          }
+          if (item.userEvidenceIds !== undefined && (!Array.isArray(item.userEvidenceIds) || item.userEvidenceIds.length > 8)) throw new Error('大纲用户证据依赖非法')
+          for (const identity of item.userEvidenceIds ?? []) {
+            if (!workflow.execution?.userEvidence.some((evidence) => evidence.id === identity)) throw new Error('大纲用户证据未经宿主登记')
+          }
+          if (item.dependencyState === 'known' && sourceIds.size === 0 && !item.userEvidenceIds?.length) throw new Error('已确定大纲依赖不能为空')
           return { ...item, relativePath, status: 'pending' }
         })
         /** 已有正文允许在精确大纲版本上重组，但不能从大纲中静默删除。 */
@@ -554,6 +578,7 @@ export function createKnowledgeVault(
             const byteSize = Buffer.byteLength(movedContent, 'utf8')
             const nextEntry = withEntryRevision({
               ...existingEntry,
+              admission: existingEntry.admission && movedContent !== cleanContent ? { ...existingEntry.admission, status: 'invalidated' } : existingEntry.admission,
               title: replacement.title,
               category: group.title,
               summary: replacement.summary,
@@ -622,14 +647,18 @@ export function createKnowledgeVault(
   }
 
   /** 在大纲定位内发布正文，并同步索引与不可变历史版本。 */
-  async function writeDocument(input: KnowledgeDocumentWriteInput): Promise<void> {
+  async function writeDocument(input: KnowledgeDocumentWriteInput, assertCurrent?: () => void): Promise<void> {
     assertSafePayload(input.content, '知识库正文')
     assertSafePayload(input.summary, '知识库摘要', 64 * 1024)
     if (input.userEvidence) assertSafePayload(input.userEvidence, '用户原话证据', 64 * 1024)
+    if (input.admission) assertSafePayload(input.admission, '知识内容准入评估', 64 * 1024)
+    assertCurrent?.()
     const project = resolveProject(input.workspaceId)
     let journal: VaultJournal | null = null
     try {
       await store.transact(project, input.workspaceId, (current) => {
+        /** 锁等待后重新核验宿主运行，暂停再继续不能复活旧事务。 */
+        assertCurrent?.()
         recoverPendingJournal(project, current.manifest.vaultCommitId)
         const workflow = currentWorkflow(current)
         if (workflow.paused) throw new Error('知识库流程已暂停')
@@ -657,10 +686,18 @@ export function createKnowledgeVault(
           throw new Error('目标文档已存在，拒绝接管')
         }
         const diskContent = withDocumentIdentity(input.content, { topicKey: item.id, entryId })
+        /** 评估、历史正文和字节统计统一使用实际写盘的正文，避免末尾换行使哈希失效。 */
+        const savedContent = stripDocumentIdentity(diskContent)
         const expectedStatus = input.complete ? 'ready' : 'partial'
         /** 新请求未携带用户原话时保留当前版本证据，避免更新正文时静默丢失。 */
         const userEvidence = input.userEvidence ?? existing?.userEvidence
+        /** 准入只绑定本次正文与已验证证据；旧评估不能背书新正文。 */
+        if (input.admission?.claims?.some((claim) => claim.usesUserEvidence) && !input.userEvidence) {
+          throw new Error('新评估引用用户原话时必须重新提供本次用户证据')
+        }
+        const admission = assessKnowledgeAdmission(input.admission, savedContent, input.evidence, userEvidence)
         if (existing
+          && JSON.stringify(existing.admission) === JSON.stringify(admission)
           && existing.document?.contentRevision === sha256(diskContent)
           && existing.summary === input.summary
           && existing.title === item.title
@@ -682,7 +719,7 @@ export function createKnowledgeVault(
             ? { ...candidate, entryId, status: expectedStatus }
             : candidate),
         }
-        const byteSize = Buffer.byteLength(input.content, 'utf8')
+        const byteSize = Buffer.byteLength(savedContent, 'utf8')
         /** source revision 表示本次磁盘正文版本；中文注释明确其不等同于 entry revision。 */
         const sourceRevision = sha256(diskContent)
         const entry = withEntryRevision({
@@ -696,6 +733,7 @@ export function createKnowledgeVault(
           source: { kind: 'managed', id: `vault:${project.projectId}:${item.id}`, revision: sourceRevision },
           evidence: input.evidence,
           userEvidence,
+          admission,
           document: {
             topicKey: item.id,
             groupId: item.groupId,
@@ -719,7 +757,7 @@ export function createKnowledgeVault(
         writeTextFileAtomic(indexPath, nextIndexContent)
         return {
           workflow: { ...workflow, outline: nextOutline },
-          commits: [{ entry, content: input.content }],
+          commits: [{ entry, content: savedContent }],
           vaultCommitId: writeJournal.transactionId,
           onCommitted: () => completeJournal(project),
           onAborted: () => { if (journal) rollbackJournal(project, journal) },
@@ -884,6 +922,7 @@ export function createKnowledgeVault(
           state: 'draft',
           freshness: 'unverified',
           evidence: undefined,
+          admission: existing?.admission ? { ...existing.admission, status: 'invalidated' } : undefined,
           source: { ...(existing?.source ?? { kind: 'managed' as const, id: `vault:${project.projectId}:${topicKey}` }), revision: contentRevision },
           document: {
             topicKey,

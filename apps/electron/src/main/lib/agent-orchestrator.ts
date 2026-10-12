@@ -90,6 +90,7 @@ import { buildPiBuiltinTools } from './adapters/pi-builtin-tools'
 import { createProjectKnowledgeAgent } from './project-knowledge-agent'
 import { buildProjectKnowledgeTools } from './project-knowledge-tools'
 import { getProjectKnowledgeBinding, getProjectKnowledgeService } from './project-knowledge-runtime'
+import type { KnowledgeExecutionRun } from './project-knowledge-execution'
 import { createApiAgentFacade } from './api-workbench/api-agent-facade'
 import { buildApiAgentTools, API_AGENT_TOOL_NAMES } from './api-workbench/api-agent-tools'
 import { getApiWorkbenchService } from './api-workbench/api-workbench-singleton'
@@ -803,6 +804,10 @@ export class AgentOrchestrator {
     const streamStartedAt = input.startedAt ?? Date.now()
     let userMessagePersisted = false
     let initialUserMessageUuid: string | undefined
+    /** 知识任务能力绑定本次真实运行，不影响普通聊天终态。 */
+    let knowledgeExecutionRun: KnowledgeExecutionRun | undefined
+    let knowledgeRunFailed = false
+    let knowledgeRunStopped = false
     /** 当前运行消息仍按原顺序落盘，知识维护在本回合工具内完成。 */
     const persistRunSDKMessages = (messages: SDKMessage[], durationMs?: number): void => {
       this.persistSDKMessages(sessionId, messages, durationMs)
@@ -810,8 +815,12 @@ export class AgentOrchestrator {
     let sessionMeta = getAgentSessionMeta(sessionId)
     /** 即使入参非法，也通过单次终态通知器隔离调用方回调异常。 */
     const terminalNotifier = createAgentRunTerminalNotifier<AgentMessage[], AgentRunCompleteOptions>({
-      onError: callbacks.onError,
-      onComplete: callbacks.onComplete,
+      onError: (error) => { knowledgeRunFailed = true; callbacks.onError(error) },
+      onComplete: (messages, opts) => {
+        knowledgeRunStopped ||= Boolean(opts?.stoppedByUser)
+        knowledgeRunFailed ||= Boolean(opts?.resultErrors?.length || (opts?.resultSubtype && /^(error|failed|empty_response)/.test(opts.resultSubtype)))
+        callbacks.onComplete(messages, opts)
+      },
       onCallbackError: (kind, error) => {
         console.error(`[Agent 编排] terminal ${kind} callback 执行失败:`, error)
       },
@@ -976,6 +985,16 @@ export class AgentOrchestrator {
         terminalNotifier.onComplete([], { startedAt: streamStartedAt, stoppedByUser: true })
       },
     }, async (checkpoint) => {
+
+    /** 只有已由界面启动并精确排队的控制消息才能获得有界续接。 */
+    if ((rawUserMessage ?? userMessage).startsWith('[knowledge-execution:')) {
+      if (automationContext || (input.triggeredBy && input.triggeredBy !== 'user') || runToolMode !== 'standard') throw new Error('当前运行不能领取知识任务')
+      knowledgeExecutionRun = await getProjectKnowledgeService().claimExecution(sessionId, rawUserMessage ?? userMessage, runGeneration, () => {
+        if (this.activeSessions.get(sessionId) === runGeneration) this.stop(sessionId)
+        else runIdentity.abort()
+      })
+      if (!knowledgeExecutionRun) throw new Error('知识任务消息已过期，请从整理进度继续')
+    }
 
     // 手动重试直接删除原错误，避免它在下一轮完成后仍被历史回放。
     // 删除失败不阻断重试（例如旧版本遗留的无 UUID 错误）。
@@ -1428,12 +1447,21 @@ export class AgentOrchestrator {
         getBinding: getProjectKnowledgeBinding,
         assertRunActive: runIdentity.assertActive,
         get service() { return getProjectKnowledgeService() },
+        ...(knowledgeExecutionRun ? {
+          onBudget: knowledgeExecutionRun.onBudget,
+          onProgress: knowledgeExecutionRun.onProgress,
+          onItemError: knowledgeExecutionRun.onItemError,
+          onSourceError: knowledgeExecutionRun.onSourceError,
+          beforeSourceRecovery: knowledgeExecutionRun.beforeSourceRecovery,
+          taskUserEvidence: () => getProjectKnowledgeService().getTaskUserEvidence(sessionId),
+        } : {}),
         /** 维护工厂惰性执行，只在普通前台会话通过 Facade 准入后绑定。 */
         ...(initialUserMessageUuid && runWorkspaceSkillsEnabled ? {
           maintenance: () => getProjectKnowledgeService().createAgentMaintenance({
             sessionId, userMessageId: initialUserMessageUuid!,
             assertRunActive: runIdentity.assertActive,
             canMutate: () => getPermissionMode() !== 'plan',
+            execution: knowledgeExecutionRun,
           }),
         } : {}),
       }) : undefined
@@ -1705,7 +1733,7 @@ export class AgentOrchestrator {
 
         /** 知识写工具经过通用参数、次数和扩展守卫，计划模式不会隐式写入。 */
         const knowledgeWriteTools = new Set([
-          'proma_knowledge_submit', 'proma_knowledge_plan', 'proma_knowledge_outline', 'proma_knowledge_document', 'proma_knowledge_asset',
+          'proma_knowledge_submit', 'proma_knowledge_plan', 'proma_knowledge_outline', 'proma_knowledge_document', 'proma_knowledge_asset', 'proma_knowledge_refresh_sources',
         ])
         if (toolName === 'proma_knowledge_status') {
           if (!projectKnowledge || options.signal.aborted) return { behavior: 'deny', message: '当前运行不能读取项目知识流程' }
@@ -2984,6 +3012,10 @@ export class AgentOrchestrator {
         exitPlanService.clearSessionPending(sessionId)
       }
     }
+    }).catch((error: unknown) => { knowledgeRunFailed = true; throw error }).finally(async () => {
+      /** 生命周期释放旧槽后再入 deferred queue，不能递归发起 Agent。 */
+      try { await knowledgeExecutionRun?.finish({ failed: knowledgeRunFailed, stopped: knowledgeRunStopped }) }
+      catch (error) { console.error('[知识任务] 保存终态失败:', error) }
     })
     })
   }

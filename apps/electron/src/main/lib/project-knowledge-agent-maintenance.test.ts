@@ -45,6 +45,7 @@ async function fixture(initialize = true, workflowEnabled = false) {
     reads: number
     sourcePages: Map<string, KnowledgeReadResult>
     userEvidence?: PersistedAgentEvidenceRecord
+    taskEvidence?: { sessionId: string; message: PersistedAgentEvidenceRecord }
     beforeWrite(): void
     beforeTransact(): void | Promise<void>
     workflowCalls: string[]
@@ -92,6 +93,7 @@ async function fixture(initialize = true, workflowEnabled = false) {
       return value
     },
     readUserEvidence: () => state.userEvidence,
+    resolveTaskUserEvidence: (id) => id === 'task-evidence' ? state.taskEvidence : undefined,
     assertCurrent: () => { if (!state.current) throw new Error('运行已取消') },
     canMutate: () => state.mutable,
     runWorkspaceWrite: async (effect) => { state.beforeWrite(); return effect() },
@@ -195,7 +197,7 @@ describe('当前 Agent 受控维护项目知识', () => {
     await f.maintenance.writeDocument!(input)
     expect(f.state.workflowCalls).toEqual(['document:w1:decision'])
     expect(f.state.lastDocumentInput?.userEvidence).toEqual({
-      sessionId: 's1', messageId: 'u1', quote: '资料库只保存项目事实',
+      sessionId: 's1', messageId: 'u1', quote: '资料库只保存项目事实', sha256: createHash('sha256').update(f.state.userEvidence!.text, 'utf8').digest('hex'),
     })
     f.state.beforeWrite = () => { f.state.userEvidence = { ...f.state.userEvidence!, text: '用户已修改原消息', sha256: 'changed' } }
     await expect(f.maintenance.writeDocument!(input)).rejects.toThrow('证据已变化')
@@ -459,5 +461,21 @@ describe('当前 Agent 受控维护项目知识', () => {
     f.maintenance.observeRead(f.state.sourcePages.get(`${second.id}:${second.revision}:0`)!)
     const result = await f.maintenance.submit({ processedSourceRefs: [{ entryId: second.id, revision: second.revision }], candidates: [{ ...candidate(second), title: '换标题', content: '改写措辞' }] })
     expect(result.published).toBe(0)
+  })
+})
+
+
+describe('任务绑定用户证据续接', () => {
+  test('Given 宿主登记原始用户消息 When 后续回合引用 Then 复验原消息并保持原始身份', async () => {
+    const f = await fixture(true, true)
+    f.state.taskEvidence = { sessionId: 'original-session', message: { uuid: 'original-message', role: 'user', text: '决定：资料库只保存项目事实', sha256: 'original-hash', byteOffset: 0, byteLength: 18 } }
+    const input = { planRevision: 1, outlineRevision: 1, itemId: 'decision', expectedRevision: null, content: '资料库只保存项目事实', summary: '边界', complete: true, evidence: [], userEvidenceId: 'task-evidence', userQuote: '资料库只保存项目事实' }
+    await expect(f.maintenance.writeDocument!(input)).rejects.toThrow('本轮读取')
+    f.maintenance.observeUserEvidence!(['task-evidence'])
+    await f.maintenance.writeDocument!(input)
+    expect(f.state.lastDocumentInput?.userEvidence).toEqual({ sessionId: 'original-session', messageId: 'original-message', quote: input.userQuote, sha256: createHash('sha256').update(f.state.taskEvidence!.message.text, 'utf8').digest('hex') })
+    await expect(f.maintenance.writeDocument!({ ...input, userEvidenceId: 'invented' })).rejects.toThrow('本轮读取')
+    f.state.beforeWrite = () => { f.state.taskEvidence = undefined }
+    await expect(f.maintenance.writeDocument!(input)).rejects.toThrow('证据已变化')
   })
 })

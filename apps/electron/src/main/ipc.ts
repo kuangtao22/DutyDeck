@@ -6,7 +6,7 @@ import { CAPABILITY_FACTORY_CHANNELS } from '@proma/shared'
 import { createCapabilityFactorySessionRuntime } from './lib/capability-factory/capability-factory-session-runtime'
 import { setCapabilityFactoryChangeSink } from './lib/capability-factory/capability-factory-events'
 import { registerProjectKnowledgeIpc } from './lib/project-knowledge-ipc'
-import { getProjectKnowledgeBinding, getProjectKnowledgeService, registerProjectKnowledgeSources } from './lib/project-knowledge-runtime'
+import { getProjectKnowledgeBinding, getProjectKnowledgeService, registerProjectKnowledgeSources, registerKnowledgeExecutionHost } from './lib/project-knowledge-runtime'
 import { createProjectKnowledgeSources } from './lib/project-knowledge-sources'
 import { getCapabilityFactoryService, shutdownCapabilityFactory } from './lib/capability-factory/capability-factory-singleton'
 import { createCapabilityFactoryRunner } from './lib/capability-factory/capability-factory-run'
@@ -2382,6 +2382,21 @@ export function registerIpcHandlers(): void {
     return contents && !contents.isDestroyed() ? [contents] : []
   }
   /** 全屏项目页与 Agent 右侧知识视图共用窄 IPC，扫描租约由运行时持续持有。 */
+  registerKnowledgeExecutionHost({
+    enqueue: async (sessionId, prompt, dispatchId, model) => {
+      const session = getAgentSessionMeta(sessionId)
+      const contents = listAuthorizedDesignWebContents()[0]
+      if (!contents || !session || !model?.channelId) throw new Error('整理会话的窗口或模型渠道不可用')
+      enqueueAgentQueuedMessage({ sessionId, userMessage: prompt, rawUserMessage: prompt,
+        channelId: model.channelId, modelId: model.modelId, workspaceId: session.workspaceId,
+        mentionedSkills: ['knowledge-maintenance'], queueMessageId: dispatchId,
+      }, contents)
+    },
+    cancel: async (sessionId, dispatchId) => { cancelAgentQueuedMessage({ sessionId, messageId: dispatchId }) },
+    changed: (workspaceId, generation) => {
+      for (const contents of listAuthorizedDesignWebContents()) contents.send('project-knowledge:changed', { workspaceId, generation })
+    },
+  })
   registerProjectKnowledgeIpc({
     ipc: ipcMain,
     isAuthorizedSender: (event) => listAuthorizedDesignWebContents().some((contents) => contents.id === event.sender.id),

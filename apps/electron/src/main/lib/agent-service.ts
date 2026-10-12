@@ -84,6 +84,7 @@ import { AgentStreamForwarder } from './agent-stream-forwarder'
 import { AgentStreamRouteRegistry } from './agent-stream-route-registry'
 import type { AgentStreamRoute } from './agent-stream-route-registry'
 import { AgentQueueCoordinator } from './agent-queue-coordinator'
+import { getProjectKnowledgeService } from './project-knowledge-runtime'
 import { getWorkspaceOperationBlockReason } from './workspace-operation-lock'
 import { createWorkspaceOperationGuard } from './workspace-operation-guard'
 import { runAgentServiceTerminalEffects } from './agent-run-lifecycle'
@@ -325,6 +326,14 @@ function getMainRendererWebContents(): WebContents | null {
 }
 
 const agentQueueCoordinator = new AgentQueueCoordinator({
+  onDiscard: async (input, reason) => {
+    if (!input.workspaceId) return
+    try {
+      await getProjectKnowledgeService().discardExecutionDispatch(input.workspaceId, input.sessionId, input.queueMessageId, reason)
+    } catch (error) {
+      console.error('[Agent 服务] 知识任务队列终态回传失败', error)
+    }
+  },
   isActive: (sessionId) => orchestrator.isActive(sessionId),
   getWebContents: (sessionId) => streamRoutes.get(sessionId)?.target ?? getMainRendererWebContents(),
   prepareRun: (input) => prepareAgentRun(input),

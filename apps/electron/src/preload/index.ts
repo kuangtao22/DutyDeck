@@ -1549,7 +1549,12 @@ const designPreloadApi = createDesignPreloadApi(ipcRenderer)
 const pathManagementPreloadApi = createNormalPathManagementPreloadApi(ipcRenderer)
 
 const electronAPI: ElectronAPI = {
-  ...createProjectKnowledgePreload((channel, input) => ipcRenderer.invoke(channel, input)),
+  ...createProjectKnowledgePreload((channel, input) => ipcRenderer.invoke(channel, input), (listener) => {
+    /** 只转发固定事件载荷，避免把 Electron event 传入 renderer。 */
+    const handler = (_event: Electron.IpcRendererEvent, value: { workspaceId: string; generation?: number }) => listener(value)
+    ipcRenderer.on('project-knowledge:changed', handler)
+    return () => ipcRenderer.removeListener('project-knowledge:changed', handler)
+  }),
   ...createServerOpsTrustPreload((channel, input) => ipcRenderer.invoke(channel, input)),
   ...createServerOpsDockerPreload((channel, input) => ipcRenderer.invoke(channel, input)),
   ...createServerOpsFilesPreload((channel, input) => ipcRenderer.invoke(channel, input)),

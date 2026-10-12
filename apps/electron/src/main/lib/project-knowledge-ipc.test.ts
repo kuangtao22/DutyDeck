@@ -40,6 +40,7 @@ function fixture() {
       previewMemory: async () => ({ projectId: 'workspace-1', inspected: 0, truncated: false, proposals: [] }),
       confirmPlan: async (input) => { calls.push(`confirm:${input.groups.map((group) => `${group.id}=${group.title}`).join(',')}`); return snapshot },
       pauseWorkflow: async (input) => { calls.push(`pause:${input.paused}`); return snapshot },
+      startExecution: async (input) => { calls.push(`execute:${input.sessionId}:${input.planRevision}:${input.itemIds?.join(',') ?? 'all'}`); return snapshot },
     },
   })
   /** 在发起窗口内调用真实 handler。 */
@@ -52,6 +53,23 @@ function fixture() {
 }
 
 describe('项目知识库 IPC 边界', () => {
+  test('Given 合法局部执行 When 通过窗口请求 Then 仅传宿主允许的范围和版本', async () => {
+    const context = fixture()
+    await context.invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.START_EXECUTION, { workspaceId: 'workspace-1', sessionId: 'session-1', planRevision: 2, itemIds: ['rule'] })
+    expect(context.calls).toEqual(['execute:session-1:2:rule'])
+  })
+  test('Given 执行请求含越权字段或非法范围 When 启动 Then 不发起模型', async () => {
+    const context = fixture()
+    const input = { workspaceId: 'workspace-1', sessionId: 'session-1', planRevision: 1 }
+    for (const invalid of [{ ...input, planRevision: 0 }, { ...input, sessionId: '../other' },
+      { ...input, itemIds: ['../other'] }, { ...input, itemIds: 'all' }, { ...input, modelId: 'other' },
+      { ...input, dispatchId: 'forged' }]) {
+      await expect(context.invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.START_EXECUTION, invalid)).rejects.toThrow()
+    }
+    context.access.writable = false
+    await expect(context.invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.START_EXECUTION, input)).rejects.toThrow('迁移')
+    expect(context.calls).toEqual([])
+  })
   test('Given 非法维护设置 When 保存 Then 不调用写端口', async () => {
     const context = fixture()
     for (const input of [

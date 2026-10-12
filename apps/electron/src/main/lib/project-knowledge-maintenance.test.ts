@@ -461,7 +461,7 @@ describe('项目知识持续维护', () => {
     expect(f.state.calls).toBe(1)
   })
 
-  test('Given 已确认登录方式 When 用户明确纠正并引用旧条目 Then 旧条目 superseded 且默认搜索只返回新确认知识', async () => {
+  test('Given 已确认登录方式 When 用户明确纠正并引用旧条目 Then 旧条目 superseded 且显式待核搜索只返回新确认知识', async () => {
     /** 第二轮模型输出可在取得旧条目 ID 后设置。 */
     let modelResponse = response()
     const f = await fixture(async () => modelResponse)
@@ -498,8 +498,8 @@ describe('项目知识持续维护', () => {
 
     /** 包含历史状态的权威目录。 */
     const snapshot = await f.service.getSnapshot('w1')
-    /** 默认搜索应排除被替代旧版本。 */
-    const visible = await f.service.search({ workspaceId: 'w1', query: '登录方式' })
+    /** 人工待核搜索仍应排除被替代旧版本。 */
+    const visible = await f.service.search({ workspaceId: 'w1', query: '登录方式', includeUnassessed: true })
     expect(snapshot.entries.find((entry) => entry.id === oldEntry.id)).toMatchObject({ state: 'superseded' })
     expect(snapshot.entries.find((entry) => entry.id !== oldEntry.id)).toMatchObject({
       state: 'confirmed', summary: correctedText,

@@ -1,8 +1,10 @@
 import { KNOWLEDGE_SOURCE_KINDS, PROJECT_KNOWLEDGE_IPC_CHANNELS } from '@proma/shared'
-import type { KnowledgeMemoryOrganizationPreview, KnowledgeCategory, KnowledgeMaintenanceInput, KnowledgePlanConfirmInput, KnowledgeReviewInput, KnowledgeReadInput, KnowledgeReadResult, KnowledgeSearchInput, KnowledgeSearchResult, KnowledgeSnapshot, KnowledgeSourceKind, KnowledgeWorkflowPauseInput } from '@proma/shared'
+import type { KnowledgeExecutionStartInput, KnowledgeMemoryOrganizationPreview, KnowledgeCategory, KnowledgeMaintenanceInput, KnowledgePlanConfirmInput, KnowledgeReviewInput, KnowledgeReadInput, KnowledgeReadResult, KnowledgeSearchInput, KnowledgeSearchResult, KnowledgeSnapshot, KnowledgeSourceKind, KnowledgeWorkflowPauseInput } from '@proma/shared'
 
 /** 主进程知识服务的 IPC 最小端口。 */
 export interface ProjectKnowledgeIpcService {
+  /** 宿主管理有界生成；旧只读服务替身可省略。 */
+  startExecution?(input: KnowledgeExecutionStartInput): Promise<KnowledgeSnapshot>
   /** 用户确认当前可见的分组清单。 */
   confirmPlan(input: KnowledgePlanConfirmInput): Promise<KnowledgeSnapshot>
   /** 用户暂停或继续已确认的知识生成。 */
@@ -124,7 +126,7 @@ export function parseKnowledgeWorkflowPauseInput(value: unknown): KnowledgeWorkf
 export function parseKnowledgeSearchInput(value: unknown): KnowledgeSearchInput {
   /** 先验证所有字段，再把窄合同交给服务。 */
   const input = requireObject(value)
-  allowFields(input, ['workspaceId', 'query', 'scope', 'sourceKind', 'category', 'includeHistory', 'offset', 'limit'])
+  allowFields(input, ['workspaceId', 'query', 'scope', 'sourceKind', 'category', 'includeHistory', 'includeUnassessed', 'offset', 'limit'])
   if (typeof input.query !== 'string' || input.query.length > 2000) throw new Error('检索词无效或过长')
   if (input.scope !== undefined && input.scope !== 'knowledge' && input.scope !== 'sources' && input.scope !== 'all') {
     throw new Error('知识检索范围无效')
@@ -136,12 +138,14 @@ export function parseKnowledgeSearchInput(value: unknown): KnowledgeSearchInput 
     throw new Error('知识分类无效')
   }
   if (input.includeHistory !== undefined && typeof input.includeHistory !== 'boolean') throw new Error('历史筛选无效')
+  if (input.includeUnassessed !== undefined && typeof input.includeUnassessed !== 'boolean') throw new Error('内容准入筛选无效')
   return {
     workspaceId: requireId(input.workspaceId, '项目 ID'), query: input.query,
     scope: input.scope,
     sourceKind: input.sourceKind as KnowledgeSourceKind | undefined,
     category: typeof input.category === 'string' ? input.category.trim() as KnowledgeCategory : undefined,
     includeHistory: input.includeHistory as boolean | undefined,
+    includeUnassessed: input.includeUnassessed as boolean | undefined,
     offset: optionalInteger(input.offset, '结果偏移', 0, Number.MAX_SAFE_INTEGER),
     limit: optionalInteger(input.limit, '结果数量', 1, 100),
   }
@@ -176,7 +180,16 @@ export function registerProjectKnowledgeIpc(dependencies: ProjectKnowledgeIpcDep
       /** 保存项目绑定以拒绝迁移后的迟到读取。 */
       const binding = dependencies.assertProject(workspaceId)
       let result: unknown
-      if (channel === PROJECT_KNOWLEDGE_IPC_CHANNELS.CONFIRM_PLAN) {
+      if (channel === PROJECT_KNOWLEDGE_IPC_CHANNELS.START_EXECUTION) {
+        allowFields(input, ['workspaceId', 'sessionId', 'planRevision', 'itemIds'])
+        const planRevision = optionalInteger(input.planRevision, '计划版本', 1, Number.MAX_SAFE_INTEGER)
+        if (planRevision === undefined) throw new Error('计划版本必填')
+        if (input.itemIds !== undefined && (!Array.isArray(input.itemIds) || input.itemIds.length > 100)) throw new Error('重试条目无效')
+        const itemIds = Array.isArray(input.itemIds) ? input.itemIds.map((id) => requireId(id, '大纲项')) : undefined
+        dependencies.assertWritable(workspaceId)
+        if (!dependencies.service.startExecution) throw new Error('知识执行服务尚未就绪')
+        result = await dependencies.service.startExecution({ workspaceId, sessionId: requireId(input.sessionId, '会话 ID'), planRevision, itemIds })
+      } else if (channel === PROJECT_KNOWLEDGE_IPC_CHANNELS.CONFIRM_PLAN) {
         const confirmInput = parseKnowledgePlanConfirmInput(input)
         dependencies.assertWritable(workspaceId)
         result = await dependencies.service.confirmPlan(confirmInput)

@@ -7,6 +7,7 @@ import type {
   AgentWorkspace,
   AgentSessionMeta,
   KnowledgeEntry,
+  KnowledgeExecutionStartInput,
   KnowledgeReadResult,
   KnowledgeSearchResult,
   KnowledgeSnapshot,
@@ -31,6 +32,10 @@ const workspace: AgentWorkspace = {
   updatedAt: 2,
 }
 const sessionId = 'session-knowledge-memory-smoke'
+/** 持久化整理会话区别于用户当前对话，覆盖重启后 ref 为空的恢复。 */
+const executionSessionId = 'persisted-knowledge-session'
+/** 宿主通知订阅仅在 fixture 内存中运行。 */
+const knowledgeListeners = new Set<(event: { workspaceId: string; generation?: number }) => void>()
 const profilePath = 'user-profile.md'
 const initialProfile = '# 协作画像\n\n- 偏好：结论先行\n'
 
@@ -44,6 +49,8 @@ interface KnowledgeMemorySmokeState {
   forceKnowledgeError: boolean
   /** 新建会话仅保存在内存，用于核对任务目的地与原会话隔离。 */
   createdSessions: AgentSessionMeta[]
+  /** 宿主执行调用记录，用于证明没有同时发送普通 prompt。 */
+  executionCalls: KnowledgeExecutionStartInput[]
 }
 
 const state: KnowledgeMemorySmokeState = {
@@ -57,6 +64,7 @@ const state: KnowledgeMemorySmokeState = {
   readCalls: [],
   forceKnowledgeError: new URLSearchParams(location.search).has('knowledge-error'),
   createdSessions: [],
+  executionCalls: [],
 }
 
 /** 可控读取延迟只用于覆盖快速切换的迟到响应，不进行真实 I/O。 */
@@ -83,6 +91,7 @@ const knowledgeEntry: KnowledgeEntry = {
     relativePath: '产品策划/产品原则.md',
     contentRevision: 'content-r1',
   },
+  admission: { contentType: 'rule', importance: 'high', purpose: '明确产品承诺', scope: '当前版本', claims: [], coverage: [{ topic: '付费权益', status: 'gap', reason: '月度与永久权益尚未核对' }], issues: ['会员权益口径冲突'], outcome: 'needs_evidence', ruleVersion: 1, contentHash: 'fixture-content', evidenceHash: 'fixture-evidence', status: 'needs_evidence' },
   evidence: [{ entryId: 'source-readme', revision: 'source-r1', quote: 'DutyDeck 是一个本地优先的桌面 Agent。' }],
   byteSize: 132,
   indexedBytes: 132,
@@ -102,6 +111,7 @@ const sourceEntry: KnowledgeEntry = {
   summary: '项目入口说明。',
   source: { kind: 'project-file', id: 'README.md', relativePath: 'README.md', revision: 'source-r1' },
   document: undefined,
+  admission: undefined,
 }
 
 /** 已确认且暂停的流程用于证明知识工作流状态不影响独立记忆。 */
@@ -144,6 +154,11 @@ const snapshot: KnowledgeSnapshot = {
         entryId: knowledgeEntry.id,
         status: 'ready',
       }],
+    },
+    execution: {
+      id: 'execution-smoke', generation: 1, sessionId: executionSessionId, planRevision: 2, itemIds: [], status: 'blocked',
+      dispatchId: 'fixture-dispatch', turns: 1, calls: 1, bytes: 100, activeMs: 100, readPages: [], progress: 1,
+      turnStartProgress: 0, failures: { 'outline-product-principles': { code: 'needs_evidence', message: '会员权益需补充依据' } }, reason: 'budget_exhausted', userEvidence: [], updatedAt: 4,
     },
     paused: true,
   },
@@ -206,7 +221,20 @@ const knowledgeApi: ProjectKnowledgeApi = {
     }
   },
   confirmProjectKnowledgePlan: async () => structuredClone(snapshot),
-  pauseProjectKnowledgeWorkflow: async () => structuredClone(snapshot),
+  pauseProjectKnowledgeWorkflow: async (input) => {
+    snapshot.workflow!.paused = input.paused
+    snapshot.revision += 1
+    if (input.paused && snapshot.workflow!.execution) snapshot.workflow!.execution.status = 'paused'
+    return structuredClone(snapshot)
+  },
+  onProjectKnowledgeChanged: (listener) => { knowledgeListeners.add(listener); return () => { knowledgeListeners.delete(listener) } },
+  startProjectKnowledgeExecution: async (input) => {
+    state.executionCalls.push(structuredClone(input))
+    snapshot.revision += 1
+    snapshot.workflow!.paused = false
+    snapshot.workflow!.execution = { ...snapshot.workflow!.execution!, generation: (snapshot.workflow!.execution?.generation ?? 0) + 1, sessionId: input.sessionId, planRevision: input.planRevision, itemIds: input.itemIds ?? [], status: 'queued' }
+    return structuredClone(snapshot)
+  },
   scanProjectKnowledge: async () => {
     state.knowledgeCalls.push('scan')
     return structuredClone(snapshot)
@@ -219,6 +247,13 @@ const knowledgeApi: ProjectKnowledgeApi = {
   undoProjectKnowledgeOperation: async () => structuredClone(snapshot),
   excludeProjectKnowledgeSession: async () => structuredClone(snapshot),
   previewProjectKnowledgeMemory: async () => ({ projectId: workspace.id, inspected: 2, truncated: false, proposals: [] }),
+}
+
+/** 创建失败场景仍走首次规划入口，不把已批准生成错误地退回 prompt。 */
+if (new URLSearchParams(location.search).has('session-error') || new URLSearchParams(location.search).get('case') === 'planning') {
+  snapshot.workflow!.proposal = structuredClone(snapshot.workflow!.approved!)
+  snapshot.workflow!.approved = undefined
+  snapshot.workflow!.execution = undefined
 }
 
 /** 使用打开时正文作为 CAS 基线；不匹配时模拟真实主进程拒绝覆盖。 */
@@ -235,7 +270,7 @@ const store = createStore()
 store.set(agentWorkspacesAtom, [workspace])
 store.set(currentAgentSessionIdAtom, sessionId)
 /** 当前普通会话可被旧逻辑复用，因此能够真实捕获“更新知识库挤入当前对话”的回归。 */
-store.set(agentSessionsAtom, [{ id: sessionId, title: '正在进行的工作', workspaceId: workspace.id, channelId: 'fixture-channel', modelId: 'fixture-model', toolMode: 'standard', createdAt: 1, updatedAt: 1 }])
+store.set(agentSessionsAtom, [{ id: sessionId, title: '正在进行的工作', workspaceId: workspace.id, channelId: 'fixture-channel', modelId: 'fixture-model', toolMode: 'standard', createdAt: 1, updatedAt: 1 }, { id: executionSessionId, title: '项目知识整理', workspaceId: workspace.id, channelId: 'fixture-channel', modelId: 'fixture-model', toolMode: 'standard', createdAt: 1, updatedAt: 1 }])
 store.set(agentSessionDraftsAtom, new Map([[sessionId, '保留当前对话草稿']]))
 
 const memoryChange: WorkspaceMemoryFileChange = {
@@ -294,6 +329,13 @@ Object.defineProperty(window, '__knowledgeMemorySmoke', {
     initialProfile,
     /** 读取真实 Jotai 导航与投递状态，模拟 Agent 消费任务但不调用模型。 */
     workflowState: () => ({ pendingPrompt: store.get(agentPendingPromptAtom), currentSessionId: store.get(currentAgentSessionIdAtom), originalDraft: store.get(agentSessionDraftsAtom).get(sessionId) }),
+    /** 模拟宿主运行结束的事件，组件必须自动刷新真实状态。 */
+    blockExecution: (): void => {
+      snapshot.workflow!.execution!.status = 'blocked'
+      snapshot.workflow!.execution!.reason = 'budget_exhausted'
+      snapshot.revision += 1
+      for (const listener of knowledgeListeners) listener({ workspaceId: workspace.id, generation: snapshot.workflow!.execution!.generation })
+    },
     consumePrompt: (): void => { store.set(agentPendingPromptAtom, null) },
     hasPendingSearch: (): boolean => Boolean(releaseInitialSearch),
     releaseSearch: (): void => { releaseInitialSearch?.() },
