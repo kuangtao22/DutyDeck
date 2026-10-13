@@ -156,12 +156,24 @@ export function ModelSelector({
   // 外部模型优先 → per-conversation 模型
   const selectedModel = externalSelectedModel !== undefined ? externalSelectedModel : conversationModel
 
-  // 每次打开 Popover 时刷新渠道列表，确保最新
+  // 本地模型启用真值来自资产清单；菜单未打开时也监听变化，及时清除过期选项。
   React.useEffect(() => {
-    if (open) {
-      window.electronAPI.listChannels().then(setChannels).catch(console.error)
-      setSearch('')
+    /** 当前订阅的读取代次与卸载标记，避免迟到查询覆盖新状态。 */
+    let generation = 0
+    let active = true
+    /** 读取脱敏渠道投影，不将运行时端点或凭据放进 renderer。 */
+    const refresh = async (): Promise<void> => {
+      const current = ++generation
+      try {
+        const latest = await window.electronAPI.listChannels()
+        if (active && current === generation) setChannels(latest)
+      } catch (error) {
+        console.error('[模型选择器] 刷新本地模型失败:', error)
+      }
     }
+    const unsubscribe = window.electronAPI.onLocalModelChanged(() => { void refresh() })
+    if (open) { void refresh(); setSearch('') }
+    return () => { active = false; unsubscribe() }
   }, [open, setChannels])
 
   const modelOptions = React.useMemo(
@@ -227,6 +239,8 @@ export function ModelSelector({
   // 保持上次有效的模型信息，避免渠道未加载时闪烁"选择模型"
   const stableModelInfoRef = React.useRef(currentModelInfo)
   if (currentModelInfo) stableModelInfoRef.current = currentModelInfo
+  // 本地模型被停用/验证失效后，不能继续用旧缓存冒充可选模型。
+  else if (channelsLoaded && stableModelInfoRef.current?.provider === 'dutydeck-local') stableModelInfoRef.current = null
   const displayModelInfo = currentModelInfo ?? stableModelInfoRef.current
 
   // Tooltip 必须始终保持 controlled 或 uncontrolled 之一。此前在 Popover 打开时传 false、关闭时传

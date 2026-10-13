@@ -14,6 +14,8 @@ export * from './runtime'
 
 // 渠道（AI 供应商）相关类型
 export * from './channel'
+// DutyDeck 内置本地模型与运行时生命周期
+export * from './local-model'
 
 // 代理配置相关类型
 export * from './proxy'

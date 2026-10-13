@@ -89,6 +89,7 @@ function requireSelectedChannel(reference: CapabilityFactoryModelReference, chan
   if (!channel || !channel.models.some((model) => model.id === reference.modelId && model.enabled)) {
     throw new Error('所选渠道或模型已不可用，请在「模型设置」中重新选择。')
   }
+  if (channel.provider === 'dutydeck-local') throw new Error('工厂尚未接入本地模型调度，请明确选择已支持的模型渠道')
   return channel
 }
 
@@ -118,7 +119,10 @@ export function resolveCapabilityFactoryModels(
   } catch (error) {
     return { bindings: [], error: error instanceof Error ? error.message : String(error) }
   }
-  const usable = channels.filter((channel) => channel.enabled && enabledModelIds(channel).length > 0)
+  if (!selection && channels.some((channel) => channel.id === sessionModel?.channelId && channel.provider === 'dutydeck-local')) {
+    return { bindings: [], error: '工厂尚未接入本地模型调度，请在模型设置中明确选择已支持的模型，不会自动转用云端' }
+  }
+  const usable = channels.filter((channel) => channel.enabled && channel.provider !== 'dutydeck-local' && enabledModelIds(channel).length > 0)
   if (usable.length === 0) {
     return { bindings: [], error: '本机没有可用的模型渠道：请先在「设置 > 渠道」里配置并启用一个渠道。' }
   }
@@ -224,6 +228,7 @@ export function createCapabilityFactoryModelCall(
       if (!channel) {
         throw new Error(`渠道不存在或已停用：${invocation.channelId}，无法执行这一步`)
       }
+      if (channel.provider === 'dutydeck-local') throw new Error('工厂尚未接入本地模型调度，请明确选择已支持的模型渠道')
       /** 运行前再次检查模型启用状态，防止预检后渠道设置发生变化。 */
       const modelId = invocation.modelId
       if (!channel.models.some((model) => model.id === modelId && model.enabled)) {

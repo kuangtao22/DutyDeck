@@ -59,7 +59,8 @@
     "dist:debug": "bun run scripts/dist.ts --current-arch --verbose",
     "test:audio-generation-settings-smoke": "bun run scripts/audio-generation-settings-smoke.ts",
     "build:api-workbench-runtime": "esbuild src/utility/api-workbench-runtime.ts --bundle --platform=node --format=cjs --outfile=dist/api-workbench-runtime.cjs --external:electron",
-    "watch:api-workbench-runtime": "esbuild src/utility/api-workbench-runtime.ts --bundle --platform=node --format=cjs --outfile=dist/api-workbench-runtime.cjs --external:electron --watch=forever"
+    "watch:api-workbench-runtime": "esbuild src/utility/api-workbench-runtime.ts --bundle --platform=node --format=cjs --outfile=dist/api-workbench-runtime.cjs --external:electron --watch=forever",
+    "prepare:local-model-engine": "bun run scripts/prepare-local-model-engine.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "6.20.3",

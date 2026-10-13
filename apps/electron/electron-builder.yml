@@ -87,6 +87,12 @@ extraResources:
     to: officecli
     filter:
       - "**/*"
+  # 只携带 llama.cpp 固定版本清单与许可证；引擎二进制由用户在设置页按需下载。
+  - from: resources/local-model-engine
+    to: local-model-engine
+    filter:
+      - "engine-version.json"
+      - "LICENSE"
   # 默认 Skills 模板（首次启动时同步到 ~/.proma/default-skills/）
   - from: default-skills
     to: default-skills
@@ -120,6 +126,8 @@ extraResources:
 # macOS 配置
 # ============================================
 mac:
+  # 子二进制签名后刷新本地引擎摘要，再封签外层 app，维持运行时完整性校验。
+  sign: scripts/sign-local-model-engine.cjs
   artifactName: "DutyDeck-${version}-macos-${arch}.${ext}"
   category: public.app-category.developer-tools
   icon: resources/icon.icns

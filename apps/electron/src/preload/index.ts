@@ -13,7 +13,7 @@ import type { AgentToolMode } from '@proma/shared'
  */
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, SLACK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, PLANNING_IPC_CHANNELS, VAULT_IPC_CHANNELS, AGENT_ISLAND_IPC_CHANNELS, TERMINAL_IPC_CHANNELS, PATH_MANAGEMENT_IPC_CHANNELS, SERVER_OPS_IPC_CHANNELS, WORKSPACE_MENU_IPC_CHANNELS } from '@proma/shared'
+import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, LOCAL_MODEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, SLACK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, PLANNING_IPC_CHANNELS, VAULT_IPC_CHANNELS, AGENT_ISLAND_IPC_CHANNELS, TERMINAL_IPC_CHANNELS, PATH_MANAGEMENT_IPC_CHANNELS, SERVER_OPS_IPC_CHANNELS, WORKSPACE_MENU_IPC_CHANNELS } from '@proma/shared'
 import { createLanBridgePreloadApi } from './lan-bridge-preload'
 import type { LanBridgePreloadApi } from './lan-bridge-preload'
 import { createDesignPreloadApi } from './design-preload'
@@ -70,6 +70,14 @@ import type {
   FetchModelsInput,
   FetchModelsResult,
   ChannelPlanQuotaResult,
+  LocalModelSnapshot,
+  LocalModelDownloadInput,
+  LocalModelAssetInput,
+  LocalModelEnabledInput,
+  LocalModelTestInput,
+  LocalModelRuntimeSnapshot,
+  LocalModelTestResult,
+  LocalModelProgressEvent,
   CodexOAuthLoginResult,
   XaiOAuthLoginResult,
   XaiOAuthDeviceCode,
@@ -466,6 +474,29 @@ export interface ElectronAPI extends LanBridgePreloadApi, NormalPathManagementPr
 
   /** 查询渠道订阅 Plan 额度 */
   getChannelPlanQuota: (channelId: string) => Promise<ChannelPlanQuotaResult>
+
+  /** 获取 DutyDeck 本地模型目录、资产和运行时状态。 */
+  listLocalModels: () => Promise<LocalModelSnapshot>
+  /** 按需下载并校验当前平台的 llama.cpp 本地运行环境。 */
+  downloadLocalModelEngine: () => Promise<void>
+  /** 取消本地运行环境下载，保留可续传部分。 */
+  cancelLocalModelEngineDownload: () => Promise<void>
+  /** 下载并校验指定本地模型。 */
+  downloadLocalModel: (input: LocalModelDownloadInput) => Promise<import('@proma/shared').LocalModelAsset>
+  /** 取消指定本地模型下载。 */
+  cancelLocalModelDownload: (input: LocalModelDownloadInput) => Promise<void>
+  /** 加载本地模型到受管 llama-server。 */
+  startLocalModel: (input: LocalModelAssetInput) => Promise<LocalModelRuntimeSnapshot>
+  /** 停止本地模型并释放运行内存。 */
+  stopLocalModel: () => Promise<void>
+  /** 测试本地模型回复和能力。 */
+  testLocalModel: (input: LocalModelTestInput) => Promise<LocalModelTestResult>
+  /** 只切换模型选择可见性，不会隐式加载模型。 */
+  setLocalModelEnabled: (input: LocalModelEnabledInput) => Promise<import('@proma/shared').LocalModelAsset>
+  /** 订阅本地模型状态变化。 */
+  onLocalModelChanged: (callback: (snapshot: LocalModelSnapshot) => void) => () => void
+  /** 订阅本地模型下载进度。 */
+  onLocalModelProgress: (callback: (event: LocalModelProgressEvent) => void) => () => void
 
   /** 发起 ChatGPT (Codex) OAuth 登录，返回序列化凭据（作为 apiKey 存储） */
   codexOAuthLogin: (method?: import('@proma/shared').CodexOAuthLoginMethod) => Promise<CodexOAuthLoginResult>
@@ -1874,6 +1905,55 @@ const electronAPI: ElectronAPI = {
 
   getChannelPlanQuota: (channelId: string) => {
     return ipcRenderer.invoke(CHANNEL_IPC_CHANNELS.GET_PLAN_QUOTA, channelId)
+  },
+
+  // DutyDeck 内置本地模型
+  listLocalModels: () => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.LIST)
+  },
+
+  downloadLocalModelEngine: () => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.ENGINE_DOWNLOAD)
+  },
+
+  cancelLocalModelEngineDownload: () => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.ENGINE_CANCEL_DOWNLOAD)
+  },
+
+  downloadLocalModel: (input: LocalModelDownloadInput) => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.DOWNLOAD, input)
+  },
+
+  cancelLocalModelDownload: (input: LocalModelDownloadInput) => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.CANCEL_DOWNLOAD, input)
+  },
+
+  startLocalModel: (input: LocalModelAssetInput) => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.START, input)
+  },
+
+  stopLocalModel: () => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.STOP)
+  },
+
+  testLocalModel: (input: LocalModelTestInput) => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.TEST, input)
+  },
+
+  setLocalModelEnabled: (input: LocalModelEnabledInput) => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.SET_ENABLED, input)
+  },
+
+  onLocalModelChanged: (callback: (snapshot: LocalModelSnapshot) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, snapshot: LocalModelSnapshot) => callback(snapshot)
+    ipcRenderer.on(LOCAL_MODEL_IPC_CHANNELS.CHANGED, listener)
+    return () => ipcRenderer.removeListener(LOCAL_MODEL_IPC_CHANNELS.CHANGED, listener)
+  },
+
+  onLocalModelProgress: (callback: (event: LocalModelProgressEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: LocalModelProgressEvent) => callback(progress)
+    ipcRenderer.on(LOCAL_MODEL_IPC_CHANNELS.PROGRESS, listener)
+    return () => ipcRenderer.removeListener(LOCAL_MODEL_IPC_CHANNELS.PROGRESS, listener)
   },
 
   codexOAuthLogin: (method?: import('@proma/shared').CodexOAuthLoginMethod) => {

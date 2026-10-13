@@ -43,6 +43,9 @@ import {
 } from '@proma/shared'
 import type { PromaPermissionMode, AskUserRequest, ExitPlanModeRequest, SDKSystemMessage } from '@proma/shared'
 import type { PiAgentQueryOptions } from './adapters/pi-agent-adapter'
+import { getLocalModelRuntime } from './local-model-runtime-singleton'
+import type { LocalModelLease } from './local-model-runtime'
+import { assertEnabledModelForChannel } from './agent-model-selection'
 import type { GithubCopilotOAuthCredentials } from '@proma/shared'
 import { persistGithubCopilotOAuthCredentials, resolveGithubCopilotOAuthCredentials } from './channel-manager'
 import { getAgentWorkspaceBySlug } from './agent-workspace-manager'
@@ -453,7 +456,7 @@ export class AgentOrchestrator {
     }
 
     // Copilot 的模型额度留给 Agent 正文请求，标题采用稳定的本地摘要。
-    if (channel.provider === 'github-copilot') return fallbackTitle
+    if (channel.provider === 'github-copilot' || channel.provider === 'dutydeck-local') return fallbackTitle
 
     try {
       /** API Key 渠道的运行时密钥；OAuth 渠道保持为空。 */
@@ -1114,7 +1117,9 @@ export class AgentOrchestrator {
     try {
       // 订阅 OAuth 渠道必须保留完整凭据给 Pi runtime，才能在执行中按真实 expires
       // 自动刷新；其余渠道只需解密 API Key。
-      if (channel.provider === 'openai-codex') {
+      if (channel.provider === 'dutydeck-local') {
+        apiKey = ''
+      } else if (channel.provider === 'openai-codex') {
         codexOAuthCredentials = await resolveCodexOAuthCredentials(channelId)
         apiKey = codexOAuthCredentials.access
       } else if (channel.provider === 'github-copilot') {
@@ -1235,6 +1240,8 @@ export class AgentOrchestrator {
     let agentCwd: string | undefined
     let workspaceSlug: string | undefined
     let workspace: import('@proma/shared').AgentWorkspace | undefined
+    /** 本轮独占本地推理资源，直到 adapter 完全收尾后再交给下一任务。 */
+    let localModelLease: LocalModelLease | undefined
 
     try {
       console.log(`[Agent 编排] 启动 Pi runtime — 模型: ${modelId || DEFAULT_MODEL_ID}, resume: ${existingSdkSessionId ?? '无'}`)
@@ -2287,7 +2294,7 @@ export class AgentOrchestrator {
       const handleModelResolved = (model: string): void => {
         if (!isLatestRunGeneration(this.latestRunGenerations, sessionId, runGeneration)) return
         // `[1m]` 是 SDK 内部上下文变体，不应泄漏到标题生成或用户可见的模型名。
-        resolvedModel = model.replace(/\[1m\]$/i, '')
+        resolvedModel = channel.provider === 'dutydeck-local' ? selectedModelId : model.replace(/\[1m\]$/i, '')
         console.log(`[Agent 编排] SDK 确认模型: ${resolvedModel}`)
         this.eventBus.emit(sessionId, { kind: 'proma_event', event: { type: 'model_resolved', model: resolvedModel } })
       }
@@ -2308,6 +2315,11 @@ export class AgentOrchestrator {
         : [...piBuiltinTools, ...piMcpTools, ...(extensions.piCustomTools ?? [])]
       /** 运行期间已确认的凭据版本，刷新只能条件替换相同版本，不能覆盖用户换号。 */
       let githubCopilotCredentialsSnapshot = githubCopilotOAuthCredentials
+      if (channel.provider === 'dutydeck-local') {
+        assertEnabledModelForChannel({ channelId, modelId: selectedModelId, purpose: 'Agent' })
+        localModelLease = await getLocalModelRuntime().acquire(selectedModelId, runIdentity.signal)
+        checkpoint()
+      }
       const queryOptions: PiAgentQueryOptions = {
         sessionId,
         toolMode: runToolMode,
@@ -2320,6 +2332,13 @@ export class AgentOrchestrator {
         apiKey,
         baseUrl: channel.baseUrl,
         provider: channel.provider,
+        ...(localModelLease ? { localModelBinding: {
+          assetId: selectedModelId,
+          ...localModelLease.endpoint,
+          contextWindow: localModelLease.contextWindow,
+          maxTokens: localModelLease.maxTokens,
+          engineVersion: getLocalModelRuntime().listSnapshot().runtime.engineVersion ?? '',
+        } } : {}),
         channelId,
         channelName: channel.name,
         proxyUrl,
@@ -3011,6 +3030,7 @@ export class AgentOrchestrator {
       failRun(recoveryFailure, getAgentSessionMessages(sessionId), { startedAt: streamStartedAt })
 
     } finally {
+      localModelLease?.release()
       await runFileChanges?.finish()
       /** 旧 run 收尾时若新 generation 已占槽，不得清理新运行的审批状态。 */
       const activeGenerationAtCleanup = this.activeSessions.get(sessionId)

@@ -7,6 +7,7 @@
 import * as React from 'react'
 import { useAtom, useSetAtom } from 'jotai'
 import { AlertTriangle, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { PROVIDER_LABELS } from '@proma/shared'
@@ -170,10 +171,37 @@ export function ChannelSettings(): React.ReactElement {
 
   /** 表单保存回调 */
   const handleFormSaved = async (savedChannel?: Channel): Promise<void> => {
-    setViewMode('list')
-    setEditingChannel(null)
+    if (savedChannel?.provider === 'dutydeck-local') {
+      setEditingChannel(savedChannel)
+      setViewMode('edit')
+    } else {
+      setViewMode('list')
+      setEditingChannel(null)
+    }
     await loadChannels()
     if (savedChannel?.provider === 'github-copilot') setRecentlyAuthorizedChannelId(savedChannel.id)
+  }
+
+  /** 串行化本地入口，避免连续点击创建重复供应商。 */
+  const openingLocalRef = React.useRef(false)
+
+  /** 先保存唯一的本地供应商，再进入同页模型管理，避免未保存配置发起下载。 */
+  const handleOpenLocal = async (): Promise<void> => {
+    if (openingLocalRef.current) return
+    openingLocalRef.current = true
+    try {
+      // 重新读取权威列表，防止页面缓存过期后重复创建。
+      const latest = await window.electronAPI.listChannels()
+      const local = latest.find((item) => item.provider === 'dutydeck-local')
+        ?? await window.electronAPI.createChannel({ name: 'DutyDeck 本地模型', provider: 'dutydeck-local', baseUrl: '', apiKey: '', models: [], enabled: true })
+      setEditingChannel(local)
+      setViewMode('edit')
+      await loadChannels()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '创建本地供应商失败')
+    } finally {
+      openingLocalRef.current = false
+    }
   }
 
   /** 清理上游商业版遗留的、当前版本不支持的渠道。 */
@@ -192,12 +220,14 @@ export function ChannelSettings(): React.ReactElement {
   const handleFormCancel = (): void => {
     setViewMode('list')
     setEditingChannel(null)
+    void loadChannels()
   }
 
   // 表单视图
   if (viewMode === 'create' || viewMode === 'edit') {
     return (
       <ChannelForm
+        key={editingChannel?.id ?? 'create'}
         channel={editingChannel}
         onSaved={handleFormSaved}
         onCancel={handleFormCancel}
@@ -213,10 +243,13 @@ export function ChannelSettings(): React.ReactElement {
         title="模型配置"
         description="管理 AI 供应商连接，配置 API Key 和可用模型。"
         action={
+          <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={() => void handleOpenLocal()}>本地模型</Button>
           <Button size="sm" onClick={() => setViewMode('create')}>
             <Plus size={16} />
             <span>添加配置</span>
           </Button>
+          </div>
         }
       >
         {recentlyAuthorizedChannel && (

@@ -1,5 +1,7 @@
 # MEMORY.md
 
+- 2026-10-13（本地模型提交边界）：本次 Git 提交限定于 DutyDeck 内置本地模型、llama.cpp 按需安装及相关设计/验证文档；同文件里的数据根迁移、工厂补评和其他任务改动继续保留在工作树。提交前本地模型与 Pi 注册定向测试 115 项、8 个 workspace 类型检查及完整 Electron 构建通过；真实引擎下载、真实模型推理和开发版主界面仍未验收。用户选择保留安装版、暂停开发启动的决定继续有效。Nowledge Mem 定向检索返回 HTTP 502。
+
 - 2026-10-13（统一媒体 Skill 与旧生图 Skill 清理）：移除本机 `~/.proma/default-skills/proma-generate-image`，并把仍保留的 `proma-gpt-image-2` 兼容入口改为转发 `media-models`；DutyDeck 新增 `apps/electron/default-skills/media-models/SKILL.md`，每次媒体任务分页读取 `media_list_models` 与 `media_list_api_models`，只按真实 `available/supported` 和 `text-to-image`、`text-to-video`、`text-to-speech`、`voice-cloning`、`text-to-music` 能力路由。当前代码没有音乐执行 adapter，Skill 必须把 `configuration-only` 的音乐模型报告为配置缺口，不能伪装成可执行歌曲生成。对应静态合同与统一媒体定向回归已加入；未改变 IPC、凭据和执行器，新增开销仅为媒体任务开始时的有界目录读取。
 
 - 2026-10-12（知识库内容准入要求，历史方案阶段）：用户明确要求同时评估重要内容、业务与是否达到入库标准。应区分生成完成、内容可复用和事实已确认；重要性按业务影响判断，不能用字数/重复次数/模型总分替代证据。方案补充“按类型可入库、待补证据、不新增”三类结果，计划与历史可以按类型保存，重要冲突不能作为当前事实自动使用。四份“续命”样本存在权益、隐私、导出恢复与新旧阶段口径冲突；仅完成材料对照，未核验当前产品或发布状态。最低内容准入应随第一阶段落地，而非等流程修好后再做。详见 `docs/superpowers/specs/2026-10-12-knowledge-extraction-reliability-design.md` 第 7 节；当时尚未实施，现已按文末实施记录落地。Nowledge Mem 定向检索已尝试，本机服务连接拒绝，未同步。

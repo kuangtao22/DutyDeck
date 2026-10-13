@@ -82,6 +82,7 @@ export function CapabilityFactoryModelSettings({ sessionId, scene, onSceneChange
           {selected ? <Button type="button" variant="ghost" size="sm" className="h-6 shrink-0 px-1.5 text-muted-foreground" onClick={() => { void save(target, null) }}>{defaultLabel}</Button> : null}
         </div>
         <ModelSelector
+          excludedProviders={['dutydeck-local']}
           key={selected ? `${selected.channelId}:${selected.modelId}` : 'default'}
           externalSelectedModel={selected ?? null}
           onModelSelect={(option) => { void save(target, { channelId: option.channelId, modelId: option.modelId }) }}

@@ -18,6 +18,7 @@ import {
 import { updateStatusAtom, updaterAvailableAtom, checkForUpdates } from '@/atoms/updater'
 import { environmentCheckResultAtom } from '@/atoms/environment'
 import { EnvironmentCheckCard } from '@/components/environment/EnvironmentCheckCard'
+import { LocalModelEngineCard } from '@/components/environment/LocalModelEngineCard'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { ReleaseNotesViewer } from './ReleaseNotesViewer'
@@ -290,6 +291,9 @@ function EnvironmentCard(): React.ReactElement {
       </div>
 
       <div className="p-4 space-y-3">
+        {/* llama.cpp 与 Node.js、Git 一样属于跨配置页复用的可选环境能力。 */}
+        <LocalModelEngineCard />
+
         {/* Node.js 检测卡片 */}
         <EnvironmentCheckCard
           name="Node.js"

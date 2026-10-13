@@ -337,6 +337,7 @@ import {
 } from './lib/vault-service'
 import { registerUpdaterIpc } from './lib/updater/updater-ipc'
 import { createLanBridgeIpcDependencies, registerLanBridgeIpcHandlers } from './lib/lan-bridge/lan-bridge-ipc'
+import { registerLocalModelIpcHandlers } from './lib/local-model-ipc'
 import {
   listChannels,
   createChannel,
@@ -2248,6 +2249,19 @@ function getAgentCanvasBindingStore(): AgentCanvasBindingStore {
 }
 
 export function registerIpcHandlers(): void {
+  /** 本地模型状态只通过结构化快照广播，绝不把引擎路径或短期令牌发给 renderer。 */
+  registerLocalModelIpcHandlers(ipcMain, {
+    assertSender: (event) => {
+      const window = getMainWindow()
+      if (!window || window.isDestroyed() || window.webContents.id !== event.sender.id || event.senderFrame !== event.sender.mainFrame) {
+        throw new Error('仅主窗口可以管理本地模型')
+      }
+    },
+    listTargets: () => {
+      const window = getMainWindow()
+      return window && !window.isDestroyed() ? [window.webContents] : []
+    },
+  })
   /** 当前进程共享预览预算；服务随窗口导航/关闭回收各自 lease。 */
   const htmlPreviewService = createHtmlPreviewService({ run: runStableDirectoryNative })
   /** normal 数据根已准备完成后再取得业务 Store，并在注册任何 handler 前完成初始化。 */

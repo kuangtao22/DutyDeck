@@ -33,6 +33,8 @@ export type ProviderType =
   | 'openai-codex'
   | 'github-copilot'
   | 'xai'
+  /** DutyDeck 自行管理的 llama-server + GGUF 本地运行时。 */
+  | 'dutydeck-local'
   /**
    * OpenAI Chat Completions 的自定义请求地址。
    *
@@ -71,6 +73,8 @@ export const PROVIDER_DEFAULT_URLS: Record<ProviderType, string> = {
   'openai-codex': '',
   'github-copilot': '',
   xai: '',
+  // 内置运行时由主进程动态分配回环端点，渠道不保存可编辑地址。
+  'dutydeck-local': '',
   custom: '',
 }
 
@@ -102,12 +106,13 @@ export const PROVIDER_LABELS: Record<ProviderType, string> = {
   'openai-codex': 'ChatGPT 订阅 (Codex)',
   'github-copilot': 'GitHub Copilot 订阅',
   xai: 'xAI 订阅 (Grok)',
+  'dutydeck-local': 'DutyDeck 本地运行时',
   custom: 'OpenAI Chat Completions（自定义地址）',
 }
 
 /** 使用 Pi 订阅专用传输、仅允许在 Agent 模式运行的渠道。 */
 export function isAgentOnlyProvider(provider: ProviderType): boolean {
-  return provider === 'openai-codex' || provider === 'github-copilot' || provider === 'xai'
+  return provider === 'openai-codex' || provider === 'github-copilot' || provider === 'xai' || provider === 'dutydeck-local'
 }
 
 /**

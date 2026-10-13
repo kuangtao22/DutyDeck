@@ -65,6 +65,26 @@ export function getChannelsPath(): string {
 }
 
 /**
+ * 获取 DutyDeck 内置模型目录。
+ *
+ * @param configDir 可选的业务数据根，测试可注入临时目录。
+ * @returns 默认路径为 ~/.proma/models/
+ */
+export function getLocalModelsDir(configDir = getConfigDir()): string {
+  return join(configDir, 'models')
+}
+
+/**
+ * 获取 DutyDeck 内置模型清单路径。
+ *
+ * @param configDir 可选的业务数据根，测试可注入临时目录。
+ * @returns 默认路径为 ~/.proma/models/manifest.json
+ */
+export function getLocalModelsManifestPath(configDir = getConfigDir()): string {
+  return join(getLocalModelsDir(configDir), 'manifest.json')
+}
+
+/**
  * 获取对话索引文件路径
  *
  * @returns 默认路径为 ~/.proma/conversations.json

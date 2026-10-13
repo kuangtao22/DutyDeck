@@ -10,6 +10,8 @@ import { readFileSync, existsSync } from 'node:fs'
 import { safeStorage } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { getChannelsPath } from './config-paths'
+import { getLocalModelRuntime } from './local-model-runtime-singleton'
+import { projectLocalModelChannel } from './local-model-channel'
 import type {
   Channel,
   ChannelCreateInput,
@@ -547,7 +549,8 @@ export function listChannels(): Channel[] {
     return config.channels
   }
 
-  return config.channels
+  return config.channels.map((channel) => channel.provider === 'dutydeck-local'
+    ? projectLocalModelChannel(channel, getLocalModelRuntime().listSnapshot()) : channel)
 }
 
 /**
@@ -557,7 +560,8 @@ export function listChannels(): Channel[] {
  */
 export function getChannelById(id: string): Channel | undefined {
   const config = readConfig()
-  return config.channels.find((c) => c.id === id)
+  const channel = config.channels.find((c) => c.id === id)
+  return channel?.provider === 'dutydeck-local' ? projectLocalModelChannel(channel, getLocalModelRuntime().listSnapshot()) : channel
 }
 
 /**
@@ -569,14 +573,17 @@ export function getChannelById(id: string): Channel | undefined {
 export function createChannel(input: ChannelCreateInput): Channel {
   const config = readConfig()
   const now = Date.now()
+  if (input.provider === 'dutydeck-local' && config.channels.some((channel) => channel.provider === 'dutydeck-local')) {
+    throw new Error('DutyDeck 本地运行时已存在，请编辑现有配置')
+  }
 
   const channel: Channel = {
     id: randomUUID(),
     name: input.name,
     provider: input.provider,
-    baseUrl: input.baseUrl,
-    apiKey: encryptApiKey(input.apiKey),
-    models: input.models,
+    baseUrl: input.provider === 'dutydeck-local' ? '' : input.baseUrl,
+    apiKey: input.provider === 'dutydeck-local' ? '' : encryptApiKey(input.apiKey),
+    models: input.provider === 'dutydeck-local' ? [] : input.models,
     enabled: input.enabled,
     createdAt: now,
     updatedAt: now,
@@ -586,7 +593,7 @@ export function createChannel(input: ChannelCreateInput): Channel {
   writeConfig(config)
 
   console.log(`[渠道管理] 已创建渠道: ${channel.name} (${channel.id})`)
-  return channel
+  return channel.provider === 'dutydeck-local' ? projectLocalModelChannel(channel, getLocalModelRuntime().listSnapshot()) : channel
 }
 
 /**
@@ -607,6 +614,9 @@ export function updateChannel(id: string, input: ChannelUpdateInput): Channel {
   const existing = config.channels[index]!
   /** 额度缓存以渠道更新时间区分 Copilot 账号，换号时必须保证版本严格递增。 */
   const nextProvider = input.provider ?? existing.provider
+  if (nextProvider !== existing.provider && (nextProvider === 'dutydeck-local' || existing.provider === 'dutydeck-local')) {
+    throw new Error('本地运行时与云端配置不能互相转换，请单独添加配置')
+  }
   /** 只在明文凭据实际变化时启用单调时间戳，普通渠道编辑维持原有更新时间语义。 */
   const hasChangedGithubCopilotCredentials = nextProvider === 'github-copilot'
     && Boolean(input.apiKey)
@@ -620,9 +630,9 @@ export function updateChannel(id: string, input: ChannelUpdateInput): Channel {
     ...existing,
     name: input.name ?? existing.name,
     provider: nextProvider,
-    baseUrl: input.baseUrl ?? existing.baseUrl,
-    apiKey: input.apiKey ? encryptApiKey(input.apiKey) : existing.apiKey,
-    models: input.models ?? existing.models,
+    baseUrl: nextProvider === 'dutydeck-local' ? '' : input.baseUrl ?? existing.baseUrl,
+    apiKey: nextProvider === 'dutydeck-local' ? '' : input.apiKey ? encryptApiKey(input.apiKey) : existing.apiKey,
+    models: nextProvider === 'dutydeck-local' ? [] : input.models ?? existing.models,
     enabled: input.enabled ?? existing.enabled,
     updatedAt: nextUpdatedAt,
   }
@@ -631,7 +641,7 @@ export function updateChannel(id: string, input: ChannelUpdateInput): Channel {
   writeConfig(config)
 
   console.log(`[渠道管理] 已更新渠道: ${updated.name} (${updated.id})`)
-  return updated
+  return updated.provider === 'dutydeck-local' ? projectLocalModelChannel(updated, getLocalModelRuntime().listSnapshot()) : updated
 }
 
 /**
@@ -664,7 +674,7 @@ export function decryptApiKey(channelId: string): string {
     throw new Error(`渠道不存在: ${channelId}`)
   }
 
-  return decryptKey(channel.apiKey)
+  return channel.provider === 'dutydeck-local' ? '' : decryptKey(channel.apiKey)
 }
 
 /**
@@ -861,6 +871,7 @@ export async function resolveChannelRuntimeApiKey(channelId: string): Promise<st
   if (!channel) {
     throw new Error(`渠道不存在: ${channelId}`)
   }
+  if (channel.provider === 'dutydeck-local') throw new Error('本地模型仅支持受管 Agent 调用，请通过本地运行时取得租约')
 
   if (channel.provider === 'openai-codex') return resolveCodexAccessToken(channelId)
   if (channel.provider === 'github-copilot') return (await resolveGithubCopilotOAuthCredentials(channelId)).access
@@ -880,6 +891,7 @@ export async function testChannel(channelId: string): Promise<ChannelTestResult>
   if (!channel) {
     return { success: false, message: '渠道不存在' }
   }
+  if (channel.provider === 'dutydeck-local') return { success: false, message: '请在本地模型列表中加载并测试模型' }
 
   const apiKey = decryptKey(channel.apiKey)
   const proxyUrl = await getEffectiveProxyUrl()
@@ -1887,6 +1899,7 @@ export async function getChannelPlanQuota(channelId: string): Promise<ChannelPla
  * 适用于创建/编辑渠道时用户在保存前先验证连接。
  */
 export async function testChannelDirect(input: ChannelDirectTestInput): Promise<ChannelTestResult> {
+  if (input.provider === 'dutydeck-local') return { success: false, message: '请在本地模型列表中加载并测试模型' }
   const proxyUrl = await getEffectiveProxyUrl()
   const provider = inferProviderFromBaseUrl(input.provider, input.baseUrl)
 
@@ -1985,6 +1998,7 @@ export async function testChannelDirect(input: ChannelDirectTestInput): Promise<
  * 针对不同供应商使用不同的 API 端点和响应解析。
  */
 export async function fetchModels(input: FetchModelsInput): Promise<FetchModelsResult> {
+  if (input.provider === 'dutydeck-local') return { success: false, message: '本地模型由 DutyDeck 模型目录管理', models: [] }
   const proxyUrl = await getEffectiveProxyUrl()
   const provider = inferProviderFromBaseUrl(input.provider, input.baseUrl)
 

@@ -238,7 +238,7 @@ export async function sendMessage(
   // not currently implement. Keep this guard for historical conversations that
   // still reference a formerly selectable subscription model.
   if (isAgentOnlyProvider(channel.provider)) {
-    const providerName = channel.provider === 'xai'
+    const providerName = channel.provider === 'dutydeck-local' ? 'DutyDeck 本地运行时' : channel.provider === 'xai'
       ? 'xAI（Grok OAuth）'
       : channel.provider === 'github-copilot'
         ? 'GitHub Copilot 订阅'

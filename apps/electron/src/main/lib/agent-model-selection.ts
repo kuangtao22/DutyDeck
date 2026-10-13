@@ -55,16 +55,18 @@ export function listEnabledAgentModelsForChannel(
     throw new Error(`${purpose}引用的渠道不存在或未启用: ${channelId}`)
   }
 
+  const models = channel.models
+    .filter((model) => model.enabled)
+    .map((model) => ({
+      id: model.id,
+      name: model.name,
+      source: model.source,
+    }))
+
   return {
     channelId: channel.id,
     channelName: channel.name,
     provider: channel.provider,
-    models: channel.models
-      .filter((model) => model.enabled)
-      .map((model) => ({
-        id: model.id,
-        name: model.name,
-        source: model.source,
-      })),
+    models,
   }
 }

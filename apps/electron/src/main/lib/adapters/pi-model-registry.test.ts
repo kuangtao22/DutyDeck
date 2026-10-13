@@ -102,6 +102,31 @@ describe('GLM-5.3-FlashX 离线模型注册', () => {
   })
 })
 
+describe('DutyDeck 本地模型注册', () => {
+  test('Given 本地模型已由受管 runtime 加载 When 构建 Pi 模型 Then 使用短期端点和清单窗口', async () => {
+    let registeredModel: Model<Api> | undefined
+    const modelRuntime = {
+      registerProvider: (_providerName: string, provider: { models: Model<Api>[] }) => { registeredModel = provider.models[0] },
+      getModel: () => registeredModel,
+    }
+    const sdk = {
+      ModelRuntime: { create: async () => modelRuntime },
+    } as unknown as Parameters<typeof buildModel>[0]
+      const { model } = await buildModel(sdk, {
+        sessionId: 'local-session', provider: 'dutydeck-local', model: 'qwen3-8b-revision1', apiKey: '',
+        localModelBinding: { assetId: 'qwen3-8b-revision1', modelId: 'qwen3-8b', baseUrl: 'http://127.0.0.1:43123/v1', token: 'short-lived', contextWindow: 8192, maxTokens: 2048, engineVersion: 'b11429' },
+      })
+      expect(model).toMatchObject({ api: 'openai-completions', baseUrl: 'http://127.0.0.1:43123/v1', contextWindow: 8192, maxTokens: 2048, reasoning: false, input: ['text'], compat: { supportsDeveloperRole: false, maxTokensField: 'max_tokens' } })
+      expect(model.id).toBe('qwen3-8b')
+  })
+  test('Given 没有主进程租约 When 构建本地模型 Then 拒绝且不回退云端', async () => {
+    await expect(buildModel({} as Parameters<typeof buildModel>[0], { sessionId: 'local', provider: 'dutydeck-local', model: 'qwen', apiKey: 'stale-cloud-key', baseUrl: 'https://example.com' })).rejects.toThrow('租约')
+  })
+  test('Given 租约被替换为外部地址 When 构建 Then 在注册前拒绝', async () => {
+    await expect(buildModel({} as Parameters<typeof buildModel>[0], { sessionId: 'local', provider: 'dutydeck-local', model: 'qwen-rev', apiKey: '', localModelBinding: { assetId: 'qwen-rev', modelId: 'qwen', baseUrl: 'https://example.com/v1', token: 'secret', contextWindow: 8192, maxTokens: 1024, engineVersion: 'b11429' } })).rejects.toThrow('租约无效')
+  })
+})
+
 describe('MiMo V2.6 离线模型注册', () => {
   test('Given Pi 0.87.1 catalog 已包含 MiMo V2.6 When 构建模型 Then 优先使用目录中的上下文和输出上限', async () => {
     let registeredModel: Model<Api> | undefined

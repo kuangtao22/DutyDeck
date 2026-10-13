@@ -26,6 +26,7 @@ import {
 import { toast } from 'sonner'
 import { useSetAtom } from 'jotai'
 import { channelFormDirtyAtom } from '@/atoms/settings-tab'
+import { LocalModelSettings } from './LocalModelSettings'
 import { mergeFetchedChannelModels } from '@/lib/channel-model-catalog'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -84,7 +85,7 @@ interface ChannelFormProps {
 }
 
 /** 所有可选供应商（'qwen-anthropic' 仅为兼容存量 Anthropic 渠道保留，不再出现在新建下拉） */
-const PROVIDER_OPTIONS: ProviderType[] = ['anthropic', 'anthropic-compatible', 'openai', 'openai-responses', 'openai-codex', 'github-copilot', 'xai', 'deepseek', 'google', 'kimi-api', 'kimi-coding', 'opencode-go-openai', 'zhipu', 'zhipu-coding', 'zhipu-coding-team', 'ark-coding-plan', 'doubao', 'doubao-api', 'minimax', 'qwen', 'qwen-token-plan', 'xiaomi', 'xiaomi-token-plan', 'custom']
+const PROVIDER_OPTIONS: ProviderType[] = ['anthropic', 'anthropic-compatible', 'openai', 'openai-responses', 'openai-codex', 'github-copilot', 'xai', 'dutydeck-local', 'deepseek', 'google', 'kimi-api', 'kimi-coding', 'opencode-go-openai', 'zhipu', 'zhipu-coding', 'zhipu-coding-team', 'ark-coding-plan', 'doubao', 'doubao-api', 'minimax', 'qwen', 'qwen-token-plan', 'xiaomi', 'xiaomi-token-plan', 'custom']
 
 /** 需要用 messages 端点测试的供应商预设模型 */
 const PROVIDER_TEST_MODEL_PRESETS: Partial<Record<ProviderType, string[]>> = {
@@ -217,7 +218,6 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
   const [showApiKey, setShowApiKey] = React.useState(false)
   const [models, setModels] = React.useState<ChannelModel[]>(channel?.models ?? [])
   const [enabled, setEnabled] = React.useState(channel?.enabled ?? true)
-
   // 新模型输入
   const [newModelId, setNewModelId] = React.useState('')
   const [newModelName, setNewModelName] = React.useState('')
@@ -315,6 +315,7 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
   /** Copilot 属于 OAuth 订阅渠道，不展示普通 API Key 表单。 */
   const isGithubCopilotProvider = provider === 'github-copilot'
   const isXaiProvider = provider === 'xai'
+  const isLocalProvider = provider === 'dutydeck-local'
   const isSubscriptionProvider = isCodexProvider || isGithubCopilotProvider || isXaiProvider
   const effectiveApiKey = isZhipuTeamProvider ? buildZhipuTeamSecret(zhipuTeamSecret) : apiKey
   // 订阅渠道的 apiKey state 存的是登录后拿到的凭据 JSON；能解析出有效凭据即视为已登录。
@@ -330,7 +331,7 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
         ? Boolean(githubCopilotCredentials)
         : isXaiProvider
         ? Boolean(xaiCredentials)
-        : Boolean(apiKey.trim())
+        : isLocalProvider ? true : Boolean(apiKey.trim())
   const requiresBaseUrlRiskAcknowledgement = isThirdPartyBaseUrl(provider, baseUrl)
     && normalizeBaseUrl(baseUrl) !== acknowledgedBaseUrl
 
@@ -363,7 +364,7 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
         provider: currentProvider,
         baseUrl: currentBaseUrl,
         apiKey: currentApiKey || undefined,
-        models: currentModels,
+        ...(currentProvider !== 'dutydeck-local' && { models: currentModels }),
         enabled: currentEnabled,
       })
       toast.success('已保存', { id: 'auto-save-success' })
@@ -423,6 +424,9 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
     modelFetchGenerationRef.current += 1
     setFetchingModels(false)
     const p = newProvider as ProviderType
+    // 已保存的本地与远程配置不能互转，防止残留凭据与模型身份。
+    if (isEdit && (p === 'dutydeck-local' || provider === 'dutydeck-local')) return
+    if (p === 'dutydeck-local') { setApiKey(''); setModels([]); setZhipuTeamSecret(EMPTY_ZHIPU_TEAM_SECRET) }
     // 若 name 为空或仍是上一个 provider 的默认名称，则用新 provider 的名称覆盖；用户手动改过的 name 不动
     const trimmedName = name.trim()
     if (!trimmedName || trimmedName === PROVIDER_LABELS[provider]) {
@@ -437,7 +441,7 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
       const parsed = parseZhipuTeamSecret(apiKey)
       setZhipuTeamSecret({ ...EMPTY_ZHIPU_TEAM_SECRET, ...parsed })
       setApiKey(buildZhipuTeamSecret({ ...EMPTY_ZHIPU_TEAM_SECRET, ...parsed }))
-    } else if (provider === 'zhipu-coding-team') {
+    } else if (provider === 'zhipu-coding-team' && p !== 'dutydeck-local') {
       setApiKey(zhipuTeamSecret.apiKey)
       setZhipuTeamSecret(EMPTY_ZHIPU_TEAM_SECRET)
     }
@@ -865,8 +869,8 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
         name,
         provider,
         baseUrl,
-        apiKey: effectiveApiKey,
-        models,
+        apiKey: isLocalProvider ? '' : effectiveApiKey,
+        models: isLocalProvider ? [] : models,
         enabled,
       }
       const savedChannel = await window.electronAPI.createChannel(input)
@@ -921,7 +925,7 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
 
   /** 创建渠道（仅新建模式） */
   const handleCreate = async (): Promise<void> => {
-    if (models.length === 0) {
+    if (!isLocalProvider && models.length === 0) {
       toast.warning('尚未配置模型，建议先从供应商获取或手动添加', { id: 'no-models-warn' })
       return
     }
@@ -935,7 +939,7 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
 
   /** 检测表单是否有未保存内容 */
   const isDirty = !isEdit && (name.trim() !== '' || effectiveApiKey.trim() !== '' || models.length > 0)
-  const hasNoModels = !isEdit && models.length === 0
+  const hasNoModels = !isEdit && !isLocalProvider && models.length === 0
 
   /**
    * 编辑模式下若当前 provider 已从新建下拉移除（如旧版 'qwen'），
@@ -944,12 +948,12 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
   const providerSelectOptions = React.useMemo(() => {
     if (isEdit && !PROVIDER_OPTIONS.includes(provider)) {
       return [
-        ...PROVIDER_SELECT_OPTIONS,
+        ...PROVIDER_SELECT_OPTIONS.filter((option) => option.value !== 'dutydeck-local'),
         { value: provider, label: PROVIDER_LABELS[provider], icon: getProviderLogo(provider) },
       ]
     }
-    return PROVIDER_SELECT_OPTIONS
-  }, [isEdit, provider])
+    return isEdit ? PROVIDER_SELECT_OPTIONS.filter((option) => (option.value === 'dutydeck-local') === isLocalProvider) : PROVIDER_SELECT_OPTIONS
+  }, [isEdit, provider, isLocalProvider])
 
   /** 返回按钮：创建模式下有未保存内容时拦截 */
   const handleBack = (): void => {
@@ -957,11 +961,8 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
       setShowExitDialog(true)
       return
     }
-    if (isEdit) {
-      onSaved()
-    } else {
-      onCancel()
-    }
+    if (isEdit && !isLocalProvider) onSaved()
+    else onCancel()
   }
 
   /** 放弃编辑 */
@@ -1062,7 +1063,7 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
             required
           />
           {/* 订阅 provider 的请求地址由 Pi SDK 内置管理，无需用户填写 */}
-          {!isSubscriptionProvider && (
+          {!isSubscriptionProvider && !isLocalProvider && (
             <SettingsInput
               label={getUrlInputLabel(provider)}
               value={baseUrl}
@@ -1072,8 +1073,13 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
               description={baseUrl.trim() ? `预览：${buildPreviewUrl(baseUrl, provider)}` : undefined}
             />
           )}
-          {/* API Key + 测试连接同行 */}
-          <div className="px-4 py-3 space-y-2">
+          {/* API Key + 测试连接同行；内置 provider 不需要凭据或地址。 */}
+          {isLocalProvider ? (
+            <div className="px-4 py-3 text-sm text-muted-foreground space-y-1">
+              <div className="font-medium text-foreground">DutyDeck 内置本地运行时</div>
+              <div>模型文件、校验、加载和测试都由 DutyDeck 主进程管理，不需要 Ollama、API Key 或外部地址。</div>
+            </div>
+          ) : <div className="px-4 py-3 space-y-2">
             <div className="flex items-center justify-between">
               <div className="text-sm font-medium text-foreground">
                 {isCodexProvider ? 'ChatGPT 登录' : isGithubCopilotProvider ? 'GitHub Copilot 登录' : isXaiProvider ? 'xAI 登录' : isZhipuTeamProvider ? '智谱团队版凭证' : 'API Key'}
@@ -1289,7 +1295,7 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
                 <span className="min-w-0 break-all">{testResult.message}</span>
               </div>
             )}
-          </div>
+          </div>}
           <SettingsToggle
             label="启用此配置"
             description="关闭后该配置的模型不会在选择列表中出现"
@@ -1299,6 +1305,9 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
         </SettingsCard>
       </SettingsSection>
 
+      {isLocalProvider && channel && <LocalModelSettings />}
+
+      {!isLocalProvider && <>
       {/* 已启用模型 */}
       <SettingsSection
         title="已启用模型"
@@ -1341,7 +1350,7 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
       {/* 可用模型 */}
       <SettingsSection
         title="可用模型"
-        action={
+        action={!isLocalProvider ? (
           <Button
             variant="outline"
             size="sm"
@@ -1357,10 +1366,10 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
             )}
             <span>从供应商获取</span>
           </Button>
-        }
+        ) : undefined}
       >
         {/* 拉取结果提示 */}
-        {fetchResult && (
+        {!isLocalProvider && fetchResult && (
           <div className={cn(
             'flex items-center gap-1.5 text-xs px-1',
             fetchResult.success ? 'text-emerald-600' : 'text-destructive'
@@ -1478,6 +1487,8 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
           </div>}
         </SettingsCard>
       </SettingsSection>
+
+      </>}
 
       {/* 第三方 Base URL 风险确认 */}
       <AlertDialog

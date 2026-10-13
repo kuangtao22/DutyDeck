@@ -82,6 +82,7 @@ for (const key of Object.keys(process.env)) {
 
 import { createApplicationMenu } from './menu'
 import { registerIpcHandlers } from './ipc'
+import { shutdownLocalModelRuntime } from './lib/local-model-runtime-singleton'
 import { startProjectKnowledgeObservation } from './lib/project-knowledge-observer'
 import { getDefaultDesignJobManager } from './lib/design/design-job-manager'
 import { createTray, destroyTray, getTray, setTrayFlash } from './tray'
@@ -1134,6 +1135,7 @@ app.on('before-quit', () => {
     { name: '退出状态', run: setQuitting },
     { name: 'Design Job 中断', run: () => { getDefaultDesignJobManager()?.markRunningInterrupted() } },
     { name: 'Agent 进程', run: stopAllAgents },
+    { name: 'DutyDeck 本地模型', run: () => { void shutdownLocalModelRuntime() } },
     { name: '终端进程', run: () => { void stopAllTerminals() } },
     { name: '浏览器控制器', run: () => { browserController.dispose() } },
     { name: '生成任务', run: stopAllGenerations },

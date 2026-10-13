@@ -231,6 +231,16 @@ export interface PiAgentQueryOptions extends AgentQueryInput {
   apiKey: string
   baseUrl?: string
   provider: ProviderType
+  /** 主进程取得的本地模型端点快照；只在当前查询内存中传递。 */
+  localModelBinding?: {
+    assetId: string
+    modelId: string
+    baseUrl: string
+    token: string
+    contextWindow: number
+    maxTokens: number
+    engineVersion: string
+  }
   /** OAuth credential coordination key; equals the selected Proma channel id. */
   channelId?: string
   channelName?: string
@@ -443,7 +453,8 @@ function normalizeProxyUrl(proxyUrl: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined
 }
 
-function resolvePiHttpProxy(input: Pick<PiAgentQueryOptions, 'proxyUrl' | 'runtimeEnv'>): string | undefined {
+function resolvePiHttpProxy(input: Pick<PiAgentQueryOptions, 'provider' | 'proxyUrl' | 'runtimeEnv'>): string | undefined {
+  if (input.provider === 'dutydeck-local') return undefined
   return normalizeProxyUrl(input.proxyUrl)
     ?? normalizeProxyUrl(getCaseInsensitiveRuntimeEnvValue(input.runtimeEnv?.env, 'HTTPS_PROXY'))
     ?? normalizeProxyUrl(getCaseInsensitiveRuntimeEnvValue(input.runtimeEnv?.env, 'HTTP_PROXY'))
@@ -1642,6 +1653,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     try {
       installPiRequestProxyFetch()
       requestProxyDispatcher = createPiRequestProxyDispatcher({
+        direct: input.provider === 'dutydeck-local',
         proxyUrl: resolvePiHttpProxy(input),
         noProxy: getCaseInsensitiveRuntimeEnvValue(input.runtimeEnv?.env, 'NO_PROXY'),
         httpIdleTimeoutMs: input.httpIdleTimeoutMs,
