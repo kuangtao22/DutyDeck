@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-10-11T14:43:40.465Z",
+  "passed": true,
+  "cases": 30,
+  "sourceGroups": 3,
+  "protocolFingerprint": "43bde2a09253f86b704f191a013db9fadbd3dff0c0b111a06fe29cea06d5bf32",
+  "datasetFingerprint": "6c12afb40df41b3d82e593b82643ada294996cf8c7177b1f78684aeb34ee7021",
+  "baselineFingerprint": "204601fe40facca1d7844d498da4e1b5ce8072fa5900a0d9607dfe138cdcd972",
+  "liveBaselineChecked": true,
+  "independentReviewBound": true,
+  "splits": [
+    {
+      "split": "optimization",
+      "cases": 10,
+      "nonempty": 8,
+      "empty": 2,
+      "sourceGroups": 1,
+      "textChars": 2161,
+      "minChars": 94,
+      "maxChars": 378,
+      "evidenceCount": 13,
+      "packSha256": "0d5b58018665a1b3f78eb55a8db3227a628ec9508c7604ce5d662571fffda247",
+      "sourceSha256": "ea24ec720a97da7368529f042f7423ed2ce41bdbdbfadae879d9371dfa696eee"
+    },
+    {
+      "split": "validation",
+      "cases": 10,
+      "nonempty": 9,
+      "empty": 1,
+      "sourceGroups": 1,
+      "textChars": 4769,
+      "minChars": 222,
+      "maxChars": 684,
+      "evidenceCount": 15,
+      "packSha256": "9a5c1522af5b6230f1aaa770f9babb340e15f33597ff084c4a0792518f69ace9",
+      "sourceSha256": "ddf28d52eff750e9b62b53e065a16d666d27f7d468fd038a44bc887c4a429732"
+    },
+    {
+      "split": "held-out",
+      "cases": 10,
+      "nonempty": 9,
+      "empty": 1,
+      "sourceGroups": 1,
+      "textChars": 3848,
+      "minChars": 271,
+      "maxChars": 492,
+      "evidenceCount": 27,
+      "packSha256": "bbeb0e754daae64a5fd47f51652ede64d44b66badcb6dd2fe4d72ac0758f75fa",
+      "sourceSha256": "85f17048f6d79e6c24b40e946be0fde044436da30b21ed62036125a3b8c39733"
+    }
+  ],
+  "checks": [
+    "完整来源SHA256",
+    "官方全文首尾标记",
+    "原文精确切片",
+    "来源内不交叠",
+    "来源不跨组",
+    "输入和正文精确去重",
+    "姓名证据逐字命中",
+    "生产协议与完整标签预检",
+    "独立标签复核与当前文件绑定"
+  ],
+  "limits": [
+    "未检测所有近似或语义重复",
+    "独立标签复核由Agent完成，未经用户逐条人工签署",
+    "一部作品多片段不等于独立样本",
+    "没有执行真实模型请求"
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "protocolVersion": "novel-character-real-pilot-20261011-v1",
+  "scorerVersion": 1,
+  "primaryMetric": "f1",
+  "mode": "tuple-set",
+  "outputPath": "characters",
+  "expectedPath": "characters",
+  "tupleFields": [
+    "name"
+  ],
+  "normalization": {
+    "trim": true,
+    "caseFold": false,
+    "arrayOrder": "ordered"
+  },
+  "requireReview": true
+}

@@ -1,0 +1,454 @@
+{
+  "schemaVersion": 1,
+  "split": "validation",
+  "source": {
+    "title": "吶喊",
+    "author": "鲁迅",
+    "sourceGroupId": "gutenberg-27166",
+    "url": "https://www.gutenberg.org/ebooks/27166",
+    "downloadUrl": "https://www.gutenberg.org/ebooks/27166.txt.utf-8",
+    "sha256": "ddf28d52eff750e9b62b53e065a16d666d27f7d468fd038a44bc887c4a429732",
+    "cachedTextPath": "sources/gutenberg-27166.txt"
+  },
+  "labelScope": "片段内第一页角色name集合；其他字段不纳入此标签评分",
+  "cases": [
+    {
+      "id": "validation-01",
+      "name": "真实小说验证样本 01",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-01-p0\",\"text\":\"阿Q不獨是姓名籍貫有些渺茫，連他先前的“行狀”　也渺茫。因為未莊的人們\\r\\n\\r\\n    之于阿Q，只要他幫忙，只拿他玩笑，從來沒有留心他的“行狀”的。而阿Q自己也\\r\\n\\r\\n    不說，獨有和別人口角的時候，間或瞪著眼楮道︰\\r\\n\\r\\n    “我們先前——比你闊的多啦！你算是什麼東西！”\\r\\n\\r\\n    阿Q沒有家，住在未莊的土谷祠　里；也沒有固定的職業，只給人家做短工，割\\r\\n\\r\\n    麥便割麥，舂米便舂米，撐船便撐船。工作略長久時，他也或住在臨時主人的家里，\\r\\n\\r\\n    但一完就走了。所以，人們忙碌的時候，也還記起阿Q來，然而記起的是做工，並不\\r\\n\\r\\n    是“行狀”；一閑空，連阿Q都早忘卻，更不必說“行狀”了。只是有一回，有一個\\r\\n\\r\\n    老頭子頌揚說︰“阿Q真能做！”這時阿Q赤著膊，懶洋洋的瘦伶仃的正在他面前，\\r\\n\\r\\n    別人也摸不著這話是真心還是譏笑，然而阿Q很喜歡。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "阿Q",
+            "nameEvidence": {
+              "paragraphRef": "val-01-p0",
+              "selectedText": "阿Q"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "9d0a219529225bb402b5fcc84307e58519a28b1a7d142945f0ce250e1fb7183f",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-02",
+      "name": "真实小说验证样本 02",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-02-p0\",\"text\":\"阿Q“先前闊”，見識高，而且“真能做”，本來幾乎是一個“完人”了，但可\\r\\n\\r\\n    惜他體質上還有一些缺點。最惱人的是在他頭皮上，頗有幾處不知于何時的癩瘡疤。\\r\\n\\r\\n    這雖然也在他身上，而看阿Q的意思，倒也似乎以為不足貴的，因為他諱說“癩”以\\r\\n\\r\\n    及一切近于“賴”的音，後來推而廣之，“光”也諱，“亮”也諱，再後來，連\\r\\n\\r\\n    “燈”“燭”都諱了。一犯諱，不問有心與無心，阿Q便全疤通紅的發起怒來，估量\\r\\n\\r\\n    了對手，口訥的他便罵，氣力小的他便打；然而不知怎麼一回事，總還是阿Q吃虧的\\r\\n\\r\\n    時候多。于是他漸漸的變換了方針，大抵改為怒目而視了。\\r\\n\\r\\n    誰知道阿Q采用怒目主義之後，未莊的閑人們便愈喜歡玩笑他。一見面，他們便\\r\\n\\r\\n    假作吃驚的說︰噲，亮起來了。”\\r\\n\\r\\n    阿Q照例的發了怒，他怒目而視了。\\r\\n\\r\\n    “原來有保險燈在這里！”他們並不怕。\\r\\n\\r\\n    阿Q沒有法，只得另外想出報復的話來︰\\r\\n\\r\\n    “你還不配……”這時候，又仿佛在他頭上的是一種高尚的光容的癩頭瘡，並\\r\\n\\r\\n    非平常的癩頭瘡了；但上文說過，阿Q是有見識的，他立刻知道和“犯忌”有點抵觸，\\r\\n\\r\\n    便不再往底下說。\\r\\n\\r\\n    閑人還不完，只撩他，于是終而至于打。阿Q在形式上打敗了，被人揪住黃辮子，\\r\\n\\r\\n    在壁上踫了四五個響頭，閑人這才心滿意足的得勝的走了，阿Q站了一刻，心里想，\\r\\n\\r\\n    “我總算被兒子打了，現在的世界真不像樣……”于是也心滿意足的得勝的走了。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "阿Q",
+            "nameEvidence": {
+              "paragraphRef": "val-02-p0",
+              "selectedText": "阿Q"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "7e2f6da664e38f981f6bb22f8d4983977c4f6140c32ecb4df8a7c036090f5fb8",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-03",
+      "name": "真实小说验证样本 03",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-03-p0\",\"text\":\"阿Q想在心里的，後來每每說出口來，所以凡是和阿Q玩笑的人們，幾乎全知道\\r\\n\\r\\n    他有這一種精神上的勝利法，此後每逢揪住他黃辮子的時候，人就先一著對他說︰\\r\\n\\r\\n    “阿Q，這不是兒子打老子，是人打畜生。自己說︰人打畜生！”\\r\\n\\r\\n    阿Q兩只手都捏住了自己的辮根，歪著頭，說道︰\\r\\n\\r\\n    “打蟲豸，好不好？我是蟲豸——還不放麼？”\\r\\n\\r\\n    但雖然是蟲豸，閑人也並不放，仍舊在就近什麼地方給他踫了五六個響頭，這\\r\\n\\r\\n    才心滿意足的得勝的走了，他以為阿Q這回可遭了瘟。然而不到十秒鐘，阿Q也心滿\\r\\n\\r\\n    意足的得勝的走了，他覺得他是第一個能夠自輕自賤的人，除了“自輕自賤”不算\\r\\n\\r\\n    外，余下的就是“第一個”。狀元　不也是“第一個”麼？“你算是什麼東西”呢！？\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "阿Q",
+            "nameEvidence": {
+              "paragraphRef": "val-03-p0",
+              "selectedText": "阿Q"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "937aa869cc763abc8836f48d101f56a2736eafe3662b4d9a3341f74e21e3d318",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-04",
+      "name": "真实小说验证样本 04",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-04-p0\",\"text\":\"阿Q也脫下破夾襖來，翻檢了一回，不知道因為新洗呢還是因為粗心，許多工夫，\\r\\n\\r\\n    只捉到三四個。他看那王胡，卻是一個又一個，兩個又三個，只放在嘴里畢畢剝剝\\r\\n\\r\\n    的響。\\r\\n\\r\\n    阿Q最初是失望，後來卻不平了︰看不上眼的王胡尚且那麼多，自己倒反這樣少，\\r\\n\\r\\n    這是怎樣的大失體統的事呵！他很想尋一兩個大的，然而竟沒有，好容易才捉到一\\r\\n\\r\\n    個中的，恨恨的塞在厚嘴唇里，狠命一咬，劈的一聲，又不及王胡的響。\\r\\n\\r\\n    他癩瘡疤塊塊通紅了，將衣服摔在地上，吐一口唾沫，說︰\\r\\n\\r\\n    “這毛蟲！”\\r\\n\\r\\n    “癩皮狗，你罵誰？”王胡輕蔑的抬起眼來說。\\r\\n\\r\\n    阿Q近來雖然比較的受人尊敬，自己也更高傲些，但和那些打慣的閑人們見面還\\r\\n\\r\\n    膽怯，獨有這回卻非常武勇了。這樣滿臉胡子的東西，也敢出言無狀麼？\\r\\n\\r\\n    “誰認便罵誰！”他站起來，兩手叉在腰間說。\\r\\n\\r\\n    “你的骨頭癢了麼？”王胡也站起來，披上衣服說。\\r\\n\\r\\n    阿Q以為他要逃了，搶進去就是一拳。這拳頭還未達到身上，已經被他抓住了，\\r\\n\\r\\n    只一拉，阿Q蹌蹌踉踉的跌進去，立刻又被王胡扭住了辮子，要拉到牆上照例去踫頭。\\r\\n\\r\\n    “‘君子動口不動手’！”阿Q歪著頭說。\\r\\n\\r\\n    王胡似乎不是君子，並不理會，一連給他踫了五下，又用力的一推，至于阿Q跌\\r\\n\\r\\n    出六尺多遠，這才滿足的去了。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "阿Q",
+            "nameEvidence": {
+              "paragraphRef": "val-04-p0",
+              "selectedText": "阿Q"
+            }
+          },
+          {
+            "name": "王胡",
+            "nameEvidence": {
+              "paragraphRef": "val-04-p0",
+              "selectedText": "王胡"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "b408f76c1c77cd99f40399d0d750156a547f00105b82ad3da7493d21753a124b",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-05",
+      "name": "真实小说验证样本 05",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-05-p0\",\"text\":\"但對面走來了靜修庵里的小尼姑。阿Q便在平時，看見伊也一定要唾罵，而況在\\r\\n\\r\\n    屈辱之後呢？他于是發生了回憶，又發生了敵愾了。\\r\\n\\r\\n    “我不知道我今天為什麼這樣晦氣，原來就因為見了你！”他想。\\r\\n\\r\\n    他迎上去，大聲的吐一口唾沫︰\\r\\n\\r\\n    “咳，呸！”\\r\\n\\r\\n    小尼姑全不睬，低了頭只是走。阿Q走近伊身旁，突然伸出手去摩著伊新剃的頭\\r\\n\\r\\n    皮，呆笑著，說︰\\r\\n\\r\\n    “禿兒！快回去，和尚等著你……”\\r\\n\\r\\n    “你怎麼動手動腳……”尼姑滿臉通紅的說，一面趕快走。\\r\\n\\r\\n    酒店里的人大笑了。阿Q看見自己的勛業得了賞識，便愈加興高采烈起來︰\\r\\n\\r\\n    “和尚動得，我動不得？”他扭住伊的面頰。\\r\\n\\r\\n    酒店里的人大笑了。阿Q更得意，而且為了滿足那些賞鑒家起見，再用力的一擰，\\r\\n\\r\\n    才放手。\\r\\n\\r\\n    他這一戰，早忘卻了王胡，也忘卻了假洋鬼子，似乎對于今天的一切“晦氣”\\r\\n\\r\\n    都報了仇；而且奇怪，又仿佛全身比拍拍的響了之後輕松，飄飄然的似乎要飛去了。\\r\\n\\r\\n    “這斷子絕孫的阿Q！”遠遠地听得小尼姑的帶哭的聲音。\\r\\n\\r\\n    “哈哈哈！”阿Q十分得意的笑。\\r\\n\\r\\n    “哈哈哈！”酒店里的人也九分得意的笑。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "小尼姑",
+            "nameEvidence": {
+              "paragraphRef": "val-05-p0",
+              "selectedText": "小尼姑"
+            }
+          },
+          {
+            "name": "阿Q",
+            "nameEvidence": {
+              "paragraphRef": "val-05-p0",
+              "selectedText": "阿Q"
+            }
+          },
+          {
+            "name": "王胡",
+            "nameEvidence": {
+              "paragraphRef": "val-05-p0",
+              "selectedText": "王胡"
+            }
+          },
+          {
+            "name": "假洋鬼子",
+            "nameEvidence": {
+              "paragraphRef": "val-05-p0",
+              "selectedText": "假洋鬼子"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "2e8598f3b389c6d518de319b136a23080887faf79fe54ebd8133751eb51f35b4",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-06",
+      "name": "真实小说验证样本 06",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-06-p0\",\"text\":\"待到淒風冷雨這一天，教員們因為向政府去索欠薪が，在新華門前爛泥里被國\\r\\n\\r\\n    軍打得頭破血出之後，倒居然也發了一點薪水。方玄綽不費舉手之勞的領了錢，酌\\r\\n\\r\\n    還些舊債，卻還缺一大筆款，這是因為官俸也頗有些拖欠了。當是時，便是廉吏清\\r\\n\\r\\n    官們也漸以為薪之不可不索，而況兼做教員的方玄綽，自然更表同情于學界起來，\\r\\n\\r\\n    所以大家主張繼續罷課的時候，他雖然仍未到場，事後卻尤其心悅誠服的確守了公\\r\\n\\r\\n    共的決議。\\r\\n\\r\\n\\r\\n    然而政府竟又付錢，學校也就開課了。但在前幾天，卻有學生總會上一個呈文\\r\\n\\r\\n    給政府，說“教員倘若不上課，便要付欠薪。”這雖然並無效，而方玄綽卻忽而記\\r\\n\\r\\n    起前回政府所說的“上了課才給錢”的話來，“差不多”這一個影子在他眼前又一\\r\\n\\r\\n    幌，而且並不消滅，于是他便在講堂上公表了。\\r\\n\\r\\n    準此，可見如果將“差不多說”鍛煉羅織起來，自然也可以判作一種挾帶私心\\r\\n\\r\\n    的不平，但總不能說是專為自己做官的辯解。只是每到這些時，他又常常喜歡拉上\\r\\n\\r\\n    中國將來的命運之類的問題，一不小心，便連自己也以為是一個憂國的志士；人們\\r\\n\\r\\n    是每苦于沒有“自知之明”的。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "方玄綽",
+            "nameEvidence": {
+              "paragraphRef": "val-06-p0",
+              "selectedText": "方玄綽"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "2179476b3b500ee80ce544d2449631187f9e6f31ebcc44b6040b418a71917546",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-07",
+      "name": "真实小说验证样本 07",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-07-p0\",\"text\":\"大家左索右索，總自一節一節的挨過去了，但比起先前來，方玄綽究竟是萬分\\r\\n\\r\\n    的拮據，所以使用的小廝和交易的店家不消說，便是方太太對于他也漸漸的缺了敬\\r\\n\\r\\n    意，只要看伊近來不很附和，而且常常提出獨創的意見，有些唐突的舉動，也就可\\r\\n\\r\\n    以了然了。到了陰歷五月初四的午前，他一回來，伊便將一疊賬單塞在他的鼻子跟\\r\\n\\r\\n    前，這也是往常所沒有的。\\r\\n\\r\\n\\r\\n    “一總總得一百八十塊錢才夠開消……發了麼？”伊並不對著他看的說。\\r\\n\\r\\n    “哼，我明天不做官了。錢的支票是領來的了，可是索薪大會的代表不發放，\\r\\n\\r\\n    先說是沒有同去的人都不發，後來又說是要到他們跟前去親領。他們今天單捏著支\\r\\n\\r\\n    票，就變了閻王臉了，我實在怕看見……我錢也不要了，官也不做了，這樣無限量\\r\\n\\r\\n    的卑屈……”\\r\\n\\r\\n\\r\\n    方太太見了這少見的義憤，倒有些愕然了，但也就沉靜下來。\\r\\n\\r\\n\\r\\n    “我想，還不如去親領罷，這算什麼呢。”伊看著他的臉說。\\r\\n\\r\\n\\r\\n    “我不去！這是官俸，不是賞錢，照例應該由會計科送來的。”\\r\\n\\r\\n\\r\\n    “可是不送來又怎麼好呢……哦，昨夜忘記說了，孩子們說那學費，學校里已\\r\\n\\r\\n    經催過好幾次了，說是倘若再不繳……”\\r\\n\\r\\n\\r\\n    “胡說！做老子的辦事教書都不給錢，兒子去念幾句書倒要錢？”\\r\\n\\r\\n\\r\\n    伊覺得他已經不很顧忌道理，似乎就要將自己當作校長來出氣，犯不上，便不\\r\\n\\r\\n    再言語了。\\r\\n\\r\\n\\r\\n    兩個默默的吃了午飯。他想了一會，又懊惱的出去了。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "方玄綽",
+            "nameEvidence": {
+              "paragraphRef": "val-07-p0",
+              "selectedText": "方玄綽"
+            }
+          },
+          {
+            "name": "方太太",
+            "nameEvidence": {
+              "paragraphRef": "val-07-p0",
+              "selectedText": "方太太"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "35b5249c881b3e8115d0b055a3b74f668ed996a8888c55cb574a1468087e55cb",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-08",
+      "name": "真实小说验证样本 08",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-08-p0\",\"text\":\"方玄綽低下頭來了，覺得這也無怪其然的，況且自己和金永生本來很疏遠。他\\r\\n\\r\\n    接著就記起去年年關的事來，那時有一個同鄉來借十塊錢，他其時明明已經收到了\\r\\n\\r\\n    衙門的領款憑單的了，因為死怕這人將來未必會還錢，便裝了副為難的神色，說道\\r\\n\\r\\n    衙門里既然領不到俸錢，學校里又不發薪水，實在“愛莫能助”，將他空手送走了。\\r\\n\\r\\n    他雖然自已並不看見裝了怎樣的臉，但此時卻覺得很局促，嘴唇微微一動，又搖一\\r\\n\\r\\n    搖頭。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "方玄綽",
+            "nameEvidence": {
+              "paragraphRef": "val-08-p0",
+              "selectedText": "方玄綽"
+            }
+          },
+          {
+            "name": "金永生",
+            "nameEvidence": {
+              "paragraphRef": "val-08-p0",
+              "selectedText": "金永生"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "4d49611855923315e46b269c79993da5845e2677ca70b1ca2febcb69f29ec55d",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-09",
+      "name": "真实小说验证样本 09",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-09-p0\",\"text\":\"孔乙己是站著喝酒而穿長衫的唯一的人。他身材很高大；青白臉色，皺紋間時\\r\\n\\r\\n    常夾些傷痕；一部亂蓬蓬的花白的胡子。穿的雖然是長衫，可是又髒又破，似乎十\\r\\n\\r\\n    多年沒有補，也沒有洗。他對人說話，總是滿口之乎者也，教人半懂不懂的。因為\\r\\n\\r\\n    他姓孔，別人便從描紅紙え上的“上大人孔乙己”這半懂不懂的話里，替他取下一\\r\\n\\r\\n    個綽號，叫作孔乙己。孔乙己一到店，所有喝酒的人便都看著他笑，有的叫道，\\r\\n\\r\\n    “孔乙己，你臉上又添上新傷疤了！”他不回答，對櫃里說，“溫兩碗酒，要一碟\\r\\n\\r\\n    茴香豆。”便排出九文大錢。他們又故意的高聲嚷道，“你一定又偷了人家的東西\\r\\n\\r\\n    了！”孔乙己睜大眼楮說，“你怎麼這樣憑空污人清白……”“什麼清白？我前天\\r\\n\\r\\n    親眼見你偷了何家的書，吊著打。”孔乙己便漲紅了臉，額上的青筋條條綻出，爭\\r\\n\\r\\n    辯道，“竊書不能算偷……竊書！……讀書人的事，能算偷麼？”接連便是難懂的\\r\\n\\r\\n    話，什麼“君子固窮”ぉ，什麼“者乎”之類，引得眾人都哄笑起來︰店內外充滿\\r\\n\\r\\n    了快活的空氣。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "孔乙己",
+            "nameEvidence": {
+              "paragraphRef": "val-09-p0",
+              "selectedText": "孔乙己"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "37f66c2803ec31cf7c08b519e6d9af5b5fca7810478e9d6e39e3381a3e9bed09",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-10",
+      "name": "真实小说验证样本 10",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-10-p0\",\"text\":\"魯鎮的酒店的格局，是和別處不同的︰都是當街一個曲尺形的大櫃台，櫃里面\\r\\n\\r\\n    預備著熱水，可以隨時溫酒。做工的人，傍午傍晚散了工，每每花四文銅錢，買一\\r\\n\\r\\n    碗酒，——這是二十多年前的事，現在每碗要漲到十文，——靠櫃外站著，熱熱的\\r\\n\\r\\n    喝了休息；倘肯多花一文，便可以買一碟鹽煮筍，或者茴香豆，做下酒物了，如果\\r\\n\\r\\n    出到十幾文，那就能買一樣葷菜，但這些顧客，多是短衣幫，大抵沒有這樣闊綽。\\r\\n\\r\\n    只有穿長衫的，才踱進店面隔壁的房子里，要酒要菜，慢慢地坐喝。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": []
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "f6492d28b9d39c6919fc828dadf8b6c9571da16720bfb61d55c2fd07a2b75da4",
+        "labelStatus": "complete"
+      }
+    }
+  ],
+  "annotations": [
+    {
+      "caseId": "validation-01",
+      "startUtf16": 43052,
+      "endUtf16": 43448,
+      "checks": [
+        "两遍核对：阿Q有明确反复姓名；临时主人、一个老头子、别人均为无名泛称，不构成稳定角色名。",
+        "未庄与土谷祠是地点；对话中的我们、你不另建角色。"
+      ]
+    },
+    {
+      "caseId": "validation-02",
+      "startUtf16": 43799,
+      "endUtf16": 44470,
+      "checks": [
+        "两遍核对：只有阿Q具名；未庄的闲人们、对手属于不具名群体或泛称。",
+        "儿子打了是阿Q自我安慰的比喻，不能新增其儿子；灯、烛、保险灯不是独立人物。"
+      ]
+    },
+    {
+      "caseId": "validation-03",
+      "startUtf16": 44478,
+      "endUtf16": 44830,
+      "checks": [
+        "两遍核对：阿Q为唯一有明确名称的独立主体；闲人和玩笑的人们没有稳定身份。",
+        "儿子、老子、畜生、虫豸均在辱骂或自比语境；状元为抽象名次比喻，均不新增人物。"
+      ]
+    },
+    {
+      "caseId": "validation-04",
+      "startUtf16": 46563,
+      "endUtf16": 47183,
+      "checks": [
+        "两遍核对：阿Q与王胡直接交互，姓名指向清晰；仅按片段实际出现的名称标注，不借全书补别名。",
+        "毛虫、癞皮狗、满脸胡子的东西是对已有主体的辱称；君子为成语和评价，闲人们为群体。"
+      ]
+    },
+    {
+      "caseId": "validation-05",
+      "startUtf16": 48045,
+      "endUtf16": 48597,
+      "checks": [
+        "两遍核对：小尼姑为持续行动和发声的稳定代称，尼姑、秃儿和伊同指此人，不重复计数。",
+        "王胡与假洋鬼子虽仅被回忆提及，仍是明确独立主体，应与阿Q一并覆盖。",
+        "和尚仅见于阿Q的泛指性污辱猜测，没有独立身份线索；酒店里的人及赏鉴家是群体，静修庵是地点。"
+      ]
+    },
+    {
+      "caseId": "validation-06",
+      "startUtf16": 18251,
+      "endUtf16": 18787,
+      "checks": [
+        "两遍核对：方玄绰为唯一具名主体，忧国的志士是对他的评价，不另立角色。",
+        "教员们、国军、清官们、学生总会和政府均是群体或组织；新华门与中国是地点。"
+      ]
+    },
+    {
+      "caseId": "validation-07",
+      "startUtf16": 19356,
+      "endUtf16": 20040,
+      "checks": [
+        "两遍核对：方玄绰与方太太是明确对话主体，伊指方太太，不新增同义主名。",
+        "小厮与店家只作用工或交易对象泛称，索薪代表、孩子们是无名群体；校长是出气对象的比较，没有明确人物。",
+        "阎王脸是外貌和态度比喻，不是神话人物登场。"
+      ]
+    },
+    {
+      "caseId": "validation-08",
+      "startUtf16": 20726,
+      "endUtf16": 20948,
+      "checks": [
+        "两遍核对：方玄绰和金永生的姓名直接出现，金永生虽未在片段中发言，仍被明确提及。",
+        "一个同乡只是一次回忆中的无名泛称，缺乏稳定姓名或代称；衙门和学校是组织而非角色。"
+      ]
+    },
+    {
+      "caseId": "validation-09",
+      "startUtf16": 30932,
+      "endUtf16": 31420,
+      "checks": [
+        "两遍核对：孔乙己为明确绰号，与姓孔的同一主体合并；描红纸中的字样不是另一个角色。",
+        "喝酒的人、众人、读书人均为群体或泛称，何家只是家庭指代，没有明确独立成员；君子固穷是引语。"
+      ]
+    },
+    {
+      "caseId": "validation-10",
+      "startUtf16": 30325,
+      "endUtf16": 30573,
+      "checks": [
+        "两遍核对：本段纯叙述酒店格局、价格与顾客阶层，没有具名或稳定代称的独立主体。",
+        "做工的人、顾客、短衣帮、穿长衫的是群体；鲁镇是地点。保留完整自然段作负例，汉字数量略低于建议区间。"
+      ]
+    }
+  ]
+}

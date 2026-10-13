@@ -1,0 +1,537 @@
+{
+  "schemaVersion": 1,
+  "split": "held-out",
+  "source": {
+    "title": "老殘遊記",
+    "author": "刘鹗",
+    "sourceGroupId": "gutenberg-23850",
+    "url": "https://www.gutenberg.org/ebooks/23850",
+    "downloadUrl": "https://www.gutenberg.org/ebooks/23850.txt.utf-8",
+    "sha256": "85f17048f6d79e6c24b40e946be0fde044436da30b21ed62036125a3b8c39733",
+    "cachedTextPath": "sources/gutenberg-23850.txt"
+  },
+  "labelScope": "片段内第一页角色name集合；其他字段不纳入此标签评分",
+  "cases": [
+    {
+      "id": "held-out-01",
+      "name": "真实小说留出片段 01",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-01-p0\",\"text\":\"黃龍子向子平道：「申先生睏不睏？如其不睏，今夜良會，可以不必早睡，明天遲遲起來最好。柏樹峪地方，路極險峻，很不好走。又有這場大雪，路影看不清楚，跌下去有性命之憂。劉仁甫今天晚上檢點行李，大約明日午牌時候，可以到集上關帝廟。你明天用過早飯動身，正好相遇了。」子平聽說大喜，說道：「今日得遇諸仙，三生有幸。請教上仙誕降之辰，還是在唐在宋？」黃龍子又大笑道：「何以知之？」答：「尊作明說『迴首滄桑五百年』，可知斷不止五六百歲了。」黃龍子道：「『盡信書，則不如無書。』此鄙人之遊戲筆墨耳。公直當《桃花源記》讀可矣。」就舉起茶杯，品那新茶。\\r\\n\\r\\n璵姑見子平杯內茶已將盡，就持小茶壺代為斟滿。子平連連欠身道：「不敢。」亦舉起杯來詳細品量。卻聽窗外遠遠唔了一聲，那窗紙微覺颯颯價動，屋塵簌簌價落。想起方纔路上光景，不覺毛骨森竦，勃然色變。黃龍道：「這是虎嘯，不要緊的。山家看著此種物事，如你們城市中人看騾馬一樣，雖知他會踢人，卻不怕他。因為相習已久，知他傷人也不是常有的事。山上人與虎相習，尋常人固避虎，虎也避人，故傷害人也不是常有的事，不必怕他。」\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "黃龍子",
+            "nameEvidence": {
+              "paragraphRef": "held-01-p0",
+              "selectedText": "黃龍子"
+            }
+          },
+          {
+            "name": "子平",
+            "nameEvidence": {
+              "paragraphRef": "held-01-p0",
+              "selectedText": "子平"
+            }
+          },
+          {
+            "name": "劉仁甫",
+            "nameEvidence": {
+              "paragraphRef": "held-01-p0",
+              "selectedText": "劉仁甫"
+            }
+          },
+          {
+            "name": "璵姑",
+            "nameEvidence": {
+              "paragraphRef": "held-01-p0",
+              "selectedText": "璵姑"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "f4aea53bb80115fa1f81c16369c7e04693f822273ecb71d709476c24335ee0e9",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-02",
+      "name": "真实小说留出片段 02",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-02-p0\",\"text\":\"黃龍子移了兩張小長幾，摘下一張琴、一張瑟來。璵姑也移了三張凳子，讓子平坐了一張。彼此調了一調弦，同黃龍各坐了一張凳子。弦已調好，璵姑與黃龍商酌了兩句，就彈起來了。初起不過輕挑漫剔，聲響悠柔，一段以後，散泛相錯，其聲清脆，兩段以後，吟揉漸多。那瑟之勾挑夾縫中，與琴之綽註相應，粗聽若彈琴鼓瑟，各自為調，細聽則如珠鳥一雙，此唱彼和，問來答往。四五段以後，吟揉漸少，雜以批拂、蒼蒼涼涼，磊磊落落，下指甚重，聲韻繁興。六七八段，間以曼衍，愈轉愈清，其調愈逸。\\r\\n\\r\\n子平本會彈十幾調琴，所以聽得入彀，因為瑟是未曾聽過，格外留神。那知瑟的妙用也在左手，看他右手發聲之後，那左手進退揉顫，其餘音也就隨著猗猗靡靡，真是聞所未聞。初聽還在算計他的指法、調頭，既而便耳中有音，目中無指。久之，耳目俱無，覺得自己的身體飄飄蕩蕩，如隨長風，浮沉於雲霞之際。久之又久，心身俱忘，如醉如夢。於恍惚杳冥之中，錚鏦數聲，琴瑟俱息，乃通見聞，人亦警覺。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "黃龍子",
+            "nameEvidence": {
+              "paragraphRef": "held-02-p0",
+              "selectedText": "黃龍子"
+            }
+          },
+          {
+            "name": "璵姑",
+            "nameEvidence": {
+              "paragraphRef": "held-02-p0",
+              "selectedText": "璵姑"
+            }
+          },
+          {
+            "name": "子平",
+            "nameEvidence": {
+              "paragraphRef": "held-02-p0",
+              "selectedText": "子平"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "054ec7ada67d626c4938c815a319227e664cc8a3733bd4a730c2618c85142623",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-03",
+      "name": "真实小说留出片段 03",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-03-p0\",\"text\":\"話說子平聽得天崩地塌價一聲，腳下震震搖動，嚇得魂不附體，怕是山倒下來。黃龍子在身後說道：「不怕的，這是山上的凍雪被泉水漱空了，滾下一大塊來，夾冰夾雪，所以有這大的聲音。」說著，又朝向北一轉，便是一個洞門。這洞不過有兩間房大，朝外半截窗臺，上面安著窗戶。其餘三面俱斬平雪白，頂是圓的，像城門洞的樣子。洞裡陳設甚簡，有幾張樹根的坐具，卻是七大八小的不勻，又都是磨得絹光。几案也全是古籐天生的，不方不圓，隨勢製成。東壁橫了一張枯槎獨睡榻子，設著衾枕。榻旁放了兩三個黃竹箱子，想必是盛衣服什物的了。洞內並無燈燭，北牆上嵌了兩個滴圓夜明珠，有巴斗大小，光色發紅，不甚光亮。地下鋪著地毯，甚厚軟，微覺有聲。榻北立了一個曲尺形書架，放了許多書，都是草訂，不曾切過書頭的。雙夜明珠中間掛了幾件樂器，有兩張瑟、兩張琴，是認得的，還有些不認得的。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "子平",
+            "nameEvidence": {
+              "paragraphRef": "held-03-p0",
+              "selectedText": "子平"
+            }
+          },
+          {
+            "name": "黃龍子",
+            "nameEvidence": {
+              "paragraphRef": "held-03-p0",
+              "selectedText": "黃龍子"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "629f9fac999531098d3eae9c2c7ef16df00043a96a253cf9c2f0b7481c2dfbc2",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-04",
+      "name": "真实小说留出片段 04",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-04-p0\",\"text\":\"當時璵姑立起身來，向西壁有個小門，開了門，對著大聲喊了幾句，不知甚話，聽不清楚。看黃龍子亦立起身，將琴瑟懸在壁上。子平於是也立起，走到壁間，仔細看那夜明珠到底甚麼樣子，以便回去誇耀於人。及走至珠下，伸手一摸，那夜明珠卻甚熱，有些烙手，心裡詫異道：「這是甚麼道理呢？」看黃龍子琴瑟已俱掛好，即問道：「先生，這是什麼？」笑答道：「驪龍之珠，你不認得嗎？」問：「驪珠怎樣會熱呢？」答：「這是火龍所吐的珠，自然熱的。」子平說：「火龍珠那得如此一樣大的一對呢？雖說是火龍，難道永遠這們熱麼？」笑答道：「然則我說的話，先生有不信的意思了。既不信，我就把這熱的道理開給你看。」說著，便向那夜明珠的旁邊有個小銅鼻子一拔，那珠子便像一扇門似的張開來了。原來是個珠殼，裡面是很深的油池，當中用棉花線捲的個燈心，外面用千層紙做的個燈筩，上面有個小煙囪，從壁子上出去，上頭有許多的黑煙，同洋燈的道理一樣，卻不及洋燈精緻，所以不免有黑煙上去，看過也就笑了。再看那珠殼，原來是用大螺蚌殼磨出來的，所以也不及洋燈光亮。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "璵姑",
+            "nameEvidence": {
+              "paragraphRef": "held-04-p0",
+              "selectedText": "璵姑"
+            }
+          },
+          {
+            "name": "黃龍子",
+            "nameEvidence": {
+              "paragraphRef": "held-04-p0",
+              "selectedText": "黃龍子"
+            }
+          },
+          {
+            "name": "子平",
+            "nameEvidence": {
+              "paragraphRef": "held-04-p0",
+              "selectedText": "子平"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "767be5e6f789f40cb4ebc7c213838b51f9b91cff31ab4ac3d883ca5aa503f0e9",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-05",
+      "name": "真实小说留出片段 05",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-05-p0\",\"text\":\"黃龍子道：「我且問你，這個月亮，十五就明瞭，三十就暗了，上弦下弦就明暗各半了，那初三四裡的月亮只有一牙，請問他怎麼便會慢慢地長滿了呢？十五以後怎麼慢慢地又會爛掉了呢？」子平道：「這個理容易明白，因為月球本來無光，受太陽的光，所以朝太陽的半個是明的，背太陽的半個是暗的。初三四，月身斜對太陽，所以人眼看見的正是三分明、七分暗，就像一牙似的。其實月球並無分別，只是半個明、半個暗，盈虧圓缺，都是人眼睛現出來的景相，與月球毫不相干。」\\r\\n\\r\\n黃龍子道：「你既明白這個道理，應須知道好即是壞，壞即是好，同那月球的明暗，是一個道理。」子平道：「這個道理實不能同。月球雖無圓缺，實有明暗。因永遠是半個明的，半個暗的，所以明的半邊朝人，人就說月圓了；暗的半邊朝人，人就說月黑了。初八、二十三，人正對他側面，所以覺得半明半暗，就叫做上弦、下弦。因人所看的方面不同，喚做個盈虧圓缺。若在二十八九，月亮全黑的時候，人若能飛到月球上邊去看，自然仍是明的。這就是明暗的道理，我們都懂得的。然究竟半個明的、半個暗的，是一定不移的道理。半個明的終久是明，半個暗的終久是暗。若說暗即是明，明即是暗，理性總不能通。」\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "黃龍子",
+            "nameEvidence": {
+              "paragraphRef": "held-05-p0",
+              "selectedText": "黃龍子"
+            }
+          },
+          {
+            "name": "子平",
+            "nameEvidence": {
+              "paragraphRef": "held-05-p0",
+              "selectedText": "子平"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "cd47a9f2987641ee5d7e057fbc5ecbbe4466cb2069ed9ed93ec6afdd5b8fdaf1",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-06",
+      "name": "真实小说留出片段 06",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-06-p0\",\"text\":\"「那些南革的首領，初起都是官商人物，並都是聰明出眾的人才。因為所秉的是婦女陰水嫉妒性質，只知有己，不知有人，所以在世界上就不甚行得開了。由憤懣生嫉妒，由嫉妒生破壞。這破壞豈是一人做得的事呢！於是同類相呼，『水流濕，火就燥』，漸漸的越聚越多，鉤連上些人家的敗類子弟，一發做得如火如荼。其已得舉人、進士、翰林、部曹等官的呢，就談朝廷革命；其讀書不成，無著子弟，就學兩句愛皮西提衣或阿衣烏愛窩，便談家庭革命。一談了革命，就可以不受天理國法人情的拘束，豈不大痛快呢？可知太痛快了不是好事，吃得痛快，傷食；飲得痛快，病酒。今者，不管天理、不畏國法、不近人情，放肆做去。這種痛快不有人災，必有鬼禍，能得長久嗎？」\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": []
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "80649e1e776d72cc6eb535508119223708aea3fc7e3fce31748129eef0ffccd0",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-07",
+      "name": "真实小说留出片段 07",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-07-p0\",\"text\":\"老殘對著雪月交輝的景緻，想起謝靈運的詩，「明月照積雪，北風勁且哀」兩句。若非經歷北方苦寒景象，那裡知道「北風勁且哀」的個「哀」字下的好呢？這時月光照的滿地的亮，抬起頭來，天上的星一個也看不見，只有北邊，北斗七星開陽搖光，像幾個淡白點子一樣，還看得清楚。那北斗正斜倚在紫微垣的西邊上面，杓在上，魁在下。心裡想道：「歲月如流，眼見鬥杓又將東指了，人又要添一歲了。一年一年的這樣瞎混下去，如何是個了局呢？」又想到《詩經》上說的「維北有鬥，不可以挹酒漿。」──「現在國家正當多事之秋，那王公大臣只是恐怕擔處分，多一事不如少一事，弄的百事俱廢，將來又是怎樣個了局，國是如此，丈夫何以家為！」想到此地，不覺滴下淚來，也就無心觀玩景緻，慢慢回店去了。一面走著，覺得臉上有樣物件附著似的，用手一摸，原來兩邊著了兩條滴滑的冰。初起不懂什麼緣故，既而想起，自己也就笑了。原來就是方纔流的淚，天寒，立刻就凍住了，地下必定還有幾多冰珠子呢。悶悶的回到店裡，也就睡了。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "老殘",
+            "nameEvidence": {
+              "paragraphRef": "held-07-p0",
+              "selectedText": "老殘"
+            }
+          },
+          {
+            "name": "謝靈運",
+            "nameEvidence": {
+              "paragraphRef": "held-07-p0",
+              "selectedText": "謝靈運"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "7131b141bf62f49a99f3ec54887de339fcff95bcbc9c8b957474f7dc065be30c",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-08",
+      "name": "真实小说留出片段 08",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-08-p0\",\"text\":\"人瑞卻從懷中把剛才縣裡送來的紅封套遞給老殘，說：「你瞧，這是貴如夫人原來的賣身契一紙，這是新寫的身契一紙，總共奉上。你看愚弟辦事周到不周到？」老殘說：「既已如此，感激的很。你又何苦把我套在圈子裡做甚麼呢？」人瑞道：「我不對你說『是前生註定事，莫錯過姻緣』嗎？我為翠環計，救人須救徹，非如此，總不十分妥當。為你計，亦不吃虧。天下事就該這麼做法，是不錯的。」說過，呵呵大笑。又說：「不用費話罷，我們肚子餓的了不得，要吃飯了。」人瑞拉著老殘，翠花拉著翠環，要他們兩個上坐。老殘決意不肯，仍是去了桌裙，四方兩對面坐的。這一席酒，不消說，各人有各人快樂處，自然是盡歡而散，以後無非是送房睡覺，無庸贅述。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "人瑞",
+            "nameEvidence": {
+              "paragraphRef": "held-08-p0",
+              "selectedText": "人瑞"
+            }
+          },
+          {
+            "name": "老殘",
+            "nameEvidence": {
+              "paragraphRef": "held-08-p0",
+              "selectedText": "老殘"
+            }
+          },
+          {
+            "name": "翠環",
+            "nameEvidence": {
+              "paragraphRef": "held-08-p0",
+              "selectedText": "翠環"
+            }
+          },
+          {
+            "name": "翠花",
+            "nameEvidence": {
+              "paragraphRef": "held-08-p0",
+              "selectedText": "翠花"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "1968da1d659c9508b5fe9ce533afa3c4446bbb58dedcfa329e8bf0e6e5f47eb6",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-09",
+      "name": "真实小说留出片段 09",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-09-p0\",\"text\":\"大家聽了這話，都不禁發了一笑，連翠環遮著臉也撲嗤的笑了一聲。原來翠環本來知道在客人面前萬不能哭的，只因老殘問到他老家的事，又被翠花說出他二年前還是個大財主，所以觸起他的傷心，故眼淚不由的直穿出來，要強忍也忍不住。及至聽到老殘說他受了一肚子悶氣，到那裡去哭，讓他哭個夠，也算痛快一回。心裡想道：「自從落難以來，從沒有人這樣體貼過他，可見世界上男子並不是個個人都是拿女兒家當糞土一般作踐的。只不知道像這樣的人世界上多不多，我今生還能遇見幾個？想既能遇見一個，恐怕一定總還有呢。」心裡只顧這麼盤算，倒把剛才的傷心盤算的忘記了，反側著耳朵聽他們再說什麼。忽然被黃人瑞喊著，要託他替哭，怎樣不好笑呢？所以含著兩包眼淚，撲嗤的笑了一聲，並抬起頭來看了人瑞一眼。那知被他們看了這個形景，越發笑個不止。翠環此刻心裡一點主意沒有，看看他們傻笑，只好糊裡糊塗，陪著他們嘻嘻的傻了一回。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "翠環",
+            "nameEvidence": {
+              "paragraphRef": "held-09-p0",
+              "selectedText": "翠環"
+            }
+          },
+          {
+            "name": "老殘",
+            "nameEvidence": {
+              "paragraphRef": "held-09-p0",
+              "selectedText": "老殘"
+            }
+          },
+          {
+            "name": "翠花",
+            "nameEvidence": {
+              "paragraphRef": "held-09-p0",
+              "selectedText": "翠花"
+            }
+          },
+          {
+            "name": "黃人瑞",
+            "nameEvidence": {
+              "paragraphRef": "held-09-p0",
+              "selectedText": "黃人瑞"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "a900617cd46a058a650e002b550e26a81be33b88a357d0caac0a0e18e891316f",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-10",
+      "name": "真实小说留出片段 10",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-10-p0\",\"text\":\"彼此序了幾句閒話，老殘就問：「聽說先生同青龍子長相往來，近來知道他雲遊何處嗎？」安貧子道：「噯呀！你要見他嗎？有啥事體？」老殘便將以上事告知安貧子。安貧子說：「太不巧了！他昨日在我這裡坐了半天，說今日清晨回山去，此刻出南門怕還不到十里路呢！」老殘說：「這可真不巧了！只是他回什麼山？」安貧子道：「裡山玄珠洞。他去年住靈岩山，因近來香客漸多，常有到他茅篷裡的，所以他厭煩，搬到裡山玄珠洞去了。」老殘問：「玄珠洞離此地有幾十里？」安貧子道：「我也沒去過，聽他說，大約五十里路不到點。此去一直向南，過黃芽嘴子，向西到白雪塢，再向南，就到玄珠洞了。」\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "老殘",
+            "nameEvidence": {
+              "paragraphRef": "held-10-p0",
+              "selectedText": "老殘"
+            }
+          },
+          {
+            "name": "青龍子",
+            "nameEvidence": {
+              "paragraphRef": "held-10-p0",
+              "selectedText": "青龍子"
+            }
+          },
+          {
+            "name": "安貧子",
+            "nameEvidence": {
+              "paragraphRef": "held-10-p0",
+              "selectedText": "安貧子"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "5fcf3a2ccf91e2fe45a2023650d699f35e1eacbb384d77b8c9159ffd55cecfd5",
+        "labelStatus": "complete"
+      }
+    }
+  ],
+  "annotations": [
+    {
+      "caseId": "held-out-01",
+      "startUtf16": 47024,
+      "endUtf16": 47493,
+      "checks": [
+        "黃龍子、子平、劉仁甫、璵姑全部有片段内直接姓名；申先生指子平，黃龍为黃龍子的明确简称，均不重复。",
+        "上仙、诸仙是现有主体的礼貌称呼；山上人、城市中人、寻常人为泛指群体，虎与骡马为未命名动物，关帝庙及桃花源记分别是地点和书名。",
+        "旧准备版本核对说明曾向父代理暴露；当前片段全部位于38635之后，与该旧版无重叠。独立审查指出五条稳定代称边界问题后，本轮将这五条再次更换。完整来源本身已被接触，不声明整部来源从未接触。"
+      ]
+    },
+    {
+      "caseId": "held-out-02",
+      "startUtf16": 48924,
+      "endUtf16": 49334,
+      "checks": [
+        "三位参与者均在开头直接具名；黃龍为同段黃龍子简称，彼此、他、自己均可归入已列主体。",
+        "珠鸟为琴瑟相和的比喻，云霞为感受描写，不是另一个人物；片段截止于完整句末，不补入下一句及片段外姓名。"
+      ]
+    },
+    {
+      "caseId": "held-out-03",
+      "startUtf16": 48355,
+      "endUtf16": 48718,
+      "checks": [
+        "子平与黃龍子分别被明确命名，片段内无其他姓名；开头仅移除整行回目，正文从话说开始连续保留。",
+        "洞内器物、夜明珠、琴瑟及书箱均非人物；想必是盛衣服的叙述不构成额外主体。"
+      ]
+    },
+    {
+      "caseId": "held-out-04",
+      "startUtf16": 49674,
+      "endUtf16": 50118,
+      "checks": [
+        "璵姑、黃龍子、子平分别有明确动作，所有问答代词均归这些已命名主体，不重复计数。",
+        "驪龍之珠和火龙吐珠是灯具来源的戏言说明，未识别出具名或稳定代称的独立龙类角色；珠壳、油池、灯心均为器物。"
+      ]
+    },
+    {
+      "caseId": "held-out-05",
+      "startUtf16": 53146,
+      "endUtf16": 53638,
+      "checks": [
+        "两轮问答双方均明确标作黃龍子与子平，我、你、我们均指已列主体。",
+        "月亮、月球、太阳、明暗、盈亏为议论对象，不是角色；人、人眼及能飞到月球者为泛指或假设，不建立额外主体。"
+      ]
+    },
+    {
+      "caseId": "held-out-06",
+      "startUtf16": 57435,
+      "endUtf16": 57735,
+      "checks": [
+        "南革首领、官商、败类子弟、举人、进士、翰林、部曹等均为泛指群体或官职，没有具名独立主体。",
+        "爱皮西提衣、阿衣乌爱窝是字母读音描述，不是人名；叙述中的你与泛论对象不建立角色。"
+      ]
+    },
+    {
+      "caseId": "held-out-07",
+      "startUtf16": 61093,
+      "endUtf16": 61514,
+      "checks": [
+        "老殘为片段行动和思考主体，謝靈運作为诗句作者被明确提及，按具名主体纳入。",
+        "王公大臣为匿名群体；北斗七星、开阳、摇光、紫微垣为星象，《诗经》为书名，不建立角色。"
+      ]
+    },
+    {
+      "caseId": "held-out-08",
+      "startUtf16": 93215,
+      "endUtf16": 93511,
+      "checks": [
+        "人瑞、老殘、翠環、翠花均逐字具名；本片段只出现人瑞这一明确姓名，不能借相邻材料补全姓氏。",
+        "贵如夫人、新身契所指的人由紧接着的翠環明确解说；愚弟指人瑞，各人和他们为已有主体集合，没有未命名对话者。"
+      ]
+    },
+    {
+      "caseId": "held-out-09",
+      "startUtf16": 69900,
+      "endUtf16": 70282,
+      "checks": [
+        "翠環、老殘、翠花、黃人瑞均有直接姓名证据；人瑞明确为同段黃人瑞的简称，只保留完整名称。",
+        "客人、财主、男子、女儿家为泛称；大家、他们为已出现角色集合，不重复建立。"
+      ]
+    },
+    {
+      "caseId": "held-out-10",
+      "startUtf16": 109504,
+      "endUtf16": 109775,
+      "checks": [
+        "老殘与安貧子为具名问答者，青龍子为具名被访对象；先生、他、此公的指向均有片段内姓名支持，不另建角色。",
+        "香客为未命名群体；玄珠洞、靈岩山、黃芽嘴子、白雪塢为地点，不拆成人物。"
+      ]
+    }
+  ]
+}

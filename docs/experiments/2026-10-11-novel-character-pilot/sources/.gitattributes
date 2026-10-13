@@ -1,0 +1,3 @@
+# 保留冻结原文的字节及换行，维持 SHA-256 与切片证据。
+gutenberg-*.txt -text -whitespace
+local-task.jsonl -text

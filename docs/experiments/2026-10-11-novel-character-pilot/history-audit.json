@@ -1,0 +1,161 @@
+{
+  "capturedAt": "2026-10-11T14:34:22.840Z",
+  "sourcePath": "/Users/xutaoyu/.proma/agent-workspaces/default/capability-factory/runs/a0a4ff51-7d4b-4ebb-9b10-af6344ed670f.jsonl",
+  "sourceSha256": "3d0bce2cb6cb6162943c7c7520dfd4e49f7da30f66f12ca1a797bd03ddced362",
+  "totalRuns": 79,
+  "recentWindow": 10,
+  "baselineVersion": 24,
+  "executionFailed": 7,
+  "succeededAndReviewed": 3,
+  "diagnosis": "空正文且length/max_tokens停止；不等同于账户余额或订阅额度不足，不能记作角色提取质量失败。",
+  "diagnosisCodeReferences": [
+    "apps/electron/src/main/lib/capability-factory/capability-factory-pi-call.ts:84",
+    "apps/electron/src/main/lib/capability-factory/capability-factory-model-call.ts:292"
+  ],
+  "lastObservedBindings": [
+    {
+      "slotId": "scan",
+      "declaredModel": "glm-5.3",
+      "channelId": "27f16855-ace4-428c-a89d-39ad8da4aaa9",
+      "channelName": "BigModel-传贝",
+      "modelId": "glm-5.3",
+      "substituted": false
+    }
+  ],
+  "runs": [
+    {
+      "runId": "3e9b56e4-d8b5-46cf-a2d8-9ff6024bc946",
+      "sceneVersion": 24,
+      "status": "failed",
+      "valid": false,
+      "startedAt": 1791723213465,
+      "finishedAt": 1791723268647,
+      "elapsedMs": 55182,
+      "reviewStatus": "skipped",
+      "reviewPassed": null,
+      "stepErrors": [
+        "模型 glm-5.3 未返回正文（生成额度已用尽），请检查模型设置或更换模型后重试。"
+      ]
+    },
+    {
+      "runId": "6d79c4ec-dc18-43c4-baa9-936583042787",
+      "sceneVersion": 24,
+      "status": "failed",
+      "valid": false,
+      "startedAt": 1791723268848,
+      "finishedAt": 1791723354324,
+      "elapsedMs": 85476,
+      "reviewStatus": "skipped",
+      "reviewPassed": null,
+      "stepErrors": [
+        "模型 glm-5.3 未返回正文（生成额度已用尽），请检查模型设置或更换模型后重试。"
+      ]
+    },
+    {
+      "runId": "363732cb-0115-4234-9b2c-97c7084bebbd",
+      "sceneVersion": 24,
+      "status": "failed",
+      "valid": false,
+      "startedAt": 1791723354534,
+      "finishedAt": 1791723425916,
+      "elapsedMs": 71382,
+      "reviewStatus": "skipped",
+      "reviewPassed": null,
+      "stepErrors": [
+        "模型 glm-5.3 未返回正文（生成额度已用尽），请检查模型设置或更换模型后重试。"
+      ]
+    },
+    {
+      "runId": "d166287b-6ceb-4df4-a2d6-f1b84d17cd3d",
+      "sceneVersion": 24,
+      "status": "failed",
+      "valid": false,
+      "startedAt": 1791723426282,
+      "finishedAt": 1791723476567,
+      "elapsedMs": 50285,
+      "reviewStatus": "skipped",
+      "reviewPassed": null,
+      "stepErrors": [
+        "模型 glm-5.3 未返回正文（生成额度已用尽），请检查模型设置或更换模型后重试。"
+      ]
+    },
+    {
+      "runId": "e189eae0-638e-4092-9d46-0a242146f7e2",
+      "sceneVersion": 24,
+      "status": "failed",
+      "valid": false,
+      "startedAt": 1791723476790,
+      "finishedAt": 1791723527229,
+      "elapsedMs": 50439,
+      "reviewStatus": "skipped",
+      "reviewPassed": null,
+      "stepErrors": [
+        "模型 glm-5.3 未返回正文（生成额度已用尽），请检查模型设置或更换模型后重试。"
+      ]
+    },
+    {
+      "runId": "d667cbaa-c35c-44fb-8f69-23b955abe692",
+      "sceneVersion": 24,
+      "status": "succeeded",
+      "valid": true,
+      "startedAt": 1791723527414,
+      "finishedAt": 1791723595812,
+      "elapsedMs": 68398,
+      "reviewStatus": "succeeded",
+      "reviewPassed": true,
+      "stepErrors": []
+    },
+    {
+      "runId": "5e4ff21d-2f27-4041-8a0f-c8e38886fd59",
+      "sceneVersion": 24,
+      "status": "failed",
+      "valid": false,
+      "startedAt": 1791723685015,
+      "finishedAt": 1791723734224,
+      "elapsedMs": 49209,
+      "reviewStatus": "skipped",
+      "reviewPassed": null,
+      "stepErrors": [
+        "模型 glm-5.3 未返回正文（生成额度已用尽），请检查模型设置或更换模型后重试。"
+      ]
+    },
+    {
+      "runId": "bb9125f2-cdf3-4ddc-a6ed-1c7cef8d4f66",
+      "sceneVersion": 24,
+      "status": "succeeded",
+      "valid": true,
+      "startedAt": 1791723734451,
+      "finishedAt": 1791723756464,
+      "elapsedMs": 22013,
+      "reviewStatus": "succeeded",
+      "reviewPassed": true,
+      "stepErrors": []
+    },
+    {
+      "runId": "16a197f2-29cb-4c33-b867-7a5d34657075",
+      "sceneVersion": 24,
+      "status": "failed",
+      "valid": false,
+      "startedAt": 1791723849334,
+      "finishedAt": 1791723902351,
+      "elapsedMs": 53017,
+      "reviewStatus": "skipped",
+      "reviewPassed": null,
+      "stepErrors": [
+        "模型 glm-5.3 未返回正文（生成额度已用尽），请检查模型设置或更换模型后重试。"
+      ]
+    },
+    {
+      "runId": "69840a64-5f82-47cc-ab7d-d2dd61fe932f",
+      "sceneVersion": 24,
+      "status": "succeeded",
+      "valid": true,
+      "startedAt": 1791723902570,
+      "finishedAt": 1791723909468,
+      "elapsedMs": 6898,
+      "reviewStatus": "succeeded",
+      "reviewPassed": true,
+      "stepErrors": []
+    }
+  ]
+}
