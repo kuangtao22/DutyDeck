@@ -53,6 +53,8 @@ interface CanvasAgentReviewReadResult {
 /** 单次审核仅在内存内累计已送达事实，生命周期随Agent运行结束。 */
 export interface CanvasAgentReviewTracker {
   record: (result: CanvasAgentReviewReadResult) => void
+  /** 仅补齐已送达节点元数据的同基线正文，不推断关系或质量结论。 */
+  recordTextContent: (result: { canvasId: string; revision: number; nodeId: string }) => void
   status: () => CanvasAgentReviewCoverage
 }
 
@@ -95,12 +97,15 @@ export function createCanvasAgentReviewTracker(context: CanvasAgentReviewContext
   const expectedEdges = new Map(context.edges.map(edge => [edge.id, JSON.stringify(edge)]))
   /** 已返回关系仅保存ID以避免重复复制图。 */
   const readEdgeIds = new Set<string>()
+  /** 正文分页没有位置等节点信息，必须先有同基线普通读取的完整元数据。 */
+  const textMetadataRead = new Set<string>()
   return {
     record: result => {
       if (result.canvasId !== context.canvasId || result.revision !== context.revision) return
       for (const entry of result.nodes) {
         if (!states.has(entry.node.id)) continue
         if (entry.readError || entry.issue) {
+          textMetadataRead.delete(entry.node.id)
           states.set(entry.node.id, 'failed')
           continue
         }
@@ -113,11 +118,19 @@ export function createCanvasAgentReviewTracker(context: CanvasAgentReviewContext
         /** 即使历史列表被限流，当前节点/正文/配置完整时仍可记录当前输入覆盖。 */
         const complete = entry.node.position !== undefined && length === entry.contentLength
           && entry.artifact?.configOmitted !== true
+        if ((entry.node.kind === 'document' || entry.node.kind === 'webview')
+          && entry.node.position !== undefined && entry.artifact?.configOmitted !== true) textMetadataRead.add(entry.node.id)
+        else textMetadataRead.delete(entry.node.id)
         if (complete) states.set(entry.node.id, 'read')
         else states.set(entry.node.id, 'incomplete')
       }
       for (const edge of result.edges) {
         if (expectedEdges.get(edge.id) === JSON.stringify(edge)) readEdgeIds.add(edge.id)
+      }
+    },
+    recordTextContent: result => {
+      if (result.canvasId === context.canvasId && result.revision === context.revision && textMetadataRead.has(result.nodeId)) {
+        states.set(result.nodeId, 'read')
       }
     },
     status: () => {

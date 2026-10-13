@@ -49,6 +49,7 @@ import type { CanvasAgentExecutionResult, CanvasAgentExecutionService } from './
 import { describeCanvasAgentPreparationFailure } from './canvas-agent-execution-service'
 import type { CanvasAgentOutputService } from './canvas-agent-output-service'
 import { createCanvasAgentReviewTracker, resolveCanvasAgentReviewContext } from './canvas-agent-review'
+import { CANVAS_INTENT_GUIDANCE } from './canvas-intent-guidance'
 import type { CanvasAgentReviewContext, CanvasAgentReviewCoverage } from './canvas-agent-review'
 import { resolveCanvasAgentReviewPosition } from './canvas-agent-review-layout'
 import type {
@@ -78,6 +79,7 @@ import { createCanvasTaskMediaReview, type CanvasTaskMediaTarget } from './canva
 import type { createMediaDeliveryInspectionService } from '../media/media-delivery-inspection-service'
 import { createCanvasTaskEvidence, resolveCanvasTaskBaseline, resolveCanvasTaskEvidence } from './canvas-task-evidence'
 import { hasCanvasTextArtifactContent } from './canvas-text-artifact-content'
+import { createCanvasTextReadCoverage, parseCanvasTextReadPage } from './canvas-text-read-coverage'
 import { CANVAS_AGENT_MUTATION_SCHEMA, CANVAS_UPSERT_EDGES_EXAMPLE } from './canvas-mutation-tool-schema'
 import {
   canvasNodeCapabilityRegistry,
@@ -1051,6 +1053,8 @@ export function createCanvasToolRun(
   let task = createCanvasTaskContract(taskOptions)
   /** 持久任务只有在 start/resume 后才加入本轮完成检查。 */
   let taskEngaged = false
+  /** 分页覆盖只存在于本轮运行，未送达正文不会因历史任务恢复被算作已读。 */
+  const textReadCoverage = createCanvasTextReadCoverage()
 
   /** 查看指定画布的本会话活动任务；每次都复验关联与读取权限。 */
   const readStoredTask = (canvasId: string) => {
@@ -1711,7 +1715,7 @@ export function createCanvasToolRun(
     }),
     defineCanvasTool({
       name: 'canvas_read', label: '读取画布节点',
-      description: '按 ID 读取有限节点、正文与邻接；expectedRevision 固定审核基线。逐节点 readError 表示读取失败，missingNodeIds 表示不存在，omittedEdgeCount 表示相关连线未完整返回，需补读后才能替换节点。complete 仅表示数据完整，不代表审核通过。Agent 配置更新使用顶层 revision 与 artifact.configRevision；configOmitted 时缩小范围。',
+      description: '按 ID 读取有限节点、正文与邻接；expectedRevision 固定审核基线。逐节点 readError 表示读取失败，missingNodeIds 表示不存在，omittedEdgeCount 表示相关连线未完整返回，需补读后才能替换节点。complete 仅表示数据完整，不代表审核通过。文档或 WebView 单节点正文仍截断时，使用 canvas_read_version 按 artifact.currentRevision 从 offset=0 跟随 nextOffset 分页；全部送达后取 evidence 完成交付。Agent 配置更新使用顶层 revision 与 artifact.configRevision；configOmitted 时缩小范围。',
       parameters: Type.Object({
         canvasId: Type.String({ minLength: 1, maxLength: 128 }),
         nodeIds: Type.Array(Type.String({ minLength: 1, maxLength: 128 }), { minItems: 1, maxItems: MAX_READ_NODES }),
@@ -2968,7 +2972,60 @@ export function createCanvasToolRun(
     (toolCallId) => createArtifactOperationId(context, toolCallId),
     taskExecutionContext,
   )
-  tools.push(...operationTools)
+  tools.push(...operationTools.map((tool): ToolDefinition => tool.name !== 'canvas_read_version' ? tool : {
+    ...tool,
+    execute: async (...args: Parameters<ToolDefinition['execute']>) => {
+      /** 捕获执行起点的合同，拒绝异步返回后把旧页计入另一任务。 */
+      const readingTask = task
+      const readingTaskId = task.status().taskId
+      /** 原操作先完成 schema、授权与响应预算检查，只有成功页参与覆盖。 */
+      const result = await tool.execute(...args)
+      const page = parseCanvasTextReadPage(result.details)
+      if (!page) return result
+      /** 结果必须对应实际请求，不能把另一节点或另一版本的页登记进来。 */
+      const params = args[1] as Record<string, unknown>
+      const requestedVersion = params.version as { kind?: string; revision?: number } | undefined
+      if (page.canvasId !== params.canvasId || page.nodeId !== params.nodeId
+        || page.version.kind !== requestedVersion?.kind || page.version.revision !== requestedVersion.revision
+        || page.offset !== (params.offset ?? 0)) throw new Error('CANVAS_TEXT_READ_PAGE_MISMATCH')
+      assertReadAccess(page.canvasId, args[2])
+      if (task !== readingTask || task.status().taskId !== readingTaskId) throw new Error('CANVAS_TASK_STORE_CONFLICT')
+      /** 阶段性页只累计摘要，全部覆盖时才额外读取一次权威正文来签发证据。 */
+      const pending = textReadCoverage.prepare(page, readingTaskId)
+      let proof: CanvasTaskEvidence | undefined
+      /** 只有复验通过的当前正文可补齐导演审核，历史版本不能覆盖当前基线。 */
+      let reviewedContent: { canvasId: string; nodeId: string; revision: number } | undefined
+      if (pending.readCoverage.complete) {
+        /** 历史版本仍允许浏览，但只有当前采用的正式版本可以用于任务交付。 */
+        const target = { projectId: context.projectId, canvasId: page.canvasId }
+        const snapshot = loadReadSnapshot(target, args[2])
+        const node = snapshot.document.nodes.find(candidate => candidate.id === page.nodeId)
+        if (node && (node.kind === 'document' || node.kind === 'webview') && node.kind === page.version.kind
+          && node.contentRevision === page.version.revision && !snapshot.nodeIssues.some(issue => issue.nodeId === node.id)) {
+          /** 通过权威节点解析内容 ID，工具参数和元数据 hash 不能替代它。 */
+          const contentId = node.kind === 'document' ? node.documentId : node.prototypeId
+          const artifact = await dependencies.textArtifacts.read({ ...target, nodeId: node.id,
+            kind: node.kind, contentId, contentRevision: node.contentRevision })
+          loadReadSnapshot(target, args[2], snapshot.document.revision)
+          if (pending.matches(artifact.content) && hasCanvasTextArtifactContent(node.kind, artifact.content)) {
+            proof = createCanvasTaskEvidence(page.canvasId, node, 'content', [contentId, node.contentRevision, artifact.content])
+            reviewedContent = { canvasId: page.canvasId, nodeId: node.id, revision: snapshot.document.revision }
+          }
+        }
+      }
+      assertReadAccess(page.canvasId, args[2])
+      if (task !== readingTask || task.status().taskId !== readingTaskId) throw new Error('CANVAS_TASK_STORE_CONFLICT')
+      /** 覆盖和凭据一起随公开响应交付；签发前再次验证完整序列化响应预算。 */
+      const details = { ...(result.details as Record<string, unknown>), readCoverage: pending.readCoverage,
+        ...(proof ? { evidence: describeCanvasTaskEvidence(proof) } : {}) }
+      const text = JSON.stringify(details)
+      if (Buffer.byteLength(text, 'utf8') > 64 * 1024) throw new Error('CANVAS_OPERATION_RESPONSE_TOO_LARGE')
+      if (proof) readingTask.recordMany([proof])
+      pending.commit()
+      if (reviewedContent) reviewTracker?.recordTextContent(reviewedContent)
+      return { content: [{ type: 'text' as const, text }], details }
+    },
+  }))
   tools.push(...createCanvasImageCandidateTools(dependencies, toolContext, prepareInspectionThumbnail))
 
   if (dependencies.canvasMedia.attachImportedAssets) tools.push(defineCanvasTool({
@@ -3157,6 +3214,7 @@ export function createCanvasToolRun(
     evaluateCompletion: (signal) => !dependencies.taskStore || taskEngaged || taskOptions.required
       ? task.evaluate(signal) : Promise.resolve({ action: 'complete' }),
     systemPromptAppend: `## 画布工具
+${CANVAS_INTENT_GUIDANCE}
 ${dependencies.orchestration ? buildCanvasOrchestrationGuidance(context) : ''}
 ${CANVAS_PROFESSIONAL_DESIGN_GUIDANCE}
 请基于完整用户语义、项目上下文和工具 schema 自主决定是否读取、创建、修改或运行画布，不要按“首页”或“设计”等关键词硬编码。
@@ -3164,7 +3222,7 @@ ${CANVAS_PROFESSIONAL_DESIGN_GUIDANCE}
 跨专业任务采用持久委托时，由画布编排 Agent 维护下述交付合同，普通 Agent 不重复启动同一合同。直接执行画布任务时先用 canvas_task status 查询；存在未完成任务就按 taskId resume，首次执行才用 canvas_task start 在写入前登记真实交付要求，并按可用能力自主读取、配置、执行、验证和修复。response 仅适用于文本本身就是用户交付，不能用它代替要求的节点或真实生成结果。canvas_read 返回 content/configuration/adopted 证据，canvas_inspect_images 返回真实图像检查的 inspection 证据；用 evidenceId 完成全部要求后调用 canvas_task complete。提交时严格二选一：content/configuration/adopted/inspection 只提交 \`{id,evidenceId}\`，response 只提交 \`{id,text}\`，绝不在同一项中同时提交 text 与 evidenceId，也不能把说明文字塞入证据提交。配置已保存不表示可运行，媒体采用不表示质量通过。音视频 metadataOnly 与 WebView 源码不能代替内容或交互检查，缺少能力时 canvas_task block 报告具体原因。完成前 Host 会复验产物版本；有合法下一步的未完成任务在原会话和预算内继续，不能重建运行或降低交付要求来绕过核验。普通能力咨询和无需画布产物的问答不必登记任务。任务要求新增产物时，保留源输入，读取新产物作为完成证据。
 音视频采用要求根据用途填写 mediaReview（stage、contentCoverage、音轨/时长/尺寸）。technical 仅适合技术素材，sampled 只代表有限抽样；完整成片视听验收需 full，能力不足明确 block，不能省略条件或降级。当前可用 canvas_inspect_media_content 时先读取真实采用素材，再在下一轮看过实际样本后 canvas_review_media；同批盲评不允许，样本只供紧接着的模型请求，重看时重新检查同一素材而非生成。完成提交评审后的 evidence.evidenceId，元数据、检查前ID或报告正文不能替代评审。
 
-当任务需要网页原型、图片设计稿、文档或多个可关联产物时，先读取并遵循 \`canvas-production\` Skill。Skill 不可用时按以下最小规则继续：产物类型会改变交付结果且用户未说明时，只询问一次；用户已明确类型时直接执行；明确要求修改项目 HTML、React、组件或其它代码文件时继续普通 Agent。
+以下制作规则仅适用于已根据本轮意图确定的画布任务。Skill 不可用时沿工具能力和既有授权继续；不能因工具可用或存在历史任务就将普通交付转入画布。
 
 先依据当前任务的用途、受众、交付、已有素材、阶段和成本约束选择制作模式，再按真实模型/工作流能力选择生成模式。单项试验可直接完成，系列产物先统一规范，多镜头视频先导演规划，已有素材剪辑先梳理素材和时间线；工程与研究沿各自的专业分工，不套用导演。产品推广、教程、叙事、氛围展示各按卖点与行动引导、步骤正确、角色因果、视听节奏来评审。解释推荐模式的依据和用户影响，不按关键词、节点数量或模型名称硬编码。复杂生产或适配评审时按 canvas-production 入口读取 references/production-review.md。
 

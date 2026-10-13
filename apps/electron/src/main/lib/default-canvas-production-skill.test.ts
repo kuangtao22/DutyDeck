@@ -38,12 +38,21 @@ test('Given canvas-production 默认 Skill When 校验发布合同 Then 元数�
 
   expect(skill).toMatch(/^name: canvas-production$/m)
   expect(skill).toMatch(/^group: proma$/m)
-  expect(skill).toMatch(/^version: "1\.0\.40"$/m)
+  expect(skill).toMatch(/^version: "1\.0\.41"$/m)
   expect(skill).toContain('产品套图')
   expect(skill).toContain('漫剧分镜')
   expect(skill).toContain('交互视觉稿')
   expect(skill).toContain('普通代码')
   expect(skill).toContain('不要强行转入画布')
+})
+
+test('Given 普通原型交付与画布长正文 When 读取默认Skill Then 不隐式转入画布且给出分页验收路径', () => {
+  /** 分发入口既约束误触发，也明确超长正文的真实完成凭据。 */
+  const skill = readCanvasProductionSkill()
+  expect(skill).toContain('普通 HTML/React/代码实现或一次性原型')
+  expect(skill).toContain('不自动创建、同步或打开画布')
+  expect(skill).toContain('历史关联、默认画布、旧任务')
+  for (const field of ['`canvas_read_version`', '`nextOffset`', '`readCoverage.complete`', '`evidence.evidenceId`']) expect(skill).toContain(field)
 })
 
 test('Given 用户要求连接当前镜头 When 读取制作规则 Then 核对画布与真实素材而不把换图归因于绑定故障', () => {

@@ -1,4 +1,5 @@
 import type { AgentCanvasBinding, AgentCanvasBindingChangeEvent, AgentEvent, CanvasToolNavigationResult } from '@proma/shared'
+import { isOrdinaryTopLevelAgentSession } from '@proma/shared'
 import { atom } from 'jotai'
 import type { Store } from 'jotai/vanilla/store'
 import {
@@ -42,6 +43,99 @@ const CHANGE_TOOLS = new Set([
   'canvas_delegate', 'canvas_resume_orchestration', 'canvas_cancel_orchestration',
   'canvas_update_plan', 'canvas_dispatch', 'canvas_review_step', 'canvas_report_orchestration', 'canvas_finish_orchestration',
 ])
+
+/** 只接收明确定位或本轮显式引用；上下文里的历史默认画布不构成导航意图。 */
+const ACTIVITY_TOOLS = new Set(['canvas_read', 'canvas_read_version', 'canvas_list_nodes', 'canvas_get_context',
+  'canvas_inspect_images', 'canvas_inspect_media_content', 'canvas_run_nodes', 'canvas_task'])
+
+/** 真实画布业务的定位事实，不与内容修改回执混淆。 */
+interface CanvasActivityNavigation {
+  projectId: string
+  canvasId: string
+  nodeIds: string[]
+  revision?: number
+}
+
+/**
+ * 将正式画布业务返回的身份投影为定位目标；请求目标与响应目标必须一致。
+ * @param toolName 已配对的业务工具名。
+ * @param input 本轮工具请求，仅用于核对返回身份。
+ * @param result Host 工具结果，不能从正文、历史关联或 Markdown 推测位置。
+ * @param projectId 当前会话项目，稍后仍须权威关联复验。
+ * @returns 已读取节点或显式引用的目标；失败、损坏或无目标时为 null。
+ */
+function parseCanvasActivityNavigation(toolName: string, input: Record<string, unknown>, result: string, projectId: string): CanvasActivityNavigation | null {
+  try {
+    /** Pi 可能把正式 JSON 封装为文本块数组，保留相同字段校验。 */
+    let value: unknown = JSON.parse(result)
+    if (toolName === 'canvas_inspect_images') {
+      if (!isIdentity(input.canvasId) || !Array.isArray(input.nodeIds) || input.nodeIds.length > 512
+        || !input.nodeIds.every(isIdentity) || !Array.isArray(value) || value.length > 1024) return null
+      /** 此工具正式结果逐节点返回状态，没有顶层 canvasId；仅核对配对请求中的节点。 */
+      const nodeIds = value.flatMap(block => {
+        if (!isRecord(block) || block.type !== 'text' || typeof block.text !== 'string') return []
+        const inspection: unknown = JSON.parse(block.text)
+        return isRecord(inspection) && inspection.status === 'ready' && isIdentity(inspection.nodeId)
+          && (input.nodeIds as string[]).includes(inspection.nodeId) ? [inspection.nodeId] : []
+      })
+      return nodeIds.length ? { projectId, canvasId: input.canvasId, nodeIds: [...new Set(nodeIds)] } : null
+    }
+    if (Array.isArray(value) && toolName === 'canvas_inspect_media_content') {
+      /** 正式媒体检查合同将身份放在首个 JSON 块；后面的帧说明与图片不参与导航解析。 */
+      const first = value[0]
+      if (!isRecord(first) || first.type !== 'text' || typeof first.text !== 'string') return null
+      value = JSON.parse(first.text) as unknown
+    } else if (Array.isArray(value)) {
+      if (!value.length || !value.every(block => isRecord(block) && block.type === 'text' && typeof block.text === 'string')) return null
+      value = JSON.parse(value.map(block => (block as { text: string }).text).join('')) as unknown
+    }
+    if (!isRecord(value)) return null
+    if (toolName === 'canvas_get_context') {
+      if (value.projectId !== projectId || !Array.isArray(value.explicitReferences)
+        || value.explicitReferences.length === 0 || value.explicitReferences.length > 512
+        || !value.explicitReferences.every(reference => isRecord(reference) && isIdentity(reference.canvasId) && isIdentity(reference.nodeId))) return null
+      /** 多画布引用没有唯一展示目标，不猜默认画布或抢占另一个引用。 */
+      const references = value.explicitReferences as Array<{ canvasId: string; nodeId: string }>
+      const canvasId = references[0]!.canvasId
+      if (references.some(reference => reference.canvasId !== canvasId)) return null
+      return { projectId, canvasId, nodeIds: [...new Set(references.map(reference => reference.nodeId))] }
+    }
+    if (!isIdentity(value.canvasId) || value.canvasId !== input.canvasId) return null
+    if (value.revision !== undefined && (typeof value.revision !== 'number' || !Number.isSafeInteger(value.revision) || value.revision < 0)) return null
+    if (toolName === 'canvas_task') {
+      if (!['start', 'resume'].includes(String(input.action)) || !isIdentity(value.taskId)
+        || (input.taskId !== undefined && input.taskId !== value.taskId)
+        || !['working', 'blocked', 'needs-input', 'completed'].includes(String(value.phase))) return null
+      return { projectId, canvasId: value.canvasId, nodeIds: [] }
+    }
+    if (toolName === 'canvas_inspect_media_content') {
+      if (!isIdentity(value.nodeId) || value.nodeId !== input.nodeId || !isIdentity(value.inspectionEvidenceId)) return null
+      return { projectId, canvasId: value.canvasId, nodeIds: [value.nodeId] }
+    }
+    if (toolName === 'canvas_run_nodes') {
+      if (!Array.isArray(value.tasks) || value.tasks.length > 512 || !Array.isArray(input.nodeIds)) return null
+      /** 生成受理只表示已进入任务，不表示产物成功或正式采用。 */
+      const nodeIds = value.tasks.flatMap(task => isRecord(task) && isIdentity(task.nodeId) && isIdentity(task.taskId)
+        && ['queued', 'started'].includes(String(task.status)) && (input.nodeIds as unknown[]).includes(task.nodeId) ? [task.nodeId] : [])
+      return nodeIds.length ? { projectId, canvasId: value.canvasId, nodeIds: [...new Set(nodeIds)],
+        ...(typeof value.revision === 'number' ? { revision: value.revision } : {}) } : null
+    }
+    /** 分页正文版本属于内容版本，不冒充图 revision。 */
+    if (toolName === 'canvas_read_version') {
+      if (!isIdentity(value.nodeId) || value.nodeId !== input.nodeId || typeof value.content !== 'string') return null
+      return { projectId, canvasId: value.canvasId, nodeIds: [value.nodeId] }
+    }
+    if (!Array.isArray(value.nodes) || value.nodes.length > 512 || typeof value.revision !== 'number') return null
+    /** 只聚焦已成功返回的节点；缺失、逐节点读取失败不能被当作成功定位。 */
+    const nodeIds = value.nodes.flatMap(entry => {
+      if (!isRecord(entry) || entry.readError) return []
+      const node = toolName === 'canvas_read' ? entry.node : entry
+      return isRecord(node) && isIdentity(node.id) ? [node.id] : []
+    })
+    if (toolName === 'canvas_read' && nodeIds.length === 0) return null
+    return { projectId, canvasId: value.canvasId, nodeIds: [...new Set(nodeIds)], revision: value.revision }
+  } catch { return null }
+}
 
 /** 校验短身份，拒绝空字符串与非文本值。 */
 function isIdentity(value: unknown): value is string {
@@ -112,7 +206,7 @@ export function hasAgentCanvasDraft(store: Store, sessionId: string): boolean {
 }
 
 /** 在当前聊天打开具体画布，并在权威 LOAD 到达后按真实节点几何定位。 */
-export function revealAgentCanvasChange(store: Store, notice: AgentCanvasChangeNotice, nodeIds = notice.nodeIds): boolean {
+export function revealAgentCanvasChange(store: Store, notice: CanvasActivityNavigation & { sessionId: string }, nodeIds = notice.nodeIds): boolean {
   if (store.get(currentAgentSessionIdAtom) !== notice.sessionId || store.get(appModeAtom) !== 'agent'
     || hasAgentCanvasDraft(store, notice.sessionId)) return false
   /** 分屏只替换当前 Pane；已有目标 Pane 则聚焦它，保留另一侧内容。 */
@@ -178,7 +272,7 @@ export function createAgentCanvasChangeConsumer(
   dependencies: CanvasChangeConsumerDependencies = navigationDependencies,
 ): { beginRun: (sessionId: string) => void; handle: (sessionId: string, event: AgentEvent) => void; dispose: () => void } {
   /** 待处理身份跨聊天隔离，消费后立即删除，重复结果不二次导航。 */
-  const pending = new Map<string, { toolName: string; runKey: string; focus: string }>()
+  const pending = new Map<string, { toolName: string; input: Record<string, unknown>; runKey: string; focus: string }>()
   /** 每会话当前轮次的首个回执占用自动展示机会，后续仅更新摘要。 */
   const revealedRuns = new Map<string, string>()
   /** 记录运行起点的用户视图，模型思考期间的主动切页也应受到保护。 */
@@ -243,8 +337,13 @@ export function createAgentCanvasChangeConsumer(
       if (event.type !== 'tool_start' && event.type !== 'tool_result') return
       const key = JSON.stringify([sessionId, event.toolUseId])
       if (event.type === 'tool_start') {
-        if (CHANGE_TOOLS.has(event.toolName)) pending.set(key, {
-          toolName: event.toolName, runKey: readRunKey(store, sessionId),
+        if (CHANGE_TOOLS.has(event.toolName) || (ACTIVITY_TOOLS.has(event.toolName)
+          && runFocus.get(sessionId)?.runKey === readRunKey(store, sessionId))) pending.set(key, {
+          toolName: event.toolName,
+          // 仅保留定位身份，不延长大段 HTML 或媒体参数的生命周期。
+          input: { canvasId: event.input.canvasId, nodeId: event.input.nodeId,
+            nodeIds: Array.isArray(event.input.nodeIds) ? event.input.nodeIds.filter(isIdentity).slice(0, 512) : undefined,
+            action: event.input.action, taskId: event.input.taskId }, runKey: readRunKey(store, sessionId),
           focus: runFocus.get(sessionId)?.runKey === readRunKey(store, sessionId)
             ? runFocus.get(sessionId)!.focus : readFocusSignature(store, sessionId),
         })
@@ -267,12 +366,19 @@ export function createAgentCanvasChangeConsumer(
       /** 旧主进程仅对普通聊天的两类创建结果提供兼容；委托必须带 Host 签发的归属。 */
       const legacy = !delegated && (start.toolName === 'canvas_create_artifact' || start.toolName === 'canvas_import_image')
         ? parseCanvasArtifactToolResult(event.result) : null
-      const navigation = parsed ?? (legacy ? {
+      /** 新增业务入口必须来自已观察到开始事件的本轮，并且不消费写入回执伪装。 */
+      const reading = ACTIVITY_TOOLS.has(start.toolName)
+      const readNavigation = reading && !delegated
+        ? parseCanvasActivityNavigation(start.toolName, start.input, event.result, session.workspaceId) : null
+      const navigation = reading ? readNavigation : parsed ?? (legacy ? {
         status: 'changed' as const, projectId: session.workspaceId, canvasId: legacy.canvasId,
         nodeIds: [legacy.nodeId], revision: legacy.revision,
       } : null)
       if (!navigation || navigation.projectId !== session.workspaceId
-        || (navigation.sourceToolCallId && navigation.sourceToolCallId !== event.toolUseId)) return
+        || ('sourceToolCallId' in navigation && navigation.sourceToolCallId && navigation.sourceToolCallId !== event.toolUseId)) return
+      // 非修改业务后续无需再次读取关联；修改回执仍保留摘要汇总与权限复验。
+      if (reading && (revealedRuns.get(sessionId) === start.runKey || runFocus.get(sessionId)?.interrupted
+        || !isOrdinaryTopLevelAgentSession(session) || store.get(currentAgentSessionIdAtom) !== sessionId)) return
       const noticeRunKey = delegated ? readRunKey(store, sessionId) : start.runKey
       const bindingKey = JSON.stringify([navigation.projectId, sessionId])
       const generation = bindingGenerations.get(bindingKey) ?? 0
@@ -282,7 +388,19 @@ export function createAgentCanvasChangeConsumer(
           || !store.get(agentSessionsAtom).some(item => item.id === sessionId && item.workspaceId === navigation.projectId)
           || !bindings.some(binding => binding.projectId === navigation.projectId && binding.sessionId === sessionId
             && binding.linkedCanvasIds.includes(navigation.canvasId))) return
-        const receiptKey = JSON.stringify([sourceSessionId, start.runKey, navigation.canvasId, navigation.operationId ?? event.toolUseId])
+        /** 读写共用一次自动展示机会，手动关闭与切页保护在异步复验后再次检查。 */
+        const revealOnce = (): void => {
+          if (delegated || !isOrdinaryTopLevelAgentSession(store.get(agentSessionsAtom).find(item => item.id === sessionId))) return
+          if (revealedRuns.get(sessionId) === start.runKey) return
+          revealedRuns.set(sessionId, start.runKey)
+          if (revealedRuns.size > 128) revealedRuns.delete(revealedRuns.keys().next().value!)
+          if (!runFocus.get(sessionId)?.interrupted && !store.get(agentCanvasNavigationInterruptedSessionsAtom).has(sessionId)
+            && start.focus === readFocusSignature(store, sessionId)) revealAgentCanvasChange(store, { ...navigation, sessionId })
+        }
+        if (reading) { revealOnce(); return }
+        /** 非修改回执已提前返回，后续才是内容修改摘要。 */
+        const change = navigation as CanvasChangeNavigation
+        const receiptKey = JSON.stringify([sourceSessionId, start.runKey, navigation.canvasId, change.operationId ?? event.toolUseId])
         if (processed.has(receiptKey)) return
         processed.add(receiptKey)
         if (processed.size > 512) processed.delete(processed.values().next().value!)
@@ -292,11 +410,11 @@ export function createAgentCanvasChangeConsumer(
         const sameRun = old?.runKey === noticeRunKey
         /** 迟到的旧图回执不能让已删除节点在摘要中复活。 */
         if (navigation.revision !== undefined && old?.revision !== undefined && navigation.revision < old.revision) return
-        const deleted = new Set([...(sameRun ? old.deletedNodeIds ?? [] : []), ...navigation.deletedNodeIds ?? []])
+        const deleted = new Set([...(sameRun ? old.deletedNodeIds ?? [] : []), ...change.deletedNodeIds ?? []])
         for (const nodeId of navigation.nodeIds) deleted.delete(nodeId)
         const nodeIds = [...new Set([...(sameRun ? old.nodeIds : []), ...navigation.nodeIds])].filter(nodeId => !deleted.has(nodeId)).slice(-512)
         const notice: AgentCanvasChangeNotice = {
-          ...navigation, sessionId, runKey: noticeRunKey, nodeIds, deletedNodeIds: [...deleted].slice(-512),
+          ...change, sessionId, runKey: noticeRunKey, nodeIds, deletedNodeIds: [...deleted].slice(-512),
           revision: Math.max(navigation.revision ?? 0, sameRun ? old.revision ?? 0 : 0),
           changes: (sameRun ? old.changes : 0) + 1,
         }
@@ -305,12 +423,7 @@ export function createAgentCanvasChangeConsumer(
         next.set(viewKey, notice)
         while (next.size > 64) next.delete(next.keys().next().value!)
         store.set(agentCanvasChangeNoticesAtom, next)
-        if (delegated) return
-        if (revealedRuns.get(sessionId) === start.runKey) return
-        revealedRuns.set(sessionId, start.runKey)
-        if (revealedRuns.size > 128) revealedRuns.delete(revealedRuns.keys().next().value!)
-        if (!runFocus.get(sessionId)?.interrupted && !store.get(agentCanvasNavigationInterruptedSessionsAtom).has(sessionId)
-          && start.focus === readFocusSignature(store, sessionId)) revealAgentCanvasChange(store, notice)
+        revealOnce()
       }).catch(() => console.error('[Agent Canvas] 修改位置关联校验失败'))
     },
     dispose() { disposed = true; pending.clear(); revealedRuns.clear(); runFocus.clear(); processed.clear(); releaseBinding?.(); bindingGenerations.clear(); releaseFocusSubscriptions.forEach(release => release()) },

@@ -190,6 +190,17 @@ test('Given 用户提出画布视觉需求 When 构建系统提示词 Then Agent
   expect(prompt).not.toContain('用户选择 Design')
 })
 
+test('Given 普通 HTML 原型实现请求 When 构建系统提示词 Then 不把文件交付自动升级为画布任务', () => {
+  /** 默认文件交付与画布的使用授权分开，历史关联不能触发新制作。 */
+  const prompt = buildSystemPrompt({ sessionId: 'session-html', permissionMode: 'bypassPermissions',
+    dependencies: { resolveWorkspaceContext: () => ({ workspaceRoot: '/tmp/workspace', projectRoot: '/tmp/project', isLocalProject: true }),
+      getUserName: () => '测试用户' } })
+  expect(prompt).toContain('普通 HTML/React/代码实现或一次性原型')
+  expect(prompt).toContain('不自动创建、同步或打开画布')
+  expect(prompt).toContain('历史关联、默认画布、旧任务')
+  expect(prompt).toContain('明确要求使用画布')
+})
+
 test('Given 用户已给出具体目标后追问能否执行 When 构建系统提示词 Then Agent 立即进入工具读取阶段', () => {
   const prompt = buildSystemPrompt({
     sessionId: 'session-execution-intent',
