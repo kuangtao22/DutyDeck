@@ -1440,6 +1440,18 @@ export class AgentOrchestrator {
         getBatch: (sceneId, batchId) => factoryRuntime.batches().get(sceneId, batchId),
         assertAdoptable: (sceneId, batchId) => factoryRuntime.batches().assertAdoptable(sceneId, batchId),
       }) : null
+      /** 在构建系统提示词前读取一次当前工作区的场景摘要，帮助 Agent 沿用已有 sceneId。 */
+      const capabilityFactoryScenes = capabilityFactoryFacade
+        ? (() => {
+            try {
+              return capabilityFactoryFacade.listScenes()
+            } catch (error) {
+              /** 场景摘要只是提示词辅助信息，读取失败不能阻断普通 Agent 回合。 */
+              console.warn('[Agent 编排] 读取编排工厂场景摘要失败，继续运行:', error)
+              return undefined
+            }
+          })()
+        : undefined
       /** 普通前台回合的知识能力；提炼复用当前模型和 Skill，不另起后台模型。 */
       const projectKnowledge = !automationContext ? createProjectKnowledgeAgent({
         sessionId, toolMode: runToolMode, triggeredBy: input.triggeredBy,
@@ -2204,6 +2216,7 @@ export class AgentOrchestrator {
         serverOpsWriteAvailable: Boolean(serverOpsFacade),
         /** 工厂是工作区级能力：能建 facade 就说明这个会话能用它，注入场景设计方法论。 */
         capabilityFactoryAvailable: capabilityFactoryFacade !== null,
+        capabilityFactoryScenes,
         currentModelId: selectedModelId,
         projectInstructions,
         projectKnowledgeMaintenanceApproved,

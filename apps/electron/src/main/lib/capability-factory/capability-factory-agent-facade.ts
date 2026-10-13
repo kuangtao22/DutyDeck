@@ -196,7 +196,7 @@ export function createCapabilityFactoryAgentFacade(options: CapabilityFactoryAge
   })
 
   return {
-    /** 列出本项目的全部场景。 */
+    /** 列出当前 Agent 归属工作区的全部场景。 */
     listScenes(): CapabilityFactoryAgentSceneSummary[] {
       assertCurrent()
       return service.listScenes().map(summarize)

@@ -984,6 +984,19 @@ test('Given 直接工具调用 When 伪造推进阶段和批准字段 Then schem
 })
 
 
+test('Given Agent 读取工厂工具说明 When 用户要求修改已有流程 Then 工具明确要求复用场景而不是新建项目', () => {
+  const sdk = { defineTool: (definition: unknown) => definition } as Parameters<typeof buildCapabilityFactoryAgentTools>[0]
+  const tools = buildCapabilityFactoryAgentTools(sdk, fixture().facade)
+  const listScenes = tools.find((tool) => tool.name === 'factory_list_scenes')!
+  const prepareOperation = tools.find((tool) => tool.name === 'factory_prepare_operation')!
+
+  expect(listScenes.description).toContain('当前工作区')
+  expect(listScenes.description).toContain('场景是工作区内的流程')
+  expect(prepareOperation.description).toContain('只有用户明确要求新建独立场景时才使用 createScene')
+  expect(prepareOperation.description).toContain('修改或增加步骤时沿用已有 sceneId')
+})
+
+
 test('Given Agent 读取最近运行 When 登记暴露 Then 只传实际返回的 ID 并保留数据集显式暴露', () => {
   const { service } = fixture()
   const scene = service.createScene('真实可见范围')

@@ -132,7 +132,7 @@ export function buildCapabilityFactoryAgentTools(
     sdk.defineTool({
       name: 'factory_list_scenes',
       label: '列出编排场景',
-      description: 'List orchestration scenes in this project as summaries (id, name, current version, whether a draft is pending, step count). Read-only. Use factory_get_scene for the full definition.',
+      description: '列出当前工作区的编排场景摘要（id、name、当前版本、是否有草案、步骤数）。场景是工作区内的流程，不是另一个项目；用户要求修改或增加步骤时先调用本工具，再复用匹配场景的 sceneId。只读；完整定义使用 factory_get_scene。',
       parameters: Type.Object({}, { additionalProperties: false }),
       async execute() { return result(facade.listScenes()) },
     }),
@@ -311,7 +311,7 @@ export function buildCapabilityFactoryAgentTools(
     sdk.defineTool({
       name: 'factory_prepare_operation',
       label: '准备工厂操作',
-      description: 'Step 1 of 2 for scene lifecycle, draft adoption/discard, rollback, export, dataset changes, or stub deletion. Freezes the exact target state and returns an approval snapshot; writes nothing. For a single-block adoption, explicitly use adoptDraft scope kind=step or kind=stepAcceptance; omitting scope means the WHOLE draft. Unselected draft changes remain pending. Partial scope MUST NOT include testedBatchId because whole-draft evidence cannot prove a partial adoption. testedExperimentId may certify a partial adoption only when the host verifies the actual merged definition exactly matches the frozen tested candidate. First save the candidate prompt into the existing draft through its approval flow, preserving other pending blocks; experiments never overwrite drafts. Every new adoptDraft request MUST include proposal with a concrete problem and expected benefit; risk is optional. Proposal is an Agent judgment awaiting review, never a test conclusion. The host separately derives verified benefits, current problems, remaining risks, and validation scope only from matching test evidence. Legacy internal calls without proposal remain readable through the exact draft diff and note.',
+      description: 'Step 1 of 2 for scene lifecycle, draft adoption/discard, rollback, export, dataset changes, or stub deletion. 场景操作属于当前工作区；修改或增加步骤时沿用已有 sceneId，只有用户明确要求新建独立场景时才使用 createScene。Freezes the exact target state and returns an approval snapshot; writes nothing. For a single-block adoption, explicitly use adoptDraft scope kind=step or kind=stepAcceptance; omitting scope means the WHOLE draft. Unselected draft changes remain pending. Partial scope MUST NOT include testedBatchId because whole-draft evidence cannot prove a partial adoption. testedExperimentId may certify a partial adoption only when the host verifies the actual merged definition exactly matches the frozen tested candidate. First save the candidate prompt into the existing draft through its approval flow, preserving other pending blocks; experiments never overwrite drafts. Every new adoptDraft request MUST include proposal with a concrete problem and expected benefit; risk is optional. Proposal is an Agent judgment awaiting review, never a test conclusion. The host separately derives verified benefits, current problems, remaining risks, and validation scope only from matching test evidence. Legacy internal calls without proposal remain readable through the exact draft diff and note.',
       parameters: Type.Object({ operation }, { additionalProperties: false }),
       async execute(_id, input) { return result(facade.prepareOperation(input.operation)) },
     }),
