@@ -10,19 +10,25 @@ export interface AgentRunMarker {
   runGeneration?: number
 }
 
-/** 每个 Renderer store 只保留各会话最新终态身份，避免消息展示清理后被旧快照复活。 */
-export const agentTerminalRunMarkersAtom = atom<Map<string, AgentRunMarker>>(new Map())
+/** 独立于消息展示保留本轮结果，避免清理 stream state 后丢失失败状态。 */
+export interface AgentTerminalRunMarker extends AgentRunMarker {
+  /** 本轮是否失败；主动停止与成功完成不标记失败。 */
+  failed?: boolean
+}
+
+/** 每个 Renderer store 只保留各会话最新终态身份与结果，避免旧快照复活运行。 */
+export const agentTerminalRunMarkersAtom = atom<Map<string, AgentTerminalRunMarker>>(new Map())
 
 /** 将 sessionId 的 run 终态身份写入 store；旧代际不能覆盖较新的终态。 */
-export function recordAgentTerminalRun(store: Store, sessionId: string, run: AgentRunMarker): void {
+export function recordAgentTerminalRun(store: Store, sessionId: string, run: AgentTerminalRunMarker): void {
   if (run.startedAt == null && run.runGeneration == null) return
   store.set(agentTerminalRunMarkersAtom, (previous) => {
     /** 当前已知的最新终态，和普通完成事件共用同一代际判定。 */
     const existing = previous.get(sessionId)
     if (existing && isSameOrNewerRun(existing, run)) return previous
-    /** 仅保存身份字段，不保留整份运行状态或消息。 */
+    /** 仅保存身份与失败标记，不保留整份运行状态或消息。 */
     const next = new Map(previous)
-    next.set(sessionId, { startedAt: run.startedAt, runGeneration: run.runGeneration })
+    next.set(sessionId, { startedAt: run.startedAt, runGeneration: run.runGeneration, failed: run.failed })
     return next
   })
 }

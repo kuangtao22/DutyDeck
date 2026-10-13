@@ -88,7 +88,7 @@ export function sortDelegatedChildSessions(
   agentIndicatorMap?: ReadonlyMap<string, SessionIndicatorStatus>,
 ): AgentSessionMeta[] {
   const priority = (session: AgentSessionMeta): number => Number(
-    agentIndicatorMap && ['blocked', 'running', 'completed'].includes(getDelegatedChildSessionStatus(session, agentIndicatorMap)),
+    agentIndicatorMap && ['blocked', 'running', 'failed', 'completed'].includes(getDelegatedChildSessionStatus(session, agentIndicatorMap)),
   )
   return [...sessions].sort((a, b) => priority(b) - priority(a) || b.updatedAt - a.updatedAt)
 }
@@ -155,7 +155,7 @@ export function getCollapsedAgentRailTreeStatus(
 
 /**
  * 折叠态 Rail 的可见会话树：排序与上游 Rail 完全一致（当前会话 > blocked >
- * running > pinned > completed > idle，再按更新时间），只是把委派子会话收纳到
+ * running > pinned > failed > completed > idle，再按更新时间），只是把委派子会话收纳到
  * 父条目下，并用会话树聚合状态参与排序。
  *
  * 排序只依赖传入的派生数据，不引入任何中间 state，因此点击后的置顶在同一次
@@ -185,8 +185,9 @@ export function getCollapsedAgentRailTrees(input: {
     if (status === 'blocked') return 1
     if (status === 'running') return 2
     if (session.pinned) return 3
-    if (status === 'completed') return 4
-    return 5
+    if (status === 'failed') return 4
+    if (status === 'completed') return 5
+    return 6
   }
 
   return decoratedTrees

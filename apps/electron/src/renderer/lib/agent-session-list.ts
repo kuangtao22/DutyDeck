@@ -11,6 +11,7 @@ const DELEGATION_STATUS_ICON_CLASS: Readonly<Record<SessionIndicatorStatus, stri
   running: 'text-blue-500',
   blocked: 'text-orange-500',
   completed: 'text-green-500',
+  failed: 'text-destructive',
 }
 
 /** 保持协作子 Agent 在所有入口使用一致的状态颜色。 */
@@ -305,7 +306,7 @@ export function getDelegatedChildSessionStatus(
 /**
  * Resolve the sidebar indicator status of one parent session together with its
  * delegated children, taking the highest priority of
- * blocked > running > completed > idle.
+ * blocked > running > failed > completed > idle.
  *
  * Expanded rows and the collapsed Rail must both call this: the parent's color
  * code has to follow its children even while the parent itself is idle, and the
@@ -323,6 +324,7 @@ export function getAgentSessionTreeIndicatorStatus(
 
   if (statuses.includes('blocked')) return 'blocked'
   if (statuses.includes('running')) return 'running'
+  if (statuses.includes('failed')) return 'failed'
   if (statuses.includes('completed')) return 'completed'
   return 'idle'
 }

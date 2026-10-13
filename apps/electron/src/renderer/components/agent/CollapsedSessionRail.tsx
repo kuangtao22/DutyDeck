@@ -49,6 +49,7 @@ const RAIL_STATUS_CLASS: Record<SessionIndicatorStatus, string> = {
   running: 'border-blue-500 animate-pulse',
   blocked: 'border-orange-500',
   completed: 'border-emerald-500',
+  failed: 'border-destructive',
 }
 
 function getRailItemChildCount(item: RailRecentItem): number {
