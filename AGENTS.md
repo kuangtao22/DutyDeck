@@ -10,7 +10,7 @@ Proma 是一个本地优先的 Electron AI 桌面 Agent。仓库是 Bun monorepo
 - 状态管理统一使用 Jotai。保持组件化、可读、最小设计；避免过度抽象。
 - 先调研再新增依赖，明确版本与维护状态；不要凭习惯加入依赖。
 - 本地优先：持久化优先采用可移植的 JSON/JSONL 配置文件，不引入本地数据库。
-- 开发版与打包版共享 `~/.proma` 业务配置目录，确保 Skills、模型、渠道和会话设置一致；Electron 内部 `userData` 仍按开发实例隔离。
+- 开发版与打包版共享 locator 指向的业务数据根（默认 `~/.DutyDeck`），确保 Skills、模型、渠道和会话设置一致；旧 `~/.proma` 在启动时检测并创建待确认迁移计划，项目内 `.proma` 保持兼容；Electron 内部 `userData` 仍按开发实例隔离。
 - 修改 JSON 配置或会话元数据时，使用 `apps/electron/src/main/lib/safe-file.ts` 的原子写封装；不要直接 `writeFileSync`。
 - 功能改动应有 BDD 风格的可执行测试，至少覆盖正常路径和主要边界。
 - 改动 UI 时复用既有 Radix/shadcn primitives 与主题变量；重视空状态、键盘操作、加载态和深浅主题。

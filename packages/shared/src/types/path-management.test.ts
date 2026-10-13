@@ -13,6 +13,7 @@ describe('isDataRootLocatorFile', () => {
         id: 'migration-1',
         sourceRoot,
         targetRoot,
+        origin: 'default-root-upgrade',
         stage: 'copying',
         completedBytes: 1,
         totalBytes: 2,
@@ -40,6 +41,15 @@ describe('isDataRootLocatorFile', () => {
       { version: 1, activeRoot: targetRoot, postCommitCleanup: { migrationId: 'migration-1', targetRoot: 'relative' } },
       { version: 1, activeRoot: targetRoot, postCommitCleanup: { migrationId: 'migration-1', targetRoot: sourceRoot } },
       { version: 1, activeRoot: targetRoot, postCommitCleanup: { migrationId: 'migration-1', targetRoot, error: '' } },
+      { version: 1, activeRoot: targetRoot, defaultMigrationDismissed: 'yes' },
+      {
+        version: 1,
+        activeRoot: sourceRoot,
+        migration: {
+          id: 'migration-1', sourceRoot, targetRoot, origin: 'other', stage: 'copying', completedBytes: 0,
+          totalBytes: 1, startedAt: 1, updatedAt: 1,
+        },
+      },
       {
         version: 1,
         activeRoot: sourceRoot,

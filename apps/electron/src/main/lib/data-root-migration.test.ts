@@ -46,7 +46,7 @@ describe('DataRootMigrationCoordinator', () => {
 
   beforeEach(() => {
     homeDir = mkdtempSync(join(tmpdir(), 'proma-data-root-migration-'))
-    sourceRoot = join(homeDir, '.proma')
+    sourceRoot = join(homeDir, '.DutyDeck')
     targetRoot = join(homeDir, 'target')
     mkdirSync(sourceRoot)
     writeFileSync(join(sourceRoot, 'settings.json'), '{"theme":"dark"}')

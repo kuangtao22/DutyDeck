@@ -25,7 +25,7 @@ import type {
 } from '@proma/shared'
 import { DataRootLocator } from './data-root-locator'
 import type { DataRootLocatorResult } from './data-root-locator'
-import { DataRootMigrationCoordinator } from './data-root-migration'
+import { DataRootMigrationCoordinator, type DataRootMigrationPlanOptions } from './data-root-migration'
 import type { DataRootMigrationGuard } from './data-root-instance-lease'
 import { ensurePromaDataRootMarker, initializeEmptyPromaDataRoot, inspectPromaDataRootIdentity } from './data-root-marker'
 import { inspectDataRootDirectories, inspectDataRootStartup } from './data-root-startup-check'
@@ -115,7 +115,7 @@ export interface PathManagementCoordinator {
   /** 只读预检用户刚选择的目标目录。 */
   previewTarget?: (targetRoot: string) => Promise<DataRootMigrationPreview>
   /** 创建已完成预检的迁移计划。 */
-  createPlan(targetRoot: string): Promise<DataRootMigrationProgress>
+  createPlan(targetRoot: string, options?: DataRootMigrationPlanOptions): Promise<DataRootMigrationProgress>
   /** 执行当前 pending 迁移。 */
   runPending(onProgress?: (progress: DataRootMigrationProgress) => void): Promise<void>
   /** 从持久化断点继续迁移。 */
@@ -221,7 +221,7 @@ export function registerPathManagementIpcHandlers(
   let coordinator: PathManagementCoordinator | null = null
   /** 仅 normal/migration handler 调用，避免 recovery 注册阶段自动重试 cleanup。 */
   const getCoordinator = (): PathManagementCoordinator => {
-    if (coordinator === null) coordinator = options.coordinator ?? getDefaultCoordinator(locator)
+    if (coordinator === null) coordinator = options.coordinator ?? getDefaultDataRootMigrationCoordinator(locator)
     return coordinator
   }
   /** 本次实际注册的通道，防止迁移模式意外暴露业务 IPC。 */
@@ -576,10 +576,16 @@ export function registerPathManagementIpcHandlers(
     register(PATH_MANAGEMENT_IPC_CHANNELS.GET_STATE, () => getCoordinator().getStatus())
     register(PATH_MANAGEMENT_IPC_CHANNELS.RESUME_DATA_ROOT_MIGRATION, async () => {
       invalidateDataRootStorage()
+      /** 继续复制必须独占迁移 intent，避免旧 normal 实例同时写入源根。 */
+      const migrationGuard = await options.acquireMigrationGuard?.()
       try {
+        if (await options.hasOtherPromaInstance?.()) {
+          throw new Error('另一个 DutyDeck 实例仍在使用数据根，请先退出后再继续迁移')
+        }
         await getCoordinator().resumePending(broadcastProgress)
         relaunchNow()
       } finally {
+        migrationGuard?.release()
         invalidateDataRootStorage()
       }
     })
@@ -840,7 +846,7 @@ function assertExpectedSender(event: unknown, expected: object | null): asserts 
 }
 
 /** 延迟创建默认协调器，确保 recovery 模式不会触发迁移或 cleanup。 */
-function getDefaultCoordinator(locator: DataRootLocator): DataRootMigrationCoordinator {
+export function getDefaultDataRootMigrationCoordinator(locator = getDefaultDataRootLocator()): DataRootMigrationCoordinator {
   if (defaultCoordinator === null) defaultCoordinator = new DataRootMigrationCoordinator({ locator })
   return defaultCoordinator
 }

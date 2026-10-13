@@ -42,13 +42,13 @@ describe('DutyDeck 数据根 marker', () => {
 
     const activeRoot = prepareNormalDataRoot(locator, initial)
 
-    expect(activeRoot).toBe(join(homeDir, '.proma'))
+    expect(activeRoot).toBe(join(homeDir, '.DutyDeck'))
     expect(readMarker(activeRoot)).toEqual({ owner: 'proma', version: 1 })
   })
 
   test('Given 无 locator 且默认根只有 default-skills 目录 When 正常启动 Then 按受控默认根补 marker', () => {
     /** 历史默认根可能只完成默认 Skill 初始化，没有可作为 legacy 身份的 JSON。 */
-    const activeRoot = join(homeDir, '.proma')
+    const activeRoot = join(homeDir, '.DutyDeck')
     mkdirSync(join(activeRoot, 'default-skills'), { recursive: true })
     const locator = new DataRootLocator({ homeDir })
 
@@ -58,7 +58,7 @@ describe('DutyDeck 数据根 marker', () => {
 
   test('Given 无 locator 且默认根只有 agent-sessions 目录 When 正常启动 Then 按受控默认根补 marker', () => {
     /** 历史会话目录本身足以说明默认路径已被应用使用，但不放宽 custom 根。 */
-    const activeRoot = join(homeDir, '.proma')
+    const activeRoot = join(homeDir, '.DutyDeck')
     mkdirSync(join(activeRoot, 'agent-sessions'), { recursive: true })
     const locator = new DataRootLocator({ homeDir })
 
@@ -149,7 +149,7 @@ describe('DutyDeck 数据根 marker', () => {
 
   test('Given 默认根预置 fixed .tmp symlink When 补 marker Then 根外文件不变', () => {
     /** 旧 safe-file 固定临时路径可被 symlink 预置，marker 必须改走随机 no-follow helper。 */
-    const activeRoot = join(homeDir, '.proma')
+    const activeRoot = join(homeDir, '.DutyDeck')
     const outsidePath = join(homeDir, 'outside-marker.json')
     const markerPath = join(activeRoot, PROMA_DATA_ROOT_MARKER_FILE)
     mkdirSync(activeRoot)

@@ -93,7 +93,7 @@ extraResources:
     filter:
       - "engine-version.json"
       - "LICENSE"
-  # 默认 Skills 模板（首次启动时同步到 ~/.proma/default-skills/）
+  # 默认 Skills 模板（首次启动时同步到 ~/.DutyDeck/default-skills/）
   - from: default-skills
     to: default-skills
     filter:
@@ -203,7 +203,7 @@ linux:
     StartupWMClass: dutydeck
   category: Development
   synopsis: 本地优先的 AI 桌面 Agent
-  description: DutyDeck 把多模型 Chat、通用 Agent、工作区、Skills、MCP 与记忆能力放进同一个开源客户端，数据和配置默认留在本地（~/.proma/）。
+  description: DutyDeck 把多模型 Chat、通用 Agent、工作区、Skills、MCP 与记忆能力放进同一个开源客户端，数据和配置默认留在本地（~/.DutyDeck/）。
   maintainer: ErlichLiu <erlichliu@gmail.com>
   target:
     - target: AppImage

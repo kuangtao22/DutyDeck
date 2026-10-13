@@ -35,7 +35,7 @@ describe('数据根启动目录检查', () => {
 
     const result = inspectDataRootStartup(locator, true)
 
-    const root = join(homeDir, '.proma')
+    const root = join(homeDir, '.DutyDeck')
     expect(result.status).toBe('ready')
     expect(result.state.startupIssue).toBeUndefined()
     expect(readFileSync(join(root, PROMA_DATA_ROOT_MARKER_FILE), 'utf8')).toContain('"owner": "proma"')
@@ -50,11 +50,11 @@ describe('数据根启动目录检查', () => {
     expect(result.status).toBe('ready')
     expect(result.state.availability).toBe('missing')
     expect(result.state.startupIssue).toBeUndefined()
-    expect(existsSync(join(homeDir, '.proma'))).toBe(false)
+    expect(existsSync(join(homeDir, '.DutyDeck'))).toBe(false)
   })
 
   test('Given 已有合法数据根但缺失 server-ops When 只读检查 Then 允许展示且不提前补目录', () => {
-    const root = join(homeDir, '.proma')
+    const root = join(homeDir, '.DutyDeck')
     mkdirSync(root)
     writeFileSync(join(root, PROMA_DATA_ROOT_MARKER_FILE), '{"owner":"proma","version":1}')
     const locator = new DataRootLocator({ homeDir })
@@ -67,7 +67,7 @@ describe('数据根启动目录检查', () => {
   })
 
   test('Given server-ops 被同名文件占用 When 启动检查 Then 进入恢复且不覆盖用户文件', () => {
-    const root = join(homeDir, '.proma')
+    const root = join(homeDir, '.DutyDeck')
     const serverOpsPath = join(root, 'server-ops')
     mkdirSync(root)
     writeFileSync(join(root, PROMA_DATA_ROOT_MARKER_FILE), '{"owner":"proma","version":1}')
@@ -86,7 +86,7 @@ describe('数据根启动目录检查', () => {
   })
 
   test('Given server-ops 是符号链接 When 启动检查 Then 进入恢复且不跟随链接', () => {
-    const root = join(homeDir, '.proma')
+    const root = join(homeDir, '.DutyDeck')
     const outside = join(homeDir, 'outside')
     const serverOpsPath = join(root, 'server-ops')
     mkdirSync(root)

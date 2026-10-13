@@ -1,9 +1,10 @@
 /**
  * 会话存储路径解析（electron-free）。
  *
- * CLI 不依赖 Electron，通过固定 `~/.proma-location.json` 读取活动数据根。
+ * CLI 不依赖 Electron，通过固定 `~/.DutyDeck-location.json` 读取活动数据根；
+ * 没有 DutyDeck locator 时只读兼容旧的 `~/.proma-location.json`。
  * 优先级：显式 `--config-dir` > `PROMA_CONFIG_DIR` > 开发目录开关 >
- * 固定 locator > 默认 `~/.proma`。locator 指向离线根时明确报错，不静默回退。
+ * 固定 locator > 默认 `~/.DutyDeck`。locator 指向离线根时明确报错，不静默回退。
  *
  * 与 config-paths.ts 的目录布局保持一致：
  *   <configDir>/agent-sessions.json        会话索引
@@ -51,16 +52,26 @@ export function resolveConfigDir(
   if (useDev) return join(context.homeDir, '.proma-dev')
 
   /** locator 位于可迁移数据根之外，因此离线时仍可读取。 */
-  const locatorPath = join(context.homeDir, '.proma-location.json')
+  const primaryLocatorPath = join(context.homeDir, '.DutyDeck-location.json')
+  const legacyLocatorPath = join(context.homeDir, '.proma-location.json')
+  /** 主 locator 存在时不回退旧文件，避免两个应用的状态互相覆盖。 */
+  const locatorPath = hasLocatorCandidates(primaryLocatorPath) ? primaryLocatorPath : legacyLocatorPath
   /** 与 Electron 保持相同恢复顺序：主文件、原子写临时文件、备份文件。 */
   const locatorCandidates = [locatorPath, `${locatorPath}.tmp`, `${locatorPath}.bak`]
   const existingCandidates = locatorCandidates.filter((candidatePath) => existsSync(candidatePath))
-  if (existingCandidates.length === 0) return join(context.homeDir, '.proma')
+  if (existingCandidates.length === 0) return join(context.homeDir, '.DutyDeck')
 
   /** 首个 schema-valid 候选即为权威 locator；可用性失败时禁止尝试旧备份。 */
   const locatorFile = readFirstValidLocatorFile(existingCandidates)
   assertReadableDataRoot(locatorFile.activeRoot)
   return locatorFile.activeRoot
+}
+
+/** 判断 locator 主文件或崩溃恢复候选是否存在。 */
+function hasLocatorCandidates(locatorPath: string): boolean {
+  return existsSync(locatorPath)
+    || existsSync(`${locatorPath}.tmp`)
+    || existsSync(`${locatorPath}.bak`)
 }
 
 /** 校验显式配置根，拒绝依赖当前工作目录的相对路径。 */

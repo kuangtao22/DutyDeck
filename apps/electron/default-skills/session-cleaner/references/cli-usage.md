@@ -6,11 +6,11 @@
 ## 会话存储
 
 ```
-~/.proma/agent-sessions.json        会话索引（{ version, sessions: AgentSessionMeta[] }）
-~/.proma/agent-sessions/<id>.jsonl   单会话消息，JSONL（一行一条 JSON）
+~/.DutyDeck/agent-sessions.json        会话索引（{ version, sessions: AgentSessionMeta[] }）
+~/.DutyDeck/agent-sessions/<id>.jsonl   单会话消息，JSONL（一行一条 JSON）
 ```
 
-开发版与正式版共享同一活动数据根。Agent 运行时通过 `PROMA_CONFIG_DIR` 把 Electron 已解析的根传给 CLI；独立 CLI 依次读取 `--config-dir`、`PROMA_CONFIG_DIR`、`~/.proma-location.json`，完全没有定位信息时才使用 `~/.proma/`。`--dev` / `PROMA_DEV=1` 仅是显式调试覆盖，不代表开发版默认目录。
+开发版与正式版共享同一活动数据根。Agent 运行时通过 `PROMA_CONFIG_DIR` 把 Electron 已解析的根传给 CLI；独立 CLI 依次读取 `--config-dir`、`PROMA_CONFIG_DIR`、`~/.DutyDeck-location.json`，没有 DutyDeck locator 时只读兼容旧 `~/.proma-location.json`，完全没有定位信息时才使用 `~/.DutyDeck/`。`--dev` / `PROMA_DEV=1` 仅是显式调试覆盖，不代表开发版默认目录。
 
 ## 两种会话格式（CLI 自动识别，无需关心）
 

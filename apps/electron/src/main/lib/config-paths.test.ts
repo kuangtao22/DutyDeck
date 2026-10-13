@@ -39,7 +39,7 @@ test('Given a development environment When resolving business storage Then it sh
   process.env.PROMA_DEV = '1'
 
   try {
-    expect(getConfigDirName()).toBe('.proma')
+    expect(getConfigDirName()).toBe('.DutyDeck')
   } finally {
     if (originalPromaDev === undefined) {
       delete process.env.PROMA_DEV
@@ -55,7 +55,7 @@ test('Given traversal 消息 ID When 解析 JSONL 路径 Then Agent 与 Conversa
 })
 
 test('Given the default environment When resolving business storage Then it uses the shared config directory', () => {
-  expect(getConfigDirName()).toBe('.proma')
+  expect(getConfigDirName()).toBe('.DutyDeck')
 })
 
 test('Given 配置根 When 解析 Agent-画布关联索引 Then 使用根目录下固定 JSON 文件', () => {
@@ -92,7 +92,7 @@ test('Given 缺失的默认数据根 When 首次读取配置目录 Then 按需�
   /** 没有定位文件和默认根的独立 locator。 */
   const { homeDir, locator } = createLocator()
   /** 默认业务数据根在读取前不应存在。 */
-  const defaultRoot = join(homeDir, '.proma')
+  const defaultRoot = join(homeDir, '.DutyDeck')
 
   expect(existsSync(defaultRoot)).toBe(false)
   expect(getConfigDir(locator)).toBe(defaultRoot)
@@ -109,7 +109,6 @@ test('Given 缺失的默认数据根 When 首次读取配置目录 Then 按需�
 
   expect(getConfigDir(locator)).toBe(defaultRoot)
 })
-
 
 test('Given 已删除的旧生图 Skill 缓存 When 清理退役默认 Skill Then 只删除明确退役目录', () => {
   /** 使用独立临时目录验证启动清理不会碰用户自行安装的 Skill。 */

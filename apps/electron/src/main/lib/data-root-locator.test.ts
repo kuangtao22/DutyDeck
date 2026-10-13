@@ -54,11 +54,12 @@ describe('DataRootLocator', () => {
 
   test('Given no locator file When inspecting Then the default root is ready without filesystem side effects', () => {
     /** 默认数据根在定位文件缺失时仅被解析，不应被创建。 */
-    const defaultRoot = join(homeDir, '.proma')
+    const defaultRoot = join(homeDir, '.DutyDeck')
     /** 待验证的固定定位器实例。 */
     const locator = new DataRootLocator({ homeDir })
 
-    expect(locator.getLocatorPath()).toBe(join(homeDir, '.proma-location.json'))
+    expect(locator.getLocatorPath()).toBe(join(homeDir, '.DutyDeck-location.json'))
+    expect(locator.getLegacyLocatorPath()).toBe(join(homeDir, '.proma-location.json'))
     expect(locator.inspect()).toMatchObject({
       status: 'ready',
       state: {
@@ -73,7 +74,7 @@ describe('DataRootLocator', () => {
 
   test('Given no locator file When requiring the default root explicitly Then it creates and returns it', () => {
     /** 显式允许创建时应初始化的默认数据根。 */
-    const defaultRoot = join(homeDir, '.proma')
+    const defaultRoot = join(homeDir, '.DutyDeck')
     /** 待验证的固定定位器实例。 */
     const locator = new DataRootLocator({ homeDir })
 
@@ -86,7 +87,7 @@ describe('DataRootLocator', () => {
     const customRoot = join(homeDir, 'offline-volume', 'Proma')
     /** 指向离线自定义根的合法定位文件。 */
     const locatorFile: DataRootLocatorFile = { version: 1, activeRoot: customRoot }
-    writeFileSync(join(homeDir, '.proma-location.json'), JSON.stringify(locatorFile), 'utf-8')
+    writeFileSync(join(homeDir, '.DutyDeck-location.json'), JSON.stringify(locatorFile), 'utf-8')
     /** 待验证的固定定位器实例。 */
     const locator = new DataRootLocator({ homeDir })
 
@@ -104,7 +105,7 @@ describe('DataRootLocator', () => {
     mkdirSync(customRoot, { recursive: true })
     /** 指向在线自定义根的定位文件。 */
     const locatorFile: DataRootLocatorFile = { version: 1, activeRoot: customRoot }
-    writeFileSync(join(homeDir, '.proma-location.json'), JSON.stringify(locatorFile), 'utf-8')
+    writeFileSync(join(homeDir, '.DutyDeck-location.json'), JSON.stringify(locatorFile), 'utf-8')
 
     expect(new DataRootLocator({ homeDir }).inspect()).toMatchObject({
       status: 'ready',
@@ -112,10 +113,23 @@ describe('DataRootLocator', () => {
     })
   })
 
+  test('Given only the legacy Proma locator When inspecting Then reads it without making it the DutyDeck write target', () => {
+    /** 旧 Proma locator 仍可提供首次升级所需的活动根。 */
+    const customRoot = join(homeDir, 'legacy-mounted-root')
+    mkdirSync(customRoot, { recursive: true })
+    writeFileSync(join(homeDir, '.proma-location.json'), JSON.stringify({ version: 1, activeRoot: customRoot }), 'utf-8')
+    const locator = new DataRootLocator({ homeDir })
+
+    expect(locator.inspect()).toMatchObject({ status: 'ready', state: { activeRoot: customRoot } })
+    locator.write({ version: 1, activeRoot: join(homeDir, '.DutyDeck') })
+    expect(existsSync(join(homeDir, '.DutyDeck-location.json'))).toBe(true)
+    expect(JSON.parse(readFileSync(join(homeDir, '.proma-location.json'), 'utf-8'))).toEqual({ version: 1, activeRoot: customRoot })
+  })
+
   test('Given activeRoot 是目录链接 When 启动检查 Then 进入不可用状态而不是迟到崩溃', () => {
     /** 精确模拟 Windows 用户用 junction 把默认 ~/.proma 重定向到其他磁盘。 */
     const actualRoot = join(homeDir, 'actual-root')
-    const linkedRoot = join(homeDir, '.proma')
+    const linkedRoot = join(homeDir, '.DutyDeck')
     mkdirSync(actualRoot)
     symlinkSync(actualRoot, linkedRoot, 'junction')
     /** 定位器必须与安全原子写使用相同的 no-follow 目录语义。 */
@@ -133,7 +147,7 @@ describe('DataRootLocator', () => {
     const customRoot = join(homeDir, 'backup-root')
     mkdirSync(customRoot)
     /** 固定定位文件路径。 */
-    const locatorPath = join(homeDir, '.proma-location.json')
+    const locatorPath = join(homeDir, '.DutyDeck-location.json')
     writeFileSync(locatorPath, '{broken', 'utf-8')
     writeFileSync(`${locatorPath}.bak`, JSON.stringify({ version: 1, activeRoot: customRoot }), 'utf-8')
 
@@ -149,7 +163,7 @@ describe('DataRootLocator', () => {
     const customRoot = join(homeDir, 'schema-backup-root')
     mkdirSync(customRoot)
     /** 固定定位文件路径。 */
-    const locatorPath = join(homeDir, '.proma-location.json')
+    const locatorPath = join(homeDir, '.DutyDeck-location.json')
     writeFileSync(locatorPath, JSON.stringify({ version: 2, activeRoot: customRoot }), 'utf-8')
     writeFileSync(`${locatorPath}.bak`, JSON.stringify({ version: 1, activeRoot: customRoot }), 'utf-8')
 
@@ -162,9 +176,9 @@ describe('DataRootLocator', () => {
 
   test('Given all locator candidates are damaged When inspecting Then it reports invalid without falling back', () => {
     /** 固定定位文件路径。 */
-    const locatorPath = join(homeDir, '.proma-location.json')
+    const locatorPath = join(homeDir, '.DutyDeck-location.json')
     /** invalid 状态绝不能隐式创建的默认数据根。 */
-    const defaultRoot = join(homeDir, '.proma')
+    const defaultRoot = join(homeDir, '.DutyDeck')
     writeFileSync(locatorPath, '{broken-primary', 'utf-8')
     writeFileSync(`${locatorPath}.tmp`, '{broken-temp', 'utf-8')
     writeFileSync(`${locatorPath}.bak`, '{broken-backup', 'utf-8')
@@ -201,7 +215,7 @@ describe('DataRootLocator', () => {
         updatedAt: 2000,
       },
     }
-    writeFileSync(join(homeDir, '.proma-location.json'), JSON.stringify(locatorFile), 'utf-8')
+    writeFileSync(join(homeDir, '.DutyDeck-location.json'), JSON.stringify(locatorFile), 'utf-8')
 
     expect(new DataRootLocator({ homeDir }).inspect()).toMatchObject({
       status: 'migration',
@@ -227,13 +241,13 @@ describe('DataRootLocator', () => {
     mkdirSync(targetRoot)
     /** 待验证缓存刷新的固定定位器实例。 */
     const locator = new DataRootLocator({ homeDir })
-    expect(locator.inspect().state.activeRoot).toBe(join(homeDir, '.proma'))
+    expect(locator.inspect().state.activeRoot).toBe(join(homeDir, '.DutyDeck'))
 
     /** 模拟其他进程在首次解析后直接改写磁盘，当前实例仍应返回缓存。 */
     const externalRoot = join(homeDir, 'external-root')
     mkdirSync(externalRoot)
     writeFileSync(locator.getLocatorPath(), JSON.stringify({ version: 1, activeRoot: externalRoot }), 'utf-8')
-    expect(locator.inspect().state.activeRoot).toBe(join(homeDir, '.proma'))
+    expect(locator.inspect().state.activeRoot).toBe(join(homeDir, '.DutyDeck'))
 
     locator.write({
       version: 1,
@@ -349,7 +363,7 @@ describe('DataRootLocator', () => {
     mkdirSync(sourceRoot)
     mkdirSync(targetRoot)
     /** 固定定位文件路径。 */
-    const locatorPath = join(homeDir, '.proma-location.json')
+    const locatorPath = join(homeDir, '.DutyDeck-location.json')
     writeMigrationLocator(locatorPath, { sourceRoot, targetRoot, stage: 'switching' })
     /** 读取并尝试提交迁移的定位器。 */
     const locator = new DataRootLocator({ homeDir })
@@ -369,7 +383,7 @@ describe('DataRootLocator', () => {
       mkdirSync(sourceRoot)
       mkdirSync(targetRoot)
       /** 固定定位文件路径。 */
-      const locatorPath = join(homeDir, '.proma-location.json')
+      const locatorPath = join(homeDir, '.DutyDeck-location.json')
       writeMigrationLocator(locatorPath, { sourceRoot, targetRoot, stage })
       /** 读取并尝试提交迁移的定位器。 */
       const locator = new DataRootLocator({ homeDir })
@@ -387,7 +401,7 @@ describe('DataRootLocator', () => {
     mkdirSync(sourceRoot)
     mkdirSync(targetRoot)
     /** 固定定位文件路径。 */
-    const locatorPath = join(homeDir, '.proma-location.json')
+    const locatorPath = join(homeDir, '.DutyDeck-location.json')
     writeMigrationLocator(locatorPath, {
       sourceRoot,
       targetRoot,
@@ -409,7 +423,7 @@ describe('DataRootLocator', () => {
     const targetRoot = join(homeDir, 'offline-volume', 'target-root')
     mkdirSync(sourceRoot)
     /** 固定定位文件路径。 */
-    const locatorPath = join(homeDir, '.proma-location.json')
+    const locatorPath = join(homeDir, '.DutyDeck-location.json')
     writeMigrationLocator(locatorPath, { sourceRoot, targetRoot, stage: 'switching' })
     /** 读取并尝试提交迁移的定位器。 */
     const locator = new DataRootLocator({ homeDir })
@@ -427,7 +441,7 @@ describe('DataRootLocator', () => {
     mkdirSync(sourceRoot)
     writeFileSync(targetRoot, 'not-a-directory', 'utf-8')
     /** 固定定位文件路径。 */
-    const locatorPath = join(homeDir, '.proma-location.json')
+    const locatorPath = join(homeDir, '.DutyDeck-location.json')
     writeMigrationLocator(locatorPath, { sourceRoot, targetRoot, stage: 'switching' })
     /** 读取并尝试提交迁移的定位器。 */
     const locator = new DataRootLocator({ homeDir })
@@ -473,7 +487,7 @@ describe('DataRootLocator', () => {
     ]
 
     for (const invalidFile of invalidFiles) {
-      writeFileSync(join(homeDir, '.proma-location.json'), JSON.stringify(invalidFile), 'utf-8')
+      writeFileSync(join(homeDir, '.DutyDeck-location.json'), JSON.stringify(invalidFile), 'utf-8')
       expect(new DataRootLocator({ homeDir }).inspect().status).toBe('invalid')
     }
   })

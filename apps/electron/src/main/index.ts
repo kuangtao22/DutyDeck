@@ -150,9 +150,11 @@ import { canRecoverRenderer, RENDERER_RECOVERY_WINDOW_MS } from './lib/renderer-
 import { shouldBlockSandboxedSrcdocNavigation } from './lib/sandboxed-srcdoc-navigation'
 import {
   getDefaultDataRootLocator,
+  getDefaultDataRootMigrationCoordinator,
   registerPathManagementIpcHandlers,
   resolveDataRootStartupMode,
 } from './lib/path-management-ipc'
+import { ensureDefaultDataRootMigrationPlan } from './lib/data-root-default-migration'
 import {
   getDefaultDataRootInstanceLeaseRegistry,
   type DataRootInstanceLeaseRegistry,
@@ -844,6 +846,27 @@ app.whenReady()
 async function bootstrap(): Promise<void> {
   /** 首次解析固定 locator，并在 normal gate 内准备受控目录。 */
   const dataRootLocator = getDefaultDataRootLocator()
+  /** 自动迁移与 normal 实例共用同一个跨进程 lease registry。 */
+  dataRootInstanceLease = getDefaultDataRootInstanceLeaseRegistry()
+  /** 新版本启动时仅自动生成旧默认根迁移计划，复制仍由迁移窗口显式继续。 */
+  const defaultMigration = await ensureDefaultDataRootMigrationPlan(
+    dataRootLocator,
+    () => getDefaultDataRootMigrationCoordinator(dataRootLocator),
+    {
+      acquireMigrationGuard: () => dataRootInstanceLease!.acquireMigrationGuard(),
+      hasOtherActiveLease: () => dataRootInstanceLease!.hasOtherActiveLease(),
+    },
+  )
+  if (defaultMigration.status === 'planned') {
+    console.info(`[启动] 检测到历史数据根 ${defaultMigration.legacyRoot}，已创建迁移计划至 ${defaultMigration.targetRoot}`)
+  } else if (defaultMigration.status === 'blocked') {
+    dataRootBusinessStartupBlocked = true
+    throw defaultMigration.error instanceof Error
+      ? defaultMigration.error
+      : new Error('自动迁移旧数据根前无法取得独占启动保护')
+  } else if (defaultMigration.status === 'failed') {
+    console.warn('[启动] 历史数据根迁移计划创建失败，将继续使用旧数据根:', defaultMigration.error)
+  }
   /** normal gate 前准备受控默认根和关键目录，异常直接转入轻量恢复模式。 */
   const locatorResult = inspectDataRootStartup(dataRootLocator, true)
   /** 数据根启动隔离模式。 */
@@ -858,6 +881,8 @@ async function bootstrap(): Promise<void> {
       app,
       dialog,
       shell,
+      hasOtherPromaInstance: () => dataRootInstanceLease!.hasOtherActiveLease(),
+      acquireMigrationGuard: () => dataRootInstanceLease!.acquireMigrationGuard(),
       getExpectedWebContents: () => getStoredMainWindow()?.webContents ?? null,
     })
     dataRootStartupRouter.resolveMode(dataRootMode)
@@ -874,7 +899,6 @@ async function bootstrap(): Promise<void> {
 
   /** 共享 lease 必须早于任何普通业务服务。 */
   try {
-    dataRootInstanceLease = getDefaultDataRootInstanceLeaseRegistry()
     await dataRootInstanceLease.acquire(activeRoot)
     /** 只自动完成不可取消的 committing；其他 journal 留给设置页继续或取消。 */
     await getDefaultWorkspaceProjectRelocator().resumeCommittingJournals()
@@ -901,7 +925,7 @@ async function bootstrap(): Promise<void> {
   // 或由用户从设置手动检测；启动时不应将其作为 Agent 的前置要求。
   await safeAwait('initializeRuntime', () => initializeRuntime({ skipNodeDetection: true }))
 
-  // 同步默认 Skills 模板到 ~/.proma/default-skills/
+  // 同步默认 Skills 模板到 ~/.DutyDeck/default-skills/
   safeRun('seedDefaultSkills', seedDefaultSkills)
 
   // 升级所有工作区中版本过旧的默认 Skills
@@ -1099,8 +1123,8 @@ function handleBootstrapFailure(err: unknown): void {
         `日志位置：${app.getPath('logs')}\n\n` +
         `常见原因与排查：\n` +
         `1. 旧版 DutyDeck 进程未退出（终端运行 killall DutyDeck 后重试）\n` +
-        `2. ~/.proma/ 配置损坏（重命名 ~/.proma 后重启）\n` +
-        `3. 系统 Keychain 无法解密保存的凭证（删除 ~/.proma/feishu.json 等后重新登录）\n\n` +
+        `2. ~/.DutyDeck/ 配置损坏（重命名 ~/.DutyDeck 后重启）\n` +
+        `3. 系统 Keychain 无法解密保存的凭证（删除 ~/.DutyDeck/feishu.json 等后重新登录）\n\n` +
         `如需协助请到 GitHub Issues 反馈。`,
     )
   } catch {

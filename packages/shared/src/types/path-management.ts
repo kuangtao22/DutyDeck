@@ -233,6 +233,8 @@ export interface DataRootMigrationRecord {
   id: string
   sourceRoot: string
   targetRoot: string
+  /** 仅自动升级旧默认根时写入；普通设置页迁移不填。 */
+  origin?: 'default-root-upgrade'
   stage: DataRootMigrationStage
   completedBytes: number
   totalBytes: number
@@ -253,6 +255,8 @@ export interface DataRootLocatorFile {
   version: 1
   activeRoot: string
   previousRoot?: string
+  /** 用户取消自动默认根升级后，避免每次启动重复阻断；手动迁移仍可继续。 */
+  defaultMigrationDismissed?: boolean
   migration?: DataRootMigrationRecord
   postCommitCleanup?: DataRootPostCommitCleanupRecord
 }
@@ -266,6 +270,7 @@ const DATA_ROOT_MIGRATION_STAGES: ReadonlySet<DataRootMigrationStage> = new Set(
 export function isDataRootLocatorFile(value: unknown): value is DataRootLocatorFile {
   if (!isRecord(value) || value.version !== 1 || !isPortableAbsolutePath(value.activeRoot)) return false
   if (value.previousRoot !== undefined && !isPortableAbsolutePath(value.previousRoot)) return false
+  if (value.defaultMigrationDismissed !== undefined && typeof value.defaultMigrationDismissed !== 'boolean') return false
   if (value.migration !== undefined) {
     if (!isDataRootMigrationRecord(value.migration) || value.migration.sourceRoot !== value.activeRoot) return false
   }
@@ -282,6 +287,7 @@ function isDataRootMigrationRecord(value: unknown): value is DataRootMigrationRe
   return isNonEmptyString(value.id)
     && isPortableAbsolutePath(value.sourceRoot)
     && isPortableAbsolutePath(value.targetRoot)
+    && (value.origin === undefined || value.origin === 'default-root-upgrade')
     && typeof value.stage === 'string'
     && DATA_ROOT_MIGRATION_STAGES.has(value.stage as DataRootMigrationStage)
     && isNonNegativeFiniteNumber(value.completedBytes)

@@ -1,13 +1,13 @@
 ---
 name: session-cleaner
 description: 把 DutyDeck 会话 JSONL 清洗为干净可读的 Markdown 对话，并支持对超长会话的渐进式读取（概览 / 大纲 / 搜索 / 按 turn 区间导出），避免一次性全量读撑爆上下文。当用户提到"清洗会话""解析对话文件""提取对话上下文""过滤流式冗余""导出会话 Markdown""把会话转成对话""整理 agent-sessions""看某个会话讲了什么"时使用此技能。
-version: 2.0.2
+version: 2.0.4
 license: AGPL-3.0-only
 ---
 
 # Session Cleaner
 
-把 `~/.proma/agent-sessions/<id>.jsonl` 里被流式快照污染过的会话，清洗为干净 Markdown 对话。
+把 `~/.DutyDeck/agent-sessions/<id>.jsonl` 里被流式快照污染过的会话，清洗为干净 Markdown 对话。
 
 本技能是 `proma` CLI 的**薄封装**：所有解析 / 快照去重 / 渲染逻辑都在 `@proma/session-core`（仓库内唯一真源），由 `proma session` 命令暴露。技能本身不解析 JSONL，只负责教你按正确的顺序调用 CLI。
 
@@ -110,7 +110,7 @@ proma_session export <id> --out cleaned/<id>.clean.md
 
 - **打包版与 Agent 运行时**：bundled CLI 路径由 `PROMA_CLI` 注入，必须通过上方包装函数优先调用。
 - **PATH 回退**：仅当 `PROMA_CLI` 缺失时使用 PATH 中的 `proma`；若两者都不可用，先报告 CLI 不可用，再按提示中的 History path 兜底。
-- **配置目录**：开发版与正式版共享同一活动数据根。运行时通过 `PROMA_CONFIG_DIR` 传递；独立 CLI 依次读取显式参数、环境变量、固定 locator 和默认 `~/.proma`。
+- **配置目录**：开发版与正式版共享同一活动数据根。运行时通过 `PROMA_CONFIG_DIR` 传递；独立 CLI 依次读取显式参数、环境变量、固定 locator 和默认 `~/.DutyDeck`。
 
 ## 实现要点（供维护者）
 

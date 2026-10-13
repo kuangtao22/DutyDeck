@@ -251,6 +251,47 @@ describe('路径管理 IPC', () => {
     }
   })
 
+  test('Given 迁移窗口继续复制 When 另一个实例仍活跃 Then 先阻断且不执行复制；无冲突时释放 guard 后重启', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => unknown>()
+    let resumed = 0
+    let relaunched = 0
+    let released = 0
+    const coordinator = {
+      getStatus: () => createLocatorResult().state,
+      createPlan: async () => ({ migrationId: 'migration-1', stage: 'pending' as const, completedBytes: 0, totalBytes: 1 }),
+      runPending: async () => undefined,
+      resumePending: async () => { resumed += 1 },
+      cancel: async () => undefined,
+    }
+    const register = (hasOtherPromaInstance: () => Promise<boolean>) => {
+      handlers.clear()
+      registerPathManagementIpcHandlers({
+        mode: 'data-root-migration',
+        ipc: {
+          handle: (channel, handler) => { handlers.set(channel, handler) },
+          removeHandler: () => undefined,
+        },
+        app: { relaunch: () => { relaunched += 1 }, quit: () => undefined },
+        getExpectedWebContents: () => expectedWebContents,
+        coordinator,
+        hasOtherPromaInstance,
+        acquireMigrationGuard: async () => ({ release: () => { released += 1 } }),
+      })
+    }
+
+    register(async () => true)
+    await expect(handlers.get(PATH_MANAGEMENT_IPC_CHANNELS.RESUME_DATA_ROOT_MIGRATION)?.({ sender: expectedWebContents })).rejects.toThrow('另一个 DutyDeck 实例')
+    expect(resumed).toBe(0)
+    expect(relaunched).toBe(0)
+    expect(released).toBe(1)
+
+    register(async () => false)
+    await handlers.get(PATH_MANAGEMENT_IPC_CHANNELS.RESUME_DATA_ROOT_MIGRATION)?.({ sender: expectedWebContents })
+    expect(resumed).toBe(1)
+    expect(relaunched).toBe(1)
+    expect(released).toBe(2)
+  })
+
   test('Given 开发热重载从 recovery 切到 normal When 重新注册 Then 不残留旧敏感 handler', () => {
     /** 真实模拟 removeHandler 对同一个 ipcMain handler 表的影响。 */
     const handlers = new Map<string, (...args: unknown[]) => unknown>()
