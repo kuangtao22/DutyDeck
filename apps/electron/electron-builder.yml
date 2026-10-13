@@ -126,8 +126,7 @@ extraResources:
 # macOS 配置
 # ============================================
 mac:
-  # 子二进制签名后刷新本地引擎摘要，再封签外层 app，维持运行时完整性校验。
-  sign: scripts/sign-local-model-engine.cjs
+  # 引擎按需下载，安装包无引擎二进制；沿用 builder 标准签名流程。
   artifactName: "DutyDeck-${version}-macos-${arch}.${ext}"
   category: public.app-category.developer-tools
   icon: resources/icon.icns

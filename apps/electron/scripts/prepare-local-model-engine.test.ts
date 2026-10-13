@@ -117,13 +117,3 @@ test('Given 子二进制已签名 When 刷新清单 Then 摘要和大小匹配�
     expect(executable.sha256).toBe(createHash('sha256').update('signed-server').digest('hex'))
   } finally { await rm(root, { recursive: true, force: true }) }
 })
-test('Given macOS 签名顺序 When 处理子文件和外层 app Then 仅封签 app 前刷新且保留签名选项', () => {
-  const { wrapSignOptions } = require('./sign-local-model-engine.cjs')
-  const events: string[] = []
-  const options = wrapSignOptions({ app: '/tmp/DutyDeck.app', identity: 'certificate', optionsForFile: (path: string) => { events.push(path); return { hardenedRuntime: true } } }, () => events.push('refresh'))
-  expect(options.optionsForFile('/tmp/DutyDeck.app/Contents/Resources/local-model-engine/llama-server')).toEqual({ hardenedRuntime: true })
-  expect(events).toHaveLength(1)
-  options.optionsForFile('/tmp/DutyDeck.app')
-  expect(events.slice(-2)).toEqual(['refresh', '/tmp/DutyDeck.app'])
-  expect(options.identity).toBe('certificate')
-})

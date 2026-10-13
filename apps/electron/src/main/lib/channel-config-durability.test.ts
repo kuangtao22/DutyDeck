@@ -49,7 +49,7 @@ mock.module('./safe-file', () => ({
 
 /** 返回测试渠道配置文件路径。 */
 function getChannelsPath(): string {
-  return join(tempHome, '.proma', 'channels.json')
+  return join(tempHome, '.DutyDeck', 'channels.json')
 }
 
 /** 写入指定的渠道配置原文，用于构造升级和损坏场景。 */
@@ -69,7 +69,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   atomicWriteError = undefined
-  rmSync(join(tempHome, '.proma'), { recursive: true, force: true })
+  rmSync(join(tempHome, '.DutyDeck'), { recursive: true, force: true })
 })
 
 afterAll(() => {
