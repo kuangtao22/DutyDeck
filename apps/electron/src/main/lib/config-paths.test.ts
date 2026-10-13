@@ -9,6 +9,9 @@ import {
   getConfigDir,
   getConfigDirName,
   getConversationMessagesPath,
+  isRetiredDefaultSkill,
+  removeRetiredDefaultSkills,
+  RETIRED_DEFAULT_SKILL_SLUGS,
   resolveAgentSessionWorkspacePath,
 } from './config-paths'
 import { DataRootLocator } from './data-root-locator'
@@ -105,4 +108,20 @@ test('Given 缺失的默认数据根 When 首次读取配置目录 Then 按需�
   )
 
   expect(getConfigDir(locator)).toBe(defaultRoot)
+})
+
+
+test('Given 已删除的旧生图 Skill 缓存 When 清理退役默认 Skill Then 只删除明确退役目录', () => {
+  /** 使用独立临时目录验证启动清理不会碰用户自行安装的 Skill。 */
+  const defaultSkillsDir = mkdtempSync(join(tmpdir(), 'proma-retired-skills-'))
+  temporaryHomeDirs.push(defaultSkillsDir)
+  mkdirSync(join(defaultSkillsDir, 'proma-generate-image'))
+  mkdirSync(join(defaultSkillsDir, 'user-installed-skill'))
+
+  removeRetiredDefaultSkills(defaultSkillsDir)
+
+  expect(RETIRED_DEFAULT_SKILL_SLUGS).toContain('proma-generate-image')
+  expect(isRetiredDefaultSkill('proma-generate-image')).toBe(true)
+  expect(existsSync(join(defaultSkillsDir, 'proma-generate-image'))).toBe(false)
+  expect(existsSync(join(defaultSkillsDir, 'user-installed-skill'))).toBe(true)
 })
