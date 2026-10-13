@@ -150,17 +150,17 @@ import { canRecoverRenderer, RENDERER_RECOVERY_WINDOW_MS } from './lib/renderer-
 import { shouldBlockSandboxedSrcdocNavigation } from './lib/sandboxed-srcdoc-navigation'
 import {
   getDefaultDataRootLocator,
-  getDefaultDataRootMigrationCoordinator,
   registerPathManagementIpcHandlers,
   resolveDataRootStartupMode,
 } from './lib/path-management-ipc'
-import { ensureDefaultDataRootMigrationPlan } from './lib/data-root-default-migration'
+import { handleDefaultDataRootMove } from './lib/data-root-default-move'
 import {
   getDefaultDataRootInstanceLeaseRegistry,
   type DataRootInstanceLeaseRegistry,
 } from './lib/data-root-instance-lease'
 import { inspectDataRootStartup } from './lib/data-root-startup-check'
 import { detectStaleDevBundle } from './lib/dev-bundle-freshness'
+import { DEFAULT_ROOT_MIGRATION_IPC_CHANNELS } from '@proma/shared'
 import type { DataRootStartupMode } from '@proma/shared'
 import { createDataRootStartupRouter } from './lib/data-root-startup-routing'
 import { getDefaultWorkspaceProjectRelocator } from './lib/workspace-project-relocator-production'
@@ -325,6 +325,8 @@ async function recoverEnabledSlackBots(): Promise<void> {
 }
 
 let mainWindow: BrowserWindow | null = null
+/** 启动阶段的应用内迁移确认窗口；普通业务窗口创建后立即释放。 */
+let defaultRootMigrationWindow: BrowserWindow | null = null
 let startupSplashWindow: BrowserWindow | null = null
 
 const DEFAULT_MAIN_WINDOW_WIDTH = 1400
@@ -792,6 +794,66 @@ function createDataRootManagementWindow(mode: Exclude<DataRootStartupMode, 'norm
   }
 }
 
+/**
+ * 创建使用项目 Dialog 组件的默认数据根迁移确认窗口。
+ *
+ * 该窗口只暴露一次性选择 bridge，真正的目录移动仍由主进程完成。
+ */
+function requestDefaultRootMigration(legacyRoot: string, targetRoot: string): Promise<boolean> {
+  return new Promise((resolveChoice) => {
+    /** 防止按钮、关闭事件和加载失败同时结算 Promise。 */
+    let settled = false
+    /** 结束确认流程并移除一次性 IPC handler。 */
+    const finish = (confirmed: boolean): void => {
+      if (settled) return
+      settled = true
+      ipcMain.removeHandler(DEFAULT_ROOT_MIGRATION_IPC_CHANNELS.CHOOSE)
+      if (defaultRootMigrationWindow && !defaultRootMigrationWindow.isDestroyed()) {
+        defaultRootMigrationWindow.close()
+      }
+      defaultRootMigrationWindow = null
+      resolveChoice(confirmed)
+    }
+    /** 创建只含项目样式迁移确认内容的独立窗口。 */
+    const migrationWindow = new BrowserWindow({
+      width: 560,
+      height: 500,
+      minWidth: 500,
+      minHeight: 460,
+      resizable: false,
+      show: false,
+      title: '迁移 DutyDeck 数据',
+      backgroundColor: nativeTheme.shouldUseDarkColors ? '#09090b' : '#ffffff',
+      webPreferences: {
+        preload: join(__dirname, 'default-root-migration-preload.cjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    })
+    defaultRootMigrationWindow = migrationWindow
+    /** 只接受当前窗口、布尔值和单次提交，避免其它 renderer 伪造迁移结果。 */
+    ipcMain.handle(DEFAULT_ROOT_MIGRATION_IPC_CHANNELS.CHOOSE, (event, rawConfirmed) => {
+      if (event.sender !== migrationWindow.webContents) throw new Error('迁移确认窗口来源无效')
+      if (typeof rawConfirmed !== 'boolean') throw new Error('迁移确认结果无效')
+      finish(rawConfirmed)
+    })
+    migrationWindow.once('ready-to-show', () => migrationWindow.show())
+    migrationWindow.once('closed', () => finish(false))
+    /** 读取失败时按取消处理，避免启动永久等待确认。 */
+    migrationWindow.webContents.once('did-fail-load', () => finish(false))
+    /** 开发窗口通过 URL 传参，Electron 打包窗口使用同一组 query 字段。 */
+    const query = new URLSearchParams({ window: 'default-root-migration', legacyRoot, targetRoot })
+    if (app.isPackaged) {
+      void migrationWindow.loadFile(join(__dirname, 'renderer', 'index.html'), {
+        query: { window: 'default-root-migration', legacyRoot, targetRoot },
+      })
+    } else {
+      void migrationWindow.loadURL(`http://127.0.0.1:5174/?${query.toString()}`)
+    }
+  })
+}
+
 /** 创建或聚焦隔离路径窗口，供 bootstrap 与 second-instance 共用。 */
 function showAndFocusDataRootManagementWindow(
   mode: Exclude<DataRootStartupMode, 'normal'>,
@@ -848,24 +910,24 @@ async function bootstrap(): Promise<void> {
   const dataRootLocator = getDefaultDataRootLocator()
   /** 自动迁移与 normal 实例共用同一个跨进程 lease registry。 */
   dataRootInstanceLease = getDefaultDataRootInstanceLeaseRegistry()
-  /** 新版本启动时仅自动生成旧默认根迁移计划，复制仍由迁移窗口显式继续。 */
-  const defaultMigration = await ensureDefaultDataRootMigrationPlan(
+  /** 新版本启动时仅轻量检测旧默认根，迁移由用户在弹窗中明确确认。 */
+  const defaultMigration = await handleDefaultDataRootMove(
     dataRootLocator,
-    () => getDefaultDataRootMigrationCoordinator(dataRootLocator),
     {
       acquireMigrationGuard: () => dataRootInstanceLease!.acquireMigrationGuard(),
       hasOtherActiveLease: () => dataRootInstanceLease!.hasOtherActiveLease(),
+      confirmMigration: (legacyRoot, targetRoot) => requestDefaultRootMigration(legacyRoot, targetRoot),
     },
   )
-  if (defaultMigration.status === 'planned') {
-    console.info(`[启动] 检测到历史数据根 ${defaultMigration.legacyRoot}，已创建迁移计划至 ${defaultMigration.targetRoot}`)
+  if (defaultMigration.status === 'moved' || defaultMigration.status === 'recovered') {
+    console.info(`[启动] 已将历史数据根移动到 ${defaultMigration.targetRoot}`)
   } else if (defaultMigration.status === 'blocked') {
     dataRootBusinessStartupBlocked = true
     throw defaultMigration.error instanceof Error
       ? defaultMigration.error
-      : new Error('自动迁移旧数据根前无法取得独占启动保护')
+      : new Error('迁移旧数据根前无法取得独占启动保护')
   } else if (defaultMigration.status === 'failed') {
-    console.warn('[启动] 历史数据根迁移计划创建失败，将继续使用旧数据根:', defaultMigration.error)
+    console.warn('[启动] 历史数据根移动失败，将继续使用旧数据根:', defaultMigration.error)
   }
   /** normal gate 前准备受控默认根和关键目录，异常直接转入轻量恢复模式。 */
   const locatorResult = inspectDataRootStartup(dataRootLocator, true)

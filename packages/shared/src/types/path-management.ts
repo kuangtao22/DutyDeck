@@ -359,3 +359,8 @@ export const PATH_MANAGEMENT_IPC_CHANNELS = {
   EXIT_APP: 'path-management:exit-app',
   PROGRESS: 'path-management:progress',
 } as const
+
+/** 启动迁移确认窗口的最小 IPC 合同，不暴露普通业务或路径管理写权限。 */
+export const DEFAULT_ROOT_MIGRATION_IPC_CHANNELS = {
+  CHOOSE: 'default-root-migration:choose',
+} as const

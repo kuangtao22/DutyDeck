@@ -45,4 +45,12 @@ describe('数据根启动门模块隔离', () => {
     expect(resumeIndex).toBeLessThan(source.indexOf("await safeAwait('initializeRuntime'"))
     expect(resumeIndex).toBeLessThan(source.indexOf("safeRun('startWorkspaceWatcher'"))
   })
+
+  test('Given 默认根迁移需要用户决定 When 启动确认流程 Then 使用项目 renderer Dialog 而不是系统消息框', () => {
+    /** 启动确认必须通过轻量 renderer 窗口，保持项目主题和键盘交互一致。 */
+    const source = readFileSync(join(import.meta.dir, '..', 'index.ts'), 'utf8')
+    expect(source).toContain("window: 'default-root-migration'")
+    expect(source).toContain("default-root-migration-preload.cjs")
+    expect(source).not.toContain('dialog.showMessageBox')
+  })
 })
