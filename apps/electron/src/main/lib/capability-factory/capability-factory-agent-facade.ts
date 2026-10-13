@@ -12,6 +12,9 @@ import type { CapabilityExperimentCreateRequest, CapabilityExperimentAdvanceRequ
 import { randomUUID } from 'node:crypto'
 import type {
   CapabilityDataset,
+  CapabilityFactoryRunDiagnosis,
+  CapabilityFactoryReviewRetryRequest,
+  CapabilityFactoryReviewRetryRecord,
   CapabilityDelivery,
   CapabilityEvaluation,
   CapabilityFactoryBatch,
@@ -109,6 +112,10 @@ export interface CapabilityFactoryAgentFacadeOptions {
   assertExperimentAdoptable?: (sceneId: string, experimentId: string, definition: CapabilitySceneDefinition) => CapabilityFactoryExperiment
   /** 显式完整读取会污染关联实验；不能宣称文件工具旁路也被隔离。 */
   markExposureForRead?: (request: { kind: 'datasets' | 'run' | 'batch' | 'runs'; sceneId?: string; runId?: string; runIds?: readonly string[]; batchId?: string }) => void
+  /** 读取源运行诊断及独立补评历史，不发送模型请求。 */
+  diagnoseRun?: (sceneId: string, runId: string) => CapabilityFactoryRunDiagnosis
+  /** 宿主复核冻结身份，保留原输出并仅补评失败步骤。 */
+  retryReview?: (request: CapabilityFactoryReviewRetryRequest) => Promise<CapabilityFactoryReviewRetryRecord>
   runBatch?: (request: CapabilityFactoryBatchRequest) => Promise<CapabilityFactoryBatch>
   listBatches?: (sceneId: string) => CapabilityFactoryBatchSummary[]
   getBatch?: (sceneId: string, batchId: string) => CapabilityFactoryBatch | null
@@ -153,6 +160,8 @@ export function createCapabilityFactoryAgentFacade(options: CapabilityFactoryAge
   const comparisonRuns = new Map<string, Set<'baseline' | 'candidate'>>()
   let comparisonRoundsUsed = 0
   let runUnitsUsed = 0
+  /** 补评另设回合次数上限，同时占用既有运行额度。 */
+  let reviewRetriesUsed = 0
   /** 一轮 10 条基线/候选对比需要 20 次运行，三轮即 60 次。 */
   const consumeRunUnits = (units: number): boolean => {
     if (runUnitsUsed + units > 60) return false
@@ -240,6 +249,44 @@ export function createCapabilityFactoryAgentFacade(options: CapabilityFactoryAge
       assertCurrent()
       options.markExposureForRead?.({ kind: 'run', sceneId, runId })
       return service.getRun(sceneId, runId)
+    },
+
+    /** 读取精确运行的诊断，补充报告属于可暴露的评审证据。 */
+    diagnoseRun(sceneId: string, runId: string): CapabilityFactoryRunDiagnosis | { reason: string } {
+      assertCurrent()
+      assertNotAborted()
+      if (!options.diagnoseRun) return { reason: '当前会话没有运行诊断能力' }
+      options.markExposureForRead?.({ kind: 'run', sceneId, runId })
+      return options.diagnoseRun(sceneId, runId)
+    },
+
+    /** 仅在预检通过后消费额度；每条运行的持久一次性限制由宿主负责。 */
+    async retryReview(request: CapabilityFactoryReviewRetryRequest): Promise<CapabilityFactoryReviewRetryRecord | { reason: string }> {
+      assertCurrent()
+      if (!canMutate()) return { reason: '当前模式不允许补评编排工厂' }
+      assertNotAborted()
+      if (!options.diagnoseRun || !options.retryReview) return { reason: '当前会话没有定点补评能力' }
+      /** 复制请求，避免异步宿主执行期间调用方替换预算。 */
+      const frozen = structuredClone(request)
+      const { maxCalls, maxTransportAttempts, durationMs } = frozen.limits
+      if (!Number.isSafeInteger(maxCalls) || maxCalls < 1 || maxCalls > 10
+        || !Number.isSafeInteger(maxTransportAttempts) || maxTransportAttempts < 1 || maxTransportAttempts > 20
+        || !Number.isSafeInteger(durationMs) || durationMs < 1 || durationMs > 600000) return { reason: '补评预算超出允许范围' }
+      const diagnosis = options.diagnoseRun(frozen.sceneId, frozen.runId)
+      if (diagnosis.sourceFingerprint !== frozen.expectedSourceFingerprint) return { reason: '源运行已变化，请重新诊断' }
+      if (diagnosis.retry !== null) return { reason: '该运行已补评，不允许再次调用' }
+      const steps = diagnosis.retryableStepIds.length
+      if (steps === 0) return { reason: '没有可补评的步骤，请按诊断建议处理' }
+      if (steps > maxCalls || steps > maxTransportAttempts) return { reason: '补评预算不足以覆盖待补评步骤' }
+      if (reviewRetriesUsed >= 3) return { reason: '当前 Agent 回合最多补评 3 次' }
+      if (!consumeRunUnits(1)) return { reason: '当前 Agent 回合最多发起 60 次场景运行' }
+      reviewRetriesUsed += 1
+      const record = await options.retryReview(frozen)
+      assertCurrent()
+      /** 补充报告也是显式返回的运行证据；内部预检失败不算读取材料。 */
+      options.markExposureForRead?.({ kind: 'run', sceneId: frozen.sceneId, runId: frozen.runId })
+      options.onChanged?.()
+      return record
     },
 
     /** 读取用户已保存的整链任务，优化时直接复用原始输入。 */

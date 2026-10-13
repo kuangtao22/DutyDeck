@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CapabilitySceneDefinition } from '@proma/shared'
@@ -33,8 +33,10 @@ function definition(prompt: string): CapabilitySceneDefinition {
 /** 创建真实服务、场景和两条任务；模型端口仍使用离线 stub。 */
 function fixture(options: {
   signal?: AbortSignal
-  onModelCall?: (stepId: string) => void
+  onModelCall?: (stepId: string) => void | Promise<void>
   assertCurrent?: () => void
+  /** 控制离线评审故障，用真实运行生成可恢复记录。 */
+  reviewMalformed?: () => boolean
 } = {}) {
   const rootDir = mkdtempSync(join(tmpdir(), 'proma-factory-session-runtime-'))
   roots.push(rootDir)
@@ -74,13 +76,14 @@ function fixture(options: {
         }
       },
       callModel: async (invocation) => {
-        options.onModelCall?.(invocation.stepId)
+        await options.onModelCall?.(invocation.stepId)
         if (invocation.stepId !== '__factory_review__') {
           return {
             text: invocation.prompt.includes('候选回答') ? '候选结果' : '基线结果',
             model: 'test-model',
           }
         }
+        if (options.reviewMalformed?.()) return { text: '非JSON评审响应', model: 'test-model' }
         const candidate = invocation.prompt.includes('候选结果')
         return {
           text: JSON.stringify({
@@ -239,6 +242,13 @@ test('Given 独立实验候选 When 三阶段走真实参考runner Then 不覆�
   expect(setup.service.listRuns(setup.sceneId)).toHaveLength(6)
   expect(setup.runtime.batches().list(setup.sceneId)).toHaveLength(3)
   expect(experiments.assertAdoptable(setup.sceneId, record.id, record.candidates[0]!.definition).id).toBe(record.id)
+  const experimentRunId = record.stages[0]!.pairs[0]!.baselineRunId!
+  const diagnosis = setup.runtime.diagnoseRun(setup.sceneId, experimentRunId)
+  expect(diagnosis.retryableStepIds).toEqual([])
+  expect(diagnosis.nextAction).toContain('冻结实验')
+  await expect(setup.runtime.retryReview({ sceneId: setup.sceneId, runId: experimentRunId, expectedSourceFingerprint: diagnosis.sourceFingerprint,
+    limits: { maxCalls: 1, maxTransportAttempts: 2, durationMs: 1000 } })).rejects.toThrow('冻结实验')
+
 })
 
 test('Given 实验模型返回时用户取消 When 收尾 Then 保留真实取消轨迹和半对运行引用', async () => {
@@ -275,4 +285,67 @@ test('Given 计划模式 When 读取实验与尝试创建或运行 Then 只读�
   expect(() => readonly.experiments().markExposureForRead({ kind: 'datasets' })).not.toThrow()
   expect(() => readonly.runner()).toThrow('计划模式')
   await expect(readonly.runBatch({ sceneId: setup.sceneId, kind: 'comparison', taskIds: setup.taskIds })).rejects.toThrow('计划模式')
+})
+
+
+test('Given 原评审解析失败 When runtime定点补评 Then 原运行字节不变且仅增加评审调用', async () => {
+  let malformed = true
+  const calls: string[] = []
+  const setup = fixture({ reviewMalformed: () => malformed, onModelCall: (stepId) => { calls.push(stepId) } })
+  const run = await setup.runtime.runner().run(setup.sceneId, { text: '核对已有输出' })
+  const original = readFileSync(join(setup.rootDir, 'runs', `${setup.sceneId}.jsonl`), 'utf8')
+  const diagnosis = setup.runtime.diagnoseRun(setup.sceneId, run.id)
+  expect(diagnosis.retryableStepIds).toEqual(['answer'])
+  malformed = false
+  const result = await setup.runtime.retryReview({ sceneId: setup.sceneId, runId: run.id, expectedSourceFingerprint: diagnosis.sourceFingerprint,
+    limits: { maxCalls: 1, maxTransportAttempts: 2, durationMs: 1000 } })
+  expect(result.status).toBe('completed')
+  expect(calls).toEqual(['answer', '__factory_review__', '__factory_review__'])
+  expect(readFileSync(join(setup.rootDir, 'runs', `${setup.sceneId}.jsonl`), 'utf8')).toBe(original)
+  expect(setup.runtime.diagnoseRun(setup.sceneId, run.id).retry?.id).toBe(result.id)
+})
+
+test('Given plan或归属撤销 When 诊断与补评 Then 只读不初始化模型且失效归属不可读写', async () => {
+  const setup = fixture({ reviewMalformed: () => true })
+  const run = await setup.runtime.runner().run(setup.sceneId, { text: '已有输出' })
+  let owner = true
+  const readonly = createCapabilityFactorySessionRuntime({ rootDir: setup.rootDir, sessionId: 'readonly', service: setup.service,
+    assertCurrent: () => { if (!owner) throw new Error('归属撤销') }, canMutate: () => false,
+    getRunPorts: () => { throw new Error('只读不能加载模型') },
+  })
+  const diagnosis = readonly.diagnoseRun(setup.sceneId, run.id)
+  expect(diagnosis.retryableStepIds).toEqual(['answer'])
+  const request = { sceneId: setup.sceneId, runId: run.id, expectedSourceFingerprint: diagnosis.sourceFingerprint, limits: { maxCalls: 1, maxTransportAttempts: 2, durationMs: 1000 } }
+  await expect(readonly.retryReview(request)).rejects.toThrow('计划模式')
+  owner = false
+  expect(() => readonly.diagnoseRun(setup.sceneId, run.id)).toThrow('归属撤销')
+  await expect(readonly.retryReview(request)).rejects.toThrow('归属撤销')
+})
+
+
+test('Given 补评正在等待模型 When 并发批测与用户停止 Then 共用场景锁且取消保留独立报告', async () => {
+  const controller = new AbortController()
+  let retrying = false
+  let notifyStarted!: () => void
+  let release!: () => void
+  const started = new Promise<void>((resolve) => { notifyStarted = resolve })
+  const pending = new Promise<void>((resolve) => { release = resolve })
+  const setup = fixture({ signal: controller.signal, reviewMalformed: () => !retrying,
+    onModelCall: async (stepId) => {
+      if (retrying && stepId === '__factory_review__') { notifyStarted(); await pending }
+    },
+  })
+  const run = await setup.runtime.runner().run(setup.sceneId, { text: '原结果' })
+  const diagnosis = setup.runtime.diagnoseRun(setup.sceneId, run.id)
+  retrying = true
+  const retry = setup.runtime.retryReview({ sceneId: setup.sceneId, runId: run.id, expectedSourceFingerprint: diagnosis.sourceFingerprint,
+    limits: { maxCalls: 1, maxTransportAttempts: 2, durationMs: 1000 } })
+  await started
+  await expect(setup.runtime.runBatch({ sceneId: setup.sceneId, kind: 'evaluation', taskIds: setup.taskIds })).rejects.toThrow('已有批次')
+  controller.abort(new Error('用户停止'))
+  const result = await retry
+  release()
+  expect(result.status).toBe('cancelled')
+  expect(setup.runtime.diagnoseRun(setup.sceneId, run.id).retry?.status).toBe('cancelled')
+  expect(setup.service.getRun(setup.sceneId, run.id)?.status).toBe('succeeded')
 })

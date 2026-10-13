@@ -16,3 +16,6 @@ export * from './types/project-knowledge-execution'
 export * from './types/capability-factory-experiment-record'
 export * from './types/capability-factory-call-ledger'
 export * from './types/capability-factory-experiment'
+
+export * from './types/capability-factory-review-retry'
+export * from './utils/capability-factory-run-diagnosis'

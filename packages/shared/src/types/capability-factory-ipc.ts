@@ -1,3 +1,4 @@
+import { validateCapabilityFactoryRunLimits, type CapabilityFactoryRunLimits } from './capability-factory-call-ledger'
 import type { CapabilityExperimentCreateRequest, CapabilityExperimentAdvanceRequest, CapabilityFactoryExperimentView } from './capability-factory-experiment-record'
 import { validateCapabilityEvaluationProtocol } from './capability-factory-experiment'
 /**
@@ -98,6 +99,8 @@ export interface CapabilityFactoryCommandInputs {
   deleteStub: { sessionId: string; capabilityId: string }
   /** 运行：提交一次任务，返回**已经跑完**的运行记录（含完整轨迹）。 */
   runScene: {
+    /** 可选整链调用预算，由运行时复核截止时间。 */
+    limits?: CapabilityFactoryRunLimits
     sessionId: string
     sceneId: string
     input: Record<string, unknown>
@@ -610,7 +613,7 @@ export function parseCapabilityFactoryCommand(value: unknown): CapabilityFactory
     case 'runScene': {
       const input = record(root.input, [
         'sessionId', 'sceneId', 'input', 'requestId', 'target', 'expectedVersion',
-        'expectedDraftCreatedAt', 'expectedDraftDefinition', 'comparisonId', 'comparisonRole',
+        'expectedDraftCreatedAt', 'expectedDraftDefinition', 'comparisonId', 'comparisonRole', 'limits',
       ], 'input')
       const target = input.target === undefined || input.target === 'current'
         ? 'current' : input.target === 'draft' ? 'draft' : bad('input.target')
@@ -641,6 +644,7 @@ export function parseCapabilityFactoryCommand(value: unknown): CapabilityFactory
         sessionId: str(input.sessionId, 'input.sessionId', 128),
         sceneId: str(input.sceneId, 'input.sceneId', 128),
         input: workflowInput(input.input),
+        ...(input.limits === undefined ? {} : { limits: validateCapabilityFactoryRunLimits(input.limits) }),
         ...(target === 'current' && input.target === undefined ? {} : { target }),
         ...(expectedVersion === undefined ? {} : { expectedVersion }),
         ...(expectedDraftCreatedAt === undefined ? {} : { expectedDraftCreatedAt }),

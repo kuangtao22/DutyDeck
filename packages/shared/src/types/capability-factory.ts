@@ -1,3 +1,5 @@
+import type { CapabilityFactoryCallRecord, CapabilityFactoryRunLimits } from './capability-factory-call-ledger'
+import type { CapabilityRunReviewFailureKind } from './capability-factory-review-retry'
 import type { CapabilityCaseScore, CapabilityEvaluationProtocol, CapabilityExperimentSample, CapabilityScoreSummary } from './capability-factory-experiment'
 /**
  * 提示词编排工厂的领域类型（DutyDeck 侧）。
@@ -173,6 +175,8 @@ export type CapabilityRunStatus = 'running' | 'succeeded' | 'partial' | 'failed'
 
 /** 单次内容评审：独立于运行成功与格式合法，旧记录可没有这一项。 */
 export interface CapabilityRunReview {
+  /** 仅评审异常使用；旧记录缺失时保守诊断。 */
+  failureKind?: CapabilityRunReviewFailureKind
   status: 'running' | 'succeeded' | 'failed' | 'skipped'
   /** 无法判断或尚未评完时为 null，不能按通过处理。 */
   passed: boolean | null
@@ -192,6 +196,13 @@ export interface CapabilityRunReview {
 
 /** 一次运行。`sceneVersion` 是贯穿主键 —— 没有它，"改了提示词之后旧记录是哪一版"无从回答。 */
 export interface CapabilityRun {
+  /** 显式限额运行的持久账本；旧运行没有此字段，保持原行为。 */
+  callBudget?: {
+    /** 本轮固定预算与截止时间。 */
+    limits: CapabilityFactoryRunLimits
+    /** 已预留和结算的逻辑调用，失败与取消仍保留消费证据。 */
+    calls: CapabilityFactoryCallRecord[]
+  }
   id: string
   sceneId: string
   sceneVersion: number

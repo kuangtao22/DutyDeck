@@ -1442,6 +1442,9 @@ export class AgentOrchestrator {
         },
         assertExperimentAdoptable: (sceneId, experimentId, definition) => factoryRuntime.experiments().assertAdoptable(sceneId, experimentId, definition),
         markExposureForRead: (request) => factoryRuntime.experiments().markExposureForRead(request),
+        /** 定点补评由宿主绑定源运行与当前会话，模型不能指定宿主身份。 */
+        diagnoseRun: factoryRuntime.diagnoseRun,
+        retryReview: factoryRuntime.retryReview,
         runBatch: factoryRuntime.runBatch,
         listBatches: (sceneId) => factoryRuntime.batches().list(sceneId),
         getBatch: (sceneId, batchId) => factoryRuntime.batches().get(sceneId, batchId),

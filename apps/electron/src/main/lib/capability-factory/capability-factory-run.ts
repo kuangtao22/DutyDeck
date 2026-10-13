@@ -21,6 +21,8 @@ import {
   getStepAcceptance,
   getReviewSteps,
   isPromptOnlyOptimization,
+  validateCapabilityFactoryRunLimits,
+  type CapabilityFactoryRunLimits,
 } from '@proma/shared'
 import type { CapabilityBinding, CapabilityStepProgress, RunResult } from '@proma/capability-runner'
 import { createCapabilityRunner } from '@proma/capability-runner'
@@ -31,7 +33,7 @@ import {
 import type { CapabilityFactoryModelCall } from './capability-factory-model-call'
 import type { CapabilityFactoryModelResolution } from './capability-factory-model-call'
 import { reviewCapabilityRun } from './capability-factory-review'
-import type { CapabilityFactoryCallLedger } from './capability-factory-budget'
+import { createCapabilityFactoryCallLedger, type CapabilityFactoryCallLedger } from './capability-factory-budget'
 import { validateCapabilityEvidence } from './capability-factory-evidence'
 
 /** 运行适配器依赖：全部注入，离线可测。 */
@@ -63,6 +65,8 @@ export interface CapabilityFactoryRunDeps {
 /** 整链运行的内部选项；批量评测关闭任务保存，避免数据集污染用户提交历史。 */
 export interface CapabilityFactoryRunOptions {
   saveTask?: boolean
+  /** 普通整链的总调用、传输及截止限制，执行重试与评审共用。 */
+  limits?: CapabilityFactoryRunLimits
   /** 运行当前生效定义或待采纳草案。 */
   target?: 'current' | 'draft'
   /** 对比基线版本锁；版本变化时停止，不混合运行。 */
@@ -185,6 +189,7 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
         },
         now,
         timeoutMs: deps.reviewTimeoutMs,
+        signal: deps.signal,
       })
       publishReviewProgress(`已处理 ${Object.keys(stepReviews).length} / ${configured.length} 个步骤的评审。`)
       if (deps.signal?.aborted) break
@@ -204,6 +209,7 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
         const stepId = reviewedStepIds[index] ?? `step-${index + 1}`
         return item.metrics.map((metric) => ({ ...metric, name: `[${stepId}] ${metric.name}` }))
       })
+    const deadlineCancelled = deps.signal?.aborted === true
     const aggregateReview: CapabilityRunReview = {
       ...base,
       status: results.some((item) => item.status === 'failed') ? 'failed'
@@ -217,7 +223,7 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
       ...(results.some((item) => item.error) ? { error: results.flatMap((item) => item.error ? [item.error] : []).join('；') } : {}),
     }
     assertCurrent()
-    return deps.service.finishRunReview(run.sceneId, run.id, aggregateReview, stepReviews)
+    return deps.service.finishRunReview(run.sceneId, run.id, aggregateReview, stepReviews, deadlineCancelled ? 'cancelled' : undefined)
   }
 
   /**
@@ -328,6 +334,52 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
       input: Record<string, unknown>,
       options: CapabilityFactoryRunOptions = {},
     ): Promise<CapabilityRun> {
+      if (options.limits !== undefined) {
+        if (deps.callLedger) throw new Error('已有共享调用账本，不能用单次限额替换')
+        /** 运行边界再次校验，内部调用方也不能绕过限额合同。 */
+        const limits = validateCapabilityFactoryRunLimits(options.limits)
+        /** 只在账本变动时持久化最新运行快照，不随流式 token 写盘。 */
+        let latestRun: CapabilityRun | undefined
+        /** 服务视图沿用原持久化与归属规则，只为本次运行附加账本。 */
+        const budgetService = Object.create(deps.service) as CapabilityFactoryService
+        /** 截止信号贯穿执行、重试和评审，并能中断在途传输。 */
+        const deadline = new AbortController()
+        /** 超长绝对期限分段等待，避免 Node 的 32 位定时器溢出立即触发。 */
+        let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+        const armDeadline = (): void => {
+          const remaining = limits.deadlineAt - now()
+          if (remaining <= 0) { deadline.abort(new Error('运行已到截止时间')); return }
+          deadlineTimer = setTimeout(armDeadline, Math.min(remaining, 2_147_483_647))
+          deadlineTimer.unref()
+        }
+        /** 预留和发送标记都先原子落盘；落盘失败由账本永久关闭发送许可。 */
+        const ledger = createCapabilityFactoryCallLedger({ ...limits, now, onChange: (calls) => {
+          assertCurrent()
+          if (!latestRun) throw new Error('缺少运行快照，禁止发送未记账请求')
+          latestRun = deps.service.recordBudgetedRun({ ...latestRun, callBudget: { limits, calls } })
+        } })
+        budgetService.recordRun = (run) => {
+          assertCurrent()
+          latestRun = deps.service.recordBudgetedRun({ ...run, callBudget: { limits, calls: ledger.snapshot() } })
+          return latestRun
+        }
+        armDeadline()
+        try {
+          /** 去掉本层限额后复用完整生产运行路径，保留版本锁和草案锁。 */
+          const { limits: _limits, ...runOptions } = options
+          const result = await createCapabilityFactoryRunner({
+            ...deps, service: budgetService, callLedger: ledger,
+            signal: deps.signal ? AbortSignal.any([deps.signal, deadline.signal]) : deadline.signal,
+            onProgress: (run) => {
+              latestRun = { ...run, callBudget: { limits, calls: ledger.snapshot() } }
+              deps.onProgress?.(latestRun)
+            },
+          }).run(sceneId, input, runOptions)
+          return result
+        } finally {
+          if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
+        }
+      }
       const runId = createId()
       const startedAt = now()
       assertCurrent()
@@ -600,6 +652,8 @@ export function createCapabilityFactoryRunner(deps: CapabilityFactoryRunDeps) {
       const evidenceIssues = validateCapabilityEvidence(input, outcome.step.parsedOutput)
       return finish({
         id: runId, sceneId, sceneVersion: scene.currentVersion, kind: 'step', stepId, startedAt,
+        /** 单步也冻结本次定义；之后补评不得借用已经修改过的场景或临时提示词。 */
+        definitionSnapshot: definition,
         status: outcome.valid ? 'succeeded' : 'failed',
         valid: outcome.valid,
         input,

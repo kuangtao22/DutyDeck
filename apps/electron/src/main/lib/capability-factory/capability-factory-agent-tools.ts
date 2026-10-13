@@ -6,6 +6,7 @@
  * 修改的 prepare 阶段冻结目标并生成审批快照，apply 阶段由宿主权限层授权后执行。
  */
 import { Type } from 'typebox'
+import { Value } from 'typebox/value'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { parseCapabilityFactoryCommand } from '@proma/shared'
 import type { CapabilityFactoryBatchRequest, CapabilitySceneDefinition } from '@proma/shared'
@@ -19,6 +20,7 @@ export const CAPABILITY_FACTORY_AGENT_READ_TOOL_NAMES = [
   'factory_list_stubs',
   'factory_list_runs',
   'factory_get_run',
+  'factory_diagnose_run',
   'factory_list_tasks',
   'factory_list_datasets',
   'factory_list_evaluations',
@@ -37,6 +39,7 @@ export const CAPABILITY_FACTORY_AGENT_RUN_TOOL_NAMES = [
   'factory_create_experiment',
   'factory_advance_experiment',
   'factory_cancel_experiment',
+  'factory_retry_review',
 ] as const
 
 /** 两段式修改工具；apply 必须经过宿主真实授权。 */
@@ -76,6 +79,34 @@ export function buildCapabilityFactoryAgentTools(
 ): ToolDefinition[] {
   const sceneId = Type.String({ minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$' })
   const entityId = Type.String({ minLength: 1, maxLength: 128 })
+  /** 整链运行的 SDK 和直接执行共用同一白名单及可选限额。 */
+  const runSceneParameters = Type.Object({
+    sceneId,
+    limits: Type.Optional(Type.Object({
+      maxCalls: Type.Integer({ minimum: 1, maximum: 1000 }),
+      maxTransportAttempts: Type.Integer({ minimum: 1, maximum: 2000 }),
+      deadlineAt: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+    }, { additionalProperties: false })),
+    input: Type.Record(Type.String(), Type.Unknown()),
+    target: Type.Optional(Type.Union([Type.Literal('current'), Type.Literal('draft')])),
+    expectedVersion: Type.Optional(Type.Integer({ minimum: 1 })),
+    expectedDraftCreatedAt: Type.Optional(Type.Integer({ minimum: 0 })),
+    expectedDraftDefinition: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+    comparisonId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+    comparisonRole: Type.Optional(Type.Union([Type.Literal('baseline'), Type.Literal('candidate')])),
+  }, { additionalProperties: false })
+  /** 诊断输入只允许场景与运行身份。 */
+  const diagnoseRunParameters = Type.Object({ sceneId, runId: entityId }, { additionalProperties: false })
+  /** schema 同时用于 SDK 描述与执行时复核，防止直调绕过白名单。 */
+  const reviewRetryParameters = Type.Object({
+    sceneId, runId: entityId,
+    expectedSourceFingerprint: Type.String({ minLength: 1, maxLength: 128 }),
+    limits: Type.Object({
+      maxCalls: Type.Integer({ minimum: 1, maximum: 10 }),
+      maxTransportAttempts: Type.Integer({ minimum: 1, maximum: 20 }),
+      durationMs: Type.Integer({ minimum: 1, maximum: 600000 }),
+    }, { additionalProperties: false }),
+  }, { additionalProperties: false })
   const datasetCase = Type.Object({
     name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
     input: Type.Record(Type.String(), Type.Unknown()),
@@ -267,6 +298,24 @@ export function buildCapabilityFactoryAgentTools(
       async execute(_id, input) { return result(facade.getRun(input.sceneId, input.runId)) },
     }),
     sdk.defineTool({
+      name: 'factory_diagnose_run', label: '诊断运行失败',
+      description: '只读诊断执行、约束和评审失败，不调用模型。返回源指纹、可补评步骤和已有独立补评记录。评审超时不代表业务输出错误；读取评审证据会登记关联实验暴露。',
+      parameters: diagnoseRunParameters,
+      async execute(_id, input) {
+        if (!Value.Check(diagnoseRunParameters, input)) throw new Error('诊断请求无效')
+        return result(facade.diagnoseRun(input.sceneId, input.runId))
+      },
+    }),
+    sdk.defineTool({
+      name: 'factory_retry_review', label: '定点补评已有输出',
+      description: '先用 factory_diagnose_run 诊断，再绑定返回的 sourceFingerprint 执行一次有界补评。仅补 timeout/invalid-response 步骤，不重新生成业务输出，不改变原 run/batch 认证或采纳资格。每条运行最多一次、每回合最多三次并占运行额度；实验引用运行拒绝旁路补评。取消不自动重试，model-error 先排查，内容未达标应改业务提示词。必须显式提供调用、传输尝试和毫秒耗时预算，预算不足以覆盖失败步骤则拒绝。',
+      parameters: reviewRetryParameters,
+      async execute(_id, input) {
+        if (!Value.Check(reviewRetryParameters, input)) throw new Error('补评请求无效')
+        return result(await facade.retryReview(input))
+      },
+    }),
+    sdk.defineTool({
       name: 'factory_list_tasks',
       label: '读取已保存任务',
       description: 'Read the reusable whole-scene task inputs previously submitted by the human, newest first. Read-only. Reuse these exact inputs for baseline/candidate comparisons instead of paraphrasing or reconstructing them from run output.',
@@ -393,18 +442,14 @@ export function buildCapabilityFactoryAgentTools(
       name: 'factory_run_scene',
       label: '运行整链对比',
       description: 'Run a whole scene without changing or adopting its definition. For an optimization comparison, run the current baseline and pending draft candidate with the SAME input, expectedVersion and comparisonId; use role=baseline with target=current, then role=candidate with target=draft and pass BOTH the exact expectedDraftCreatedAt and expectedDraftDefinition returned by factory_get_scene. Comparison runs do not add duplicate saved tasks. The host rejects a changed version/draft and rejects a candidate with changes outside llm/extract prompts (including review standards, model slots, workflow or contracts), so prompt improvement cannot be manufactured by relaxing evaluation criteria or changing models.',
-      parameters: Type.Object({
-        sceneId,
-        input: Type.Record(Type.String(), Type.Unknown()),
-        target: Type.Optional(Type.Union([Type.Literal('current'), Type.Literal('draft')])),
-        expectedVersion: Type.Optional(Type.Integer({ minimum: 1 })),
-        expectedDraftCreatedAt: Type.Optional(Type.Integer({ minimum: 0 })),
-        expectedDraftDefinition: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-        comparisonId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
-        comparisonRole: Type.Optional(Type.Union([Type.Literal('baseline'), Type.Literal('candidate')])),
-      }, { additionalProperties: false }),
+      parameters: runSceneParameters,
       async execute(_id, input) {
-        return result(await facade.runScene(input.sceneId, input.input, {
+        /** 复用 IPC 严格解析，直接工具调用也不能绕过字段白名单。 */
+        if (!Value.Check(runSceneParameters, input)) throw new Error('CAPABILITY_FACTORY_INVALID: runScene')
+        const command = parseCapabilityFactoryCommand({ method: 'runScene', input: { ...input, sessionId: 'agent-tool' } })
+        if (command.method !== 'runScene') throw new Error('CAPABILITY_FACTORY_INVALID: runScene')
+        return result(await facade.runScene(command.input.sceneId, command.input.input, {
+          ...(command.input.limits === undefined ? {} : { limits: command.input.limits }),
           ...(input.target === undefined ? {} : { target: input.target }),
           ...(input.expectedVersion === undefined ? {} : { expectedVersion: input.expectedVersion }),
           ...(input.expectedDraftCreatedAt === undefined ? {} : { expectedDraftCreatedAt: input.expectedDraftCreatedAt }),

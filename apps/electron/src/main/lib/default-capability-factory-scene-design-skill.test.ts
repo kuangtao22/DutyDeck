@@ -13,7 +13,7 @@ test('Given capability-factory-scene-design 默认 Skill When 校验发布合同
 
   expect(skill).toMatch(/^name: capability-factory-scene-design$/m)
   expect(skill).toMatch(/^group: proma$/m)
-  expect(skill).toMatch(/^version: "1\.0\.12"$/m)
+  expect(skill).toMatch(/^version: "1\.0\.13"$/m)
   /** 触发词必须写进 description，否则 Agent 不会在有需要时加载它。 */
   for (const trigger of ['编排工厂', '提示词工厂', '能力包', '场景']) {
     expect(skill).toContain(trigger)

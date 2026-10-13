@@ -345,3 +345,12 @@ test('Given 实验有限预算 When 超过公开上限 Then 在解析阶段拒�
 test('Given 数据集列表命令 When 解析 Then 不得误分派为交付列表', () => {
   expect(parse({ method: 'listDatasets', input: { sessionId: 's' } })).toEqual({ method: 'listDatasets', input: { sessionId: 's' } })
 })
+
+test('Given 整链可选限额 When 解析 Then 保留限额并拒绝未知字段且兼容旧请求', () => {
+  /** 普通运行可选择硬调用预算，协议解析不依赖当前时间。 */
+  const input = { sessionId: 's1', sceneId: 'scene', input: {} }
+  const limits = { maxCalls: 3, maxTransportAttempts: 3, deadlineAt: 123 }
+  expect(parse({ method: 'runScene', input: { ...input, limits } })).toMatchObject({ input: { limits } })
+  expect(parse({ method: 'runScene', input }).input).not.toHaveProperty('limits')
+  expect(() => parse({ method: 'runScene', input: { ...input, limits: { ...limits, durationMs: 1 } } })).toThrow('CAPABILITY_FACTORY_INVALID')
+})

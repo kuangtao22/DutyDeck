@@ -426,10 +426,19 @@ export class CapabilityFactoryService {
     return run
   }
 
+  /** 为仍在执行的有界运行原子保存调用证据，终态由存储层保护。 */
+  recordBudgetedRun(run: CapabilityRun): CapabilityRun {
+    if (this.getScene(run.sceneId) === null) {
+      throw new CapabilityFactoryError('SCENE_NOT_FOUND', `场景不存在：${run.sceneId}`)
+    }
+    this.store.saveBudgetedRun(run)
+    return run
+  }
+
   /** 完成本轮自动评审，仅更新目标运行的质量轴。 */
-  finishRunReview(sceneId: string, runId: string, review: CapabilityRunReview, stepReviews?: CapabilityRun['stepReviews']): CapabilityRun {
+  finishRunReview(sceneId: string, runId: string, review: CapabilityRunReview, stepReviews?: CapabilityRun['stepReviews'], runStatus?: CapabilityRun['status']): CapabilityRun {
     if (this.getScene(sceneId) === null) throw new CapabilityFactoryError('SCENE_NOT_FOUND', `场景不存在：${sceneId}`)
-    return this.store.finishRunReview(sceneId, runId, review, stepReviews)
+    return this.store.finishRunReview(sceneId, runId, review, stepReviews, runStatus)
   }
 
   /** 仅在主进程首次建立工作区服务时调用，恢复上次退出遗留的评测中状态。 */
