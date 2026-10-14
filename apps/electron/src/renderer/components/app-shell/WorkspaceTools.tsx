@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { Blocks, Brain, Braces, CalendarDays, Clock, Factory, FolderOpen, Globe, ListTodo, Palette, ServerCog, SquareTerminal } from 'lucide-react'
+import { Blocks, Brain, Braces, CalendarDays, Clock, Factory, FolderOpen, Globe, ListTodo, Plug, ServerCog, SquareTerminal, Workflow } from 'lucide-react'
 import { WorkspaceToolRail } from './WorkspaceToolRail'
 import type { WorkspaceToolRailItem } from './WorkspaceToolRail'
 import { ObsidianIcon } from '@/components/obsidian/obsidian-brand'
@@ -10,7 +10,7 @@ import { automationsAtom } from '@/atoms/automation-atoms'
 import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
 import { appModeAtom } from '@/atoms/app-mode'
 
-/** 固定入口按已确认的四组排列；图标只作装饰，业务可用性统一来自命令 atom。 */
+/** 固定入口按已确认的四组排列；各工具及外观入口使用不同图标，业务可用性统一来自命令 atom。 */
 const TOOL_ITEMS: WorkspaceToolRailItem[] = [
   { id: 'browser', label: '新建浏览器标签', group: '工作区', icon: Globe, keywords: 'browser 网页' },
   { id: 'files', label: '打开文件', group: '工作区', icon: FolderOpen, keywords: 'files 文件夹' },
@@ -21,8 +21,8 @@ const TOOL_ITEMS: WorkspaceToolRailItem[] = [
   { id: 'memory', label: '项目知识库', group: '知识与能力', icon: Brain, keywords: 'memory 记忆' },
   { id: 'vault', label: 'Obsidian', group: '知识与能力', icon: ObsidianIcon, keywords: 'vault 笔记' },
   { id: 'skills', label: 'Skills', group: '知识与能力', icon: Blocks, keywords: '技能' },
-  { id: 'mcp', label: 'MCP', group: '知识与能力', icon: Braces, keywords: '服务 插件' },
-  { id: 'canvas', label: '画布', group: '专业工具', icon: Palette, keywords: 'canvas 设计' },
+  { id: 'mcp', label: 'MCP', group: '知识与能力', icon: Plug, keywords: '服务 插件' },
+  { id: 'canvas', label: '画布', group: '专业工具', icon: Workflow, keywords: 'canvas 设计' },
   { id: 'server-ops', label: '服务器运维', group: '专业工具', icon: ServerCog, keywords: 'server ops SSH 数据库' },
   { id: 'api-workbench', label: '接口工作台', group: '专业工具', icon: Braces, keywords: 'API HTTP' },
   { id: 'capability-factory', label: '编排工厂', group: '专业工具', icon: Factory, keywords: 'factory 能力' },
