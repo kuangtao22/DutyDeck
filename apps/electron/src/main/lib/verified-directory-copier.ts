@@ -33,6 +33,7 @@ import {
 } from './verified-directory-copy-sidecar'
 
 export { hashFile } from './verified-directory-copy-filesystem'
+export { renameReplacingExistingPath } from './verified-directory-copy-filesystem'
 export {
   finalizeDirectoryCopy,
   getDirectoryCopySidecarPath,

@@ -348,7 +348,7 @@ describe('DataRootMigrationCoordinator', () => {
     expect(harness.locator.requireActiveRoot()).toBe(sourceRoot)
     expect(harness.locator.inspect().locatorFile?.migration).toMatchObject({
       stage: 'failed',
-      error: '复制数据失败',
+      error: '复制数据失败：磁盘读取失败 /secret/path',
     })
     expect(harness.finalizeCalls).toEqual([])
   })

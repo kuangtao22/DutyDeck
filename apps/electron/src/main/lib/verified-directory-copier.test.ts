@@ -16,7 +16,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { open } from 'node:fs/promises'
+import { open, rename as renameAsync, unlink as unlinkAsync } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { DataRootMigrationProgress } from '@proma/shared'
@@ -27,6 +27,7 @@ import {
   hashFile,
   inspectDirectoryCopyOwnership,
   inspectDirectoryCopySpace,
+  renameReplacingExistingPath,
   type CopyDirectoryResult,
 } from './verified-directory-copier'
 
@@ -106,6 +107,39 @@ describe('verified-directory-copier', () => {
 
   afterEach(() => {
     rmSync(testRoot, { recursive: true, force: true })
+  })
+
+  test('Given Windows 目标文件已存在且 rename 返回冲突 When 替换临时文件 Then 先校验原目标再完成替换', async () => {
+    /** Windows rename 不允许直接覆盖已有文件时使用的临时文件。 */
+    const temporaryPath = join(testRoot, 'temporary.txt')
+    /** 复制断点中已存在的旧目标文件。 */
+    const targetPath = join(testRoot, 'target.txt')
+    writeFileSync(temporaryPath, 'new')
+    writeFileSync(targetPath, 'old')
+    let renameAttempts = 0
+    let unlinkCalls = 0
+
+    await renameReplacingExistingPath(temporaryPath, targetPath, {
+      platform: 'win32',
+      renamePath: async (source, destination) => {
+        renameAttempts += 1
+        if (renameAttempts === 1) {
+          const error = new Error('目标已存在') as NodeJS.ErrnoException
+          error.code = 'EEXIST'
+          throw error
+        }
+        await renameAsync(source, destination)
+      },
+      unlinkPath: async (path) => {
+        unlinkCalls += 1
+        await unlinkAsync(path)
+      },
+    })
+
+    expect(readFileSync(targetPath, 'utf-8')).toBe('new')
+    expect(existsSync(temporaryPath)).toBe(false)
+    expect(renameAttempts).toBe(2)
+    expect(unlinkCalls).toBe(1)
   })
 
   test('Given 普通文件、Unicode 路径与外部符号链接 When 复制并校验 Then 内容一致且链接不被跟随', async () => {

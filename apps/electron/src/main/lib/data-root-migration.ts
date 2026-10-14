@@ -581,6 +581,8 @@ export class DataRootMigrationCoordinator {
     code: DataRootMigrationErrorCode,
     cause: unknown,
   ): DataRootMigrationError {
+    /** 将底层文件系统错误压缩进持久化摘要，便于 Windows 现场定位具体冲突。 */
+    const publicMessage = appendMigrationFailureDetail(message, cause)
     try {
       const current = this.locator.inspect().locatorFile?.migration
       if (current && current.stage !== 'switching') {
@@ -588,13 +590,13 @@ export class DataRootMigrationCoordinator {
           stage: 'failed',
           completedBytes: current.completedBytes,
           updatedAt: Math.max(this.now(), current.updatedAt),
-          error: message,
+          error: publicMessage,
         })
       }
     } catch (locatorError) {
       return new DataRootMigrationError('LOCATOR_WRITE_FAILED', '保存迁移失败状态失败', locatorError)
     }
-    return new DataRootMigrationError(code, message, cause)
+    return new DataRootMigrationError(code, publicMessage, cause)
   }
 
   /** switching 失败保持阶段不倒退，只原子记录可读错误供下次恢复。 */
@@ -940,6 +942,16 @@ function toPreviewBlocker(error: unknown): {
     return { code: error.code, message: error.message }
   }
   return { code: 'UNSAFE_TARGET', message: error instanceof Error ? error.message : '无法预检目标数据根' }
+}
+
+/** 将底层错误转换为单行且有界的用户可见迁移摘要。 */
+function appendMigrationFailureDetail(message: string, cause: unknown): string {
+  if (!(cause instanceof Error)) return message
+  /** 错误消息可能包含换行或重复前缀，先压成单行再限制长度。 */
+  const detail = cause.message.replace(/\s+/g, ' ').trim()
+  if (detail.length === 0 || detail === message) return message
+  const suffix = detail.length > 480 ? `${detail.slice(0, 477)}...` : detail
+  return `${message}：${suffix}`
 }
 
 /** 预览只公开用户可在确认前处理的预检错误。 */
