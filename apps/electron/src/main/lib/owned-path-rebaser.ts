@@ -5,6 +5,7 @@ import {
   preflightPersistentJson,
   recoverPersistentJson,
   validateDataRoots,
+  validateMovedDataRoot,
   validateUniqueCandidateOwnership,
   verifyTargetRootGuard,
   writePersistentJson,
@@ -41,6 +42,12 @@ export interface RebaseDataRootOwnedPathsResult {
   inspectedFiles: string[]
   /** 因 Proma-owned 路径发生变化而原子写回的文件。 */
   updatedFiles: string[]
+}
+
+/** 移动完成后用于校验目标目录身份的参数。 */
+export interface RebaseMovedDataRootOwnedPathsInput extends RebaseDataRootOwnedPathsInput {
+  /** 移动前目录的设备号和 inode。 */
+  sourceIdentity: { dev: string; ino: string }
 }
 
 /** 路径字符串采用的数据平台语义。 */
@@ -93,6 +100,28 @@ export function rebaseDataRootOwnedPaths(
 ): RebaseDataRootOwnedPathsResult {
   /** 在任何索引 I/O 前建立的目标根物理身份。 */
   const targetGuard = validateDataRoots(input.sourceRoot, input.targetRoot)
+  return rebaseWithTargetGuard(input, targetGuard)
+}
+
+/**
+ * 重写已原地移动的数据根中的 Proma-owned 路径；源目录允许已经不存在。
+ * @param input 旧根、目标根及移动前的物理身份
+ * @returns 已检查和实际写回的文件列表
+ */
+export function rebaseMovedDataRootOwnedPaths(
+  input: RebaseMovedDataRootOwnedPathsInput,
+): RebaseDataRootOwnedPathsResult {
+  /** 移动后目标目录必须保持移动前的设备号和 inode。 */
+  const targetGuard = validateMovedDataRoot(input.targetRoot, input.sourceIdentity)
+  return rebaseWithTargetGuard(input, targetGuard, true)
+}
+
+/** 共享 copy 与 move 两条路径的安全 JSON 预检和提交逻辑。 */
+function rebaseWithTargetGuard(
+  input: RebaseDataRootOwnedPathsInput,
+  targetGuard: TargetRootGuard,
+  moved = false,
+): RebaseDataRootOwnedPathsResult {
   /** 按处理顺序记录已安全读取的文件。 */
   const inspectedFiles: string[] = []
   /** 按处理顺序记录发生实际字段变化的文件。 */
@@ -136,18 +165,25 @@ export function rebaseDataRootOwnedPaths(
   /** 仅记录实际发生 owned 路径变化的文件，保持结果合同稳定。 */
   const ownedChangedPaths = new Set<string>()
   if (sessionsFile) {
-    if (rebaseSessionsIndex(sessionsFile.value, input.sourceRoot, input.targetRoot)) {
+    if (rebaseSessionsIndex(sessionsFile.value, input.sourceRoot, input.targetRoot, moved)) {
       ownedChangedPaths.add(sessionsFile.filePath)
     }
     if (ownedChangedPaths.has(sessionsFile.filePath) || needsPersistentJsonCommit(sessionsFile)) {
       queuePersistentCommit(sessionsFile, filesToCommit, queuedFiles, queuedPaths)
     }
   }
-  if (workspacesFile && needsPersistentJsonCommit(workspacesFile)) {
+  if (workspacesFile && moved) {
+    let changed = false
+    for (const workspace of workspacesFile.value.workspaces) {
+      changed = rebaseStringField(workspace, 'projectRootPath', input.sourceRoot, input.targetRoot) || changed
+    }
+    if (changed) ownedChangedPaths.add(workspacesFile.filePath)
+  }
+  if (workspacesFile && (ownedChangedPaths.has(workspacesFile.filePath) || needsPersistentJsonCommit(workspacesFile))) {
     queuePersistentCommit(workspacesFile, filesToCommit, queuedFiles, queuedPaths)
   }
   for (const configFile of workspaceConfigFiles) {
-    if (rebaseWorkspaceConfig(configFile.value, input.sourceRoot, input.targetRoot)) {
+    if (rebaseWorkspaceConfig(configFile.value, input.sourceRoot, input.targetRoot, moved)) {
       ownedChangedPaths.add(configFile.filePath)
     }
     if (ownedChangedPaths.has(configFile.filePath) || needsPersistentJsonCommit(configFile)) {
@@ -304,6 +340,7 @@ function rebaseSessionsIndex(
   index: JsonObject & { sessions: JsonObject[] },
   sourceRoot: string,
   targetRoot: string,
+  moved = false,
 ): boolean {
   /** 索引是否发生实际变化。 */
   let changed = false
@@ -312,12 +349,16 @@ function rebaseSessionsIndex(
     for (const field of SESSION_PATH_ARRAY_FIELDS) {
       changed = rebaseStringArrayField(session, field, sourceRoot, targetRoot) || changed
     }
+    if (moved && isJsonObject(session.activeWorktree)) {
+      changed = rebaseStringField(session.activeWorktree, 'path', sourceRoot, targetRoot) || changed
+      changed = rebaseStringField(session.activeWorktree, 'mainRepoRoot', sourceRoot, targetRoot) || changed
+    }
   }
   return changed
 }
 
 /** 重写单个工作区配置的声明路径字段。 */
-function rebaseWorkspaceConfig(config: JsonObject, sourceRoot: string, targetRoot: string): boolean {
+function rebaseWorkspaceConfig(config: JsonObject, sourceRoot: string, targetRoot: string, moved = false): boolean {
   /** 配置是否发生实际变化。 */
   let changed = false
   for (const field of WORKSPACE_PATH_ARRAY_FIELDS) {

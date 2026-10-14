@@ -211,6 +211,33 @@ export function validateDataRoots(sourceRoot: string, targetRoot: string): Targe
   }
 }
 
+/**
+ * 校验目录已完成原地移动后的目标身份。源目录此时可能已不存在，调用方必须提供移动前记录的设备号和 inode。
+ * @param targetRoot 移动后的数据根
+ * @param sourceIdentity 移动前目标目录的设备号和 inode
+ * @returns 可供安全 JSON 读写使用的目标 guard
+ */
+export function validateMovedDataRoot(
+  targetRoot: string,
+  sourceIdentity: { dev: string; ino: string },
+): TargetRootGuard {
+  if (!isAbsolute(targetRoot)) throw new Error('targetRoot 必须是绝对路径')
+  const targetStat = lstatIfPresent(targetRoot)
+  if (!targetStat || targetStat.isSymbolicLink() || !targetStat.isDirectory()) {
+    throw new Error(`targetRoot 必须是实际目录: ${targetRoot}`)
+  }
+  if (String(targetStat.dev) !== sourceIdentity.dev || String(targetStat.ino) !== sourceIdentity.ino) {
+    throw new Error(`移动后的 targetRoot 身份与移动前不匹配: ${targetRoot}`)
+  }
+  return {
+    requestedPath: targetRoot,
+    canonicalPath: realpathSync(targetRoot),
+    canonicalSourceRoot: '',
+    dev: targetStat.dev,
+    ino: targetStat.ino,
+  }
+}
+
 /** 只读预检主/tmp/bak，不触发 safe-file 恢复写入。 */
 export function preflightPersistentJson<T extends JsonObject>(
   filePath: string,
