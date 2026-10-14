@@ -1,6 +1,6 @@
 import type { KnowledgeAdmissionRecord } from './project-knowledge-admission'
 import type { KnowledgeExecutionStartInput } from './project-knowledge-execution'
-import type { KnowledgeDocumentLocation, KnowledgePlanConfirmInput, KnowledgeWorkflow, KnowledgeWorkflowPauseInput } from './project-knowledge-workflow'
+import type { KnowledgeDocumentLocation, KnowledgeIndexPreview, KnowledgeIndexRebuildInput, KnowledgeIndexRebuildResult, KnowledgePlanConfirmInput, KnowledgeWorkflow, KnowledgeWorkflowPauseInput } from './project-knowledge-workflow'
 
 /** 项目自由分组；旧分类字符串继续可读，不限制新场景。 */
 export type KnowledgeCategory = string
@@ -313,7 +313,22 @@ export const PROJECT_KNOWLEDGE_IPC_CHANNELS = {
   UNDO: 'project-knowledge:undo',
   EXCLUDE_SESSION: 'project-knowledge:exclude-session',
   PREVIEW_MEMORY: 'project-knowledge:preview-memory',
+  IMPORT: 'project-knowledge:import',
+  PREVIEW_INDEX: 'project-knowledge:preview-index',
+  REBUILD_INDEX: 'project-knowledge:rebuild-index',
 } as const
+
+/** 旧知识库导入方式；路径由主进程原生选择器提供。 */
+export type KnowledgeImportMode = 'files' | 'folder'
+
+/** 一次导入的可见结果；不包含宿主绝对路径或正文副本。 */
+export interface KnowledgeImportResult {
+  rootRelativePath: string
+  imported: number
+  unchanged: number
+  files: Array<{ relativePath: string; kind: 'document' | 'attachment' }>
+  skipped: Array<{ path: string; reason: string }>
+}
 
 /** Renderer 仅能通过项目身份访问知识库，不接触文件系统和模型凭据。 */
 export interface ProjectKnowledgeApi {
@@ -349,4 +364,10 @@ export interface ProjectKnowledgeApi {
   excludeProjectKnowledgeSession(workspaceId: string, sessionId: string): Promise<KnowledgeSnapshot>
   /** 预览旧记忆的主题拆分建议，不改写或移动原文件。 */
   previewProjectKnowledgeMemory(workspaceId: string): Promise<KnowledgeMemoryOrganizationPreview>
+  /** 由主进程弹出原生选择器并保留旧库原文。 */
+  importProjectKnowledge(input: { workspaceId: string; mode: KnowledgeImportMode }): Promise<KnowledgeImportResult>
+  /** 只读查看磁盘索引与当前目录生成结果。 */
+  previewProjectKnowledgeIndex(workspaceId: string): Promise<KnowledgeIndexPreview>
+  /** 用户明确确认后备份旧索引并重建。 */
+  rebuildProjectKnowledgeIndex(input: KnowledgeIndexRebuildInput): Promise<KnowledgeIndexRebuildResult>
 }

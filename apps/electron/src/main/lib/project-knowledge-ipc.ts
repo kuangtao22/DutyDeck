@@ -1,5 +1,5 @@
 import { KNOWLEDGE_SOURCE_KINDS, PROJECT_KNOWLEDGE_IPC_CHANNELS } from '@proma/shared'
-import type { KnowledgeExecutionStartInput, KnowledgeMemoryOrganizationPreview, KnowledgeCategory, KnowledgeMaintenanceInput, KnowledgePlanConfirmInput, KnowledgeReviewInput, KnowledgeReadInput, KnowledgeReadResult, KnowledgeSearchInput, KnowledgeSearchResult, KnowledgeSnapshot, KnowledgeSourceKind, KnowledgeWorkflowPauseInput } from '@proma/shared'
+import type { KnowledgeExecutionStartInput, KnowledgeImportMode, KnowledgeIndexPreview, KnowledgeIndexRebuildInput, KnowledgeIndexRebuildResult, KnowledgeImportResult, KnowledgeMemoryOrganizationPreview, KnowledgeCategory, KnowledgeMaintenanceInput, KnowledgePlanConfirmInput, KnowledgeReviewInput, KnowledgeReadInput, KnowledgeReadResult, KnowledgeSearchInput, KnowledgeSearchResult, KnowledgeSnapshot, KnowledgeSourceKind, KnowledgeWorkflowPauseInput } from '@proma/shared'
 
 /** 主进程知识服务的 IPC 最小端口。 */
 export interface ProjectKnowledgeIpcService {
@@ -33,6 +33,12 @@ export interface ProjectKnowledgeIpcService {
   excludeSession(workspaceId: string, sessionId: string): Promise<KnowledgeSnapshot>
   /** 只读旧记忆整理预览，不调用模型。 */
   previewMemory(workspaceId: string): Promise<KnowledgeMemoryOrganizationPreview>
+  /** 由宿主原生选择器完成旧知识库导入；路径不来自 renderer。 */
+  importSources?(workspaceId: string, paths: string[]): Promise<KnowledgeImportResult>
+  /** 只读索引差异预览。 */
+  previewIndex?(workspaceId: string): Promise<KnowledgeIndexPreview>
+  /** 用户确认后的索引重建。 */
+  rebuildIndex?(input: KnowledgeIndexRebuildInput): Promise<KnowledgeIndexRebuildResult>
 }
 
 /** IPC 只需要核验发送方身份，不把 Electron 对象传入知识服务。 */
@@ -58,6 +64,8 @@ export interface ProjectKnowledgeIpcDependencies {
   assertWritable(workspaceId: string): void
   /** 实际知识服务或运行时包装。 */
   service: ProjectKnowledgeIpcService
+  /** 在主进程调用原生选择器；返回值只在本次调用内使用。 */
+  selectImportPaths?: (event: ProjectKnowledgeIpcEvent, mode: KnowledgeImportMode) => Promise<string[]>
 }
 
 /** 读取未知输入的窄对象，并拒绝原型对象和数组。 */
@@ -167,6 +175,30 @@ export function parseKnowledgeReadInput(value: unknown): KnowledgeReadInput {
   }
 }
 
+/** 校验旧知识库导入方式，路径由主进程选择器补充。 */
+export function parseKnowledgeImportMode(value: unknown): KnowledgeImportMode {
+  if (value === 'files' || value === 'folder') return value
+  throw new Error('导入方式无效')
+}
+
+/** 校验索引重建时的预览版本，避免覆盖预览后的人工编辑。 */
+export function parseKnowledgeIndexRebuildInput(value: unknown): KnowledgeIndexRebuildInput {
+  const input = requireObject(value)
+  allowFields(input, ['workspaceId', 'planRevision', 'outlineRevision', 'expectedContentRevision'])
+  const planRevision = optionalInteger(input.planRevision, '计划版本', 1, Number.MAX_SAFE_INTEGER)
+  const outlineRevision = optionalInteger(input.outlineRevision, '大纲版本', 1, Number.MAX_SAFE_INTEGER)
+  if (planRevision === undefined || outlineRevision === undefined) throw new Error('索引版本必填')
+  if (input.expectedContentRevision !== null && (typeof input.expectedContentRevision !== 'string' || input.expectedContentRevision.length > 128)) {
+    throw new Error('索引摘要无效')
+  }
+  return {
+    workspaceId: requireId(input.workspaceId, '项目 ID'),
+    planRevision,
+    outlineRevision,
+    expectedContentRevision: input.expectedContentRevision as string | null,
+  }
+}
+
 /** 注册经过授权、参数校验与异步后归属复核的知识库 IPC。 */
 export function registerProjectKnowledgeIpc(dependencies: ProjectKnowledgeIpcDependencies): { dispose(): void } {
   /** 所有知识通道共享同一套边界，释放时也使用同一集合。 */
@@ -201,6 +233,23 @@ export function registerProjectKnowledgeIpc(dependencies: ProjectKnowledgeIpcDep
         result = await dependencies.service.search(parseKnowledgeSearchInput(input))
       } else if (channel === PROJECT_KNOWLEDGE_IPC_CHANNELS.READ) {
         result = await dependencies.service.read(parseKnowledgeReadInput(input))
+      } else if (channel === PROJECT_KNOWLEDGE_IPC_CHANNELS.IMPORT) {
+        allowFields(input, ['workspaceId', 'mode'])
+        const mode = parseKnowledgeImportMode(input.mode)
+        dependencies.assertWritable(workspaceId)
+        if (!dependencies.selectImportPaths || !dependencies.service.importSources) throw new Error('知识库导入服务尚未就绪')
+        const paths = await dependencies.selectImportPaths(event, mode)
+        if (!dependencies.isAuthorizedSender(event) || dependencies.assertProject(workspaceId) !== binding) throw new Error('项目关联已变化，请重新选择导入来源')
+        result = await dependencies.service.importSources(workspaceId, paths)
+      } else if (channel === PROJECT_KNOWLEDGE_IPC_CHANNELS.PREVIEW_INDEX) {
+        allowFields(input, ['workspaceId'])
+        if (!dependencies.service.previewIndex) throw new Error('索引预览服务尚未就绪')
+        result = await dependencies.service.previewIndex(workspaceId)
+      } else if (channel === PROJECT_KNOWLEDGE_IPC_CHANNELS.REBUILD_INDEX) {
+        const rebuildInput = parseKnowledgeIndexRebuildInput(input)
+        dependencies.assertWritable(workspaceId)
+        if (!dependencies.service.rebuildIndex) throw new Error('索引恢复服务尚未就绪')
+        result = await dependencies.service.rebuildIndex(rebuildInput)
       } else if (channel === PROJECT_KNOWLEDGE_IPC_CHANNELS.MAINTENANCE) {
         allowFields(input, ['workspaceId', 'enabled', 'channelId', 'modelId', 'dailyJobLimit'])
         if (typeof input.enabled !== 'boolean') throw new Error('维护开关无效')

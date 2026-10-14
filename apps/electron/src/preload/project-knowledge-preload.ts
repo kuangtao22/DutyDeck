@@ -1,5 +1,5 @@
 import { PROJECT_KNOWLEDGE_IPC_CHANNELS } from '@proma/shared'
-import type { KnowledgeMemoryOrganizationPreview, KnowledgeReadResult, KnowledgeSearchResult, KnowledgeSnapshot, ProjectKnowledgeApi } from '@proma/shared'
+import type { KnowledgeImportResult, KnowledgeIndexPreview, KnowledgeIndexRebuildInput, KnowledgeIndexRebuildResult, KnowledgeMemoryOrganizationPreview, KnowledgeReadResult, KnowledgeSearchResult, KnowledgeSnapshot, ProjectKnowledgeApi } from '@proma/shared'
 
 /** 创建知识库窄桥接；参数合法性与访问范围由主进程核验。 */
 export function createProjectKnowledgePreload(
@@ -24,5 +24,8 @@ export function createProjectKnowledgePreload(
     undoProjectKnowledgeOperation: (workspaceId, operationId) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.UNDO, { workspaceId, operationId }) as Promise<KnowledgeSnapshot>,
     excludeProjectKnowledgeSession: (workspaceId, sessionId) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.EXCLUDE_SESSION, { workspaceId, sessionId }) as Promise<KnowledgeSnapshot>,
     previewProjectKnowledgeMemory: (workspaceId) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.PREVIEW_MEMORY, { workspaceId }) as Promise<KnowledgeMemoryOrganizationPreview>,
+    importProjectKnowledge: (input) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.IMPORT, input) as Promise<KnowledgeImportResult>,
+    previewProjectKnowledgeIndex: (workspaceId) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.PREVIEW_INDEX, { workspaceId }) as Promise<KnowledgeIndexPreview>,
+    rebuildProjectKnowledgeIndex: (input: KnowledgeIndexRebuildInput) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.REBUILD_INDEX, input) as Promise<KnowledgeIndexRebuildResult>,
   }
 }

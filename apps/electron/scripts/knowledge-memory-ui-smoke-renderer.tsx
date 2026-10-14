@@ -7,6 +7,7 @@ import type {
   AgentWorkspace,
   AgentSessionMeta,
   KnowledgeEntry,
+  KnowledgeImportResult,
   KnowledgeExecutionStartInput,
   KnowledgeReadResult,
   KnowledgeSearchResult,
@@ -51,6 +52,8 @@ interface KnowledgeMemorySmokeState {
   createdSessions: AgentSessionMeta[]
   /** 宿主执行调用记录，用于证明没有同时发送普通 prompt。 */
   executionCalls: KnowledgeExecutionStartInput[]
+  /** 可变导入回执用于验证全跳过、成功与幂等反馈。 */
+  importResult: KnowledgeImportResult
 }
 
 const state: KnowledgeMemorySmokeState = {
@@ -65,6 +68,7 @@ const state: KnowledgeMemorySmokeState = {
   forceKnowledgeError: new URLSearchParams(location.search).has('knowledge-error'),
   createdSessions: [],
   executionCalls: [],
+  importResult: { rootRelativePath: ".context/knowledge-imports", imported: 0, unchanged: 0, files: [], skipped: [{ path: "secret.pem", reason: "凭据文件不可导入" }] },
 }
 
 /** 可控读取延迟只用于覆盖快速切换的迟到响应，不进行真实 I/O。 */
@@ -73,6 +77,13 @@ const pendingReadReleases = new Map<string, () => void>()
 /** 暂停首次目录请求，验证用户从大纲打开正文后，目录返回不能清空选择。 */
 let delayInitialSearch = new URLSearchParams(location.search).has('hold-search')
 let releaseInitialSearch: (() => void) | undefined
+
+/** 复用内存延迟控制面覆盖导入扫描与索引 IPC。 */
+async function waitForSupplement(key: string): Promise<void> {
+  if (!delayedReads.has(key)) return
+  await new Promise<void>((resolve) => { pendingReadReleases.set(key, resolve) })
+  pendingReadReleases.delete(key)
+}
 
 const knowledgeEntry: KnowledgeEntry = {
   id: 'knowledge-product-principles',
@@ -196,8 +207,8 @@ function searchKnowledge(scope: 'knowledge' | 'sources' | 'all' | undefined): Kn
 }
 
 const knowledgeApi: ProjectKnowledgeApi = {
-  getProjectKnowledgeSnapshot: async () => {
-    state.knowledgeCalls.push('snapshot')
+  getProjectKnowledgeSnapshot: async (workspaceId) => {
+    state.knowledgeCalls.push(`snapshot:${workspaceId}`)
     if (state.forceKnowledgeError) throw new Error('fixture 知识库读取失败')
     return structuredClone(snapshot)
   },
@@ -237,6 +248,7 @@ const knowledgeApi: ProjectKnowledgeApi = {
   },
   scanProjectKnowledge: async () => {
     state.knowledgeCalls.push('scan')
+    await waitForSupplement('scan')
     return structuredClone(snapshot)
   },
   cancelProjectKnowledgeScan: async () => structuredClone(snapshot),
@@ -246,6 +258,16 @@ const knowledgeApi: ProjectKnowledgeApi = {
   organizeProjectKnowledge: async () => structuredClone(snapshot),
   undoProjectKnowledgeOperation: async () => structuredClone(snapshot),
   excludeProjectKnowledgeSession: async () => structuredClone(snapshot),
+  importProjectKnowledge: async () => structuredClone(state.importResult),
+  previewProjectKnowledgeIndex: async () => {
+    await waitForSupplement('index-preview')
+    return { planRevision: 2, outlineRevision: 1, currentContent: '# 人工索引原文', generatedContent: '# 重建索引正文', currentRevision: 'index-r1' }
+  },
+  rebuildProjectKnowledgeIndex: async (input) => {
+    state.knowledgeCalls.push(`rebuild:${input.workspaceId}:${input.expectedContentRevision}`)
+    await waitForSupplement('index-rebuild')
+    return { backupRelativePath: '.context/backup.json' }
+  },
   previewProjectKnowledgeMemory: async () => ({ projectId: workspace.id, inspected: 2, truncated: false, proposals: [] }),
 }
 
@@ -336,6 +358,9 @@ Object.defineProperty(window, '__knowledgeMemorySmoke', {
       snapshot.revision += 1
       for (const listener of knowledgeListeners) listener({ workspaceId: workspace.id, generation: snapshot.workflow!.execution!.generation })
     },
+    /** 同组件切换项目身份，验证在途 IPC 不污染新项目。 */
+    switchWorkspace: (): void => { store.set(agentWorkspacesAtom, [{ ...workspace, id: 'other-workspace' }]) },
+    removeCurrentSession: (): void => { store.set(agentSessionsAtom, store.get(agentSessionsAtom).filter((item) => item.id !== sessionId)) },
     consumePrompt: (): void => { store.set(agentPendingPromptAtom, null) },
     hasPendingSearch: (): boolean => Boolean(releaseInitialSearch),
     releaseSearch: (): void => { releaseInitialSearch?.() },

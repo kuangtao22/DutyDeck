@@ -168,6 +168,46 @@ describe('当前 Agent 受控维护项目知识', () => {
     expect(f.state.workflowCalls).toEqual(['document:w1:overview'])
   })
 
+  test('Given 两步流程读取 JSON 或源码来源 When 写大纲文档 Then readable 来源登记为本轮证据', async () => {
+    const cases: Array<[string, string]> = [['config.json', 'a'.repeat(32)], ['src/main.ts', 'b'.repeat(32)]]
+    for (const [relativePath, entryId] of cases) {
+      const f = await fixture(true, true)
+      const entry = { ...sourceEntry(entryId, 'c'.repeat(64), relativePath), source: {
+        ...sourceEntry(entryId, 'c'.repeat(64), relativePath).source, relativePath,
+      } }
+      await f.seed(entry, 'const enabled = true;')
+      const page = f.state.sourcePages.get(`${entry.id}:${entry.revision}:0`)!
+      f.maintenance.observeRead(page)
+      await f.maintenance.writeDocument!({
+        planRevision: 1, outlineRevision: 1, itemId: 'source', expectedRevision: null,
+        content: '# 来源说明\n\nconst enabled = true;', summary: '来源说明', complete: true,
+        evidence: [{ entryId: entry.id, revision: entry.revision, quote: 'const enabled = true;' }],
+      })
+      expect(f.state.workflowCalls).toEqual(['document:w1:source'])
+    }
+  })
+
+  test('Given 来源不可读或仅元数据 When 观察读取结果 Then 不登记为可发布证据', async () => {
+    const f = await fixture(true, true)
+    const entry = sourceEntry('d'.repeat(32), 'd'.repeat(64), 'config.json')
+    await f.seed(entry, 'const enabled = true;')
+    f.maintenance.observeRead({ ...f.state.sourcePages.get(`${entry.id}:${entry.revision}:0`)!, status: 'unavailable' })
+    await expect(f.maintenance.writeDocument!({
+      planRevision: 1, outlineRevision: 1, itemId: 'source', expectedRevision: null,
+      content: '# 来源说明', summary: '来源说明', complete: true,
+      evidence: [{ entryId: entry.id, revision: entry.revision, quote: 'const enabled = true;' }],
+    })).rejects.toThrow('尚未通过知识读取工具读取')
+
+    const metadataEntry = { ...entry, id: 'e'.repeat(32), metadataOnly: true }
+    const metadataPage = { ...f.state.sourcePages.get(`${entry.id}:${entry.revision}:0`)!, entry: metadataEntry }
+    f.maintenance.observeRead(metadataPage)
+    await expect(f.maintenance.writeDocument!({
+      planRevision: 1, outlineRevision: 1, itemId: 'metadata', expectedRevision: null,
+      content: '# 元数据', summary: '元数据', complete: true,
+      evidence: [{ entryId: metadataEntry.id, revision: metadataEntry.revision, quote: 'const enabled = true;' }],
+    })).rejects.toThrow('尚未通过知识读取工具读取')
+  })
+
   test('Given 引用伪造、来源未读或版本在租约前变化 When 写文档 Then 拒绝发布', async () => {
     const f = await fixture(true, true)
     const entry = sourceEntry('8'.repeat(32), '8'.repeat(64))

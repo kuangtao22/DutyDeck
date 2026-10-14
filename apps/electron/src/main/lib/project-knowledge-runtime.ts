@@ -9,7 +9,7 @@ import { isOrdinaryTopLevelAgentSession } from '@proma/shared'
 import type { KnowledgeExecution, KnowledgeExecutionStartInput, KnowledgeSnapshot } from '@proma/shared'
 import type { ProjectKnowledgeIpcService } from './project-knowledge-ipc'
 import type { ResolvedKnowledgeProject } from './project-knowledge/types'
-import { getAgentSessionMeta, getPersistedAgentMessageReceipt, isAgentSessionDeleting, readPersistedAgentEvidence } from './agent-session-manager'
+import { getAgentSessionMeta, getLatestPersistedUserEvidence, getPersistedAgentMessageReceipt, isAgentSessionDeleting, readPersistedAgentEvidence } from './agent-session-manager'
 import { createProjectKnowledgeAgentMaintenance } from './project-knowledge-agent-maintenance'
 import type { ProjectKnowledgeAgentMaintenance } from './project-knowledge-agent-maintenance'
 import type { ProjectKnowledgeSources } from './project-knowledge-sources'
@@ -220,6 +220,16 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
         || getProjectKnowledgeBinding(workspaceId) !== binding) throw new Error('知识维护会话或项目归属已变化')
     }
     assertCurrent()
+    /** 当前会话补充提示是控制消息；把证据锚定到它之前最近一条用户消息，且只读尾部 512 KiB。 */
+    let maintenanceUserMessageId = input.userMessageId
+    const controlReceipt = getPersistedAgentMessageReceipt(input.sessionId, input.userMessageId)
+    const controlMessage = controlReceipt ? readPersistedAgentEvidence(input.sessionId, [controlReceipt]).records
+      .find((record) => record.uuid === input.userMessageId && record.role === 'user') : undefined
+    if (controlMessage?.text.startsWith('[knowledge-supplement:conversation]')
+      || controlMessage?.text.startsWith('[knowledge-supplement:entry]')) {
+      const previous = getLatestPersistedUserEvidence(input.sessionId, input.userMessageId)
+      if (previous) maintenanceUserMessageId = previous.uuid
+    }
     /** 同一断言在调用入口与事务真正提交时执行，阻止等待期间撤权的旧写入。 */
     const assertMutable = (): void => {
       assertCurrent()
@@ -227,7 +237,7 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
       if (!input.canMutate() || (!input.execution && task && ['queued', 'running'].includes(task.status))) throw new Error('当前模式没有项目知识写入权限')
     }
     return createProjectKnowledgeAgentMaintenance({
-      workspaceId, sessionId: input.sessionId, userMessageId: input.userMessageId,
+      workspaceId, sessionId: input.sessionId, userMessageId: maintenanceUserMessageId,
       store: service.store, resolveProject, readSource: service.read,
       assertCurrent,
       canMutate: () => {
@@ -238,9 +248,9 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
       },
       readUserEvidence: () => {
         assertCurrent()
-        const receipt = getPersistedAgentMessageReceipt(input.sessionId, input.userMessageId)
+        const receipt = getPersistedAgentMessageReceipt(input.sessionId, maintenanceUserMessageId)
         const evidence = receipt ? readPersistedAgentEvidence(input.sessionId, [receipt]).records
-          .find((record) => record.uuid === input.userMessageId && record.role === 'user') : undefined
+          .find((record) => record.uuid === maintenanceUserMessageId && record.role === 'user') : undefined
         return evidence && !isKnowledgeControlPrompt(evidence.text) ? evidence : undefined
       },
       resolveTaskUserEvidence: (id) => {
@@ -257,9 +267,9 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
         getSnapshot: service.getSnapshot,
         proposePlan: async (proposal) => {
           await service.proposePlan(proposal, assertMutable)
-          const receipt = getPersistedAgentMessageReceipt(input.sessionId, input.userMessageId)
+          const receipt = getPersistedAgentMessageReceipt(input.sessionId, maintenanceUserMessageId)
           const evidence = receipt ? readPersistedAgentEvidence(input.sessionId, [receipt]).records
-            .find((record) => record.uuid === input.userMessageId && record.role === 'user') : undefined
+            .find((record) => record.uuid === maintenanceUserMessageId && record.role === 'user') : undefined
           if (evidence && !isKnowledgeControlPrompt(evidence.text)) {
             assertCurrent()
             await service.store.transact(resolveProject(workspaceId), workspaceId, ({ manifest }) => {
@@ -295,6 +305,12 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
   const mutate = async (workspaceId: string, operation: () => Promise<unknown>): Promise<KnowledgeSnapshot> => {
     const release = acquireWorkspaceWriteLease(workspaceId)
     try { await operation(); return await runtime.getSnapshot(workspaceId) }
+    finally { release() }
+  }
+  /** 对导入与索引恢复等返回专用结果的写操作复用同一工作区租约。 */
+  const mutateResult = async <T>(workspaceId: string, operation: () => Promise<T>): Promise<T> => {
+    const release = acquireWorkspaceWriteLease(workspaceId)
+    try { return await operation() }
     finally { release() }
   }
   const runtime: ProjectKnowledgeRuntime = {
@@ -347,6 +363,14 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
     }),
     organize: (workspaceId) => mutate(workspaceId, () => service.organize(workspaceId)),
     undo: (workspaceId, operationId) => mutate(workspaceId, () => service.undo(workspaceId, operationId)),
+    importSources: (workspaceId, paths) => mutateResult(workspaceId, () => service.importSources(workspaceId, paths, () => {
+      /** 导入目录扫描期间持续复核项目绑定和迁移写守卫。 */
+      getProjectKnowledgeBinding(workspaceId)
+      const reason = getWorkspaceOperationBlockReason(workspaceId)
+      if (reason) throw new Error(reason)
+    })),
+    previewIndex: (workspaceId) => service.previewIndex(workspaceId),
+    rebuildIndex: (input) => mutateResult(input.workspaceId, () => service.rebuildIndex(input)),
     excludeSession: async () => { throw new Error('当前知识提炼仅使用当前用户回合，不再扫描历史会话队列') },
     previewMemory: (workspaceId) => previewKnowledgeMemory(workspaceId, service),
   }

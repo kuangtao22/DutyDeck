@@ -268,6 +268,48 @@ async function verifyKnowledgeErrorIsolation(window: BrowserWindow, fixtureUrl: 
   assert.equal(await window.webContents.executeJavaScript(`document.querySelector('.cm-content[contenteditable="true"]') !== null`), true, '知识库错误下记忆编辑器不可编辑')
 }
 
+/** 实际点击补充入口，核对会话归属、导入反馈及索引迟到隔离。 */
+async function verifyKnowledgeSupplement(window: BrowserWindow, fixtureUrl: string): Promise<void> {
+  await window.loadURL(`${fixtureUrl}?case=supplement`)
+  await click(window, '补充当前会话')
+  await waitFor(window, `window.__knowledgeMemorySmoke.workflowState().pendingPrompt`, '会话补充未投递')
+  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.workflowState().pendingPrompt.sessionId`), 'session-knowledge-memory-smoke')
+  await waitFor(window, `document.querySelector('[aria-label="打开产品原则.md"]')`, '补充单篇前目录尚未就绪')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.consumePrompt(); document.querySelector('[aria-label="打开产品原则.md"]').click()`)
+  await click(window, '补充此篇')
+  await waitFor(window, `window.__knowledgeMemorySmoke.workflowState().pendingPrompt`, '单篇补充未投递')
+  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.workflowState().pendingPrompt.sessionId`), 'session-knowledge-memory-smoke')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.consumePrompt(); window.__knowledgeMemorySmoke.removeCurrentSession()`)
+  await click(window, '补充当前会话')
+  await waitFor(window, `document.body.textContent.includes('请先打开当前项目的普通 Agent 会话')`, '无普通会话未报错')
+  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.state.createdSessions.length`), 0)
+  await click(window, '导入旧库文件')
+  await waitFor(window, `document.body.textContent.includes('凭据文件不可导入')`, '全部跳过未提供原因')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.state.importResult = { rootRelativePath: '.context/knowledge-imports', imported: 1, unchanged: 2, files: [{ relativePath: 'old.md', kind: 'document' }], skipped: [] }`)
+  await click(window, '导入旧库目录')
+  await waitFor(window, `document.body.textContent.includes('已导入 1 个文件，已有 2 个文件未变化')`, '成功与幂等计数不可见')
+  await click(window, '检查索引')
+  await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('summary')).find(item => item.textContent === '查看重建前后内容')?.click()`)
+  await waitFor(window, `document.body.innerText.includes('# 人工索引原文') && document.body.innerText.includes('# 重建索引正文')`, '重建前后内容不可见')
+  await click(window, '备份并重建索引')
+  await waitFor(window, `window.__knowledgeMemorySmoke.state.knowledgeCalls.some(call => call === 'rebuild:workspace-knowledge-memory-smoke:index-r1')`, '重建未绑定预览版本')
+  for (const operation of ['index-preview', 'index-rebuild', 'scan']) {
+    await window.loadURL(`${fixtureUrl}?case=supplement`)
+    if (operation === 'index-rebuild') { await click(window, '检查索引'); await waitFor(window, `document.body.textContent.includes('查看重建前后内容')`, '预览未加载') }
+    await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.delayRead(${JSON.stringify(operation)}); window.__knowledgeMemorySmoke.state.importResult = { rootRelativePath: '.context/knowledge-imports', imported: 1, unchanged: 0, files: [{ relativePath: 'old.md', kind: 'document' }], skipped: [] }`)
+    await click(window, operation === 'scan' ? '导入旧库文件' : operation === 'index-rebuild' ? '备份并重建索引' : '检查索引')
+    await waitFor(window, `window.__knowledgeMemorySmoke.hasPendingRead(${JSON.stringify(operation)})`, '未进入延迟 IPC')
+    await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.switchWorkspace()`)
+    /** 等待组件已按新项目请求快照，再释放旧项目响应，避免测试抢在 React 提交前继续。 */
+    await waitFor(window, `window.__knowledgeMemorySmoke.state.knowledgeCalls.includes('snapshot:other-workspace')`, '组件尚未切换到新项目')
+    await waitFor(window, `!document.body.textContent.includes('查看重建前后内容')`, '新项目残留旧预览')
+    await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.releaseRead(${JSON.stringify(operation)})`)
+    await waitFor(window, `!window.__knowledgeMemorySmoke.hasPendingRead(${JSON.stringify(operation)})`, '迟到 IPC 未完成')
+    assert.equal(await window.webContents.executeJavaScript(`document.body.textContent.includes('查看重建前后内容')`), false)
+    assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.workflowState().pendingPrompt`), null)
+  }
+}
+
 /** 隐藏窗口使用隔离 userData，且所有业务数据均来自 renderer 内存。 */
 async function runElectronSmoke(app: import('electron').App, BrowserWindowCtor: typeof import('electron').BrowserWindow): Promise<void> {
   const fixtureUrl = process.env.PROMA_KNOWLEDGE_MEMORY_FIXTURE_URL
@@ -282,6 +324,7 @@ async function runElectronSmoke(app: import('electron').App, BrowserWindowCtor: 
     }
   })
   try {
+    await verifyKnowledgeSupplement(window, fixtureUrl)
     await verifyKnowledgeExecutionRoutes(window, fixtureUrl)
     await verifyConversationCreationFailure(window, fixtureUrl)
     await verifyMainFlow(window, fixtureUrl)

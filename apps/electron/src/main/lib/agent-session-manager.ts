@@ -840,6 +840,53 @@ export interface PersistedAgentEvidence {
   readBytes?: number
 }
 
+/** 从会话 JSONL 尾部读取最近一条用户纯文本，最多读取 512 KiB，供当前会话补充使用。 */
+export function getLatestPersistedUserEvidence(sessionId: string, excludeUuid?: string): PersistedAgentEvidenceRecord | undefined {
+  if (isAgentSessionDeleting(sessionId) || !getAgentSessionMeta(sessionId)) return undefined
+  const filePath = getAgentSessionMessagesPath(sessionId)
+  if (!existsSync(filePath)) return undefined
+  const stat = lstatSync(filePath)
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) return undefined
+  const maximumBytes = 512 * 1024
+  const start = Math.max(0, stat.size - maximumBytes)
+  const handle = openSync(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
+  try {
+    const opened = fstatSync(handle)
+    if (opened.dev !== stat.dev || opened.ino !== stat.ino || opened.nlink !== 1 || !opened.isFile()) return undefined
+    const buffer = Buffer.alloc(stat.size - start)
+    const bytesRead = readSync(handle, buffer, 0, buffer.length, start)
+    if (bytesRead !== buffer.length) return undefined
+    /** 先按字节跳过半行，避免尾部起点截断中文时整段 UTF-8 解码失败。 */
+    let cursor = start > 0 ? buffer.indexOf(10) + 1 : 0
+    if (start > 0 && cursor === 0) return undefined
+    /** 只接受控制消息之前的事实；锚点已离开窗口时不猜测所属回合。 */
+    let boundaryFound = !excludeUuid
+    let latest: PersistedAgentEvidenceRecord | undefined
+    while (cursor < buffer.length) {
+      /** 未写完整的末行不作为证据，字节偏移直接来自原始 buffer。 */
+      const newline = buffer.indexOf(10, cursor)
+      if (newline < 0) break
+      try {
+        const line = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(cursor, newline))
+        if (line) {
+          const plain = plainEvidenceText(JSON.parse(line))
+          if (plain?.role === 'user' && plain.uuid === excludeUuid) { boundaryFound = true; break }
+          const isMaintenanceControl = plain?.text.startsWith('[knowledge-')
+            || plain?.text.startsWith('请使用 knowledge-maintenance Skill')
+            || plain?.text.startsWith('请继续使用 knowledge-maintenance Skill')
+          if (plain?.role === 'user' && !isMaintenanceControl && plain.text.trim().length > 0 && plain.text.trim().length <= 4_000) {
+            latest = { ...plain, sha256: createHash('sha256').update(line, 'utf8').digest('hex'), byteOffset: start + cursor, byteLength: newline - cursor + 1 }
+          }
+        }
+      } catch { /* 单行损坏不影响后续完整用户消息的取证。 */ }
+      cursor = newline + 1
+    }
+    return boundaryFound ? latest : undefined
+  } catch {
+    return undefined
+  } finally { closeSync(handle) }
+}
+
 const MAX_PERSISTED_EVIDENCE_BYTES = 48 * 1024
 
 /** 仅投影用户正文和助手公开文本，工具入参、输出与思考内容均不作为知识依据。 */

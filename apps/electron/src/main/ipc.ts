@@ -2436,6 +2436,17 @@ export function registerIpcHandlers(): void {
     isAuthorizedSender: (event) => listAuthorizedDesignWebContents().some((contents) => contents.id === event.sender.id),
     assertProject: getProjectKnowledgeBinding,
     assertWritable: (workspaceId) => workspaceOperationGuard.assertWorkspaceWritable(workspaceId),
+    selectImportPaths: async (_event, mode) => {
+      /** 导入路径只由主进程原生选择器产生，渲染层不能伪造任意文件路径。 */
+      const options: OpenDialogOptions = mode === 'folder'
+        ? { title: '选择要导入的知识库目录', properties: ['openDirectory'] }
+        : { title: '选择要导入的知识库文件', properties: ['openFile', 'multiSelections'] }
+      const owner = getStoredMainWindow()
+      const result = owner && !owner.isDestroyed()
+        ? await dialog.showOpenDialog(owner, options)
+        : await dialog.showOpenDialog(options)
+      return result.canceled ? [] : result.filePaths
+    },
     get service() { return getProjectKnowledgeService() },
   })
   /** 接口工作台只信任主窗口，workspace 从当前普通会话元数据解析。 */

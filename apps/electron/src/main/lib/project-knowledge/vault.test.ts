@@ -308,6 +308,118 @@ describe('项目知识资料库文件流程', () => {
     expect(after?.outline).toEqual(before?.outline)
   })
 
+  test('Given 已发布索引 When 确认新增分组并改标题后继续写正文与大纲 Then 旧索引仍是可信发布基线', async () => {
+    /** 隔离的旧资料库。 */
+    const fixture = createFixture()
+    await prepareOutline(fixture)
+    await fixture.vault.proposePlan({ workspaceId: 'workspace-1', title: '产品知识', rootRelativePath: 'docs/knowledge', groups: [group('group-b', '产品')] })
+    /** 待确认的扩展计划。 */
+    const proposal = fixture.store.readManifest(fixture.project)!.workflow!.proposal!
+    await fixture.vault.confirmPlan({ workspaceId: 'workspace-1', planId: proposal.id, expectedRevision: proposal.revision, groups: [{ id: 'group-b', title: '产品' }] })
+    /** 当前流程，正文写入先于新大纲。 */
+    let workflow = fixture.store.readManifest(fixture.project)!.workflow!
+    await fixture.vault.writeDocument({ workspaceId: 'workspace-1', planRevision: workflow.approved!.revision, outlineRevision: workflow.outline!.revision, itemId: 'topic-a', expectedRevision: null, content: '# 原正文', summary: '正文', complete: true, evidence: [] })
+    workflow = fixture.store.readManifest(fixture.project)!.workflow!
+    await fixture.vault.saveOutline({ workspaceId: 'workspace-1', planRevision: workflow.approved!.revision, expectedRevision: workflow.outline!.revision, items: [...workflow.outline!.items, { id: 'topic-b', groupId: 'group-b', title: '产品规则', relativePath: '产品/规则.md', summary: '规则', sections: [] }] })
+    expect(readFileSync(join(fixture.projectRoot, 'docs/knowledge/索引.md'), 'utf8')).toContain('# 产品知识')
+  })
+
+  for (const operation of ['outline', 'document', 'refresh'] as const) {
+    test(`Given 旧版索引无摘要且扩展计划只新增分组 When ${operation} Then 可证明旧结构恢复且保存新基线`, async () => {
+      /** 模拟真实旧版错位数据的隔离库。 */
+      const fixture = createFixture()
+      await prepareOutline(fixture)
+      await fixture.store.transact(fixture.project, 'workspace-1', (current) => ({ workflow: { ...current.manifest.workflow!, outline: { ...current.manifest.workflow!.outline!, publishedContentRevision: undefined } } }))
+      await fixture.vault.proposePlan({ workspaceId: 'workspace-1', title: '项目资料库', rootRelativePath: 'docs/knowledge', groups: [group('group-b', '产品')] })
+      /** 已确认扩展版本，不修改旧索引。 */
+      const proposal = fixture.store.readManifest(fixture.project)!.workflow!.proposal!
+      await fixture.vault.confirmPlan({ workspaceId: 'workspace-1', planId: proposal.id, expectedRevision: proposal.revision, groups: [{ id: 'group-b', title: '产品' }] })
+      /** 读取新计划与旧大纲。 */
+      const workflow = fixture.store.readManifest(fixture.project)!.workflow!
+      if (operation === 'outline') await fixture.vault.saveOutline({ workspaceId: 'workspace-1', planRevision: workflow.approved!.revision, expectedRevision: workflow.outline!.revision, items: workflow.outline!.items })
+      if (operation === 'document') await fixture.vault.writeDocument({ workspaceId: 'workspace-1', planRevision: workflow.approved!.revision, outlineRevision: workflow.outline!.revision, itemId: 'topic-a', expectedRevision: null, content: '# 正文', summary: '正文', complete: true, evidence: [] })
+      if (operation === 'refresh') {
+        writeFileSync(join(fixture.projectRoot, 'docs/knowledge/手写.md'), '# 新资料')
+        await fixture.vault.refresh('workspace-1')
+      }
+      expect(fixture.store.readManifest(fixture.project)!.workflow!.outline!.publishedContentRevision).toMatch(/^[a-f0-9]{64}$/)
+      expect(readFileSync(join(fixture.projectRoot, 'docs/knowledge/索引.md'), 'utf8')).toContain('## 产品')
+    })
+
+    test(`Given 人工修改索引 When ${operation} Then 拒绝覆盖人工内容`, async () => {
+      /** 含人工索引修改的隔离库。 */
+      const fixture = createFixture()
+      await prepareOutline(fixture)
+      /** 将要保护的原路径。 */
+      const path = join(fixture.projectRoot, 'docs/knowledge/索引.md')
+      writeFileSync(path, readFileSync(path, 'utf8') + '\n人工备注')
+      /** 写请求所需版本。 */
+      const workflow = fixture.store.readManifest(fixture.project)!.workflow!
+      /** 各写入口都必须拒绝不匹配基线。 */
+      const action = operation === 'outline'
+        ? fixture.vault.saveOutline({ workspaceId: 'workspace-1', planRevision: workflow.approved!.revision, expectedRevision: workflow.outline!.revision, items: workflow.outline!.items })
+        : operation === 'document'
+          ? fixture.vault.writeDocument({ workspaceId: 'workspace-1', planRevision: workflow.approved!.revision, outlineRevision: workflow.outline!.revision, itemId: 'topic-a', expectedRevision: null, content: '# 正文', summary: '正文', complete: true, evidence: [] })
+          : (writeFileSync(join(fixture.projectRoot, 'docs/knowledge/手写.md'), '# 新资料'), fixture.vault.refresh('workspace-1'))
+      await expect(action).rejects.toThrow('人工修改')
+      expect(readFileSync(path, 'utf8')).toContain('人工备注')
+    })
+  }
+
+  test('Given 旧版标题已变化且无法证明索引来源 When 保存大纲 Then 保留冲突直到用户明确重建', async () => {
+    /** 不具备发布基线的旧库。 */
+    const fixture = createFixture()
+    await prepareOutline(fixture)
+    await fixture.store.transact(fixture.project, 'workspace-1', (current) => ({ workflow: { ...current.manifest.workflow!, approved: { ...current.manifest.workflow!.approved!, revision: 2, title: '新标题' }, outline: { ...current.manifest.workflow!.outline!, publishedContentRevision: undefined } } }))
+    /** 错位的计划与大纲。 */
+    const workflow = fixture.store.readManifest(fixture.project)!.workflow!
+    await expect(fixture.vault.saveOutline({ workspaceId: 'workspace-1', planRevision: 2, expectedRevision: workflow.outline!.revision, items: workflow.outline!.items })).rejects.toThrow('发布基线')
+    /** 用户所见差异预览。 */
+    const preview = await fixture.vault.previewIndex('workspace-1')
+    expect(preview.currentContent).toContain('# 项目资料库')
+    expect(preview.generatedContent).toContain('# 新标题')
+    /** 用户明确确认后原文必须进入可恢复备份。 */
+    const rebuilt = await fixture.vault.rebuildIndex({ workspaceId: 'workspace-1', planRevision: preview.planRevision, outlineRevision: preview.outlineRevision, expectedContentRevision: preview.currentRevision })
+    expect(JSON.parse(readFileSync(join(fixture.projectRoot, rebuilt.backupRelativePath!), 'utf8')).content).toBe(preview.currentContent!)
+    expect(readFileSync(join(fixture.projectRoot, 'docs/knowledge/索引.md'), 'utf8')).toBe(preview.generatedContent)
+  })
+
+  test('Given 重建预览后文件或计划改变 When 用户确认旧预览 Then 不覆盖新内容', async () => {
+    /** 用于迟到确认校验的隔离库。 */
+    const fixture = createFixture()
+    await prepareOutline(fixture)
+    /** 原预览与请求身份。 */
+    const preview = await fixture.vault.previewIndex('workspace-1')
+    const input = { workspaceId: 'workspace-1', planRevision: preview.planRevision, outlineRevision: preview.outlineRevision, expectedContentRevision: preview.currentRevision }
+    await expect(fixture.vault.rebuildIndex({ ...input, planRevision: input.planRevision + 1 })).rejects.toThrow('计划版本')
+    await expect(fixture.vault.rebuildIndex({ ...input, outlineRevision: input.outlineRevision + 1 })).rejects.toThrow('大纲版本')
+    writeFileSync(join(fixture.projectRoot, 'docs/knowledge/索引.md'), '# 迟到人工修改')
+    await expect(fixture.vault.rebuildIndex(input)).rejects.toThrow('预览版本')
+    expect(readFileSync(join(fixture.projectRoot, 'docs/knowledge/索引.md'), 'utf8')).toBe('# 迟到人工修改')
+  })
+
+  for (const operation of ['refresh', 'rebuild'] as const) {
+    test(`Given ${operation} 索引已写入但 manifest 失败 When 回滚 Then 索引和基线仍保持旧版本`, async () => {
+      /** 用于注入提交失败的独立 Store。 */
+      const fixture = createFixture()
+      await prepareOutline(fixture)
+      /** 发布前的可信版本。 */
+      const before = fixture.store.readManifest(fixture.project)!
+      const preview = await fixture.vault.previewIndex('workspace-1')
+      const originalTransact = fixture.store.transact
+      fixture.store.transact = async (project, workspaceId, update) => originalTransact(project, workspaceId, (current) => {
+        /** 仅在真正写文件的事务处模拟失败，refresh 的前置恢复不受影响。 */
+        const result = update(current)
+        if (result.vaultCommitId) { result.onAborted?.(); throw new Error('模拟索引提交失败') }
+        return result
+      })
+      writeFileSync(join(fixture.projectRoot, 'docs/knowledge/手写.md'), '# 新资料')
+      await expect(operation === 'refresh' ? fixture.vault.refresh('workspace-1') : fixture.vault.rebuildIndex({ workspaceId: 'workspace-1', planRevision: preview.planRevision, outlineRevision: preview.outlineRevision, expectedContentRevision: preview.currentRevision })).rejects.toThrow('模拟索引提交失败')
+      expect(readFileSync(join(fixture.projectRoot, 'docs/knowledge/索引.md'), 'utf8')).toBe(preview.currentContent!)
+      expect(fixture.store.readManifest(fixture.project)!.workflow).toEqual(before.workflow)
+    })
+  }
+
   test('Given 已生成正文引用同目录图片 When 用户要求重组路径 Then 保持条目身份并修正相对链接', async () => {
     const fixture = createFixture()
     await prepareOutline(fixture)

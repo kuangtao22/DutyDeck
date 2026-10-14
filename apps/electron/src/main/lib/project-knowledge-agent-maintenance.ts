@@ -405,7 +405,15 @@ export function createProjectKnowledgeAgentMaintenance(
   /** 记录 Agent 通过正式读取工具看到的来源页。 */
   const observeRead = (result: KnowledgeReadResult): void => {
     options.assertCurrent()
-    if (result.status !== 'readable' || (!isSourceDistillationCandidate(result.entry)
+    /**
+     * 两步知识文档流程的读取范围由受控读取结果决定：JSON、源码等合法来源
+     * 可能不适合旧的“自动提炼候选”批次，但只要正文确实可读，就必须登记，
+     * 否则发布阶段会把真实读取误判为 evidence_unread。元数据或不可读结果仍拒绝。
+     */
+    const readableWorkflowSource = options.workflow
+      && result.status === 'readable'
+      && !result.entry.metadataOnly
+    if (result.status !== 'readable' || (!readableWorkflowSource && !isSourceDistillationCandidate(result.entry)
       && result.entry.source.kind !== 'managed' && result.entry.source.kind !== 'conversation')) return
     const ref: KnowledgeSourceRef = {
       entryId: result.entry.id,

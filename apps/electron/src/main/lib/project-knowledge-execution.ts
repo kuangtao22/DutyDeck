@@ -52,6 +52,7 @@ export function knowledgeExecutionPrompt(execution: KnowledgeExecution): string 
 /** 判断受管控制提示，避免把界面生成消息当作用户事实。 */
 export function isKnowledgeControlPrompt(text: string): boolean {
   return text.startsWith('[knowledge-execution:')
+    || text.startsWith('[knowledge-supplement:')
     || text.startsWith('请使用 knowledge-maintenance Skill 为当前项目规划知识库。')
     || text.startsWith('请继续使用 knowledge-maintenance Skill 完成当前项目知识库。')
     || text.startsWith('请继续使用 knowledge-maintenance Skill 调整当前项目知识库清单。')

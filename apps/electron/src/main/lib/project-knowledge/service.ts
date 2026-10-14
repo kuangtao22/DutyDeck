@@ -17,6 +17,10 @@ import type {
   KnowledgeAssetCopyInput,
   KnowledgeAssetCopyResult,
   KnowledgeSourceKind,
+  KnowledgeImportResult,
+  KnowledgeIndexPreview,
+  KnowledgeIndexRebuildInput,
+  KnowledgeIndexRebuildResult,
 } from '@proma/shared'
 import { KNOWLEDGE_SOURCE_KINDS } from '@proma/shared'
 import {
@@ -37,6 +41,7 @@ import { createProjectKnowledgeStore } from './store'
 import { createKnowledgeVault, readVaultDocument } from './vault'
 import { copyKnowledgeAsset } from './assets'
 import { isKnowledgeAdmissionCurrent, knowledgeEvidenceHash } from './admission'
+import { importKnowledgeSources } from './import'
 import type {
   KnowledgeManifest,
   KnowledgeScanTask,
@@ -147,6 +152,12 @@ export interface ProjectKnowledgeService {
   reviewEntry: (input: KnowledgeReviewInput) => Promise<KnowledgeSnapshot>
   organize: (workspaceId: string) => Promise<KnowledgeSnapshot>
   undo: (workspaceId: string, operationId: string) => Promise<KnowledgeSnapshot>
+  /** 将宿主选择的旧知识库安全暂存到项目来源区。 */
+  importSources: (workspaceId: string, paths: string[], assertCurrent?: () => void) => Promise<KnowledgeImportResult>
+  /** 只读索引差异预览。 */
+  previewIndex: (workspaceId: string) => Promise<KnowledgeIndexPreview>
+  /** 用户确认后的索引恢复。 */
+  rebuildIndex: (input: KnowledgeIndexRebuildInput) => Promise<KnowledgeIndexRebuildResult>
   /** 等待已登记扫描任务结束；无任务时立即返回。 */
   waitForScan: (workspaceId: string) => Promise<void>
   /** 后续 1B/1C 复用的显式版本存储扩展点。 */
@@ -591,6 +602,27 @@ export function createProjectKnowledgeService(
     return getSnapshot(input.workspaceId)
   }
 
+  /** 将用户选择的旧库原文暂存为受管项目来源，扫描与 Agent 后续负责智能归档。 */
+  async function importSources(workspaceId: string, paths: string[], assertCurrent?: () => void): Promise<KnowledgeImportResult> {
+    if (!Array.isArray(paths) || paths.length > 64) throw new Error('导入来源数量无效')
+    const project = resolveWorkspace(workspaceId)
+    if (dependencies.assertWritable) await dependencies.assertWritable(workspaceId)
+    const assertImportCurrent = (): void => {
+      assertCurrent?.()
+    }
+    return importKnowledgeSources({ projectRoot: project.projectRoot, paths, assertCurrent: assertImportCurrent })
+  }
+
+  /** 索引预览不触碰 manifest 与文件。 */
+  async function previewIndex(workspaceId: string): Promise<KnowledgeIndexPreview> {
+    return vault.previewIndex(workspaceId)
+  }
+
+  /** 索引恢复由 vault 在事务锁内复核版本并建立旧内容备份。 */
+  async function rebuildIndex(input: KnowledgeIndexRebuildInput): Promise<KnowledgeIndexRebuildResult> {
+    return vault.rebuildIndex(input)
+  }
+
   /** 暂停只修改后续维护状态，不改变已有可读文件。 */
   async function pauseWorkflow(input: KnowledgeWorkflowPauseInput): Promise<KnowledgeSnapshot> {
     await vault.pauseWorkflow(input)
@@ -991,6 +1023,9 @@ export function createProjectKnowledgeService(
     reviewEntry,
     organize,
     undo,
+    importSources,
+    previewIndex,
+    rebuildIndex,
     waitForScan,
     store,
   }

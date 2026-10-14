@@ -81,6 +81,8 @@ export interface KnowledgeOutlineItem {
 
 /** 可读大纲的版本和计划内容。 */
 export interface KnowledgeOutline {
+  /** 最近一次成功发布的索引字节摘要；计划扩展不能改变磁盘基线。 */
+  publishedContentRevision?: string
   /** 内容或结构变化时递增。 */
   revision: number
   /** 大纲所属的已确认清单。 */
@@ -221,4 +223,36 @@ export interface KnowledgeAssetCopyResult {
   contentRevision: string
   /** 真实复制字节数。 */
   byteSize: number
+}
+
+/** 用户重建索引前看到的磁盘版本与系统生成结果；读取不修改文件。 */
+export interface KnowledgeIndexPreview {
+  /** 当前已确认计划版本。 */
+  planRevision: number
+  /** 当前大纲版本。 */
+  outlineRevision: number
+  /** 当前索引原文；文件已删除时为空。 */
+  currentContent: string | null
+  /** 将按当前目录结构生成的完整索引。 */
+  generatedContent: string
+  /** 当前磁盘原文摘要，防止预览后人工变更被覆盖。 */
+  currentRevision: string | null
+}
+
+/** 用户明确确认重建时提交预览中的三个版本。 */
+export interface KnowledgeIndexRebuildInput {
+  /** 当前项目工作区。 */
+  workspaceId: string
+  /** 预览时的计划版本。 */
+  planRevision: number
+  /** 预览时的大纲版本。 */
+  outlineRevision: number
+  /** 预览时的磁盘摘要；不存在时为 null。 */
+  expectedContentRevision: string | null
+}
+
+/** 重建后的原索引备份位置，不自动删除旧人工内容。 */
+export interface KnowledgeIndexRebuildResult {
+  /** 相对于项目根的 JSON 备份路径，原索引不存在时为 null。 */
+  backupRelativePath: string | null
 }

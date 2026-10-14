@@ -186,6 +186,40 @@ afterAll(() => {
 })
 
 describe('Agent 会话 JSONL 读取', () => {
+  test('Given 知识补充取证的尾部从中文中间开始 When 读取 Then 仍返回完整用户行和正确字节位置', async () => {
+    /** 使用生产会话和配置路径隔离 fixture，不依赖旧数据根名称。 */
+    const session = manager.createAgentSession('中文尾部取证')
+    const { getAgentSessionMessagesPath } = await import('./config-paths')
+    /** 第一行大于尾部预算，使读取起点落入中文的 UTF-8 续字节。 */
+    const prefix = '{"type":"assistant","uuid":"long","message":{"content":"'
+    const padding = prefix + '中'.repeat(180_000) + '"}}\n'
+    const userLine = JSON.stringify({ type: 'user', uuid: 'tail-user', message: { content: '决定：知识正文保存在本地。' } }) + '\n'
+    const controlLine = JSON.stringify({ type: 'user', uuid: 'tail-control', message: { content: '[knowledge-supplement:conversation]' } }) + '\n'
+    let transcript = Buffer.from(padding + userLine + controlLine)
+    if ((transcript[transcript.length - 512 * 1024]! & 0xc0) !== 0x80) transcript = Buffer.concat([transcript, Buffer.from('\n')])
+    expect(transcript[transcript.length - 512 * 1024]! & 0xc0).toBe(0x80)
+    writeFileSync(getAgentSessionMessagesPath(session.id), transcript)
+    const evidence = manager.getLatestPersistedUserEvidence(session.id, 'tail-control')
+    expect(evidence?.uuid).toBe('tail-user')
+    expect(evidence?.byteOffset).toBe(Buffer.byteLength(padding))
+    expect(evidence?.byteLength).toBe(Buffer.byteLength(userLine))
+  })
+
+  test('Given 知识补充取证锚点后有新消息 When 查找原回合 Then 不引用后来的用户消息或控制提示', async () => {
+    /** 生产 append 同步生成消息定位，验证尾部结果能够被正式证据读取复核。 */
+    const session = manager.createAgentSession('有界回合取证')
+    manager.appendSDKMessages(session.id, [
+      { type: 'user', uuid: 'before-control', message: { content: '决定：保留附件。' } } as SDKMessage,
+      { type: 'user', uuid: 'control-entry', message: { content: '[knowledge-supplement:entry]' } } as SDKMessage,
+      { type: 'user', uuid: 'after-control', message: { content: '这是另一个回合的决定。' } } as SDKMessage,
+    ])
+    const evidence = manager.getLatestPersistedUserEvidence(session.id, 'control-entry')
+    expect(evidence?.uuid).toBe('before-control')
+    const receipt = manager.getPersistedAgentMessageReceipt(session.id, evidence!.uuid)!
+    expect(manager.readPersistedAgentEvidence(session.id, [receipt]).records[0]?.text).toBe('决定：保留附件。')
+    expect(manager.getLatestPersistedUserEvidence(session.id, 'unknown-control')).toBeUndefined()
+  })
+
   test('Given 项目删除已持有锁 When 普通或内部入口创建新会话 Then 在索引和目录写入前拒绝', async () => {
     /** 使用生产锁验证所有会话创建入口的共同存储边界。 */
     const { acquireWorkspaceOperation } = await import('./workspace-operation-lock')

@@ -15,6 +15,8 @@ let projectRoot = ''
 let session: AgentSessionMeta
 /** 只模拟消息存储端口，来源扫描、知识发布和索引使用真实文件。 */
 let userEvidence: PersistedAgentEvidenceRecord | undefined
+/** 补充按钮产生的控制提示与真实用户事实分别保存。 */
+let supplementControl: PersistedAgentEvidenceRecord | undefined
 let deleting = false
 let active = true
 let writable = true
@@ -34,9 +36,10 @@ mock.module('./agent-session-manager', () => ({
   isAgentSessionDeleting: () => deleting,
   getPersistedAgentMessageReceipt: (id: string, uuid: string): SDKMessageAppendReceipt | undefined => {
     receiptLookups.push(`${id}:${uuid}`)
-    return userEvidence ? { sessionId: id, status: 'written' } : undefined
+    return userEvidence || supplementControl ? { sessionId: id, status: 'written' } : undefined
   },
-  readPersistedAgentEvidence: (id: string) => ({ sessionId: id, records: userEvidence ? [userEvidence] : [], truncated: false, skipped: 0 }),
+  getLatestPersistedUserEvidence: () => supplementControl ? userEvidence : undefined,
+  readPersistedAgentEvidence: (id: string) => ({ sessionId: id, records: [userEvidence, supplementControl].filter((record): record is PersistedAgentEvidenceRecord => Boolean(record)), truncated: false, skipped: 0 }),
 }))
 
 const { getProjectKnowledgeService, recoverProjectKnowledge, getProjectKnowledgeBinding, registerKnowledgeExecutionHost } = await import('./project-knowledge-runtime')
@@ -48,6 +51,7 @@ beforeEach(() => {
   mkdirSync(projectRoot)
   session = { id: 's1', title: '项目对话', workspaceId: 'w1', createdAt: 1, updatedAt: 1 }
   deleting = false; active = true; writable = true; leases = 0; receiptLookups = []
+  supplementControl = undefined
   /** 固定用户原文及真实内容散列。 */
   const text = '决定：项目数据保存在本地。'
   userEvidence = { uuid: 'u1', role: 'user', text, sha256: createHash('sha256').update(text).digest('hex'), byteOffset: 0, byteLength: Buffer.byteLength(text) }
@@ -68,6 +72,27 @@ function currentAgent() {
 }
 
 describe('知识库 runtime 与当前 Agent Skill 链路', () => {
+  for (const mode of ['conversation', 'entry']) {
+    test(`Given ${mode} 补充控制消息 When 规划和写入 Then 引用按钮之前的真实用户事实并拒绝控制提示`, async () => {
+      /** 控制提示模拟点击按钮后落盘的用户形态消息，不得成为事实来源。 */
+      const text = `[knowledge-supplement:${mode}]\n请维护知识库`
+      supplementControl = { uuid: 'supplement-control', role: 'user', text, sha256: createHash('sha256').update(text).digest('hex'), byteOffset: 100, byteLength: Buffer.byteLength(text) }
+      const service = getProjectKnowledgeService()
+      const maintenance = service.createAgentMaintenance({ sessionId: 's1', userMessageId: supplementControl.uuid, assertRunActive: () => undefined, canMutate: () => true })
+      const proposed = await maintenance.proposePlan!({ title: '数据知识', rootRelativePath: 'knowledge',
+        groups: [{ id: 'g', title: '数据', summary: '用户决定', sources: [], gaps: [], outputs: ['存储规则'] }] })
+      expect((await service.getSnapshot('w1')).workflow?.userEvidence?.map((evidence) => evidence.messageId)).toEqual(['u1'])
+      await service.confirmPlan({ workspaceId: 'w1', planId: proposed.proposal!.id, expectedRevision: 1, groups: [{ id: 'g', title: '数据' }] })
+      const outlined = await maintenance.saveOutline!({ planRevision: 1, expectedRevision: 0,
+        items: [{ id: 'rules', groupId: 'g', title: '规则', relativePath: 'rules.md', summary: '存储规则', sections: ['存储'] }] })
+      const input = { planRevision: 1, outlineRevision: outlined.outline!.revision, itemId: 'rules', expectedRevision: null,
+        content: '项目数据保存在本地。', summary: '数据位置', complete: true, evidence: [] }
+      await expect(maintenance.writeDocument!({ ...input, userQuote: text })).rejects.toThrow()
+      await maintenance.writeDocument!({ ...input, userQuote: userEvidence!.text })
+      expect((await service.getSnapshot('w1')).entries.find((entry) => entry.document)?.userEvidence?.messageId).toBe('u1')
+    })
+  }
+
   test('Given 未配置维护模型 When Agent提案且用户确认后按大纲写文档 Then 发布知识且下一回合可检索', async () => {
     writeFileSync(join(projectRoot, 'README.md'), '# 项目规则\n项目数据保存在本地，使用 JSON 文件。\n')
     const { service, agent } = currentAgent()

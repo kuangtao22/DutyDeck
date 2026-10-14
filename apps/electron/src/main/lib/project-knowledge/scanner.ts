@@ -180,6 +180,12 @@ async function discoverRoot(
         const absolutePath = join(directoryPath, directoryEntry.name)
         /** 当前候选相对来源根的稳定路径。 */
         const relativePath = normalizeSourceRelativePath(relative(rootPath, absolutePath))
+        /** 导入包的清单与未发布暂存属于维护元数据，不能成为 Agent 的知识依据。 */
+        if (sourceKind === 'project-file' && relativePath.startsWith('.context/knowledge-imports/')
+          && (directoryEntry.name === '.import-manifest.json' || directoryEntry.name.startsWith('.staging-'))) {
+          skipped += 1
+          continue
+        }
         if (vaultRoots.some((root) => relativePath === root || relativePath.startsWith(`${root}/`))) {
           skipped += 1
           continue

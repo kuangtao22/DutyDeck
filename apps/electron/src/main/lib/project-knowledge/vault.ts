@@ -11,6 +11,9 @@ import { basename, dirname, isAbsolute, join, posix, relative, resolve } from 'n
 import type {
   KnowledgeDocumentWriteInput,
   KnowledgeEntry,
+  KnowledgeIndexPreview,
+  KnowledgeIndexRebuildInput,
+  KnowledgeIndexRebuildResult,
   KnowledgeOutline,
   KnowledgeOutlineInput,
   KnowledgeOutlineItem,
@@ -48,6 +51,8 @@ const activeRefreshes = new Map<string, Promise<void>>()
 
 /** 资料库流程公开给 service/facade 的最小写接口。 */
 export interface KnowledgeVault {
+  previewIndex(workspaceId: string): Promise<KnowledgeIndexPreview>
+  rebuildIndex(input: KnowledgeIndexRebuildInput): Promise<KnowledgeIndexRebuildResult>
   proposePlan(input: KnowledgePlanProposalInput, assertCurrent?: () => void): Promise<void>
   confirmPlan(input: KnowledgePlanConfirmInput): Promise<void>
   saveOutline(input: KnowledgeOutlineInput, assertCurrent?: () => void): Promise<void>
@@ -254,6 +259,31 @@ function renderOutline(projectId: string, plan: KnowledgePlan, outline: Knowledg
     lines.push('')
   }
   return `${lines.join('\n').trimEnd()}\n`
+}
+
+/** 校验待覆盖索引与已发布版本一致；旧格式只接受可从持久结构逐字重建的内容。 */
+function assertPublishedOutline(projectId: string, plan: KnowledgePlan, outline: KnowledgeOutline | undefined, indexPath: string): void {
+  if (!existsSync(indexPath)) return
+  /** 当前磁盘字节只能参与比较，不能直接成为可信基线。 */
+  const content = readSafeMarkdown(indexPath)
+  if (!outline) throw new Error('资料库索引已存在，拒绝接管')
+  if (outline.publishedContentRevision) {
+    if (sha256(content) === outline.publishedContentRevision) return
+  } else {
+    if (content === renderOutline(projectId, plan, outline)) return
+    if (outline.planRevision < plan.revision && outline.items.length > 0) {
+      /** 旧版扩展只向末尾增加分组，旧大纲引用的最末分组限定可证明的连续前缀。 */
+      const usedGroups = new Set(outline.items.map((item) => item.groupId))
+      /** 持久计划内最后一个仍被旧大纲引用的分组位置。 */
+      const lastUsedIndex = plan.groups.findLastIndex((group) => usedGroups.has(group.id))
+      /** 只允许剔除未被旧大纲引用的末尾新增分组，不猜测标题或分组改名。 */
+      const legacyGroups = plan.groups.slice(0, lastUsedIndex + 1)
+      if (legacyGroups.length < plan.groups.length
+        && [...usedGroups].every((id) => legacyGroups.some((group) => group.id === id))
+        && content === renderOutline(projectId, { ...plan, groups: legacyGroups }, outline)) return
+    }
+  }
+  throw new Error('资料库索引已被人工修改或缺少可验证的发布基线')
 }
 
 /** 检查已有根目录是否为空或确属当前项目资料库。 */
@@ -610,11 +640,9 @@ export function createKnowledgeVault(
         assertVaultRootAvailable(project, approved.rootRelativePath)
         ensureSafeDirectory(project, approved.rootRelativePath)
         const indexPath = prepareSafeFile(project, approved.rootRelativePath, '索引.md')
-        if (workflow.outline && existsSync(indexPath)) {
-          const expected = renderOutline(project.projectId, approved, workflow.outline)
-          if (readSafeMarkdown(indexPath) !== expected) throw new Error('资料库索引已被人工修改')
-        }
+        assertPublishedOutline(project.projectId, approved, workflow.outline, indexPath)
         const nextIndexContent = renderOutline(project.projectId, approved, outline)
+        outline.publishedContentRevision = sha256(nextIndexContent)
         const journalChanges = new Map<string, Array<string | null>>()
         for (const move of movedDocuments) {
           if (move.oldPath === move.newPath) journalChanges.set(move.oldPath, [move.newDiskContent])
@@ -708,10 +736,7 @@ export function createKnowledgeVault(
           return {}
         }
         const indexPath = prepareSafeFile(project, approved.rootRelativePath, outline.relativePath)
-        if (existsSync(indexPath)
-          && readSafeMarkdown(indexPath) !== renderOutline(project.projectId, approved, outline)) {
-          throw new Error('资料库索引已被人工修改')
-        }
+        assertPublishedOutline(project.projectId, approved, outline, indexPath)
         const nextOutline: KnowledgeOutline = {
           ...outline,
           revision: outline.revision + 1,
@@ -748,6 +773,7 @@ export function createKnowledgeVault(
           updatedAt: now(),
         })
         const nextIndexContent = renderOutline(project.projectId, approved, nextOutline)
+        nextOutline.publishedContentRevision = sha256(nextIndexContent)
         const writeJournal = beginJournal(project, [
           { path: documentPath, next: [diskContent] },
           { path: indexPath, next: [nextIndexContent] },
@@ -766,6 +792,70 @@ export function createKnowledgeVault(
     } catch (error) {
       throw error
     }
+  }
+
+  /** 只读展示当前文件与生成内容；不恢复日志，不创建目录，也不将磁盘视为可信基线。 */
+  async function previewIndex(workspaceId: string): Promise<KnowledgeIndexPreview> {
+    /** 已校验的当前工作区。 */
+    const project = resolveProject(workspaceId)
+    /** 当前持久流程快照。 */
+    const workflow = store.readManifest(project)?.workflow
+    if (!workflow?.approved || !workflow.outline) throw new Error('知识库尚未建立大纲')
+    if (existsSync(getJournalPath(project))) throw new Error('资料库存在待恢复写入，请先刷新后重试')
+    /** 只读解析的索引路径。 */
+    const indexPath = resolveSafeProjectPath(project, `${workflow.approved.rootRelativePath}/${workflow.outline.relativePath}`, '资料库索引路径')
+    /** 有界读取现有文件，缺失不伪造空正文。 */
+    const currentContent = existsSync(indexPath) ? readSafeMarkdown(indexPath) : null
+    return {
+      planRevision: workflow.approved.revision,
+      outlineRevision: workflow.outline.revision,
+      currentContent,
+      generatedContent: renderOutline(project.projectId, workflow.approved, workflow.outline),
+      currentRevision: currentContent === null ? null : sha256(currentContent),
+    }
+  }
+
+  /** 用户确认差异后重建索引；调用者负责工作区写租约，本层在 Store 锁内复核全部版本。 */
+  async function rebuildIndex(input: KnowledgeIndexRebuildInput): Promise<KnowledgeIndexRebuildResult> {
+    /** 已校验的当前工作区。 */
+    const project = resolveProject(input.workspaceId)
+    /** 仅在旧内容已安全备份后对外返回其位置。 */
+    let backupRelativePath: string | null = null
+    await store.transact(project, input.workspaceId, (current) => {
+      recoverPendingJournal(project, current.manifest.vaultCommitId)
+      /** 锁内的权威流程。 */
+      const workflow = currentWorkflow(current)
+      if (!workflow.approved || workflow.approved.revision !== input.planRevision) throw new Error('已确认计划版本冲突')
+      if (!workflow.outline || workflow.outline.revision !== input.outlineRevision) throw new Error('知识库大纲版本冲突')
+      /** 将要重建的安全索引路径。 */
+      const indexPath = prepareSafeFile(project, workflow.approved.rootRelativePath, workflow.outline.relativePath)
+      /** 与用户实际预览过的版本比较，不能覆盖迟到人工编辑。 */
+      const previous = existsSync(indexPath) ? readSafeMarkdown(indexPath) : null
+      if ((previous === null ? null : sha256(previous)) !== input.expectedContentRevision) throw new Error('索引预览版本已变化，请重新查看差异')
+      /** 重建结果与新发布基线，目录版本只在成功发布后推进。 */
+      const generated = renderOutline(project.projectId, workflow.approved, workflow.outline)
+      if (previous !== null) {
+        /** 原内容备份目录只在内部知识目录中创建，不允许符号链接。 */
+        const backupDirectory = join(getKnowledgeRoot(project), 'index-backups')
+        if (existsSync(backupDirectory)) {
+          if (!lstatSync(backupDirectory).isDirectory() || lstatSync(backupDirectory).isSymbolicLink()) throw new Error('索引备份目录不安全')
+        } else ensureDirectoryDurable(backupDirectory)
+        /** 每次显式恢复使用独立不可覆盖的备份文件名。 */
+        const backupPath = join(backupDirectory, `${randomUUID()}.json`)
+        writeJsonFileAtomic(backupPath, { projectId: project.projectId, content: previous, contentRevision: sha256(previous), createdAt: now() })
+        backupRelativePath = relative(project.projectRoot, backupPath).replaceAll('\\', '/')
+      }
+      /** 同既有正文发布共用的短事务日志。 */
+      const journal = beginJournal(project, [{ path: indexPath, next: [generated] }])
+      writeTextFileAtomic(indexPath, generated)
+      return {
+        workflow: { ...workflow, outline: { ...workflow.outline, revision: workflow.outline.revision + 1, planRevision: workflow.approved.revision, publishedContentRevision: sha256(generated) } },
+        vaultCommitId: journal.transactionId,
+        onCommitted: () => completeJournal(project),
+        onAborted: () => rollbackJournal(project, journal),
+      }
+    })
+    return { backupRelativePath }
   }
 
   /** 用户暂停或继续当前资料库流程。 */
@@ -962,15 +1052,23 @@ export function createKnowledgeVault(
         }
       }
       if (commits.length === 0 && nextOutline === workflow.outline) return {}
-      if (nextOutline) {
-        const indexPath = prepareSafeFile(project, currentApproved.rootRelativePath, nextOutline.relativePath)
-        if (workflow.outline && existsSync(indexPath)
-          && readSafeMarkdown(indexPath) !== renderOutline(project.projectId, currentApproved, workflow.outline)) {
-          throw new Error('资料库索引已被人工修改')
-        }
-        writeTextFileAtomic(indexPath, renderOutline(project.projectId, currentApproved, nextOutline))
+      if (!nextOutline) return { commits, workflow }
+      /** 刷新也必须将索引和 manifest 作为同一可恢复事务发布。 */
+      const indexPath = prepareSafeFile(project, currentApproved.rootRelativePath, nextOutline.relativePath)
+      assertPublishedOutline(project.projectId, currentApproved, workflow.outline, indexPath)
+      /** 此次刷新生成的实际索引，与旧 outline 的发布摘要分离。 */
+      const nextIndexContent = renderOutline(project.projectId, currentApproved, nextOutline)
+      nextOutline = { ...nextOutline, publishedContentRevision: sha256(nextIndexContent) }
+      /** 在可见写入前持久恢复日志，manifest 失败时恢复索引。 */
+      const journal = beginJournal(project, [{ path: indexPath, next: [nextIndexContent] }])
+      writeTextFileAtomic(indexPath, nextIndexContent)
+      return {
+        commits,
+        workflow: { ...workflow, outline: nextOutline },
+        vaultCommitId: journal.transactionId,
+        onCommitted: () => completeJournal(project),
+        onAborted: () => rollbackJournal(project, journal),
       }
-      return { commits, workflow: nextOutline ? { ...workflow, outline: nextOutline } : workflow }
     })
     /** refresh 是显式恢复入口，因此即使原缓存丢失也按最终 manifest 重建。 */
     const indexRevision = refreshedManifest.indexRevision ?? refreshedManifest.revision
@@ -1003,7 +1101,7 @@ export function createKnowledgeVault(
     return task
   }
 
-  return { proposePlan, confirmPlan, saveOutline, writeDocument, pauseWorkflow, refresh }
+  return { proposePlan, confirmPlan, saveOutline, writeDocument, pauseWorkflow, refresh, previewIndex, rebuildIndex }
 }
 
 /** 从当前磁盘读取权威资料库正文；来源失效不隐藏仍存在的本地正文。 */

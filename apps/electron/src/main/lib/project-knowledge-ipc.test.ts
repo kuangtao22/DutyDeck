@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { PROJECT_KNOWLEDGE_IPC_CHANNELS } from '@proma/shared'
 import type { KnowledgeSnapshot } from '@proma/shared'
-import { parseKnowledgeSearchInput, registerProjectKnowledgeIpc } from './project-knowledge-ipc'
+import { parseKnowledgeImportMode, parseKnowledgeSearchInput, registerProjectKnowledgeIpc } from './project-knowledge-ipc'
 
 /** 无 Electron 的 IPC 替身，用真实分派验证窗口与参数边界。 */
 function fixture() {
@@ -38,10 +38,14 @@ function fixture() {
       undo: async () => { calls.push('undo'); return snapshot },
       excludeSession: async () => { calls.push('exclude'); return snapshot },
       previewMemory: async () => ({ projectId: 'workspace-1', inspected: 0, truncated: false, proposals: [] }),
+      importSources: async (_workspaceId, paths) => { calls.push(`import:${paths.join(',')}`); return { rootRelativePath: '.context/knowledge-imports', imported: paths.length, unchanged: 0, files: [], skipped: [] } },
+      previewIndex: async () => ({ planRevision: 1, outlineRevision: 2, currentContent: '# old', generatedContent: '# new', currentRevision: 'a'.repeat(64) }),
+      rebuildIndex: async (input) => { calls.push(`rebuild:${input.planRevision}:${input.outlineRevision}`); return { backupRelativePath: '.proma/knowledge/index-backups/1.json' } },
       confirmPlan: async (input) => { calls.push(`confirm:${input.groups.map((group) => `${group.id}=${group.title}`).join(',')}`); return snapshot },
       pauseWorkflow: async (input) => { calls.push(`pause:${input.paused}`); return snapshot },
       startExecution: async (input) => { calls.push(`execute:${input.sessionId}:${input.planRevision}:${input.itemIds?.join(',') ?? 'all'}`); return snapshot },
     },
+    selectImportPaths: async (_event, mode) => mode === 'files' ? ['/tmp/old.md'] : ['/tmp/old-library'],
   })
   /** 在发起窗口内调用真实 handler。 */
   const invoke = (channel: string, input: unknown): Promise<unknown> => {
@@ -150,6 +154,27 @@ describe('项目知识库 IPC 边界', () => {
     const context = fixture()
     await context.invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.SEARCH, { workspaceId: 'workspace-1', query: '登录' })
     expect(context.calls).toEqual(['search:workspace-1'])
+  })
+
+  test('Given 用户从原生选择器选择旧库 When 导入 Then 只把宿主路径交给导入服务', async () => {
+    const context = fixture()
+    await context.invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.IMPORT, { workspaceId: 'workspace-1', mode: 'files' })
+    expect(context.calls).toEqual(['import:/tmp/old.md'])
+    expect(parseKnowledgeImportMode('folder')).toBe('folder')
+    expect(() => parseKnowledgeImportMode('/etc/passwd')).toThrow()
+  })
+
+  test('Given 索引预览版本 When 用户查看或重建 Then 复核版本并经过写守卫', async () => {
+    const context = fixture()
+    await context.invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.PREVIEW_INDEX, { workspaceId: 'workspace-1' })
+    await context.invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.REBUILD_INDEX, {
+      workspaceId: 'workspace-1', planRevision: 1, outlineRevision: 2, expectedContentRevision: 'a'.repeat(64),
+    })
+    expect(context.calls).toEqual(['rebuild:1:2'])
+    context.access.writable = false
+    await expect(context.invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.REBUILD_INDEX, {
+      workspaceId: 'workspace-1', planRevision: 1, outlineRevision: 2, expectedContentRevision: 'a'.repeat(64),
+    })).rejects.toThrow('迁移')
   })
 
   test('Given 知识或来源范围 When IPC 解析 Then 保留范围且拒绝未知值', () => {
