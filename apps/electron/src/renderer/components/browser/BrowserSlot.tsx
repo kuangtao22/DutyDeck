@@ -1,5 +1,6 @@
 import * as React from 'react'
-import { useStore } from 'jotai'
+import { useAtomValue, useStore } from 'jotai'
+import { workspaceToolsWidthAtom } from '@/atoms/workspace-tools'
 import { browserNativeViewHiddenAtom } from '@/atoms/browser-modal-atoms'
 import { nextBrowserLayoutRevision } from './browser-layout-revision'
 
@@ -13,6 +14,10 @@ export function BrowserSlot({ sessionId, tabId }: { sessionId: string; tabId: st
   const ref = React.useRef<HTMLDivElement>(null)
   /** 直接订阅模态布尔状态，避免重建 Slot Effect 或监听流式消息 DOM。 */
   const store = useStore()
+  /** 菜单展开/收起会改变原生视图的 x 边界，即使 slot 宽度未变也要重新发布 bounds。 */
+  const toolsMenuWidth = useAtomValue(workspaceToolsWidthAtom)
+  /** 布局刷新与 slot 生命周期分离，菜单折叠不隐藏或回收原生页面。 */
+  const publishBoundsRef = React.useRef<(() => void) | null>(null)
 
   React.useLayoutEffect(() => {
     const element = ref.current
@@ -50,6 +55,7 @@ export function BrowserSlot({ sessionId, tabId }: { sessionId: string; tabId: st
       const nativeViewHidden = store.get(browserNativeViewHiddenAtom)
       publish(!nativeViewHidden, nativeViewHidden, immediate)
     }
+    publishBoundsRef.current = () => publishCurrentVisibility(true)
     /** 模态或浮层挂载立即避让；最后一个节点完成退出动画后才恢复。 */
     const unsubscribeNativeViewHidden = store.sub(browserNativeViewHiddenAtom, () => publishCurrentVisibility(true))
     const observer = new ResizeObserver(() => publishCurrentVisibility())
@@ -60,6 +66,7 @@ export function BrowserSlot({ sessionId, tabId }: { sessionId: string; tabId: st
     // 否则快速左右切换时原生视图会停留在隐藏状态，表现为页面内容消失。
     publishCurrentVisibility(true)
     return () => {
+      publishBoundsRef.current = null
       unsubscribeNativeViewHidden()
       observer.disconnect()
       window.removeEventListener('resize', publishBounded)
@@ -67,6 +74,8 @@ export function BrowserSlot({ sessionId, tabId }: { sessionId: string; tabId: st
       void setLayout({ sessionId, tabId, revision: nextBrowserLayoutRevision(), visible: false, preserveSessionOnHide: false, bounds: { x: 0, y: 0, width: 0, height: 0 } })
     }
   }, [sessionId, tabId, store])
+
+  React.useLayoutEffect(() => { publishBoundsRef.current?.() }, [toolsMenuWidth])
 
   return <div ref={ref} className="flex-1 min-h-0 bg-muted/15 titlebar-no-drag" aria-label="受管浏览器页面" />
 }
