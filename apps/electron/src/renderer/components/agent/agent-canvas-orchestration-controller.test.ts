@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { LEGACY_DESIGN_CANVAS_ID } from '@proma/shared'
 import type { AgentCanvasBinding, AgentCanvasBindingChangeEvent, CanvasOrchestrationChangedEvent, CanvasOrchestrationRecord } from '@proma/shared'
 import {
   createAgentCanvasOrchestrationController,
@@ -95,6 +96,29 @@ describe('普通聊天与多画布编排同步', () => {
     expect(f.controller.getSnapshot().canvases.map(item => item.canvasId)).toEqual(['canvas-a', 'canvas-b', 'canvas-c'])
     expect(f.controller.getSnapshot().canvases.map(item => item.state.record?.canvasId ?? null)).toEqual(['canvas-a', null, null])
     expect(f.controller.getSnapshot()).toMatchObject({ phase: 'ready', error: null })
+    f.controller.dispose()
+  })
+
+  test('Given 关联旧版与原生画布 When 加载制作流程 Then 跳过旧版画布且只建立原生读取', async () => {
+    const f = fixture()
+    f.setBindings([binding([LEGACY_DESIGN_CANVAS_ID, 'canvas-a'])])
+
+    await f.controller.load()
+
+    expect(f.recordCalls()).toBe(1)
+    expect(f.controller.getSnapshot().canvases.map(item => item.canvasId)).toEqual(['canvas-a'])
+    expect(f.orchestrationListeners.has(LEGACY_DESIGN_CANVAS_ID)).toBe(false)
+    f.controller.dispose()
+  })
+
+  test('Given 仅关联旧版画布 When 加载制作流程 Then 正常收敛为空摘要且不显示错误', async () => {
+    const f = fixture()
+    f.setBindings([binding([LEGACY_DESIGN_CANVAS_ID])])
+
+    await f.controller.load()
+
+    expect(f.recordCalls()).toBe(0)
+    expect(f.controller.getSnapshot()).toMatchObject({ phase: 'ready', error: null, canvases: [] })
     f.controller.dispose()
   })
 
