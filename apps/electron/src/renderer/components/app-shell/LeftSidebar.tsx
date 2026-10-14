@@ -11,15 +11,14 @@
 import * as React from 'react'
 import { useAtom, useSetAtom, useAtomValue, useStore } from 'jotai'
 import { toast } from 'sonner'
-import { Pin, PinOff, Star, Settings, Plus, CirclePlus, Trash2, Pencil, PanelLeft, PanelRight, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Bot, MessageSquare, MoreHorizontal, FolderOpen, FolderInput, FolderPlus, GripVertical, Clock, CalendarDays, ChevronRight, ChevronDown, ChevronUp, ChevronsDownUp, Blocks, Brain, ListTodo, GitBranch, Download, Loader2, RotateCw, Info, History } from 'lucide-react'
+import { Pin, PinOff, Star, Settings, Plus, CirclePlus, Trash2, Pencil, PanelLeft, PanelRight, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Bot, MessageSquare, MoreHorizontal, FolderOpen, FolderInput, FolderPlus, GripVertical, Clock, ChevronRight, ChevronDown, ChevronUp, ChevronsDownUp, GitBranch, Download, Loader2, RotateCw, Info, History } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { ModeSwitcher } from './ModeSwitcher'
 import { SearchDialog } from './SearchDialog'
 import { UserAvatar } from '@/components/chat/UserAvatar'
 import { activeViewAtom, agentSkillsTabAtom } from '@/atoms/active-view'
-import { automationFormAtom, automationsAtom } from '@/atoms/automation-atoms'
-import { planningTabAtom } from '@/atoms/planning-atoms'
+import { automationsAtom } from '@/atoms/automation-atoms'
 import { appModeAtom, type AppMode } from '@/atoms/app-mode'
 import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
 import {
@@ -47,7 +46,6 @@ import {
   agentSessionPathMapAtom,
   currentAgentWorkspaceIdAtom,
   agentWorkspacesAtom,
-  workspaceCapabilitiesVersionAtom,
   agentDiffPanelTabAtom,
   agentCanvasWorkspaceStateMapAtom,
   agentDiffRefreshVersionAtom,
@@ -62,7 +60,6 @@ import {
   agentSideDelegationMapAtom,
   agentSidePanelSplitMapAtom,
   getDelegationSidePanelTab,
-  openWorkspaceComponentAtom,
   agentStreamingStatesAtom,
   liveMessagesMapAtom,
   agentSessionPendingFilesAtom,
@@ -81,7 +78,7 @@ import {
   sessionExistsAtom,
   automationGroupOrderAtom,
 } from '@/atoms/agent-atoms'
-import type { SessionIndicatorStatus, WorkspaceComponentTab } from '@/atoms/agent-atoms'
+import type { SessionIndicatorStatus } from '@/atoms/agent-atoms'
 import {
   previewPanelOpenMapAtom,
   previewFileMapAtom,
@@ -115,11 +112,9 @@ import { conversationPromptIdAtom } from '@/atoms/system-prompt-atoms'
 import { useCreateSession } from '@/hooks/useCreateSession'
 import { useOpenSession } from '@/hooks/useOpenSession'
 import { useSyncActiveTabSideEffects } from '@/hooks/useSyncActiveTabSideEffects'
-import { productivityToolsAtom, sessionHoverPreviewEnabledAtom } from '@/atoms/ui-preferences'
+import { sessionHoverPreviewEnabledAtom } from '@/atoms/ui-preferences'
 import { CollapsedWorkspacePopover } from '@/components/agent/CollapsedWorkspacePopover'
-import { CollapsedToolsPopover, type CollapsedToolItem } from '@/components/agent/CollapsedToolsPopover'
 import { CollapsedSessionRail, type RailRecentItem } from '@/components/agent/CollapsedSessionRail'
-import { ObsidianIcon } from '@/components/obsidian/obsidian-brand'
 import { VirtualSidebarList, type VirtualSidebarRow } from '@/components/ui/virtual-sidebar-list'
 import { LocalProjectBadge } from '@/components/agent/LocalProjectBadge'
 import { MoveSessionDialog } from '@/components/agent/MoveSessionDialog'
@@ -180,11 +175,7 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
-import type { ConversationMeta, AgentSessionMeta, AgentWorkspace, WorkspaceCapabilities } from '@proma/shared'
-
-function formatAutomationCount(count: number): string {
-  return count > 99 ? '99+' : String(count)
-}
+import type { ConversationMeta, AgentSessionMeta, AgentWorkspace } from '@proma/shared'
 
 function getSidebarUpdateLabel(status: string, version?: string): string {
   const versionText = version ? ` v${version}` : ''
@@ -260,71 +251,6 @@ function SidebarUpdateButton({
         </button>
       </TooltipTrigger>
       <TooltipContent side={tooltipSide}>{label}</TooltipContent>
-    </Tooltip>
-  )
-}
-
-interface WorkspaceComponentSidebarEntryProps {
-  label: string
-  icon: React.ReactNode
-  active: boolean
-  onClick: () => void
-  badge?: React.ReactNode
-}
-
-/** 左侧项目级组件的单行入口；每项只打开一个对应的右侧 Tab。 */
-function WorkspaceComponentSidebarEntry({ label, icon, active, onClick, badge }: WorkspaceComponentSidebarEntryProps): React.ReactElement {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      onClick={onClick}
-      className={cn(
-        'group flex w-full items-center justify-between rounded-md px-3 py-2 text-[13px] transition-colors duration-100 titlebar-no-drag',
-        active
-          ? 'bg-accent-foreground/[0.10] text-foreground shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]'
-          : 'text-foreground/75 hover:bg-accent-foreground/[0.08] hover:text-foreground',
-      )}
-    >
-      <span className="flex min-w-0 items-center gap-3">
-        <span className={cn('flex size-[18px] shrink-0 items-center justify-center', active ? 'text-accent-foreground' : 'text-foreground/60')}>
-          {icon}
-        </span>
-        <span className="truncate">{label}</span>
-      </span>
-      {badge && <span className="ml-2 flex shrink-0 items-center">{badge}</span>}
-    </button>
-  )
-}
-
-interface WorkspaceComponentRailButtonProps {
-  label: string
-  icon: React.ReactNode
-  active: boolean
-  onClick: () => void
-  badge?: React.ReactNode
-}
-
-function WorkspaceComponentRailButton({ label, icon, active, onClick, badge }: WorkspaceComponentRailButtonProps): React.ReactElement {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label={label}
-          onClick={onClick}
-          className={cn(
-            'relative flex size-10 items-center justify-center rounded-[12px] border transition-colors titlebar-no-drag',
-            active
-              ? 'border-primary/80 bg-primary text-primary-foreground shadow-sm'
-              : 'border-border/45 bg-foreground/[0.025] text-foreground/45 hover:border-border/70 hover:bg-foreground/[0.045] hover:text-primary',
-          )}
-        >
-          {icon}
-          {badge}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="right">{label}</TooltipContent>
     </Tooltip>
   )
 }
@@ -613,14 +539,9 @@ function deleteSetEntry<T>(prev: Set<T>, value: T): Set<T> {
 }
 
 export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.ReactElement {
-  const [activeView, setActiveView] = useAtom(activeViewAtom)
-  const setAutomationForm = useSetAtom(automationFormAtom)
-  const setPlanningTab = useSetAtom(planningTabAtom)
+  const setActiveView = useSetAtom(activeViewAtom)
   const setAgentSkillsTab = useSetAtom(agentSkillsTabAtom)
-  const openWorkspaceComponent = useSetAtom(openWorkspaceComponentAtom)
-  const automations = useAtomValue(automationsAtom)
   const setAutomations = useSetAtom(automationsAtom)
-  const automationCount = automations.length
   const settingsOpen = useAtomValue(settingsOpenAtom)
   const setSettingsOpen = useSetAtom(settingsOpenAtom)
   const setSettingsTab = useSetAtom(settingsTabAtom)
@@ -669,7 +590,6 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   const updateStatus = useAtomValue(updateStatusAtom)
   const hasEnvironmentIssues = useAtomValue(hasEnvironmentIssuesAtom)
   const sessionHoverPreviewEnabled = useAtomValue(sessionHoverPreviewEnabledAtom)
-  const productivityTools = useAtomValue(productivityToolsAtom)
 
   // Agent 模式状态
   const [agentSessions, setAgentSessions] = useAtom(agentSessionsAtom)
@@ -693,10 +613,6 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   const activeDelegationSessionId = isDelegationVisible
     ? sideDelegationMap.get(activeParentSessionId) ?? null
     : null
-  const isWorkspaceComponentActive = React.useCallback(
-    (component: WorkspaceComponentTab): boolean => activeRightWorkspaceTab === component,
-    [activeRightWorkspaceTab],
-  )
   const agentIndicatorMap = useAtomValue(agentSessionIndicatorMapAtom)
   const unviewedCompletedSessionIds = useAtomValue(unviewedCompletedSessionIdsAtom)
   const setUnviewedCompleted = useSetAtom(unviewedCompletedSessionIdsAtom)
@@ -709,10 +625,6 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   const [currentWorkspaceId, setCurrentWorkspaceId] = useAtom(currentAgentWorkspaceIdAtom)
   const [workspaces, setWorkspaces] = useAtom(agentWorkspacesAtom)
   const setMode = useSetAtom(appModeAtom)
-
-  // 当前项目能力（MCP + Skill 计数）
-  const [capabilities, setCapabilities] = React.useState<WorkspaceCapabilities | null>(null)
-  const capabilitiesVersion = useAtomValue(workspaceCapabilitiesVersionAtom)
 
   // Tab 状态
   const [tabs, setTabs] = useAtom(tabsAtom)
@@ -917,11 +829,6 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     clearPreviewCacheForSession(id)
   }, [clearBrowserSessionState, setConvModels, setConvContextLength, setConvThinking, setConvParallel, setConvPromptId, setPreviewPanelOpen, setPreviewFile, setPreviewFiles, setPreviewContentRefreshVersion, setPreviewResolvedPaths, setDiffPanelTab, setDiffRefreshVersion, setDiffUnseen, setDiffUnseenFiles, setNonGitFileChanges, setFileChangesCurrentRun, setRunFileChanges, setDiffData, setAgentSidePanelOpenMap, setSessionChannelMap, setSessionModelMap, setSessionPathMap, setSessionViewStateMap, setStreamingStates, setLiveMessagesMap, setSessionPendingFiles, setSessionPendingMentions, setSessionCanvasNodeReferences, store])
 
-  const currentWorkspaceSlug = React.useMemo(() => {
-    if (!currentWorkspaceId) return null
-    return workspaces.find((w) => w.id === currentWorkspaceId)?.slug ?? null
-  }, [currentWorkspaceId, workspaces])
-
   const workspaceNameMap = React.useMemo(() => {
     const map = new Map<string, string>()
     for (const w of workspaces) map.set(w.id, w.name)
@@ -942,17 +849,6 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     if (!pendingDeleteId || mode !== 'agent') return 0
     return getDirectDelegatedChildren(agentSessions, pendingDeleteId).length
   }, [agentSessions, mode, pendingDeleteId])
-
-  React.useEffect(() => {
-    if (!currentWorkspaceSlug || mode !== 'agent') {
-      setCapabilities(null)
-      return
-    }
-    window.electronAPI
-      .getWorkspaceCapabilities(currentWorkspaceSlug)
-      .then(setCapabilities)
-      .catch(console.error)
-  }, [currentWorkspaceSlug, mode, activeView, capabilitiesVersion])
 
   /** 置顶对话列表（仅活跃模式显示，排除 draft） */
   const pinnedConversations = React.useMemo(
@@ -1076,51 +972,6 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     window.addEventListener('focus', handleFocus)
     return () => window.removeEventListener('focus', handleFocus)
   }, [mode, refreshAgentSidebarSessions, setConversations, viewMode])
-
-  /** 规划与能力不再替换主内容区，而是作为项目级右侧组件逐项打开。 */
-  const handleOpenPlanningComponent = React.useCallback((component: 'todos' | 'calendar' | 'automations'): void => {
-    setAutomationForm({ open: false, draft: null })
-    // 尚未创建会话时没有右侧宿主，保留原全屏规划视图作为无损兜底。
-    if (mode !== 'agent' || !currentAgentSessionId) {
-      setPlanningTab(component)
-      setActiveView('planning')
-      return
-    }
-    setActiveView('conversations')
-    openWorkspaceComponent(component)
-  }, [currentAgentSessionId, mode, openWorkspaceComponent, setAutomationForm, setActiveView, setPlanningTab])
-
-  /** Obsidian 在 Chat 中占用主内容区，在有 Agent 会话时复用右侧项目级工作区。 */
-  const handleOpenVault = React.useCallback((): void => {
-    if (mode !== 'agent' || !currentAgentSessionId) {
-      setActiveView('vault')
-      return
-    }
-    setActiveView('conversations')
-    openWorkspaceComponent('vault')
-  }, [currentAgentSessionId, mode, openWorkspaceComponent, setActiveView])
-
-  const handleOpenCapabilityComponent = React.useCallback((component: 'skills' | 'mcp' | 'memory'): void => {
-    if (mode !== 'agent' || !currentAgentSessionId) {
-      setAgentSkillsTab(component)
-      setActiveView('agent-skills')
-      return
-    }
-    setActiveView('conversations')
-    openWorkspaceComponent(component)
-  }, [currentAgentSessionId, mode, openWorkspaceComponent, setActiveView, setAgentSkillsTab])
-
-  /** MCP/Skills 为同一低频管理入口；在右侧工作区中一次展开两个独立 Tab，保留 Skills 为当前焦点。 */
-  const handleOpenMcpSkillsComponents = React.useCallback((): void => {
-    if (mode !== 'agent' || !currentAgentSessionId) {
-      setAgentSkillsTab('skills')
-      setActiveView('agent-skills')
-      return
-    }
-    setActiveView('conversations')
-    openWorkspaceComponent('mcp')
-    openWorkspaceComponent('skills')
-  }, [currentAgentSessionId, mode, openWorkspaceComponent, setActiveView, setAgentSkillsTab])
 
   // 切换模式时重置归档视图
   React.useEffect(() => {
@@ -3362,59 +3213,6 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
 
   // ===== 折叠状态：精简图标视图 =====
   if (sidebarCollapsed) {
-    const hasActiveCollapsedTool = [
-      ...(productivityTools.todosEnabled ? ["todos"] : []),
-      ...(productivityTools.calendarEnabled ? ["calendar"] : []),
-      "automations",
-      "skills",
-      "mcp",
-      "memory",
-      ...(productivityTools.obsidianEnabled ? ["vault"] : []),
-    ].some((component) =>
-      isWorkspaceComponentActive(component as WorkspaceComponentTab),
-    );
-
-    const collapsedToolItems: CollapsedToolItem[] = [
-      ...(productivityTools.todosEnabled ? [{
-        label: "Todo",
-        icon: <ListTodo size={16} />,
-        active: isWorkspaceComponentActive("todos"),
-        onClick: () => handleOpenPlanningComponent("todos"),
-      }] : []),
-      ...(productivityTools.calendarEnabled ? [{
-        label: "日程",
-        icon: <CalendarDays size={16} />,
-        active: isWorkspaceComponentActive("calendar"),
-        onClick: () => handleOpenPlanningComponent("calendar"),
-      }] : []),
-      ...(productivityTools.obsidianEnabled ? [{
-        label: "Obsidian",
-        icon: <ObsidianIcon size={16} />,
-        active: isWorkspaceComponentActive("vault"),
-        onClick: handleOpenVault,
-      }] : []),
-      ...(mode === "agent" ? [{
-        label: "项目知识库",
-        icon: <Brain size={16} />,
-        active: isWorkspaceComponentActive("memory"),
-        onClick: () => handleOpenCapabilityComponent("memory"),
-      }] : []),
-      {
-        label: "定时任务",
-        icon: <Clock size={16} />,
-        active: isWorkspaceComponentActive("automations"),
-        badge: automationCount > 0 ? formatAutomationCount(automationCount) : undefined,
-        onClick: () => handleOpenPlanningComponent("automations"),
-      },
-      ...(mode === "agent" ? [{
-        label: "MCP/Skills",
-        icon: <Blocks size={16} />,
-        active: isWorkspaceComponentActive("skills") || isWorkspaceComponentActive("mcp"),
-        showUpdate: (capabilities?.skills.filter((skill) => skill.hasUpdate).length ?? 0) > 0,
-        onClick: handleOpenMcpSkillsComponents,
-      }] : []),
-    ];
-
     return (
       <div
         ref={sidebarRootRef}
@@ -3563,26 +3361,6 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
             </TooltipTrigger>
             <TooltipContent side="right">搜索</TooltipContent>
           </Tooltip>
-          <CollapsedToolsPopover items={collapsedToolItems}>
-            <button
-              type="button"
-              aria-label="工作区工具"
-              className="group relative flex size-10 items-center justify-center p-1 titlebar-no-drag focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <span
-                className={cn(
-                  "flex size-8 items-center justify-center rounded-[10px] text-foreground/45 transition-[background-color,color,box-shadow] duration-150 group-hover:bg-foreground/[0.06] group-hover:text-foreground/75",
-                  hasActiveCollapsedTool && "bg-primary/10 text-foreground shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]",
-                )}
-              >
-                <Blocks size={16} />
-              </span>
-              {hasActiveCollapsedTool && (
-                <span className="absolute right-1 top-1 size-1.5 rounded-full bg-primary" />
-              )}
-            </button>
-          </CollapsedToolsPopover>
-
           <div className="my-1 h-px w-6 bg-border/70" />
         </div>
 
@@ -3742,70 +3520,6 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
             </span>
           </TooltipContent>
         </Tooltip>
-      </div>
-
-      {/* 项目级组件：每一行直接打开对应的右侧工作区 Tab。 */}
-      <div className="space-y-0.5 px-3 pb-0.5 pt-2">
-        {productivityTools.todosEnabled && (
-          <WorkspaceComponentSidebarEntry
-            label="Todo"
-            icon={<ListTodo size={16} />}
-            active={isWorkspaceComponentActive('todos')}
-            onClick={() => handleOpenPlanningComponent('todos')}
-          />
-        )}
-        {productivityTools.calendarEnabled && (
-          <WorkspaceComponentSidebarEntry
-            label="日程"
-            icon={<CalendarDays size={16} />}
-            active={isWorkspaceComponentActive('calendar')}
-            onClick={() => handleOpenPlanningComponent('calendar')}
-          />
-        )}
-        {productivityTools.obsidianEnabled && (
-          <WorkspaceComponentSidebarEntry
-            label="Obsidian"
-            icon={<ObsidianIcon size={16} />}
-            active={mode === 'chat' ? activeView === 'vault' : isWorkspaceComponentActive('vault')}
-            onClick={handleOpenVault}
-          />
-        )}
-      </div>
-
-      {mode === 'agent' && (
-        <div className="px-3 pb-0.5">
-          <WorkspaceComponentSidebarEntry
-            label="项目知识库"
-            icon={<Brain size={16} />}
-            active={isWorkspaceComponentActive('memory')}
-            onClick={() => handleOpenCapabilityComponent('memory')}
-          />
-        </div>
-      )}
-      <div className="space-y-0.5 px-3 pb-0.5">
-        <WorkspaceComponentSidebarEntry
-          label="定时任务"
-          icon={<Clock size={16} />}
-          active={isWorkspaceComponentActive('automations')}
-          onClick={() => handleOpenPlanningComponent('automations')}
-          badge={automationCount > 0 ? (
-            <span className={cn(
-              'flex h-5 min-w-[22px] items-center justify-center rounded-full px-1.5 text-[11px] font-medium tabular-nums',
-              isWorkspaceComponentActive('automations')
-                ? 'bg-accent-foreground/[0.26] text-primary-foreground'
-                : 'bg-foreground/[0.045] text-foreground/60 group-hover:text-foreground/75',
-            )}>{formatAutomationCount(automationCount)}</span>
-          ) : undefined}
-        />
-        {mode === 'agent' && (
-          <WorkspaceComponentSidebarEntry
-            label="MCP/Skills"
-            icon={<Blocks size={16} />}
-            active={isWorkspaceComponentActive('skills') || isWorkspaceComponentActive('mcp')}
-            onClick={handleOpenMcpSkillsComponents}
-            badge={(capabilities?.skills.filter((skill) => skill.hasUpdate).length ?? 0) > 0 ? <span className="size-2.5 rounded-full bg-blue-500" /> : undefined}
-          />
-        )}
       </div>
 
       {/* Chat 模式 active 视图：置顶 + 对话历史，结构与 Agent active 视图保持一致 */}

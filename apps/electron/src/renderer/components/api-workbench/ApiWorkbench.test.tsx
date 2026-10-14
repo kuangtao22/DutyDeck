@@ -172,11 +172,11 @@ describe('接口工作台 UI 集成', () => {
     expect(source).toContain('workspaceLabel={workspaces.find((workspace) => workspace.id === currentWorkspaceId)?.name}')
   })
 
-  test('Given 用户打开加号菜单 When 检查入口 Then 接口工作台与其它工作区能力同级', async () => {
+  test('Given 全局工具菜单迁移后 When 检查右侧标签栏 Then 不再承载接口工作台菜单入口', async () => {
     const source = await Bun.file(new URL('../diff/DiffPanelTabBar.tsx', import.meta.url)).text()
 
-    expect(source).toContain("case 'open-api-workbench': onOpenWorkspaceComponent?.('api-workbench')")
-    expect(source).toContain('打开接口工作台')
+    expect(source).not.toContain("case 'open-api-workbench'")
+    expect(source).not.toContain('打开接口工作台')
   })
 
   test('Given 旧 preload 不含接口能力 When 渲染工作台 Then 显示可恢复提示且不抛异常', () => {

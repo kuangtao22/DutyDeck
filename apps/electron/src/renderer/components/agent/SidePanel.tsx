@@ -6,7 +6,9 @@
  */
 
 import * as React from 'react'
-import { useAtom, useAtomValue, useSetAtom } from 'jotai'
+import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
+import { clearWorkspaceToolRequestAtom, pendingWorkspaceToolRequestAtom } from '@/atoms/workspace-tools'
+import { createWorkspaceToolNavigationGuard, runPendingWorkspaceToolRequest } from './workspace-tool-request'
 import { X, ExternalLink, ChevronRight, MoreHorizontal, FolderSearch, Pencil, FolderInput, GitBranch, GitMerge, MessageSquarePlus, FileDiff, FileText, FolderOpen, Globe, MessageCircle, Brain, Split, Blocks, Braces, CalendarDays, ListTodo, Clock, ServerCog, SquareTerminal, Terminal, Workflow, Factory } from 'lucide-react'
 import { CapabilityFactoryPanel } from '@/components/capability-factory/CapabilityFactoryPanel'
 import { Button } from '@/components/ui/button'
@@ -536,6 +538,9 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
   }, [activeTab, getPreviousTabBeforeClose, onTabChange])
 
   // 侧面板状态按 sessionId 持久化，切换会话不会互相覆盖。
+  /** 菜单请求使用会话绑定的原子交付，继续复用本组件资源动作。 */
+  const workspaceToolStore = useStore()
+  const pendingWorkspaceTool = useAtomValue(pendingWorkspaceToolRequestAtom(sessionId))
   const [isOpen, setIsOpen] = useAtom(currentSessionSidePanelOpenAtom)
   // Tab 系统
   const previewFileMap = useAtomValue(previewFileMapAtom)
@@ -1162,16 +1167,14 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
     if (typeof open !== 'function') return null
     openingBrowserSessionRef.current = sessionId
     try {
-      const state = await open(sessionId)
-      publishBrowserState(state)
-      return state
+      return await open(sessionId)
     } catch (error) {
       console.error('[SidePanel] 打开受管浏览器失败:', error)
-      return null
+      throw error
     } finally {
       if (openingBrowserSessionRef.current === sessionId) openingBrowserSessionRef.current = null
     }
-  }, [publishBrowserState, sessionId])
+  }, [sessionId])
 
   const flushBrowserTabSelection = React.useCallback(() => {
     const queue = browserSelectionQueueRef.current
@@ -1211,11 +1214,12 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
     /** 关闭动作延后到活动传输已收口，其他工作区仍沿用原行为。 */
     const close = (): void => {
       rememberStopGenerationTarget({ kind: 'agent', sessionId })
+      workspaceToolStore.set(clearWorkspaceToolRequestAtom, sessionId)
       setIsOpen(false)
     }
     if (workspaceComponentTabs.includes('server-ops')) transferLeave.requestLeave(close)
     else close()
-  }, [sessionId, setIsOpen, workspaceComponentTabs, transferLeave.requestLeave])
+  }, [sessionId, setIsOpen, workspaceComponentTabs, transferLeave.requestLeave, workspaceToolStore])
 
   const [canvasWorkspaceStateMap, setCanvasWorkspaceStateMap] = useAtom(agentCanvasWorkspaceStateMapAtom)
   /** 当前会话从本地存储恢复并严格清洗后的 Canvas 工作区偏好。 */
@@ -1451,6 +1455,7 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
   const handleOpenCanvas = React.useCallback(async (
     canvas: CanvasSessionMeta,
     pane: RightWorkspacePane | null,
+    canNavigate?: () => boolean,
   ): Promise<boolean> => {
     if (!canvasRegistry.bindingReady) return false
     const result = await runCanvasWorkspaceAction({
@@ -1464,11 +1469,13 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
           })
           upsertCanvasSession(visibleCanvas)
         }
-        await canvasRegistry.linkAndOpen(
-          visibleCanvas.id,
-          false,
-          pane,
-        )
+        if (canNavigate) {
+          if (await canvasRegistry.link(visibleCanvas.id, false) && canNavigate()) {
+            handleCanvasWorkspaceTabChange(getCanvasWorkspaceTab(visibleCanvas.id), pane)
+          }
+        } else {
+          await canvasRegistry.linkAndOpen(visibleCanvas.id, false, pane)
+        }
       },
       failureMessage: CANVAS_WORKSPACE_FAILURE_MESSAGES.open,
       logContext: '打开画布',
@@ -1476,7 +1483,7 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
       onLogError: reportCanvasActionError,
     })
     return result !== null
-  }, [canvasRegistry, reportCanvasActionError, showCanvasActionError, upsertCanvasSession])
+  }, [canvasRegistry, handleCanvasWorkspaceTabChange, reportCanvasActionError, showCanvasActionError, upsertCanvasSession])
 
   /** 新建与关联作为一个用户动作收口，任一 IPC 失败都只显示固定提示。 */
   const handleCreateCanvas = React.useCallback(async (pane: RightWorkspacePane | null): Promise<boolean> => {
@@ -1496,12 +1503,14 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
     pane: RightWorkspacePane | null,
   ): Promise<boolean> => {
     if (!canvasRegistry.metadataReady || !canvasRegistry.bindingReady) return false
+    const canNavigate = createWorkspaceToolNavigationGuard(workspaceToolStore, sessionId)
     return canvasWorkspaceEntryController.open({
       sessions: canvasRegistry.sessions,
       linkedCanvasIds: canvasRegistry.binding?.linkedCanvasIds ?? [],
       lastActiveCanvasId: canvasRegistry.binding?.lastActiveCanvasId,
-      openCanvas: (canvas) => handleOpenCanvas(canvas, pane),
+      openCanvas: (canvas) => handleOpenCanvas(canvas, pane, canNavigate),
       openLauncher: async () => {
+        if (!canNavigate()) return false
         handleCanvasWorkspaceTabChange('canvas', pane)
         return true
       },
@@ -1515,6 +1524,8 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
     canvasWorkspaceEntryController,
     handleCanvasWorkspaceTabChange,
     handleOpenCanvas,
+    sessionId,
+    workspaceToolStore,
   ])
 
   const handleRenameCanvas = React.useCallback(async (
@@ -1664,17 +1675,17 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
   }, [effectiveActiveTab, split, updateSplit])
 
   const handleOpenBrowserTab = React.useCallback(async () => {
-    try {
-      const state = browserState
-        ? await window.electronAPI.createAgentBrowserTab({ sessionId })
-        : await ensureBrowserOpen()
-      if (!state) return
-      publishBrowserState(state)
-      handleWorkspaceTabChange(getBrowserSidePanelTab(state.activeTabId))
-    } catch (error) {
-      console.error('[SidePanel] 新建受管浏览器标签失败:', error)
-    }
-  }, [browserState, ensureBrowserOpen, handleWorkspaceTabChange, publishBrowserState, sessionId])
+    /** 资源请求可完成，但用户后一次导航优先，旧响应不能改变焦点。 */
+    const canNavigate = createWorkspaceToolNavigationGuard(workspaceToolStore, sessionId)
+    const state = browserState
+      ? await window.electronAPI.createAgentBrowserTab({ sessionId })
+      : await ensureBrowserOpen()
+    if (!state) throw new Error('受管浏览器不可用')
+    // 资源始终登记到发起会话，只有前台焦点切换受用户后续导航约束。
+    publishBrowserState(state)
+    if (!canNavigate()) return
+    handleWorkspaceTabChange(getBrowserSidePanelTab(state.activeTabId))
+  }, [browserState, ensureBrowserOpen, handleWorkspaceTabChange, publishBrowserState, sessionId, workspaceToolStore])
 
   const handleOpenTerminal = React.useCallback((cwd?: string, title = '终端') => {
     const terminalId = crypto.randomUUID()
@@ -1685,6 +1696,18 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
     })
     handleWorkspaceTabChange(getTerminalSidePanelTab(terminalId))
   }, [handleWorkspaceTabChange, sessionId, setTerminalTabsMap])
+
+  React.useEffect(() => {
+    if (!isOpen) return
+    void runPendingWorkspaceToolRequest(workspaceToolStore, sessionId, {
+      canvasReady: Boolean(currentWorkspaceId && canvasRegistry.metadataReady && canvasRegistry.bindingReady),
+      canvasError: canvasRegistry.error,
+      openBrowser: handleOpenBrowserTab,
+      openTerminal: handleOpenTerminal,
+      openCanvas: () => handleOpenInitialCanvas(split?.focusedPane ?? null),
+      reportError: (message) => toast.error(message),
+    })
+  }, [workspaceToolStore, pendingWorkspaceTool, sessionId, isOpen, currentWorkspaceId, canvasRegistry.metadataReady, canvasRegistry.bindingReady, canvasRegistry.error, handleOpenBrowserTab, handleOpenTerminal, handleOpenInitialCanvas, split?.focusedPane])
 
   const handleOpenWorktreeTerminal = React.useCallback((worktree: WorktreeInfo) => {
     handleOpenTerminal(worktree.path, `终端 · ${worktree.branch}`)
@@ -1838,6 +1861,8 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
   }, [handleWorkspaceTabChange, sessionId, updateSplit])
 
   const handleCloseWorkspaceTab = React.useCallback((tab: AgentSidePanelTab) => {
+    // 关闭任意标签都撤销旧请求的焦点权限，包括活动标签值保持不变的情况。
+    workspaceToolStore.set(clearWorkspaceToolRequestAtom, sessionId)
     if (exitSplitInsteadOfClosingBoundTab(tab)) return
     if (tab === 'canvas') {
       forgetOpenedCanvasWorkspaceTab(tab)
@@ -1892,7 +1917,7 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
     if (tab === 'delegation') { handleCloseDelegationTab(); return }
     const browserTabId = getBrowserTabIdFromSidePanelTab(tab)
     if (browserTabId) void handleCloseBrowserTab(browserTabId)
-  }, [canvasRegistry, exitSplitInsteadOfClosingBoundTab, forgetOpenedCanvasWorkspaceTab, handleCloseBrowserTab, handleCloseChatTab, handleCloseDelegationTab, handleCloseExplorationTab, handleClosePreviewTab, returnToPreviousTabAfterClose, sessionId, setTerminalTabsMap, setWorkspaceComponentTabs, transferLeave.requestLeave])
+  }, [canvasRegistry, exitSplitInsteadOfClosingBoundTab, forgetOpenedCanvasWorkspaceTab, handleCloseBrowserTab, handleCloseChatTab, handleCloseDelegationTab, handleCloseExplorationTab, handleClosePreviewTab, returnToPreviousTabAfterClose, sessionId, setTerminalTabsMap, setWorkspaceComponentTabs, transferLeave.requestLeave, workspaceToolStore])
 
   React.useEffect(() => {
     const handleCloseActiveWorkspaceTab = (event: Event) => {
@@ -2376,23 +2401,11 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
             key={sessionId}
             tabs={workspaceTabs}
             activeTab={effectiveActiveTab}
-            onTabChange={handleWorkspaceTabChange}
-            onCloseTab={handleCloseWorkspaceTab}
-            onOpenBrowser={() => void handleOpenBrowserTab()}
-            onOpenFile={() => handleWorkspaceTabChange('files')}
-            onOpenTerminal={handleOpenTerminal}
-            onOpenWorkspaceComponent={(component) => {
-              if (!isWorkspaceComponentEnabled(component)) return
-              setWorkspaceComponentTabs((previous) => previous.includes(component) ? previous : [...previous, component])
-              handleWorkspaceTabChange(component)
+            onTabChange={(tab) => {
+              workspaceToolStore.set(clearWorkspaceToolRequestAtom, sessionId)
+              handleWorkspaceTabChange(tab)
             }}
-            onOpenVault={productivityTools.obsidianEnabled ? () => {
-              setWorkspaceComponentTabs((previous) => previous.includes('vault') ? previous : [...previous, 'vault'])
-              setIsOpen(true)
-              handleWorkspaceTabChange('vault')
-            } : undefined}
-            onOpenCanvas={() => void handleOpenInitialCanvas(split?.focusedPane ?? null)}
-            openCanvasDisabled={!currentWorkspaceId || !canvasRegistry.metadataReady || !canvasRegistry.bindingReady}
+            onCloseTab={handleCloseWorkspaceTab}
             visibleTabs={renderSplit && split ? { left: split.leftTab, right: split.rightTab } : undefined}
             focusedPane={renderSplit ? split?.focusedPane : undefined}
             onTabDragChange={handleTabDragChange}

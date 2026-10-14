@@ -1,15 +1,17 @@
 /**
  * AppShell - 应用主布局容器
  *
- * 布局结构：[LeftSidebar 可折叠] | [MainArea: TabBar + TabContent] | [RightSidePanel 可折叠]
+ * 布局结构：[LeftSidebar 可折叠] | [MainArea: TabBar + TabContent] | [RightSidePanel 可折叠] | [WorkspaceTools 工具菜单]
  *
  * MainArea 支持多标签页，Settings 视图为独立覆盖。
  */
 
 import * as React from 'react'
-import { useAtom, useAtomValue, useSetAtom } from 'jotai'
+import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
 import { LeftSidebar } from './LeftSidebar'
 import { RightSidePanel } from './RightSidePanel'
+import { WorkspaceTools } from './WorkspaceTools'
+import { subscribeWorkspaceToolRequestContext, workspaceToolsWidthAtom } from '@/atoms/workspace-tools'
 import { MainArea } from '@/components/tabs/MainArea'
 import { appModeAtom } from '@/atoms/app-mode'
 import { agentCanvasWorkspaceStateMapAtom, agentDiffPanelTabAtom, agentSessionComponentOpenMapAtom, agentSessionsAtom, agentSidePanelLayoutAtomFamily, agentSidePanelLayoutMapAtom, agentSidePanelSplitMapAtom, currentAgentSessionIdAtom, currentSessionSidePanelOpenAtom, isWorkspaceComponentTab, pruneAgentCanvasWorkspaceStates, pruneAgentSidePanelLayouts, fileBrowserExpandedPathsAtom, fileBrowserScrollTopMapAtom, pruneFileBrowserStateMap } from '@/atoms/agent-atoms'
@@ -74,6 +76,11 @@ function clampLeftSidebarWidth(width: number): number {
 }
 
 export function AppShell(): React.ReactElement {
+  /** 菜单占用独立布局空间，展开后重新计算工作区可用宽度。 */
+  const toolsMenuWidth = useAtomValue(workspaceToolsWidthAtom)
+  /** 同步取消旧宿主的未交付请求，切回旧会话也不能迟到创建资源。 */
+  const workspaceToolStore = useStore()
+  React.useEffect(() => subscribeWorkspaceToolRequestContext(workspaceToolStore), [workspaceToolStore])
   const appMode = useAtomValue(appModeAtom)
   const { workspaces, currentWorkspaceId } = useProjectActions()
   /** AppShell 单例同步所有项目的轻量 Canvas 索引。 */
@@ -234,6 +241,7 @@ export function AppShell(): React.ReactElement {
     ordinaryRightPanelMinimumWidth,
     leftSidebarOccupiedWidth,
     canUseCollapsedSidebarSpace,
+    toolsMenuWidth,
   )
   const effectiveWidePanelWidth = rightPanelLayout.widePanelWidthOverride === null
     ? clampRightPanelWidth(
@@ -242,6 +250,7 @@ export function AppShell(): React.ReactElement {
       rightPanelMinimumWidth,
       leftSidebarOccupiedWidth,
       canUseCollapsedSidebarSpace,
+      toolsMenuWidth,
     )
     : clampRightPanelWidth(
       rightPanelLayout.widePanelWidthOverride,
@@ -249,6 +258,7 @@ export function AppShell(): React.ReactElement {
       rightPanelMinimumWidth,
       leftSidebarOccupiedWidth,
       canUseCollapsedSidebarSpace,
+      toolsMenuWidth,
     )
   // 打开任一扩展工作区后，当前会话保持该宽度，避免在右侧 Tab 间切换时反复缩放。
   // 并排仅临时借用宽布局；退出后自动回到 Session 先前的普通/宽工作区宽度。
@@ -286,11 +296,7 @@ export function AppShell(): React.ReactElement {
     return () => window.removeEventListener('resize', updateViewportWidth)
   }, [])
 
-  React.useEffect(() => {
-    if (currentSessionId && clampedRightPanelWidth !== rightPanelLayout.width) {
-      setRightPanelLayout((previous) => ({ ...previous, width: clampedRightPanelWidth }))
-    }
-  }, [clampedRightPanelWidth, currentSessionId, rightPanelLayout.width, setRightPanelLayout])
+  // 视口或工具菜单只影响展示夹紧值；仅用户拖拽时保存偏好，避免展开菜单永久缩窄工作区。
 
   const handleMouseDown = React.useCallback((e: React.MouseEvent) => {
     if (!currentSessionId) return
@@ -311,7 +317,7 @@ export function AppShell(): React.ReactElement {
 
     const applyWidth = () => {
       const requestedWidth = startWidth + startX - latestClientX
-      const normalMaximumWidth = getRightPanelMaxWidth(viewportWidth, leftSidebarOccupiedWidth)
+      const normalMaximumWidth = getRightPanelMaxWidth(viewportWidth, leftSidebarOccupiedWidth, false, toolsMenuWidth)
       const shouldCollapseSidebar = canAutoCollapseSidebarForRightPanel && requestedWidth > normalMaximumWidth
       const nextSidebarCollapsed = sidebarCollapsedDuringDrag || shouldCollapseSidebar
       const nextLeftSidebarContentWidth = nextSidebarCollapsed ? COLLAPSED_LEFT_SIDEBAR_WIDTH : clampedLeftSidebarWidth
@@ -330,6 +336,7 @@ export function AppShell(): React.ReactElement {
         rightPanelMinimumWidth,
         nextLeftSidebarOccupiedWidth,
         allowFullAvailableWidth,
+        toolsMenuWidth,
       )
       setDraggedRightPanelWidth(latestWidth)
     }
@@ -373,7 +380,7 @@ export function AppShell(): React.ReactElement {
     rightPanelDragCleanup.current = cancelDrag
     document.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseup', onMouseUp)
-  }, [activeRightPanelSplit, canAutoCollapseSidebarForRightPanel, clampedLeftSidebarWidth, currentSessionId, displayedRightPanelWidth, isExpandedRightWorkspace, leftSidebarOccupiedWidth, rightPanelLayout.hasOpenedWideWorkspace, rightPanelMinimumWidth, setRightPanelLayout, setSidebarCollapsed, sidebarCollapsed, usesWidePanelLayout, viewportWidth])
+  }, [activeRightPanelSplit, canAutoCollapseSidebarForRightPanel, clampedLeftSidebarWidth, currentSessionId, displayedRightPanelWidth, isExpandedRightWorkspace, leftSidebarOccupiedWidth, rightPanelLayout.hasOpenedWideWorkspace, rightPanelMinimumWidth, setRightPanelLayout, setSidebarCollapsed, sidebarCollapsed, usesWidePanelLayout, viewportWidth, toolsMenuWidth])
 
   return (
     <>
@@ -432,6 +439,8 @@ export function AppShell(): React.ReactElement {
                 />
               </div>
             )}
+            {/* 菜单在工作区之外独立占位，原生浏览器只使用其左侧内容边界。 */}
+            <WorkspaceTools />
         </div>
         {currentWorkspace && <WorkspaceMemoryChangeObserver workspaceSlug={currentWorkspace.slug} />}
         {settingsOpen && (

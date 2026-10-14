@@ -6,9 +6,7 @@
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import type { WorkspaceMenuEntryInput } from '@proma/shared'
-import { Columns2, PanelRight, Plus, Repeat2, X } from 'lucide-react'
-import { OBSIDIAN_NAME } from '@/components/obsidian/obsidian-brand'
+import { Columns2, PanelRight, Repeat2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getScrollLeftToRevealTab } from '@/lib/tab-visibility'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
@@ -19,10 +17,9 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import { agentDiffUnseenChangesAtom, currentAgentSessionIdAtom } from '@/atoms/agent-atoms'
-import type { AgentSidePanelTab, SessionIndicatorStatus, WorkspaceComponentTab } from '@/atoms/agent-atoms'
+import type { AgentSidePanelTab, SessionIndicatorStatus } from '@/atoms/agent-atoms'
 import { groupRightWorkspaceTabs, type RightWorkspacePane } from '@/lib/right-workspace-split'
 import { getDelegationStatusIconClass } from '@/lib/agent-session-list'
-import type { ProductivityToolsSettings } from '@/types/settings'
 
 export interface RightWorkspaceTabDragState {
   tabId: AgentSidePanelTab
@@ -44,17 +41,6 @@ interface DiffPanelTabBarProps {
   activeTab: AgentSidePanelTab
   onTabChange: (tab: AgentSidePanelTab) => void
   onCloseTab: (tab: AgentSidePanelTab) => void
-  onOpenBrowser: () => void
-  onOpenFile: () => void
-  onOpenTerminal?: () => void
-  onOpenWorkspaceComponent?: (component: WorkspaceComponentTab) => void
-  onOpenVault?: () => void
-  /** 打开当前 Agent 的 Canvas 工作区；具体画布管理仍归属 Canvas Pane。 */
-  onOpenCanvas?: () => void
-  /** Canvas 关联尚未就绪或当前无项目时保留入口但禁止导航。 */
-  openCanvasDisabled?: boolean
-  productivityTools?: ProductivityToolsSettings
-  onOpenChat?: () => void
   /** 仅当前右侧 Tab 需要的紧凑动作，渲染于标签列表之后，不影响内容区布局。 */
   activeTabAction?: React.ReactNode
   visibleTabs?: Partial<Record<RightWorkspacePane, AgentSidePanelTab>>
@@ -71,15 +57,6 @@ export function DiffPanelTabBar({
   activeTab,
   onTabChange,
   onCloseTab,
-  onOpenBrowser,
-  onOpenFile,
-  onOpenTerminal,
-  onOpenWorkspaceComponent,
-  onOpenVault,
-  onOpenCanvas,
-  openCanvasDisabled = false,
-  productivityTools = { todosEnabled: true, calendarEnabled: true, obsidianEnabled: true },
-  onOpenChat,
   activeTabAction,
   visibleTabs,
   focusedPane,
@@ -94,8 +71,6 @@ export function DiffPanelTabBar({
   const currentSessionId = useAtomValue(currentAgentSessionIdAtom)
   const unseenChanges = unseenMap.get(currentSessionId ?? '') ?? false
   const [isSplitTabGroupHovered, setIsSplitTabGroupHovered] = React.useState(false)
-  /** 应用样式菜单按加号按钮的窗口内容区位置弹出。 */
-  const addTabTriggerRef = React.useRef<HTMLButtonElement>(null)
   const tabListRef = React.useRef<HTMLDivElement>(null)
   const scrollbarTrackRef = React.useRef<HTMLDivElement>(null)
   const scrollbarThumbRef = React.useRef<HTMLDivElement>(null)
@@ -104,73 +79,6 @@ export function DiffPanelTabBar({
   const barRef = React.useRef<HTMLDivElement>(null)
   const suppressClickTabRef = React.useRef<AgentSidePanelTab | null>(null)
   const activeTabDragCancelRef = React.useRef<(() => void) | null>(null)
-
-  /** 按当前可用功能生成菜单契约，主进程只展示这些固定动作和标签。 */
-  const workspaceMenuEntries = React.useMemo<WorkspaceMenuEntryInput[]>(() => [
-    { type: 'item', id: 'new-browser-tab', label: '新建浏览器标签' },
-    { type: 'item', id: 'open-file', label: '打开文件' },
-    ...(onOpenTerminal ? [{ type: 'item', id: 'new-terminal', label: '新建终端' } as const] : []),
-    ...(onOpenWorkspaceComponent ? [
-      { type: 'separator' } as const,
-      ...(productivityTools.todosEnabled ? [{ type: 'item', id: 'open-todos', label: '打开 Todo' } as const] : []),
-      ...(productivityTools.calendarEnabled ? [{ type: 'item', id: 'open-calendar', label: '打开日程' } as const] : []),
-      { type: 'item', id: 'open-skills', label: '打开 Skills' } as const,
-      { type: 'item', id: 'open-mcp', label: '打开 MCP' } as const,
-      { type: 'item', id: 'open-memory', label: '打开项目知识库' } as const,
-    ] : []),
-    ...(onOpenChat ? [
-      { type: 'separator' } as const,
-      { type: 'item', id: 'open-chat', label: '打开问答' } as const,
-    ] : []),
-    ...(onOpenWorkspaceComponent ? [{ type: 'item', id: 'open-automations', label: '打开定时任务' } as const] : []),
-    ...(onOpenVault ? [{ type: 'item', id: 'open-vault', label: `打开 ${OBSIDIAN_NAME}` } as const] : []),
-    ...((onOpenCanvas || onOpenWorkspaceComponent) ? [
-      { type: 'separator' } as const,
-      ...(onOpenCanvas ? [{ type: 'item', id: 'open-canvas', label: '打开画布', disabled: openCanvasDisabled } as const] : []),
-      ...(onOpenWorkspaceComponent ? [
-        { type: 'item', id: 'open-server-ops', label: '打开服务器运维' } as const,
-        { type: 'item', id: 'open-api-workbench', label: '打开接口工作台' } as const,
-        { type: 'item', id: 'open-capability-factory', label: '打开编排工厂' } as const,
-      ] : []),
-    ] : []),
-  ], [onOpenCanvas, onOpenChat, onOpenTerminal, onOpenVault, onOpenWorkspaceComponent, openCanvasDisabled, productivityTools.calendarEnabled, productivityTools.todosEnabled])
-
-  /** 打开应用样式菜单，并将选中的固定动作交回当前 renderer 回调执行。 */
-  const openWorkspaceMenu = React.useCallback(async (): Promise<void> => {
-    /** 当前按钮的内容区位置供主进程定位菜单子窗口。 */
-    const trigger = addTabTriggerRef.current
-    if (!trigger) return
-    /** 按钮的边界来自 renderer CSS 坐标，主进程会换算成窗口坐标。 */
-    const rect = trigger.getBoundingClientRect()
-    try {
-      /** 独立 renderer 浮层悬浮于 WebContentsView 之上，网页继续保持可见。 */
-      const action = await window.electronAPI.showWorkspaceMenu({
-        x: rect.right,
-        y: rect.bottom,
-        entries: workspaceMenuEntries,
-      })
-      if (!action) return
-      switch (action) {
-        case 'new-browser-tab': onOpenBrowser(); return
-        case 'open-file': onOpenFile(); return
-        case 'new-terminal': onOpenTerminal?.(); return
-        case 'open-todos': onOpenWorkspaceComponent?.('todos'); return
-        case 'open-calendar': onOpenWorkspaceComponent?.('calendar'); return
-        case 'open-skills': onOpenWorkspaceComponent?.('skills'); return
-        case 'open-mcp': onOpenWorkspaceComponent?.('mcp'); return
-        case 'open-memory': onOpenWorkspaceComponent?.('memory'); return
-        case 'open-chat': onOpenChat?.(); return
-        case 'open-automations': onOpenWorkspaceComponent?.('automations'); return
-        case 'open-vault': onOpenVault?.(); return
-        case 'open-canvas': if (!openCanvasDisabled) onOpenCanvas?.(); return
-        case 'open-server-ops': onOpenWorkspaceComponent?.('server-ops'); return
-        case 'open-api-workbench': onOpenWorkspaceComponent?.('api-workbench'); return
-        case 'open-capability-factory': onOpenWorkspaceComponent?.('capability-factory'); return
-      }
-    } catch (error) {
-      console.error('[右侧工作区] 打开应用菜单失败:', error)
-    }
-  }, [onOpenBrowser, onOpenCanvas, onOpenChat, onOpenFile, onOpenTerminal, onOpenVault, onOpenWorkspaceComponent, openCanvasDisabled, workspaceMenuEntries])
 
   React.useEffect(() => () => activeTabDragCancelRef.current?.(), [])
   React.useEffect(() => {
@@ -506,20 +414,6 @@ export function DiffPanelTabBar({
             <TooltipContent side="bottom">退出并排，保留当前标签</TooltipContent>
           </Tooltip>
         )}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              ref={addTabTriggerRef}
-              type="button"
-              className="mr-1 inline-flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-[background-color,color,transform] hover:bg-muted hover:text-foreground active:scale-[0.96]"
-              aria-label="添加右侧工作区标签"
-              onClick={() => { void openWorkspaceMenu() }}
-            >
-              <Plus className="size-4" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">添加标签</TooltipContent>
-        </Tooltip>
         {onClose && (
           <Tooltip>
             <TooltipTrigger asChild>
