@@ -6,7 +6,7 @@
  * core 层不依赖 Electron / Node fs，通过注入函数访问平台能力。
  */
 
-import type { AgentThinkingLevel, ChatMessage, FileAttachment, ProviderType } from '@proma/shared'
+import type { AgentThinkingLevel, ChatMessage, FileAttachment, ProviderType, TokenUsageAmounts } from '@proma/shared'
 
 // ===== 图片附件数据 =====
 
@@ -149,6 +149,14 @@ export interface StreamDoneEvent {
   stopReason?: 'end_turn' | 'tool_use' | string
 }
 
+/** Provider 在本轮响应中报告的真实 token 用量。 */
+export interface StreamUsageEvent {
+  type: 'usage'
+  usage: TokenUsageAmounts
+  /** Anthropic 原始未缓存输入；供跨事件合并后重新计算含缓存输入。 */
+  uncachedInputTokens?: number | null
+}
+
 /** 工具调用开始事件 */
 export interface StreamToolCallStartEvent {
   type: 'tool_call_start'
@@ -180,6 +188,7 @@ export type StreamEvent =
   | StreamReasoningBlockStopEvent
   | StreamErrorEvent
   | StreamDoneEvent
+  | StreamUsageEvent
   | StreamToolCallStartEvent
   | StreamToolCallDeltaEvent
 
@@ -285,4 +294,7 @@ export interface ProviderAdapter {
    * @returns 提取的标题文本，失败返回 null
    */
   parseTitleResponse(responseBody: unknown): string | null
+
+  /** 提取非流式响应的真实用量；兼容未实现此可选钩子的第三方适配器。 */
+  parseUsageResponse?(responseBody: unknown): TokenUsageAmounts | null
 }

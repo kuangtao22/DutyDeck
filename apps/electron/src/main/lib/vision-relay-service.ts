@@ -1,3 +1,6 @@
+import { createTokenUsageObserver } from './token-usage-observer'
+import { agentTokenUsageContext } from './token-usage-context'
+import { recordTokenUsage } from './token-usage-recorder'
 /**
  * 视觉助手（Vision Relay）服务。
  *
@@ -41,6 +44,8 @@ export type VisionRelayResult =
   | { ok: false; code: VisionRelayFailureCode; message: string }
 
 export interface InspectImageInput {
+  /** 视觉工具所属 Agent，用于根任务归属。 */
+  sessionId?: string
   imagePath: string
   instruction?: string
   allowedRoots: string[]
@@ -236,6 +241,7 @@ export async function inspectImageWithVisionRelay(input: InspectImageInput): Pro
       adapter,
       signal: input.signal,
       fetchFn: getFetchFn(await getEffectiveProxyUrl()),
+      onUsageAttempt: createTokenUsageObserver({ ...agentTokenUsageContext(input.sessionId, 'vision'), channelId: channel.id, channelName: channel.name, modelId: configured.modelId }, recordTokenUsage),
       onEvent: () => undefined,
     })
     return parseVisionResult(response.content.slice(0, MAX_RESULT_CHARS), attachment.filename)

@@ -1,3 +1,4 @@
+import { normalizePiTokenUsage, type TokenUsageObserver } from '../token-usage-observer'
 /** 工厂订阅及混合协议模型的独立文本调用：复用 Pi 认证与代理，不创建 Agent 会话或加载工具。 */
 import type { CapabilityFactoryCallUsage } from '@proma/shared'
 import { randomUUID } from 'node:crypto'
@@ -30,6 +31,8 @@ export interface CapabilityFactoryPiInput extends PiTitleGenerationInput, Capabi
 
 /** 一次文本生成所需参数；不接受工具和会话历史。 */
 interface CapabilityFactoryPiRequest {
+  /** 独立全局统计，原预算 usage 合同不变。 */
+  onUsageAttempt?: TokenUsageObserver
   /** 已合并格式说明的用户提示词。 */
   prompt: string
   /** 运行取消信号。 */
@@ -52,6 +55,11 @@ export async function completeCapabilityFactoryPiRequest(
   environment: PiTitleRequestEnvironment,
   transport: 'auto' | 'sse' = 'auto',
 ): Promise<string> {
+  /** 预检与预算拒绝不构成供应商调用。 */
+  let sent = false
+  /** 仅进入实际 runtime 时设置开始时间，不包含凭据和工具等待。 */
+  let startedAt = 0
+  let reported = false
   try {
     input.signal?.throwIfAborted()
     environment.installRequestProxyFetch()
@@ -66,11 +74,17 @@ export async function completeCapabilityFactoryPiRequest(
     /** Codex 显式关闭工具及推理；其他订阅协议使用 Pi 的最低推理开销路径。 */
     input.signal?.throwIfAborted()
     input.onBeforeSend?.()
+    startedAt = Date.now()
+    sent = true
     const response = await environment.runWithRequestProxy(environment.dispatcher, () => (
       model.api === 'openai-codex-responses'
         ? runtime.complete(model, context, { ...options, reasoningEffort: 'none', toolChoice: 'none' })
         : runtime.completeSimple(model, context, options)
     ))
+    /** 正文校验之前记录 transport 终态，空正文不额外计调用。 */
+    const status = response.stopReason === 'aborted' ? 'cancelled' : response.stopReason === 'error' ? 'failed' : 'completed'
+    reported = true
+    try { input.onUsageAttempt?.(normalizePiTokenUsage(response.usage, status), status, { startedAt, finishedAt: Date.now() }) } catch { /* 统计失败不影响业务 */ }
     /** SDK 的实际响应可带 usage；标题端口类型刻意精简，因此这里按未知输入校验。 */
     const usage = extractCapabilityFactoryPiUsage((response as unknown as { usage?: unknown }).usage)
     if (usage) input.onUsage?.(usage)
@@ -86,6 +100,11 @@ export async function completeCapabilityFactoryPiRequest(
       throw new Error(`模型 ${model.id} 未返回正文（${detail}），请检查模型设置或更换模型后重试。`)
     }
     return text
+  } catch (error) {
+    if (sent && !reported) {
+      try { input.onUsageAttempt?.(null, input.signal?.aborted || (error instanceof Error && error.name === 'AbortError') ? 'cancelled' : 'failed', { startedAt, finishedAt: Date.now() }) } catch { /* 统计失败不影响业务 */ }
+    }
+    throw error
   } finally {
     await environment.closeRequestProxyDispatcher(environment.dispatcher)
   }

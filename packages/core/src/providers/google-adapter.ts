@@ -1,3 +1,4 @@
+import { normalizeProviderUsage, usageObject } from './usage.ts'
 /**
  * Google Generative AI 供应商适配器
  *
@@ -21,6 +22,7 @@ import type {
   ContinuationMessage,
 } from './types.ts'
 import { getGeminiModelCapability, normalizeGeminiThinkingLevel } from '@proma/shared'
+import type { TokenUsageAmounts } from '@proma/shared'
 import { normalizeBaseUrl } from './url-utils.ts'
 import {
   getDeclaredReasoningSupport,
@@ -60,12 +62,18 @@ interface GoogleContent {
 
 /** Google SSE 流式响应 */
 interface GoogleStreamData {
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; cachedContentTokenCount?: number; thoughtsTokenCount?: number }
   candidates?: Array<{
     content?: {
       parts?: GooglePart[]
     }
     finishReason?: string
   }>
+}
+
+/** 将供应商报告归一为统一 Token 口径，未报告字段保持 null。 */
+function normalizeUsage(raw: unknown): TokenUsageAmounts {
+  return normalizeProviderUsage(raw, 'google')
 }
 
 /** Google 标题响应 */
@@ -303,12 +311,12 @@ export class GoogleAdapter implements ProviderAdapter {
     try {
       const parsed = JSON.parse(jsonLine) as GoogleStreamData
       const parts = parsed.candidates?.[0]?.content?.parts
-      if (!parts) return []
 
       const events: StreamEvent[] = []
+      if (parsed.usageMetadata) events.push({ type: 'usage', usage: normalizeUsage(parsed.usageMetadata) })
 
       // 遍历所有 parts，区分推理内容、正常文本和函数调用
-      for (const part of parts) {
+      for (const part of parts ?? []) {
         // 函数调用（Google 一次返回完整参数）
         if (part.functionCall) {
           const fc = part.functionCall
@@ -359,6 +367,12 @@ export class GoogleAdapter implements ProviderAdapter {
         generationConfig: { maxOutputTokens: 50 },
       }),
     }
+  }
+
+  /** 提取非流式响应用量，使用与流式相同的协议口径。 */
+  parseUsageResponse(responseBody: unknown): TokenUsageAmounts | null {
+    const raw = usageObject(responseBody)?.usageMetadata
+    return usageObject(raw) ? normalizeUsage(raw) : null
   }
 
   parseTitleResponse(responseBody: unknown): string | null {

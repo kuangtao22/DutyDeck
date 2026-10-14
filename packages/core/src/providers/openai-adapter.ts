@@ -1,3 +1,4 @@
+import { normalizeProviderUsage, usageObject } from './usage.ts'
 /**
  * OpenAI 兼容供应商适配器
  *
@@ -10,7 +11,7 @@
  * - 认证：Authorization: Bearer
  */
 
-import type { ProviderType } from '@proma/shared'
+import type { ProviderType, TokenUsageAmounts } from '@proma/shared'
 import type {
   ProviderAdapter,
   ProviderRequest,
@@ -56,6 +57,7 @@ interface OpenAIMessage {
 
 /** OpenAI SSE 数据块 */
 interface OpenAIChunkData {
+  usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } }
   choices?: Array<{
     delta?: {
       content?: string
@@ -190,6 +192,11 @@ function appendContinuationMessages(
   }
 }
 
+/** 将供应商报告归一为统一 Token 口径，未报告字段保持 null。 */
+function normalizeUsage(raw: unknown): TokenUsageAmounts {
+  return normalizeProviderUsage(raw, 'openai')
+}
+
 // ===== 适配器实现 =====
 
 export class OpenAIAdapter implements ProviderAdapter {
@@ -215,6 +222,7 @@ export class OpenAIAdapter implements ProviderAdapter {
       model: input.modelId,
       messages,
       stream: true,
+      stream_options: { include_usage: true },
       ...(input.temperature === undefined || !supportsTemperature(this.providerType, input.modelId)
         ? {}
         : { temperature: input.temperature }),
@@ -274,6 +282,8 @@ export class OpenAIAdapter implements ProviderAdapter {
       const chunk = JSON.parse(jsonLine) as OpenAIChunkData
       const delta = chunk.choices?.[0]?.delta
       const events: StreamEvent[] = []
+
+      if (chunk.usage) events.push({ type: 'usage', usage: normalizeUsage(chunk.usage) })
 
       if (delta?.content) {
         events.push({ type: 'chunk', delta: delta.content })
@@ -338,6 +348,12 @@ export class OpenAIAdapter implements ProviderAdapter {
         max_tokens: maxTokens,
       }),
     }
+  }
+
+  /** 提取非流式响应用量，使用与流式相同的协议口径。 */
+  parseUsageResponse(responseBody: unknown): TokenUsageAmounts | null {
+    const raw = usageObject(responseBody)?.usage
+    return usageObject(raw) ? normalizeUsage(raw) : null
   }
 
   parseTitleResponse(responseBody: unknown): string | null {

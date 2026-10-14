@@ -118,7 +118,7 @@ export function useGlobalChatListeners(): void {
         if (titleInput) {
           pendingTitles.delete(event.conversationId)
           console.log('[GlobalChatListeners] 开始生成标题:', titleInput)
-          window.electronAPI.generateTitle(titleInput).then((title) => {
+          window.electronAPI.generateTitle({ ...titleInput, conversationId: event.conversationId }).then((title) => {
             console.log('[GlobalChatListeners] 标题生成结果:', title)
             if (!title) return
             window.electronAPI

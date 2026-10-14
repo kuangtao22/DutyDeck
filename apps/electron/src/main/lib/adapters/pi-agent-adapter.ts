@@ -1,3 +1,4 @@
+import { normalizePiTokenUsage, type TokenUsageObserver } from '../token-usage-observer'
 /**
  * Pi Agent SDK 适配器
  *
@@ -270,6 +271,8 @@ export interface PiAgentQueryOptions extends AgentQueryInput {
   onPiEntryBindings?: (bindings: Record<string, string>) => void
   onModelResolved?: (model: string) => void
   onContextWindow?: (contextWindow: number) => void
+  /** 每个真实 assistant/provider 调用结束时回调；观察器异常不得影响业务。 */
+  onUsageAttempt?: TokenUsageObserver
   /** 权限已通过后的前后采集；失败不得改变工具结果。 */
   onFileChangeCapture?: (capture: import('@proma/shared').AgentFileChangeCapture) => Promise<void>
   onRetry?: (update: import('./pi-retry-control').PiRetryUpdate) => void
@@ -1873,6 +1876,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       // message_end 发生在 Pi 落盘前；保留对象身份，待 prompt 完成后从
       // SessionManager entries 精确取得 Pi entry ID，绝不按文本猜测。
       const finalAssistantUuids = new Map<AssistantMessage, string>()
+      /** 只按实际响应对象去重；重试复用展示 UUID 仍必须独立计量。 */
+      const observedUsageMessages = new WeakSet<AssistantMessage>()
 
       const persistPiEntryBindings = (): void => {
         const bindings: Record<string, string> = {}
@@ -1928,6 +1933,16 @@ export class PiAgentAdapter implements AgentProviderAdapter {
               break
             }
             case 'message_end': {
+              /** 在展示中断/原生重试门之前计量，每个实际 assistant 终态独立上报。 */
+              if (isAssistantPiMessage(event.message) && !observedUsageMessages.has(event.message as AssistantMessage)) {
+                observedUsageMessages.add(event.message as AssistantMessage)
+                /** SDK 失败对象的默认零不能冒充供应商报告。 */
+                const message = event.message as AssistantMessage
+                const status = message.stopReason === 'aborted' ? 'cancelled' : message.stopReason === 'error' ? 'failed' : 'completed'
+                try { input.onUsageAttempt?.(normalizePiTokenUsage(message.usage, status), status, { startedAt: message.timestamp, finishedAt: Date.now() }) } catch {
+                  console.warn('[Pi 统计] 观察器失败，不影响模型结果')
+                }
+              }
               if (active.interrupting && isAbortedAssistantMessage(event.message)) {
                 const converted = convertPiMessage(event.message, session.sessionId, input.model, {
                   uuid: assistantUuidFor(),

@@ -1,3 +1,5 @@
+import { createTokenUsageObserver } from './token-usage-observer'
+import { agentTokenUsageContext } from './token-usage-context'
 import { createAgentRunFileChanges } from './agent-run-file-changes-service'
 import { writeAgentRunFileChanges } from './agent-run-file-change-store'
 /**
@@ -68,6 +70,7 @@ import { getLocalProjectRootStatus } from './project-root-health'
 import { getMcpApiKeyEnvironment, getMcpOAuthHeaders } from './mcp-oauth-service'
 import { getAgentWorkspacePath, getAgentSessionWorkspacePath, getSdkConfigDir, getWorkspaceSkillsDir } from './config-paths'
 import { getRuntimeStatus } from './runtime-init'
+import { recordTokenUsage } from './token-usage-recorder'
 import { getSettings } from './settings-service'
 import { buildSystemPrompt, buildDynamicContext } from './agent-prompt-builder'
 import { resolveProjectInstructions } from './project-instruction-resolver'
@@ -433,7 +436,7 @@ export class AgentOrchestrator {
    *
    * 复用当前 Agent 的 Pi 模型路由；非中止失败统一返回本地兜底标题。
    */
-  async generateTitle(input: AgentGenerateTitleInput, signal?: AbortSignal): Promise<string | null> {
+  async generateTitle(input: AgentGenerateTitleInput, signal?: AbortSignal, usageSessionId?: string): Promise<string | null> {
     const { userMessage, channelId, modelId } = input
     if (signal?.aborted) return null
     console.log('[Agent 标题生成] 开始生成标题:', { channelId, modelId, userMessage: userMessage.slice(0, 50) })
@@ -478,6 +481,7 @@ export class AgentOrchestrator {
 
       /** Pi 返回的原始可见标题文本。 */
       const generatedTitle = await generatePiTitle({
+        onUsageAttempt: createTokenUsageObserver({ ...agentTokenUsageContext(usageSessionId, 'title'), channelId, channelName: channel.name, modelId, hiddenRetriesPossible: true }, recordTokenUsage),
         channelId,
         channelName: channel.name,
         provider: channel.provider,
@@ -540,7 +544,7 @@ export class AgentOrchestrator {
         updateAgentSessionMeta(sessionId, { explorationTitleInitializedAt })
       }
 
-      const title = await this.generateTitle({ userMessage, channelId, modelId }, signal)
+      const title = await this.generateTitle({ userMessage, channelId, modelId }, signal, sessionId)
         ?? (isFirstExplorationMessage ? createFallbackTitle(userMessage) : null)
       if (!isCurrent()) return
       if (!title || signal?.aborted) return
@@ -1412,7 +1416,7 @@ export class AgentOrchestrator {
           const sessionModel = current?.channelId && current.modelId ? { channelId: current.channelId, modelId: current.modelId } : null
           return {
             resolveModels: (definition) => resolveCapabilityFactoryModels(definition, listChannels(), sessionModel),
-            callModel: createCapabilityFactoryModelCall({ listChannels, resolveApiKey: resolveChannelRuntimeApiKey,
+            callModel: createCapabilityFactoryModelCall({ usageContext: () => agentTokenUsageContext(sessionId, 'factory'), listChannels, resolveApiKey: resolveChannelRuntimeApiKey,
               resolveSubscriptionCredentials: resolveCapabilityFactorySubscriptionCredentials,
               resolveProxyUrl: getEffectiveProxyUrl, sessionModel: () => sessionModel }),
           }
@@ -2344,6 +2348,12 @@ export class AgentOrchestrator {
         } } : {}),
         channelId,
         channelName: channel.name,
+        /** 主进程冻结归属，utility 仅传回供应商用量，父任务不再次计量 result。 */
+        onUsageAttempt: createTokenUsageObserver({
+          ...agentTokenUsageContext(sessionId, knowledgeExecutionRun ? 'knowledge' : input.triggeredBy === 'automation' ? 'automation' : input.triggeredBy === 'delegation' ? 'delegation' : 'agent'),
+          channelId: channel.id, channelName: channel.name, modelId: selectedModelId,
+          hiddenRetriesPossible: true,
+        }, (record) => recordTokenUsage({ ...record, modelId: resolvedModel })),
         proxyUrl,
         runtimeEnv,
         ...(maxTurns != null && { maxTurns }),

@@ -1,3 +1,6 @@
+import { registerTokenUsageIpc } from './lib/token-usage-ipc'
+import { initializeTokenUsageRecording } from './lib/token-usage-recorder'
+import { agentTokenUsageContext } from './lib/token-usage-context'
 import { readAgentRunFileChanges } from './lib/agent-run-file-change-store'
 import { API_WORKBENCH_CHANNELS, apiWorkbenchManualDenialReason, isOrdinaryTopLevelAgentSession } from '@proma/shared'
 import { registerApiWorkbenchIpc } from './lib/api-workbench/api-ipc'
@@ -2249,6 +2252,23 @@ function getAgentCanvasBindingStore(): AgentCanvasBindingStore {
 }
 
 export function registerIpcHandlers(): void {
+  initializeTokenUsageRecording()
+  /** Token 用量只向主窗口开放，CSV 目标由系统保存对话框授权。 */
+  registerTokenUsageIpc(ipcMain, {
+    assertSender: (event) => {
+      const window = getMainWindow()
+      if (!window || window.isDestroyed() || window.webContents.id !== event.sender.id || event.senderFrame !== event.sender.mainFrame) throw new Error('仅主窗口可以读取 Token 统计')
+    },
+    sessionExists: (type, id) => type === 'agent' ? !!getAgentSessionMeta(id) : listConversations().some(conversation => conversation.id === id),
+    saveCsv: async (csv, query) => {
+      const window = getMainWindow()
+      if (!window || window.isDestroyed()) return false
+      const result = await dialog.showSaveDialog(window, { title: '导出 Token 用量', defaultPath: `token-usage-${query.from}-${query.to}.csv`, filters: [{ name: 'CSV 表格', extensions: ['csv'] }] })
+      if (result.canceled || !result.filePath) return false
+      writeTextFileAtomic(result.filePath, csv)
+      return true
+    },
+  })
   /** 本地模型状态只通过结构化快照广播，绝不把引擎路径或短期令牌发给 renderer。 */
   registerLocalModelIpcHandlers(ipcMain, {
     assertSender: (event) => {
@@ -2468,6 +2488,7 @@ export function registerIpcHandlers(): void {
       resolveModels: (definition: CapabilitySceneDefinition) =>
         resolveCapabilityFactoryModels(definition, listChannels(), sessionModel),
       callModel: createCapabilityFactoryModelCall({
+        usageContext: () => agentTokenUsageContext(sessionId, 'factory'),
         listChannels,
         resolveApiKey: resolveChannelRuntimeApiKey,
         resolveSubscriptionCredentials: resolveCapabilityFactorySubscriptionCredentials,

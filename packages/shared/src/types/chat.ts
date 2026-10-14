@@ -247,6 +247,8 @@ export interface ChatSendInput {
  * 生成对话标题的输入参数
  */
 export interface GenerateTitleInput {
+  /** 标题模型调用归属的主对话，旧调用兼容缺省。 */
+  conversationId?: string
   /** 用户消息内容（用于生成标题） */
   userMessage: string
   /** 渠道 ID */

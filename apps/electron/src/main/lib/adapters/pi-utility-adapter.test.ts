@@ -621,3 +621,23 @@ test('Given 本轮文件采集钩子 When 跨 utility 执行 Then 不序列化�
     queryId: 'capture-query', sessionId: 'capture-session', payload: {} } as AgentRuntimeEvent)
   await expect(pendingNext).resolves.toMatchObject({ done: true })
 })
+
+test('Given 用量回调 When utility query Then 不序列化函数并逐次返回失败与成功用量', async () => {
+  /** 内存观察器只验证跨进程协议，不打开生产账本。 */
+  const events: unknown[] = []
+  const input = { ...createQueryInput('usage-session'), onUsageAttempt: (usage: import('@proma/shared').TokenUsageAmounts | null, status: string) => { events.push({ usage, status }) } }
+  const adapter = new PiUtilityAdapter()
+  const iterator = adapter.query(input, 'usage-query')[Symbol.asyncIterator]()
+  const pending = iterator.next()
+  await waitUntil(() => runtimeStates.length === 1)
+  const runtime = runtimeStates[0]!
+  const payload = runtime.requestPayloads[0] as { input: Record<string, unknown> }
+  expect(payload.input.onUsageAttempt).toBeUndefined()
+  for (const status of ['failed', 'completed']) {
+    runtime.eventListener?.({ kind: 'event', method: AGENT_RUNTIME_METHODS.EVENT_QUERY_CALLBACK, queryId: 'usage-query', sessionId: 'usage-session', payload: { callback: 'usage_attempt', payload: { usage: null, status } } } as AgentRuntimeEvent)
+  }
+  expect(events).toEqual([{ usage: null, status: 'failed' }, { usage: null, status: 'completed' }])
+  runtime.stop.resolve()
+  runtime.eventListener?.({ kind: 'event', method: AGENT_RUNTIME_METHODS.EVENT_QUERY_END, queryId: 'usage-query', sessionId: 'usage-session', payload: {} } as AgentRuntimeEvent)
+  await expect(pending).resolves.toMatchObject({ done: true })
+})

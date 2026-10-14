@@ -27,6 +27,7 @@ import {
   HardDriveDownload,
   HardDrive,
   Images,
+  BarChart3,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ShortcutKeycaps } from "@/components/shortcuts/ShortcutKeycaps";
@@ -68,6 +69,7 @@ import { VoiceInputSettings } from "./VoiceInputSettings";
 import { PathManagementSettings } from "./PathManagementSettings";
 import { StorageSettings } from "./StorageSettings";
 import { OnboardingSettings } from "./OnboardingSettings";
+import { TokenUsageSettings } from "./TokenUsageSettings";
 import { MediaSettings } from "./MediaSettings";
 import { useOpenSession } from '@/hooks/useOpenSession'
 
@@ -82,6 +84,7 @@ interface TabItem {
 const BASE_TABS: TabItem[] = [
   { id: "general", label: "通用设置", icon: <Settings size={16} /> },
   { id: "channels", label: "模型配置", icon: <Radio size={16} /> },
+  { id: "token-usage", label: "Token 统计", icon: <BarChart3 size={16} /> },
   { id: "media", label: "媒体生成", icon: <Images size={16} /> },
   { id: "vision-relay", label: "视觉助手", icon: <Eye size={16} /> },
   { id: "prompts", label: "提示词管理", icon: <BookOpen size={16} /> },
@@ -129,6 +132,8 @@ function renderTabContent(tab: SettingsTab): React.ReactElement {
       return <GeneralSettings />;
     case "channels":
       return <ChannelSettings />;
+    case "token-usage":
+      return <TokenUsageSettings />;
     case "media":
       return <MediaSettings />;
     case "vision-relay":

@@ -1,3 +1,5 @@
+import { createTokenUsageObserver, type TokenUsageContext } from '../token-usage-observer'
+import { recordTokenUsage } from '../token-usage-recorder'
 /**
  * 编排工厂的模型端口：把「场景声明的模型」落到**一个真实渠道**上发一次请求。
  *
@@ -49,6 +51,10 @@ export interface CapabilityFactoryModelCall {
 
 /** 运行依赖的宿主能力；注入是为了让 runner 能在 bun test 里离线跑。 */
 export interface CapabilityFactoryModelCallDeps {
+  /** 生产宿主提供根任务与项目快照；无宿主上下文的离线端口不写全局数据。 */
+  usageContext?: () => Pick<TokenUsageContext, 'taskId' | 'taskTitle' | 'sessionId' | 'sessionType' | 'projectId' | 'projectName' | 'source'>
+  /** 离线测试可注入内存记录端，不触碰用户数据。 */
+  recordUsage?: typeof recordTokenUsage
   /** 当前可用渠道（含模型清单）。 */
   listChannels(): Channel[]
   /** 解密渠道凭据；失败即视为该渠道不可用。 */
@@ -235,6 +241,8 @@ export function createCapabilityFactoryModelCall(
         throw new Error(`模型不存在或已停用：${modelId}，无法执行这一步`)
       }
       invocation.signal.throwIfAborted()
+      /** 冻结真实渠道、模型与主任务快照；每次 transport attempt 独立记账。 */
+      const observer = deps.usageContext ? createTokenUsageObserver({ ...deps.usageContext(), channelId: channel.id, channelName: channel.name, modelId, source: 'factory', hiddenRetriesPossible: channel.provider === 'openai-codex' || channel.provider === 'github-copilot' || channel.provider === 'xai' || channel.provider === 'opencode-go-openai' }, deps.recordUsage ?? recordTokenUsage) : undefined
       /** 格式说明由 runner 单独给出：这里是唯一一次把它拼进真实提示词的地方。 */
       const userMessage = invocation.formatInstruction
         ? `${invocation.prompt}\n\n${invocation.formatInstruction}`
@@ -253,6 +261,7 @@ export function createCapabilityFactoryModelCall(
           proxyUrl: await deps.resolveProxyUrl(),
           onBeforeSend: () => { invocation.signal.throwIfAborted(); if (reservation) ledger!.markSent(reservation, invocation.signal, true) },
           onUsage: (actual) => { usage = actual },
+          onUsageAttempt: observer,
         })
         return complete(text, modelId)
       }
@@ -275,6 +284,8 @@ export function createCapabilityFactoryModelCall(
       /** 仅工厂包装 fetch，逐次观察 SSE 在首事件前的内部重试。 */
       const transport = getFetchFn(await deps.resolveProxyUrl()) ?? globalThis.fetch
       /** 包装仅作用于此次工厂调用，不改变聊天的全局重试策略。 */
+      /** 预算拒绝不能变成虚假的供应商失败记录。 */
+      let sent = false
       const meteredFetch: typeof fetch = Object.assign(async (...args: Parameters<typeof fetch>) => {
         invocation.signal.throwIfAborted()
         try {
@@ -283,6 +294,7 @@ export function createCapabilityFactoryModelCall(
           /** 本地预算/持久化拒绝不是网络瞬态错误，禁止 SSE 继续等待重试。 */
           throw new DOMException(error instanceof Error ? error.message : String(error), 'AbortError')
         }
+        sent = true
         return transport(...args)
       }, { preconnect: globalThis.fetch.preconnect })
       const response = await streamSSE({
@@ -290,6 +302,12 @@ export function createCapabilityFactoryModelCall(
         adapter,
         signal: invocation.signal,
         fetchFn: meteredFetch,
+        onUsageAttempt: (amounts, status, timing) => {
+          if (sent) observer?.(amounts, status, timing)
+          sent = false
+          /** 预算账本仍保存不含缓存的输入，保持既有计费合同。 */
+          if (amounts?.inputTokens != null && amounts.outputTokens != null) usage = { inputTokens: Math.max(0, amounts.inputTokens - (amounts.cacheReadTokens ?? 0) - (amounts.cacheWriteTokens ?? 0)), outputTokens: amounts.outputTokens, ...(amounts.cacheReadTokens === null ? {} : { cacheReadTokens: amounts.cacheReadTokens }), ...(amounts.cacheWriteTokens === null ? {} : { cacheWriteTokens: amounts.cacheWriteTokens }) }
+        },
         onEvent: () => undefined,
       })
       if (!response.content.trim()) {

@@ -131,3 +131,23 @@ test('Given Pi 实际 usage When 响应 Then 透传 token 且不把 SDK 零成�
   expect(extractCapabilityFactoryPiUsage({ input: 12 })).toBeUndefined()
   expect(extractCapabilityFactoryPiUsage({ input: -1, output: 5 })).toBeUndefined()
 })
+
+test('Given 工厂预算拒绝或已发送失败 When 统计 Then 仅实际请求进入全局账本', async () => {
+  /** 失败端口不联网，模拟真实发送边界之后的异常。 */
+  const complete: PiTitleRuntime['completeSimple'] = async () => { throw new Error('network') }
+  const events: unknown[] = []
+  const runtime = { complete, completeSimple: complete }
+  const onUsageAttempt: import('../token-usage-observer').TokenUsageObserver = (usage, status) => { events.push({ usage, status }) }
+  await completeCapabilityFactoryPiRequest(runtime, { id: 'test' } as Model<Api>, { prompt: '问题', onBeforeSend: () => { throw new Error('budget') }, onUsageAttempt }, environment()).catch(() => undefined)
+  expect(events).toHaveLength(0)
+  await completeCapabilityFactoryPiRequest(runtime, { id: 'test' } as Model<Api>, { prompt: '问题', onUsageAttempt }, environment()).catch(() => undefined)
+  expect(events).toEqual([{ usage: null, status: 'failed' }])
+})
+
+test('Given 工厂收到正常空正文 When 业务校验失败 Then 调用仅统计一次完成终态', async () => {
+  /** 空正文是业务失败，但传输有正常完成且不能被重复累计。 */
+  const complete: PiTitleRuntime['completeSimple'] = async () => ({ content: [], stopReason: 'stop' })
+  const events: unknown[] = []
+  await completeCapabilityFactoryPiRequest({ complete, completeSimple: complete }, { id: 'test' } as Model<Api>, { prompt: '问题', onUsageAttempt: (usage, status) => events.push({ usage, status }) }, environment()).catch(() => undefined)
+  expect(events).toEqual([{ usage: null, status: 'completed' }])
+})

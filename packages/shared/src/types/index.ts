@@ -22,6 +22,7 @@ export * from './proxy'
 
 // Chat 相关类型
 export * from './chat'
+export * from './token-usage'
 
 // Agent 相关类型
 export * from './agent'

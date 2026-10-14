@@ -1076,6 +1076,7 @@ function buildVisionRelayTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDefi
       async execute(_id: string, params: unknown, signal?: AbortSignal) {
         const input = params as { imagePath?: string; instruction?: string }
         const result = await inspectImageWithVisionRelay({
+          sessionId: ctx.sessionId,
           imagePath: input.imagePath ?? '',
           instruction: input.instruction,
           allowedRoots: ctx.allowedRoots ?? [],

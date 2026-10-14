@@ -114,3 +114,29 @@ describe('Pi 自动标题生成', () => {
     })
   })
 })
+
+describe('标题调用真实用量边界', () => {
+  test.each(['stop', 'error', 'aborted'] as const)('Given %s 终态含缓存 When 标题完成 Then 只上报一次供应商用量', async (stopReason) => {
+    /** 实际完成响应，缓存输入与非缓存输入分开提供。 */
+    const complete: PiTitleRuntime['completeSimple'] = async () => ({ content: [{ type: 'text', text: '标题' }], stopReason, usage: { input: 10, output: 2, cacheRead: 20, cacheWrite: 3, totalTokens: 35, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } })
+    /** 内存事件记录不触碰生产账本。 */
+    const events: unknown[] = []
+    await completePiTitleRequest({ complete, completeSimple: complete }, model, '问题', createEnvironment(), undefined, 'auto', (usage, status) => events.push({ usage, status })).catch(() => undefined)
+    expect(events).toEqual([{ usage: { inputTokens: 33, outputTokens: 2, cacheReadTokens: 20, cacheWriteTokens: 3 }, status: stopReason === 'stop' ? 'completed' : stopReason === 'error' ? 'failed' : 'cancelled' }])
+  })
+  test('Given 预取消或运行时网络失败 When 请求 Then 分别零调用或未知失败一次', async () => {
+    /** 不进入网络的模拟运行时。 */
+    const complete: PiTitleRuntime['completeSimple'] = async () => { throw new Error('network') }
+    const events: unknown[] = []
+    const runtime = { complete, completeSimple: complete }
+    await completePiTitleRequest(runtime, model, '问题', createEnvironment(), AbortSignal.abort(), 'auto', (usage, status) => events.push({ usage, status })).catch(() => undefined)
+    expect(events).toHaveLength(0)
+    await completePiTitleRequest(runtime, model, '问题', createEnvironment(), undefined, 'auto', (usage, status) => events.push({ usage, status })).catch(() => undefined)
+    expect(events).toEqual([{ usage: null, status: 'failed' }])
+  })
+  test('Given 观察器异常 When 标题成功 Then 仍返回标题', async () => {
+    /** 返回正常标题，观察器模拟磁盘失败。 */
+    const complete: PiTitleRuntime['completeSimple'] = async () => ({ content: [{ type: 'text', text: '成功' }], stopReason: 'stop' })
+    await expect(completePiTitleRequest({ complete, completeSimple: complete }, model, '问题', createEnvironment(), undefined, 'auto', () => { throw new Error('disk') })).resolves.toBe('成功')
+  })
+})
