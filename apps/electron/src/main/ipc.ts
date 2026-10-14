@@ -5,6 +5,9 @@ import { readAgentRunFileChanges } from './lib/agent-run-file-change-store'
 import { API_WORKBENCH_CHANNELS, apiWorkbenchManualDenialReason, isOrdinaryTopLevelAgentSession } from '@proma/shared'
 import { registerApiWorkbenchIpc } from './lib/api-workbench/api-ipc'
 import { registerCapabilityFactoryIpc } from './lib/capability-factory/capability-factory-ipc'
+import { registerInteractionDesignIpc } from './lib/interaction-design/ipc'
+import { createProductionInteractionDesignAccess, setInteractionDesignHost } from './lib/interaction-design/integration'
+import { INTERACTION_DESIGN_CHANNELS } from '@proma/shared'
 import { CAPABILITY_FACTORY_CHANNELS } from '@proma/shared'
 import { createCapabilityFactorySessionRuntime } from './lib/capability-factory/capability-factory-session-runtime'
 import { setCapabilityFactoryChangeSink } from './lib/capability-factory/capability-factory-events'
@@ -3070,6 +3073,20 @@ export function registerIpcHandlers(): void {
   const mediaAssets = new MediaAssetService({ pathResolver: designPathResolver, store: designStore, images: mediaImages,
     resolveImagePath: (projectId, assetId) => designAssetService.resolveAssetPath(projectId, assetId),
     runWorkspaceWrite: (projectId, effect) => workspaceOperationGuard.runWorkspaceWrite(projectId, effect) })
+  /** 原型持有独立素材副本；图片引用先由现有媒体服务验证身份与版本。 */
+  setInteractionDesignHost({
+    readMediaAsset: (workspaceId, reference) => mediaAssets.read(workspaceId, reference),
+    onChanged: (event) => {
+      for (const contents of listAuthorizedDesignWebContents()) {
+        if (!contents.isDestroyed()) contents.send(INTERACTION_DESIGN_CHANNELS.CHANGED, event)
+      }
+    },
+  })
+  registerInteractionDesignIpc({
+    ipc: ipcMain,
+    isAuthorizedSender: (event) => listAuthorizedDesignWebContents().some((contents) => !contents.isDestroyed() && contents.id === event.sender.id),
+    createAccess: (sessionId, assertCaller) => createProductionInteractionDesignAccess(sessionId, { assertCaller }),
+  })
   /** 统一模型目录只组合独立图片/音频配置，凭据仍按运行时单条解密。 */
   const unifiedMediaCatalog = new UnifiedMediaModelCatalog({
     readImageCatalog: () => getImageGenerationStore().readPublic(),

@@ -133,3 +133,6 @@ export * from './capability-factory'
 export * from './capability-factory-ipc'
 export * from './capability-factory-batch'
 export * from './agent-run-file-changes'
+
+export * from './interaction-design'
+export * from './interaction-design-validation'

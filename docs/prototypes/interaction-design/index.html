@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>DutyDeck · 交互设计工作台</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell" id="app-shell">
+    <aside class="project-sidebar" aria-label="项目与会话">
+      <div class="window-controls"><span></span><span></span><span></span><b>DutyDeck</b></div>
+      <div class="project-identity"><span class="project-mark">D</span><div><strong>我的工作区</strong><small>本地项目</small></div></div>
+      <button class="sidebar-action" data-action="new-project"><span data-icon="plus"></span>新建设计原型</button>
+      <div class="sidebar-label">当前项目</div>
+      <div class="project-folder"><span data-icon="folder"></span><strong>拾光</strong><span class="tiny muted">⌄</span></div>
+      <button class="session-link selected" data-action="toggle-chat"><span data-icon="chat"></span><span>设计习惯养成体验</span></button>
+      <div class="sidebar-label second-label">项目原型</div>
+      <button class="prototype-link selected" data-action="home"><span class="project-dot"></span><span>习惯养成 App<small>4 个页面 · 当前方案</small></span></button>
+      <div class="sidebar-spacer"></div>
+      <div class="sidebar-note"><span data-icon="folder"></span><span>设计跟随项目保存<br><small>会话与原型共享上下文</small></span></div>
+      <button class="sidebar-footer" data-action="definition"><span data-icon="book"></span>模块业务定义<span data-icon="arrow-up-right"></span></button>
+    </aside>
+
+    <section class="conversation" id="conversation" aria-label="DutyDeck 主会话" hidden>
+      <header class="pane-header"><span data-icon="chat"></span><strong>设计习惯养成体验</strong><button class="icon-button" data-action="toggle-chat" aria-label="收起主会话"><span data-icon="close"></span></button></header>
+      <div class="conversation-body" id="messages" aria-live="polite">
+        <div class="chat-user">做一个温和、简洁的习惯养成 App。从初次进入到完成一次打卡，流程要能点通。</div>
+        <div class="assistant-heading"><span class="agent-mark" data-icon="sparkles"></span><strong>DutyDeck Agent</strong><span class="tag">演示</span></div>
+        <p>已整理为 4 个页面：欢迎、今日习惯、习惯详情和完成反馈。你可以先演示关键流程，也可以选中一个元素继续修改。</p>
+        <div class="context-card"><span data-icon="layers"></span><div><strong>习惯养成 App</strong><small>4 个页面 · 1 条主要流程</small></div><button class="text-button" data-action="home">查看</button></div>
+        <div class="chat-meta">示例对话 · 未连接真实模型</div>
+      </div>
+      <form id="agent-form" class="composer-area">
+        <div class="selection-reference" id="selection-reference"></div>
+        <label class="sr-only" for="agent-input">给 Agent 的修改要求</label>
+        <textarea id="agent-input" rows="4" placeholder="描述你想如何调整选中的页面…">将打卡按钮改为「完成今日阅读」，让操作结果更明确。</textarea>
+        <div class="composer-actions"><span class="tiny muted">局部修改 · 生成候选</span><button class="primary compact" id="agent-send" type="submit"><span data-icon="arrow-up"></span>发送</button></div>
+        <p class="composer-disclaimer">演示提交会生成预设的文案修改候选。</p>
+      </form>
+    </section>
+
+    <main class="workspace" id="workspace">
+      <header class="workspace-tabs"><div class="active-workspace-tab"><span data-icon="layout"></span>交互设计<span class="tiny muted">/</span><span id="workspace-project">拾光</span></div><div class="flex-spacer"></div><span class="prototype-badge"><i></i>交互原型</span><button class="icon-button" data-action="toggle-focus" title="切换专注模式" aria-label="切换专注模式"><span data-icon="expand"></span></button></header>
+      <section class="module" id="module">
+        <div class="module-head">
+          <div class="module-title"><div class="eyebrow">设计工作台</div><h1 id="prototype-title">习惯养成 App <span class="tag">草稿</span></h1><p id="prototype-subtitle">拾光 · 从第一次打开，到养成一个小习惯</p></div>
+          <div class="head-actions"><button class="button" data-action="toggle-chat"><span data-icon="sparkles"></span><span class="action-text">Agent 会话</span></button><button class="button" data-action="export"><span data-icon="download"></span><span class="action-text">导出</span></button><button class="primary" data-action="play"><span data-icon="play"></span><span>演示</span></button></div>
+        </div>
+        <nav class="module-navigation" aria-label="设计工作台视图"><div class="tab-group" role="tablist"><button role="tab" aria-selected="true" class="module-tab active" data-view="design"><span data-icon="layout"></span>页面设计</button><button role="tab" aria-selected="false" class="module-tab" data-view="flow"><span data-icon="flow"></span>交互流程</button><button role="tab" aria-selected="false" class="module-tab" data-view="versions"><span data-icon="history"></span>版本<span class="count" id="version-count">3</span></button></div><button class="text-button module-definition" data-action="definition"><span data-icon="book"></span>业务定义</button></nav>
+        <div id="candidate-banner" class="candidate-banner" hidden></div>
+        <section id="view-design" class="view-panel design-layout" aria-label="页面设计">
+          <aside class="pages-panel" id="pages-panel" aria-label="原型页面">
+            <div class="panel-heading"><strong>页面 <span class="muted" id="page-count">4</span></strong><button class="icon-button" data-action="add-page" aria-label="添加页面"><span data-icon="plus"></span></button><button class="icon-button drawer-close" data-action="close-drawers" aria-label="关闭页面列表"><span data-icon="close"></span></button></div>
+            <div id="page-list" class="page-list"></div>
+            <div class="page-panel-bottom"><span data-icon="flow"></span><span>首次使用与打卡<small>从欢迎页开始</small></span><button class="icon-button" data-action="flow" aria-label="查看主要流程"><span data-icon="chevron-right"></span></button></div>
+          </aside>
+          <div class="design-center">
+            <div class="canvas-toolbar"><button class="icon-button pages-toggle" data-action="toggle-pages" aria-label="打开页面列表"><span data-icon="panel"></span></button><div class="segmented" aria-label="画布显示方式"><button class="active" data-canvas-mode="overview" aria-pressed="true">总览</button><button data-canvas-mode="single" aria-pressed="false">单页</button></div><div class="toolbar-divider"></div><button class="text-button" data-action="device" id="device-button" aria-haspopup="dialog"><span data-icon="phone"></span><span class="device-label">手机</span><span data-icon="chevron-down"></span></button><span class="flex-spacer"></span><button class="icon-button" data-action="undo" id="undo-button" disabled aria-label="撤销修改"><span data-icon="undo"></span></button><button class="icon-button" data-action="redo" id="redo-button" disabled aria-label="重做修改"><span data-icon="redo"></span></button><button class="icon-button" data-action="style" aria-label="打开风格探索" title="风格探索"><span data-icon="palette"></span></button><button class="icon-button inspector-toggle" data-action="toggle-inspector" aria-label="打开属性面板"><span data-icon="sliders"></span></button></div>
+            <div class="canvas" id="canvas"><div class="canvas-intro"><span class="muted tiny">首次使用与打卡</span><span class="tiny muted">选择页面或元素，继续细化</span></div><div class="artboard-strip" id="artboard-strip"></div><div class="canvas-bottom"><span><span class="key">⌘</span> <span class="key">Z</span> 撤销</span><div class="zoom-control"><button class="icon-button" data-action="zoom-out" aria-label="缩小画布">−</button><span id="zoom-label">58%</span><button class="icon-button" data-action="zoom-in" aria-label="放大画布">＋</button><button class="text-button" data-action="zoom-fit">适合</button></div></div></div>
+          </div>
+          <aside class="inspector" id="inspector" aria-label="页面与元素属性"></aside>
+        </section>
+        <section id="view-flow" class="view-panel flow-view" aria-label="交互流程" hidden></section>
+        <section id="view-versions" class="view-panel versions-view" aria-label="版本历史" hidden></section>
+        <footer class="module-footer"><span id="save-status"><i class="status-dot"></i>示例已就绪</span><span class="footer-disclaimer">本地示例 · Agent 能力为模拟</span><button class="text-button" data-action="about">原型说明<span data-icon="arrow-up-right"></span></button></footer>
+      </section>
+    </main>
+    <aside class="tool-rail" aria-label="工作区工具"><div class="rail-card"><button class="icon-button" data-action="toggle-chat" title="主会话" aria-label="打开主会话"><span data-icon="chat"></span></button><button class="icon-button" data-action="about" title="项目文件" aria-label="查看原型文件说明"><span data-icon="folder"></span></button><div class="rail-divider"></div><button class="icon-button rail-active" data-action="home" title="交互设计" aria-label="交互设计"><span data-icon="layout"></span></button><button class="icon-button" data-action="flow" title="交互流程" aria-label="交互流程"><span data-icon="flow"></span></button><button class="icon-button" data-action="definition" title="业务定义" aria-label="查看业务定义"><span data-icon="book"></span></button><div class="flex-spacer"></div><button class="icon-button" data-action="theme" title="切换深浅主题" aria-label="切换深浅主题"><span data-icon="moon"></span></button></div></aside>
+  </div>
+  <div class="drawer-scrim" id="drawer-scrim" hidden></div>
+  <dialog id="modal" aria-labelledby="modal-title"><div class="dialog-header"><div><div class="eyebrow" id="modal-eyebrow">交互设计</div><h2 id="modal-title"></h2></div><button class="icon-button" data-action="close-modal" aria-label="关闭对话框"><span data-icon="close"></span></button></div><div id="modal-body" class="dialog-body"></div></dialog>
+  <dialog id="player" class="player-dialog" aria-labelledby="player-title"><header class="player-header"><div><h2 id="player-title">首次使用与打卡</h2><p>点击页面中的按钮，体验完整流程</p></div><div class="row"><button class="button" data-action="player-reset"><span data-icon="refresh"></span><span>重置</span></button><button class="icon-button" data-action="close-player" aria-label="退出演示"><span data-icon="close"></span></button></div></header><div class="player-body"><div id="player-screen"></div><aside class="player-trace"><div class="eyebrow">本次演示</div><h3>关键路径</h3><ol id="player-path"></ol><div class="player-state" id="player-state"></div><p>操作使用本地示例数据。</p></aside></div><footer class="player-footer"><span id="player-page-label"></span><span>演示模式 · 点击执行交互</span></footer></dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

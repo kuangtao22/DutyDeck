@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>交互设计 V3 · DutyDeck</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="screens.css">
+  <link rel="stylesheet" href="styles.css">
+  <script src="screens.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="studio">
+    <header class="app-header">
+      <div class="brand"><span class="brand-mark">D</span><strong>DutyDeck</strong><span class="slash">/</span><span class="project-name">我的产品实验室</span></div>
+      <div class="header-center"><span class="live-dot"></span>交互设计<span class="version-badge">V3</span></div>
+      <div class="header-actions"><button class="quiet-link" data-action="compare" title="查看 V2 与 V3 的设计差异"><span data-icon="layers"></span>原型对比</button><button class="icon-button" data-action="theme" title="切换深浅主题" aria-label="切换深浅主题"><span data-icon="moon"></span></button></div>
+    </header>
+    <aside class="project-rail" aria-label="项目导航">
+      <div class="project-avatar">产</div><span class="rail-line"></span>
+      <button class="rail-button" data-action="context" aria-label="当前项目"><span data-icon="folder"></span></button>
+      <button class="rail-button active" data-action="chat" aria-label="收起主会话" title="收起主会话" aria-controls="conversation" aria-expanded="true"><span data-icon="chat"></span></button>
+      <div class="rail-spacer"></div><span class="user-avatar">徐</span>
+    </aside>
+    <section class="conversation" id="conversation" aria-label="主会话">
+      <header class="conversation-header"><div><strong>设计一个习惯养成 App</strong><span>主会话 · 产品实验室</span></div><button class="icon-button mobile-close" data-action="chat" aria-label="收起主会话"><span data-icon="close"></span></button></header>
+      <div class="messages" id="messages" aria-live="polite">
+        <div class="date-divider">今天 10:24</div>
+        <article class="message user-message"><div class="message-label">你</div><p>做一个温和、简洁的习惯养成 App。从初次进入到完成一次打卡，流程要能点通。</p></article>
+        <article class="message agent-message"><div class="message-label"><span class="agent-mark" data-icon="sparkles"></span>DutyDeck</div><p>「拾光」的四个页面已就绪。右侧可以直接使用，先试着完成一次阅读打卡。</p>
+          <button class="artifact-card" data-action="show-prototype" title="查看当前原型，保留体验进度"><span class="artifact-icon" data-icon="leaf"></span><span><strong>拾光 · 习惯养成</strong><small>4 个页面 · 可点击原型</small></span><span data-icon="arrow-up-right"></span></button>
+          <div class="checklist"><span><i data-icon="check"></i>首次使用与进入首页</span><span><i data-icon="check"></i>习惯详情与打卡反馈</span><span><i data-icon="check"></i>打卡后返回，进度同步更新</span></div>
+          <p class="subtle-message">想改哪里，点击顶部「选择修改」，再选中页面里的内容。我会带着这个位置继续修改。</p>
+        </article>
+        <article class="task-note"><span data-icon="play"></span><div><strong>这一轮先验证一件事</strong><p>用户能否顺利完成打卡，并知道自己已经完成了？</p></div></article>
+        <div id="dynamic-messages"></div>
+        <div id="candidate-slot"></div>
+      </div>
+      <form class="composer" id="agent-form">
+        <div class="context-chip" id="context-chip"><span data-icon="layout"></span><span id="context-label">拾光 · 整个原型</span><button type="button" class="icon-button" data-action="clear-selection" aria-label="清除元素引用"><span data-icon="close"></span></button></div>
+        <label class="sr-only" for="agent-input">告诉 Agent 你想怎么改</label><textarea id="agent-input" rows="3" placeholder="描述想改的地方，也可以先选中一个元素…"></textarea>
+        <div class="composer-bottom"><span><i class="live-dot"></i>Agent 演示</span><button type="button" class="cancel-task" data-action="cancel" hidden>取消</button><button class="send-button" type="submit" aria-label="发送修改要求"><span data-icon="arrow-up"></span></button></div>
+      </form>
+      <div class="suggestions"><button data-action="suggest-copy">文案更明确</button><button data-action="suggest-style">换一种配色</button></div>
+      <p class="demo-note">本地评审稿 · Agent 回复为预设模拟</p>
+    </section>
+    <main class="workspace">
+      <!-- 透明遮罩只接收收起操作，不改变下层预览布局或触发页面按钮。 -->
+      <button class="page-sidebar-backdrop" id="page-sidebar-backdrop" data-action="close-page-sidebar" aria-label="收起页面目录" tabindex="-1" hidden></button>
+      <aside class="prototype-sidebar" id="prototype-sidebar" aria-label="原型页面目录">
+        <header class="prototype-sidebar-header"><div><strong>页面</strong><span id="sidebar-page-count">4</span></div><div class="sidebar-actions"><button class="icon-button" data-action="add-page" aria-label="新建页面" title="新建页面"><span data-icon="plus"></span></button><button class="icon-button" data-action="add-group" aria-label="新建分组" title="新建分组"><span data-icon="folder"></span></button><button class="icon-button" data-action="close-page-sidebar" aria-label="收起页面目录" title="收起页面目录"><span data-icon="close"></span></button></div></header>
+        <label class="page-search"><span data-icon="search"></span><input id="page-search-input" type="search" placeholder="搜索页面" aria-label="搜索页面"><kbd>⌘ K</kbd></label>
+        <div class="page-directory" id="page-directory"></div>
+        <footer class="prototype-sidebar-footer"><span id="directory-status">拖拽排序 · 可移动分组</span></footer>
+      </aside>
+      <section class="workspace-main">
+      <header class="workspace-header"><div class="workspace-title"><span class="product-mark" data-icon="leaf"></span><div><h1>拾光 <span>习惯养成 App</span></h1><p id="save-status">已保存到本机浏览器</p></div></div><div class="workspace-actions"><button class="button sidebar-toggle-header" data-action="toggle-page-sidebar" aria-label="显示或收起页面目录" title="页面目录"><span data-icon="panel"></span><span>页面</span></button><button class="button subtle" data-action="history" aria-label="版本记录" title="版本记录"><span data-icon="history"></span><span id="revision-label">v3</span></button><button class="button" data-action="flow" title="编辑页面跳转与检查流程"><span data-icon="flow"></span><span>交互流程</span></button><button class="button primary" data-action="export" aria-label="导出原型" title="导出原型"><span data-icon="download"></span><span>导出原型</span></button></div></header>
+      <div class="preview-toolbar"><div class="mode-switch" aria-label="预览操作方式"><button data-mode="play" class="active" aria-pressed="true"><span data-icon="play"></span>体验</button><button data-mode="inspect" aria-pressed="false"><span data-icon="cursor"></span>选择修改</button></div><div class="toolbar-spacer"></div><div class="device-switch" aria-label="设备尺寸"><button class="icon-button active" data-device="mobile" title="手机预览" aria-label="手机预览" aria-pressed="true"><span data-icon="phone"></span></button><button class="icon-button" data-device="desktop" title="桌面预览" aria-label="桌面预览" aria-pressed="false"><span data-icon="desktop"></span></button></div><span class="toolbar-rule"></span><button class="icon-button" data-action="restart" title="从入口重新体验" aria-label="重新体验"><span data-icon="refresh"></span></button><button class="icon-button" data-action="focus" title="专注预览" aria-label="专注预览" aria-pressed="false"><span data-icon="expand"></span></button></div>
+      <div class="candidate-preview-bar" id="candidate-preview-bar" hidden><span><i data-icon="sparkles"></i><b>候选预览</b> · 尚未采纳</span><button class="text-button" data-action="leave-candidate">返回当前版本</button></div>
+      <div class="stage" id="stage" tabindex="-1" aria-label="当前原型预览">
+        <div class="stage-top"><span id="preview-location">今日习惯</span><label class="scenario-label">状态 <select id="scenario-select" aria-label="切换示例状态"><option value="normal">正常</option><option value="empty">空状态</option><option value="loading">加载中</option><option value="error">加载失败</option></select></label></div>
+        <div class="preview-space" id="preview-space"><div class="device-frame" id="device-frame"><div id="live-screen"></div></div></div>
+        <aside class="selection-card" id="selection-card" aria-label="选中内容编辑" hidden></aside>
+        <div class="stage-hint" id="stage-hint"><span class="live-dot"></span>预览已运行，直接点击试试看</div>
+      </div>
+      <footer class="preview-footer"><span><i data-icon="flow"></i><b id="preview-flow-label">首次使用与打卡</b><span id="journey-progress">本次体验 · 阅读尚未打卡</span></span><span id="device-size">390 × 844</span></footer>
+      </section>
+    </main>
+    <button class="mobile-chat-fab" data-action="chat"><span data-icon="chat"></span>主会话<span id="mobile-candidate-dot" hidden></span></button>
+  </div>
+  <dialog id="modal" aria-labelledby="modal-title"><header class="modal-header"><div><span id="modal-eyebrow">交互设计</span><h2 id="modal-title"></h2></div><button class="icon-button" data-action="close-modal" aria-label="关闭弹窗"><span data-icon="close"></span></button></header><div id="modal-body"></div></dialog>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <div class="page-context-menu" id="page-context-menu" role="menu" hidden></div>
+</body>
+</html>

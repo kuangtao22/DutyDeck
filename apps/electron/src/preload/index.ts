@@ -2,6 +2,8 @@ import { createTokenUsagePreload } from './token-usage-preload'
 import type { TokenUsageAPI } from '@proma/shared'
 import { createApiWorkbenchPreload } from './api-workbench-preload'
 import { createCapabilityFactoryPreload } from './capability-factory-preload'
+import { createInteractionDesignPreload } from './interaction-design-preload'
+import type { InteractionDesignApi } from '@proma/shared'
 import { createProjectKnowledgePreload } from './project-knowledge-preload'
 import type { ProjectKnowledgeApi } from '@proma/shared'
 import type { ApiWorkbenchApi } from '@proma/shared'
@@ -340,6 +342,8 @@ export interface ElectronAPI extends TokenUsageAPI, LanBridgePreloadApi, NormalP
   apiWorkbench: ApiWorkbenchApi
   /** 提示词编排工厂：界面侧可采纳 / 回滚 / 导出（人的动作），与 Agent 侧的方法集刻意不同。 */
   capabilityFactory: CapabilityFactoryApi
+  /** 项目内页面原型、候选、资源和版本接口。 */
+  interactionDesign: InteractionDesignApi
   listServerOpsHosts: () => Promise<ServerOpsHost[]>
   upsertServerOpsHost: (input: ServerOpsSaveHostInput) => Promise<ServerOpsHost>
   deleteServerOpsHost: (hostId: string) => Promise<boolean>
@@ -1614,6 +1618,15 @@ const electronAPI: ElectronAPI = {
     (channel, input) => ipcRenderer.invoke(channel, input),
     (channel, listener) => {
       /** 隔离 Electron 事件对象，渲染层只拿结构化进度。 */
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown): void => { listener(value) }
+      ipcRenderer.on(channel, handler)
+      return () => { ipcRenderer.removeListener(channel, handler) }
+    },
+  ),
+  interactionDesign: createInteractionDesignPreload(
+    (channel, input) => ipcRenderer.invoke(channel, input),
+    (channel, listener) => {
+      /** 业务广播不暴露 Electron 事件。 */
       const handler = (_event: Electron.IpcRendererEvent, value: unknown): void => { listener(value) }
       ipcRenderer.on(channel, handler)
       return () => { ipcRenderer.removeListener(channel, handler) }

@@ -101,6 +101,10 @@ import { createApiAgentFacade } from './api-workbench/api-agent-facade'
 import { buildApiAgentTools, API_AGENT_TOOL_NAMES } from './api-workbench/api-agent-tools'
 import { getApiWorkbenchService } from './api-workbench/api-workbench-singleton'
 import { buildCapabilityFactoryAgentTools, CAPABILITY_FACTORY_AGENT_TOOL_NAMES, CAPABILITY_FACTORY_AGENT_RUN_TOOL_NAMES } from './capability-factory/capability-factory-agent-tools'
+import { createInteractionDesignAgentAccess } from './interaction-design/agent-access'
+import { createInteractionDesignRun } from './interaction-design/agent-run'
+import { createProductionInteractionDesignAccess } from './interaction-design/integration'
+import { buildInteractionDesignAgentTools, INTERACTION_DESIGN_AGENT_TOOL_NAMES, INTERACTION_DESIGN_AGENT_WRITE_TOOL_NAMES } from './interaction-design/agent-tools'
 import { createCapabilityFactoryAgentFacade } from './capability-factory/capability-factory-agent-facade'
 import { getCapabilityFactoryService } from './capability-factory/capability-factory-singleton'
 import { createCapabilityFactoryAgentAccess } from './capability-factory/capability-factory-agent-access'
@@ -815,6 +819,8 @@ export class AgentOrchestrator {
     let knowledgeExecutionRun: KnowledgeExecutionRun | undefined
     let knowledgeRunFailed = false
     let knowledgeRunStopped = false
+    /** 只清理本轮创建的原型任务，避免异常结束后一直显示等待生成。 */
+    let interactionRun: ReturnType<typeof createInteractionDesignRun> | undefined
     /** 当前运行消息仍按原顺序落盘，知识维护在本回合工具内完成。 */
     const persistRunSDKMessages = (messages: SDKMessage[], durationMs?: number): void => {
       this.persistSDKMessages(sessionId, messages, durationMs)
@@ -1391,6 +1397,14 @@ export class AgentOrchestrator {
         assertWorkspaceWritable: (id) => { if (!getAgentWorkspace(id)) throw new Error('API_AGENT_WORKSPACE_NOT_FOUND'); workspaceOperationGuard.assertWorkspaceWritable(id) },
         runWorkspaceWrite: (id, effect) => workspaceOperationGuard.runWorkspaceWrite(id, effect),
       })
+      /** 原型工具绑定当前主会话，仅生成候选；用户在工作区采纳正式版本。 */
+      const interactionAccess = createInteractionDesignAgentAccess({
+        sessionId, toolMode: runToolMode, triggeredBy: input.triggeredBy, automation: Boolean(automationContext),
+        getSession: getAgentSessionMeta, assertRunActive: runIdentity.assertActive,
+        canWrite: () => getPermissionMode() !== 'plan', createAccess: createProductionInteractionDesignAccess,
+      })
+      if (interactionAccess) interactionRun = createInteractionDesignRun(sessionId, interactionAccess,
+        createProductionInteractionDesignAccess(sessionId, { canWrite: () => getPermissionMode() !== 'plan' }))
       /**
        * 提示词编排工厂：存储按工作区隔离，所以服务按工作区根目录取。
        * 没有工作区（例如临时会话）时不注册工具 —— 工厂是工作区级的模块。
@@ -1496,6 +1510,13 @@ export class AgentOrchestrator {
         ...(projectKnowledge ? buildProjectKnowledgeTools(piSdk, projectKnowledge) : []),
         ...(apiFacade ? buildApiAgentTools(piSdk, apiFacade) : []),
         ...(capabilityFactoryFacade ? buildCapabilityFactoryAgentTools(piSdk, capabilityFactoryFacade) : []),
+        ...(interactionAccess ? buildInteractionDesignAgentTools({
+          sessionId, sdk: piSdk, execute: (method, request, signal) => interactionRun!.execute(method, request, signal),
+          assertAccess: (write) => {
+            interactionAccess.assertCurrent()
+            if (write && getPermissionMode() === 'plan') throw new Error('计划模式不能修改原型')
+          },
+        }) : []),
       ]
       const collaborationAvailable = builtinMcpResult.collaborationAvailable
 
@@ -1815,6 +1836,20 @@ export class AgentOrchestrator {
             return revalidateSingleApprovalResult({ behavior: 'allow', updatedInput: input }, denyStaleToolRun, getPermissionMode)
           } catch (error) {
             return { behavior: 'deny', message: error instanceof Error ? error.message : '接口批准已失效，请重新准备请求' }
+          }
+        }
+
+        /** 原型仅有候选与资源写入；正式采纳没有 Agent 工具，计划模式严格只读。 */
+        if (INTERACTION_DESIGN_AGENT_TOOL_NAMES.some((name) => name === toolName)) {
+          if (!interactionAccess) return { behavior: 'deny', message: '当前会话不具备交互设计能力' }
+          try {
+            interactionAccess.assertCurrent()
+            if (INTERACTION_DESIGN_AGENT_WRITE_TOOL_NAMES.some((name) => name === toolName) && currentMode === 'plan') {
+              return { behavior: 'deny', message: '计划模式不能创建原型、资源、候选或验证记录' }
+            }
+            return { behavior: 'allow', updatedInput: input }
+          } catch (error) {
+            return { behavior: 'deny', message: error instanceof Error ? error.message : '原型访问权限已失效' }
           }
         }
 
@@ -2241,7 +2276,9 @@ export class AgentOrchestrator {
         workspaceMemoryRecordAvailable: runToolMode === 'standard' && initialPermissionMode !== 'plan' && Boolean(workspaceSlug) && (!input.triggeredBy || input.triggeredBy === 'user'),
       }) + (automationContext ? `\n\n## 定时任务执行上下文\n\n${automationContext}` : '')
       /** 单次可信运行场景放在通用规则之后，使专用会话覆盖普通入口分流语义。 */
-      const systemPromptAppend = [baseSystemPrompt, extensions.systemPromptAppend]
+      const systemPromptAppend = [baseSystemPrompt,
+        interactionAccess ? '交互设计使用 prototype_* 工具：先读取现有原型和当前版本，基于真实项目源码/主题/素材还原页面；修改先 begin_job，再 propose 完整候选，由用户在工作区采纳。元素引用是修改上下文，自动保护范围为所属页面。不要用 Write/Edit 直接改 .proma/interaction-design 数据，也不要把结构检查或访问路径记录宣称为视觉一比一验证。详细流程按 interaction-design Skill。' : undefined,
+        extensions.systemPromptAppend]
         .filter((section): section is string => Boolean(section?.trim()))
         .join('\n\n')
       const startAutoTitleGeneration = (): void => {
@@ -3059,6 +3096,9 @@ export class AgentOrchestrator {
       }
     }
     }).catch((error: unknown) => { knowledgeRunFailed = true; throw error }).finally(async () => {
+      /** 运行结束仅结算本轮任务；归属或写权限变化时保留未知状态，不越权回填。 */
+      try { await interactionRun?.finish(knowledgeRunStopped) }
+      catch (error) { console.error('[交互设计] 保存任务终态失败:', error) }
       /** 生命周期释放旧槽后再入 deferred queue，不能递归发起 Agent。 */
       try { await knowledgeExecutionRun?.finish({ failed: knowledgeRunFailed, stopped: knowledgeRunStopped }) }
       catch (error) { console.error('[知识任务] 保存终态失败:', error) }

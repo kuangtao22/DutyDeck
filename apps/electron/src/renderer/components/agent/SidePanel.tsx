@@ -1,3 +1,5 @@
+import { InteractionDesignWorkspace } from '@/components/interaction-design/InteractionDesignWorkspace'
+import { MousePointer2 } from 'lucide-react'
 /**
  * SidePanel — Agent 侧面板容器
  *
@@ -1801,6 +1803,7 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
         'server-ops': { label: '运维', icon: <ServerCog className="size-3.5" /> },
         'api-workbench': { label: '接口', icon: <Braces className="size-3.5" /> },
         'capability-factory': { label: '工厂', icon: <Factory className="size-3.5" /> },
+        'interaction-design': { label: '交互设计', icon: <MousePointer2 className="size-3.5" /> },
       }
       return { id: component, ...meta[component], closable: true }
     }),
@@ -2220,6 +2223,8 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
       )
     ) : paneTab === 'vault' ? (
       <div className="min-h-0 flex-1 overflow-hidden"><VaultView embedded sessionId={sessionId} /></div>
+    ) : paneTab === 'interaction-design' ? (
+      currentWorkspaceId ? <InteractionDesignWorkspace key={`${sessionId}:${currentWorkspaceId}:${pane ?? 'single'}`} projectId={currentWorkspaceId} sessionId={sessionId} paneActive={paneActive} /> : <div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">当前会话没有有效的所属项目</div>
     ) : paneTab === 'server-ops' ? (
       <ServerOpsWorkspace viewScope={`${sessionId}:${pane ?? 'single'}`} paneActive={paneActive} />
     ) : paneTab === 'api-workbench' ? (
