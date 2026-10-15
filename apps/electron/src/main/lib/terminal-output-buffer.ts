@@ -104,7 +104,7 @@ function clamp(value: number, min: number, max: number): number {
  * 这是可读文本摘要而非终端模拟器：保留真实换行，但忽略孤立 \r 与其他光标操作，
  * 防止交互行重绘被误表现为多行命令回显。
  */
-function normalizeTerminalText(output: string): string {
+export function normalizeTerminalText(output: string): string {
   return output
     .replace(/\u001B\][\s\S]*?(?:\u0007|\u001B\\)/g, '') // OSC（如窗口标题）
     .replace(/\u001BP[\s\S]*?\u001B\\/g, '') // DCS（如光标样式请求）

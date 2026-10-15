@@ -57,7 +57,7 @@ test('Given 扩额审批正在等待 When 切换自动模式 Then 仍按原工�
 })
 
 describe('服务器远程命令权限', () => {
-  test.each(['server_docker_action', 'server_files_mutate'])(
+  test.each(['server_docker_action', 'server_files_mutate', 'server_task_start', 'server_task_interrupt'])(
     'Given %s 被批准并伪造 alwaysAllow When 再次调用 Then 仍需逐次审批', async (toolName) => {
       const service = new AgentPermissionService()
       const requests: Array<{ requestId: string; allowAlways?: boolean }> = []
@@ -113,7 +113,7 @@ describe('服务器远程命令权限', () => {
     expect((await next).behavior).toBe('deny')
   })
 
-  test.each(['server_list', 'server_status', 'server_connect', 'server_disconnect'])(
+  test.each(['server_list', 'server_status', 'server_connect', 'server_disconnect', 'server_task_read'])(
     'Given Server Ops 元数据工具 %s When 权限分类 Then 自动放行', async (toolName) => {
       const service = new AgentPermissionService()
       const result = await service.createCanUseTool('session-1', () => {

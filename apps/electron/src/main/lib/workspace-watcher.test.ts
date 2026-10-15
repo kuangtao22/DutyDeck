@@ -32,6 +32,18 @@ describe('shouldNotifyForWatchFilename', () => {
     }
   })
 
+  it('ignores Swift/Xcode dependency and IDE state directories', () => {
+    const noisyPaths = [
+      '.build/cache/Build/a.o',
+      '.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata',
+      'project.xcodeproj/xcuserdata/user.xcuserdatad/UserInterfaceState.xcuserstate',
+      'DerivedData/Build/Products/app',
+      'Frameworks/checkouts/Compatibility/README.md',
+    ]
+
+    for (const path of noisyPaths) expect(shouldNotifyForWatchFilename(path)).toBe(false)
+  })
+
   it('keeps generic coverage and target directories observable', () => {
     expect(shouldNotifyForWatchFilename('coverage/lcov.info')).toBe(true)
     expect(shouldNotifyForWatchFilename('target/debug/generated.rs')).toBe(true)

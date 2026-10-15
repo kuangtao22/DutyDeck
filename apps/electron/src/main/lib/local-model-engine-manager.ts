@@ -15,6 +15,7 @@ import {
   type EngineAsset,
 } from '../../../scripts/prepare-local-model-engine'
 import { LOCAL_MODEL_ENGINE_VERSION, resolveBundledLocalModelEngine } from './local-model-engine'
+import { getLocalModelDownloadNetworkMessage, type LocalModelDownloadTransport } from './local-model-download-network'
 
 /** GitHub Release 以及最终 release-assets 主机是唯一允许的引擎来源。 */
 const TRUSTED_HOSTS = new Set(['github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'])
@@ -38,6 +39,8 @@ export interface LocalModelEngineManagerDependencies {
   platform?: string
   arch?: string
   fetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+  /** 每次远程下载创建独立代理连接，完成后由管理器释放。 */
+  createDownloadTransport?: () => Promise<LocalModelDownloadTransport>
   now?: () => number
   resolve?: (root: string, platform: string, arch: string) => EngineResolution
   downloadArchive?: (asset: EngineAsset, path: string, signal: AbortSignal, progress: (completedBytes: number) => void) => Promise<Buffer>
@@ -55,7 +58,9 @@ export class LocalModelEngineManager {
   private readonly fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
   private readonly now: () => number
   private readonly resolveImpl: (root: string, platform: string, arch: string) => EngineResolution
-  private readonly downloadArchiveImpl: (asset: EngineAsset, path: string, signal: AbortSignal, progress: (completedBytes: number) => void) => Promise<Buffer>
+  private readonly downloadArchiveImpl?: LocalModelEngineManagerDependencies['downloadArchive']
+  /** 远程下载专属工厂，重试时重新读取代理设置。 */
+  private readonly createDownloadTransport?: () => Promise<LocalModelDownloadTransport>
   private readonly installArchiveImpl: (archive: Buffer, asset: EngineAsset, root: string) => Promise<void>
   private readonly verifyArchiveImpl: (archive: Buffer, asset: EngineAsset) => void
   private readonly onChanged?: (snapshot: LocalModelEngineSnapshot) => void
@@ -78,7 +83,8 @@ export class LocalModelEngineManager {
     this.fetchImpl = dependencies.fetch ?? fetch
     this.now = dependencies.now ?? Date.now
     this.resolveImpl = dependencies.resolve ?? resolveBundledLocalModelEngine
-    this.downloadArchiveImpl = dependencies.downloadArchive ?? ((asset, path, signal, progress) => downloadEngineArchive(asset, path, signal, this.fetchImpl, progress))
+    this.downloadArchiveImpl = dependencies.downloadArchive
+    this.createDownloadTransport = dependencies.createDownloadTransport
     this.installArchiveImpl = dependencies.installArchive ?? (async (archive, asset, root) => { await mkdir(root, { recursive: true }); await installEngine(archive, asset, root) })
     this.verifyArchiveImpl = dependencies.verifyArchive ?? verifyArchive
     this.onChanged = dependencies.onChanged
@@ -142,11 +148,19 @@ export class LocalModelEngineManager {
     this.controller = controller
     this.transient = { state: 'downloading', downloadedBytes: 0 }
     this.emitChanged()
+    /** 本次下载独占的连接，响应流读完或中断后统一回收。 */
+    let transport: LocalModelDownloadTransport | undefined
     try {
-      const archive = await this.downloadArchiveImpl(this.asset, stagingPath, controller.signal, (downloadedBytes) => {
+      if (this.createDownloadTransport) transport = await this.createDownloadTransport()
+      controller.signal.throwIfAborted()
+      /** 将写入进度广播给设置页，不改变归档校验边界。 */
+      const progress = (downloadedBytes: number): void => {
         this.transient = { state: 'downloading', downloadedBytes }
         this.emitChanged()
-      })
+      }
+      const archive = this.downloadArchiveImpl
+        ? await this.downloadArchiveImpl(this.asset, stagingPath, controller.signal, progress)
+        : await downloadEngineArchive(this.asset, stagingPath, controller.signal, transport?.fetch ?? this.fetchImpl, progress)
       controller.signal.throwIfAborted()
       this.transient = { state: 'verifying', downloadedBytes: archive.length, message: '正在校验引擎归档 SHA-256' }
       this.emitChanged()
@@ -162,10 +176,13 @@ export class LocalModelEngineManager {
     } catch (error) {
       const aborted = controller.signal.aborted
       if (!aborted && error instanceof Error && error.message.includes('SHA-256')) await rm(stagingPath, { force: true })
-      this.transient = { state: 'error', message: aborted ? '安装已取消，可继续下载' : toErrorMessage(error) }
+      /** IPC 与快照使用同一安全文案，避免把原始 fetch failed 再抛给界面。 */
+      const message = aborted ? '安装已取消，可继续下载' : getLocalModelDownloadNetworkMessage(error) ?? toErrorMessage(error)
+      this.transient = { state: 'error', message }
       this.emitChanged()
-      throw error
+      throw new Error(message, { cause: error })
     } finally {
+      await transport?.close().catch(() => undefined)
       if (this.controller === controller) this.controller = undefined
     }
   }
@@ -216,17 +233,18 @@ async function downloadEngineArchive(asset: EngineAsset, path: string, signal: A
     signal.throwIfAborted()
     if (completed === asset.size) return await readFile(path)
     const response = await fetchImpl(asset.browser_download_url, { signal, redirect: 'follow', headers: completed ? { Range: `bytes=${completed}-` } : {} })
+    // 先接管响应流；拒绝 HTTP/来源/续传头或此时取消时也必须释放连接。
+    reader = response.body?.getReader()
     signal.throwIfAborted()
     const finalUrl = response.url ? new URL(response.url) : new URL(asset.browser_download_url)
     if (finalUrl.protocol !== 'https:' || !TRUSTED_HOSTS.has(finalUrl.hostname)) throw new Error('引擎下载来源不受信任')
-    if (!response.ok || !response.body) throw new Error(`本地运行环境下载失败（HTTP ${response.status}）`)
+    if (!response.ok || !reader) throw new Error(`本地运行环境下载失败（HTTP ${response.status}）`)
     if (response.status === 206) {
       const range = response.headers.get('content-range')?.match(/^bytes (\d+)-(\d+)\/(\d+)$/)
       if (!range || Number(range[1]) !== completed || Number(range[2]) !== asset.size - 1 || Number(range[3]) !== asset.size) throw new Error('引擎续传 Content-Range 不匹配')
     } else if (response.status === 200) {
       await file.truncate(0); completed = 0
     } else throw new Error('引擎下载响应状态非法')
-    reader = response.body.getReader()
     while (true) {
       signal.throwIfAborted()
       const chunk = await reader.read()

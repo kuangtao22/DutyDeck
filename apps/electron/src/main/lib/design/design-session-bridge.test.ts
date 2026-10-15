@@ -67,10 +67,10 @@ describe('Design Session Bridge', () => {
   afterEach(() => rmSync(root, { recursive: true, force: true }))
 
   /** 创建使用真实文件边界、但内存 Store 的桥实例。 */
-  const createBridge = (): DesignSessionBridge => new DesignSessionBridge({
+  const createBridge = (resolveImagePath: (path: string) => string = (path) => path): DesignSessionBridge => new DesignSessionBridge({
     getSession: (sessionId) => sessions.get(sessionId),
     getMessages: (sessionId) => messages.get(sessionId) ?? [],
-    resolveAgentImagePath: (localPath) => localPath,
+    resolveAgentImagePath: resolveImagePath,
     getAllowedRoots: () => [root],
     store: {
       requireStableAuthoritativeDocument: (projectId) => {
@@ -229,6 +229,55 @@ describe('Design Session Bridge', () => {
     })
 
     expect(importedPaths).toEqual([realpathSync(imagePath)])
+  })
+
+  test('Given 默认迁移后历史附件仍记录旧根 When 用新路径导入 Then 在同一解析语义下匹配 Nano 归属', async () => {
+    /** 已迁移到新根的真实图片。 */
+    const imagePath = join(root, 'migrated.png')
+    /** 历史消息保留的旧绝对路径。 */
+    const oldPath = '/legacy/.proma/generated-images/migrated.png'
+    writeFileSync(imagePath, pngBytes)
+    /** 模拟可信迁移映射；不处理其他路径或添加授权根。 */
+    const resolveImagePath = (path: string): string => path === oldPath ? imagePath : path
+    for (const history of [
+      [createToolResultMessage(oldPath)],
+      createSdkToolResultMessages(oldPath) as unknown as AgentMessage[],
+    ]) {
+      messages.set('session-1', history)
+      await createBridge(resolveImagePath).importAgentImage({
+        projectId: 'project-1', sessionId: 'session-1', localPath: imagePath,
+        position: { x: 0, y: 0 },
+      })
+    }
+    expect(importedPaths).toEqual([realpathSync(imagePath), realpathSync(imagePath)])
+  })
+
+  test('Given 已迁移附件只属于另一会话 When 用新路径导入 Then 仍拒绝跨会话归属', async () => {
+    /** 当前授权目录内存在的文件不等于当前会话拥有它。 */
+    const imagePath = join(root, 'migrated-other.png')
+    /** 另一会话持久化的旧附件路径。 */
+    const oldPath = '/legacy/.proma/generated-images/other.png'
+    writeFileSync(imagePath, pngBytes)
+    messages.set('session-2', createSdkToolResultMessages(oldPath) as unknown as AgentMessage[])
+    await expect(createBridge((path) => path === oldPath ? imagePath : path).importAgentImage({
+      projectId: 'project-1', sessionId: 'session-1', localPath: imagePath,
+      position: { x: 0, y: 0 },
+    })).rejects.toThrow('图片不属于指定 Agent 会话')
+    expect(importedPaths).toEqual([])
+  })
+
+  test('Given 已迁移图片缺少 Nano tool_use 证据 When 新路径匹配 Then 仍拒绝导入', async () => {
+    /** 新根下存在的附件文件。 */
+    const imagePath = join(root, 'migrated-untrusted.png')
+    /** 未经 Nano 工具调用证明的旧路径。 */
+    const oldPath = '/legacy/.proma/generated-images/untrusted.png'
+    writeFileSync(imagePath, pngBytes)
+    messages.set('session-1', createSdkToolResultMessages(oldPath).slice(1) as unknown as AgentMessage[])
+    await expect(createBridge((path) => path === oldPath ? imagePath : path).importAgentImage({
+      projectId: 'project-1', sessionId: 'session-1', localPath: imagePath,
+      position: { x: 0, y: 0 },
+    })).rejects.toThrow('图片不属于指定 Agent 会话')
+    expect(importedPaths).toEqual([])
   })
 
   test('Given 路径只出现在另一会话或从未持久化 When 导入设计 Then 精确拒绝且不扫描目录', async () => {

@@ -128,6 +128,12 @@ const SEARCH_ALIASES: ReadonlyArray<ReadonlyArray<string>> = [
   ['login', 'auth', 'authentication', '登录', '鉴权', '认证'],
 ]
 
+/** Agent 扫描生命周期：取消检查保持轻量，完整身份在批次和发布时核验。 */
+export interface KnowledgeScanGuard {
+  assertCurrent(): void
+  isCancelled(): boolean
+}
+
 /** 项目知识核心服务公开合同。 */
 export interface ProjectKnowledgeService {
   /** 将已登记资产复制进已确认资料库，返回可移植相对链接。 */
@@ -143,7 +149,7 @@ export interface ProjectKnowledgeService {
   /** 用户暂停或恢复已确认范围的维护。 */
   pauseWorkflow: (input: KnowledgeWorkflowPauseInput) => Promise<KnowledgeSnapshot>
   getSnapshot: (workspaceId: string) => Promise<KnowledgeSnapshot>
-  startScan: (workspaceId: string) => Promise<KnowledgeSnapshot>
+  startScan: (workspaceId: string, guard?: KnowledgeScanGuard, onStarted?: () => void) => Promise<KnowledgeSnapshot>
   cancelScan: (workspaceId: string) => Promise<KnowledgeSnapshot>
   search: (input: KnowledgeSearchInput) => Promise<KnowledgeSearchResult>
   /** 有界刷新已登记文件，不能拓展来源范围。 */
@@ -630,15 +636,21 @@ export function createProjectKnowledgeService(
   }
 
   /** 启动后台扫描并在返回前登记可等待任务。 */
-  async function startScan(workspaceId: string): Promise<KnowledgeSnapshot> {
+  async function startScan(workspaceId: string, guard?: KnowledgeScanGuard, onStarted?: () => void): Promise<KnowledgeSnapshot> {
+    guard?.assertCurrent()
     /** 本次启动 fresh 解析的项目。 */
     const project = resolveWorkspace(workspaceId)
     /** 同项目已有扫描时直接返回当前状态。 */
     const existingTask = scanTasks.get(project.projectId)
     if (existingTask?.progress.status === 'running') return createSnapshot(project, store.readManifest(project))
     if (dependencies.assertWritable) await dependencies.assertWritable(workspaceId)
+    guard?.assertCurrent()
     /** 首次扫描才初始化权威空清单。 */
-    const manifest = await store.initialize(project, workspaceId)
+    const manifest = await store.initialize(project, workspaceId, guard?.assertCurrent)
+    guard?.assertCurrent()
+    /** 初始化期间其他调用可能已创建任务；重检后到注册之间不得再异步等待。 */
+    const concurrentTask = scanTasks.get(project.projectId)
+    if (concurrentTask?.progress.status === 'running') return createSnapshot(project, store.readManifest(project))
     /** 对外立即可见的运行状态。 */
     const progress: KnowledgeScanProgress = {
       status: 'running',
@@ -655,6 +667,7 @@ export function createProjectKnowledgeService(
       promise: Promise.resolve(),
     }
     scanTasks.set(project.projectId, task)
+    onStarted?.()
     task.promise = (async () => {
       await new Promise<void>((resolvePromise) => setImmediate(resolvePromise))
       try {
@@ -664,6 +677,8 @@ export function createProjectKnowledgeService(
         /** 执行扫描时的最新权威清单。 */
         const currentManifest = store.readManifest(currentProject)
         if (!currentManifest) throw new Error('知识库尚未初始化')
+        /** 每批至多 64 次取消检查才重读会话/项目元数据，发布仍在锁内完整核验。 */
+        let cancellationChecks = 0
         /** 本轮扫描发布结果。 */
         const result = await scanProjectKnowledge({
           project: currentProject,
@@ -671,7 +686,14 @@ export function createProjectKnowledgeService(
           store,
           manifest: currentManifest,
           now,
-          isCancelled: () => task.cancelled,
+          isCancelled: () => {
+            if (guard?.isCancelled()) task.cancelled = true
+            if (!task.cancelled && guard && cancellationChecks++ % 64 === 0) {
+              try { guard.assertCurrent() } catch { task.cancelled = true }
+            }
+            return task.cancelled
+          },
+          assertCurrent: guard?.assertCurrent,
           onProgress: (partial) => Object.assign(task.progress, partial),
           controlledSources: dependencies.controlledSources,
         })

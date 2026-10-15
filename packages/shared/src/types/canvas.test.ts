@@ -533,6 +533,7 @@ describe('Canvas 图共享合同', () => {
     })
     const snapshot: CanvasWorkspaceSnapshot & {
       imagePreviews: NonNullable<CanvasWorkspaceSnapshot['imagePreviews']>
+      imagePreparations: NonNullable<CanvasWorkspaceSnapshot['imagePreparations']>
     } = {
       document,
       writable: true as const,
@@ -542,6 +543,7 @@ describe('Canvas 图共享合同', () => {
         allowedActions: ['rebuild-agent-session', 'remove-node'],
       }],
       imagePreviews: [{ assetId: 'asset-1', previewUrl: 'proma-media://preview-1', width: 1200, height: 800 }],
+      imagePreparations: [{ nodeId: imageNode.id, preparation: { code: 'MODEL_REQUIRED', message: '请选择模型' } }],
       recoveredFrom: 'backup' as const,
     }
 
@@ -556,11 +558,18 @@ describe('Canvas 图共享合同', () => {
     expect(parsed.nodeIssues[0]).not.toBe(snapshot.nodeIssues[0])
     expect(parsed.nodeIssues[0]?.allowedActions).not.toBe(snapshot.nodeIssues[0]?.allowedActions)
     expect(parsed.imagePreviews?.[0]).not.toBe(snapshot.imagePreviews[0])
+    expect(parsed.imagePreparations?.[0]).not.toBe(snapshot.imagePreparations[0])
 
     snapshot.document.nodes[0]!.position.x = 999
     snapshot.imagePreviews[0]!.width = 1
+    snapshot.imagePreparations[0]!.preparation.message = 'changed'
     expect(parsed.document.nodes[0]?.position.x).toBe(10)
     expect(parsed.imagePreviews?.[0]?.width).toBe(1200)
+    expect(parsed.imagePreparations?.[0]?.preparation.message).toBe('请选择模型')
+    expect(() => parseCanvasWorkspaceSnapshot({
+      ...snapshot,
+      imagePreparations: [{ nodeId: agentNode.id, preparation: { code: 'MODEL_REQUIRED', message: 'x' } }],
+    })).toThrow('CANVAS_WORKSPACE_SNAPSHOT_INVALID')
   })
 
   test('Given 工作区 Agent 指针合法或损坏 When 严格解析 Then 深重建或返回稳定外层错误', () => {
@@ -1006,6 +1015,55 @@ describe('Canvas 图共享合同', () => {
       .toBe('master-image')
     expect(parseSaveCanvasImageModuleInput({ ...save, editSourceNodeId: null }).editSourceNodeId).toBeNull()
     expect(parseSaveCanvasImageModuleInput(save)).not.toHaveProperty('editSourceNodeId')
+  })
+
+  test('Given 独立图片模型选择 When 保存并读回配置与任务 Then 保留完整模型身份', () => {
+    /** 超过旧 128 字符上限的合法模型身份。 */
+    const selectionId = `imagegen:openai-images:profile-1:${'m'.repeat(150)}:v2`
+    /** 使用真实快照解析覆盖配置与历史任务两层合同。 */
+    const input = createCanvasImageSnapshotFixture()
+    input.config.selectedModelProfileId = selectionId
+    input.jobs[0]!.imageModelSnapshot = {
+      profileId: selectionId, imageProfileId: 'profile-1', name: '独立图片模型',
+      modelId: `${'m'.repeat(150)}:v2`, executor: 'openai-images',
+    }
+    expect(parseCanvasImageModuleSnapshot(input).jobs[0]?.imageModelSnapshot).toEqual(input.jobs[0]?.imageModelSnapshot)
+    expect(parseSaveCanvasImageModuleInput({
+      projectId: 'project-1', canvasId: 'canvas-1', nodeId: 'node-1', imageModuleId: 'module-1',
+      expectedConfigRevision: 0, prompt: '测试', selectedModelProfileId: selectionId,
+      aspectRatio: '1:1', imageSize: 'auto', contextMode: 'none',
+    }).selectedModelProfileId).toBe(selectionId)
+    /** 统一媒体引用不是 Canvas 模型选择 ID。 */
+    expect(() => parseCanvasImageModuleConfig({ ...input.config,
+      selectedModelProfileId: 'media:image:openai-images:profile-1:model-1',
+    })).toThrow('CANVAS_IMAGE_CONFIG_INVALID')
+    /** 快照不能用另一个供应商或配置身份冒充该选择。 */
+    expect(() => parseCanvasImageModuleSnapshot({ ...input, jobs: [{ ...input.jobs[0],
+      imageModelSnapshot: { ...input.jobs[0]!.imageModelSnapshot, imageProfileId: 'other' },
+    }] })).toThrow('CANVAS_IMAGE_MODULE_SNAPSHOT_INVALID')
+  })
+
+  test('Given 独立图片三类执行器快照 When 读取历史 Then 保留路由并拒绝供应商错配', () => {
+    /** 每种供应商均沿既有执行器身份回读，不改派生成路线。 */
+    const routes = [
+      { provider: 'openai-images', executor: 'openai-images' },
+      { provider: 'minimax', executor: 'minimax-image' },
+      { provider: 'dreamina', executor: 'dreamina-image' },
+    ] as const
+    for (const route of routes) {
+      /** 固定图与任务夹具，仅替换模型快照。 */
+      const input = createCanvasImageSnapshotFixture()
+      /** 从未知持久化数据进入解析器，而非预先声明为已验证快照。 */
+      const snapshot = {
+        profileId: `imagegen:${route.provider}:p:m`, imageProfileId: 'p', modelId: 'm',
+        name: '测试', executor: route.executor,
+      }
+      expect(snapshot as unknown).toEqual(parseCanvasImageModuleSnapshot({ ...input, jobs: [{ ...input.jobs[0], imageModelSnapshot: snapshot }] })
+        .jobs[0]?.imageModelSnapshot!)
+      expect(() => parseCanvasImageModuleSnapshot({ ...input, jobs: [{ ...input.jobs[0],
+        imageModelSnapshot: { ...snapshot, modelId: 'other' },
+      }] })).toThrow('CANVAS_IMAGE_MODULE_SNAPSHOT_INVALID')
+    }
   })
 
   test('Given 图片配置与任务使用固定版本 Comfy 预设 When 严格解析 Then 保留 media 命名空间和快照', () => {
@@ -1591,6 +1649,9 @@ describe('Canvas 图共享合同', () => {
     expect(parseCanvasChangeEvent({
       projectId: 'project-1', canvasId: 'canvas-1', revision: 1, cause: 'graph',
     })).toEqual({ projectId: 'project-1', canvasId: 'canvas-1', revision: 1, cause: 'graph' })
+    expect(parseCanvasChangeEvent({
+      projectId: 'project-1', canvasId: 'canvas-1', revision: 1, cause: 'image-preparation',
+    })).toEqual({ projectId: 'project-1', canvasId: 'canvas-1', revision: 1, cause: 'image-preparation' })
     expect(() => parseCanvasChangeEvent({ ...change, source: { ...change.source, prompt: 'private' } })).toThrow('CANVAS_CHANGE_EVENT_INVALID')
     expect(() => parseCanvasChangeEvent({ ...change, source: { sessionId: 'session-1' } })).toThrow('CANVAS_CHANGE_EVENT_INVALID')
     expect(() => parseCanvasChangeEvent({ ...change, source: { ...change.source, runStartedAt: -1 } })).toThrow('CANVAS_CHANGE_EVENT_INVALID')

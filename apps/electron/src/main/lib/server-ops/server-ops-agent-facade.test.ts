@@ -54,6 +54,71 @@ function dependencies(options: {
 }
 
 describe('Server Ops Agent Facade 安全边界', () => {
+  test('Given Agent 正常回复后工具闭包失效 When 任务仍在等用户输入 Then 只有独立显式停止信号才中断任务', async () => {
+    /** 正常回合结束与远程任务取消属于两种不同的生命周期。 */
+    const run = new AbortController()
+    const task = new AbortController()
+    let interrupted = false
+    const deps = dependencies()
+    deps.services.tasks = {
+      start: async (sessionId, input, _assertAvailable, signal) => {
+        signal?.addEventListener('abort', () => { interrupted = true }, { once: true })
+        return { ...input, sessionId, taskId: 'task-1', state: 'running', createdAt: 1 }
+      }, list: () => [], read: async () => { throw new Error('unused') }, interrupt: async () => { throw new Error('unused') },
+    }
+    const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps, runSignal: run.signal, taskSignal: task.signal })!
+    await facade.taskStart!({ hostId: 'host-1', command: 'sudo ./release.sh' })
+    run.abort()
+    expect(interrupted).toBe(false)
+    task.abort()
+    expect(interrupted).toBe(true)
+  })
+
+  test('Given 已连接服务器 When 启动交互任务 Then 绑定真实会话与原连接且不调用非交互 exec', async () => {
+    /** 捕获服务实际收到的身份，不接受模型伪造的 sessionId 或 connectionId。 */
+    const starts: unknown[] = []
+    const deps = dependencies()
+    deps.services.connections.exec = async () => { throw new Error('不应调用非交互命令') }
+    deps.services.tasks = {
+      start: async (sessionId, input, assertAvailable) => {
+        assertAvailable()
+        starts.push({ sessionId, ...input })
+        return { ...input, sessionId, taskId: 'task-1', state: 'running', createdAt: 1 }
+      },
+      list: () => [],
+      read: async () => { throw new Error('unused') },
+      interrupt: async () => { throw new Error('unused') },
+    }
+    const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps })!
+    expect(typeof facade.taskStart).toBe('function')
+    const result = await facade.taskStart!({ hostId: 'host-1', command: 'sudo ./release.sh' })
+    expect(result.state).toBe('running')
+    expect(starts).toEqual([{ sessionId: 'session-1', hostId: 'host-1', connectionId: 'connection-secret', command: 'sudo ./release.sh' }])
+  })
+
+  test('Given 任务断线后保留输出 When 原会话读取 Then 返回未知终态且清除控制序列，过期运行拒绝读取', async () => {
+    const deps = dependencies()
+    const readTargets: unknown[] = []
+    deps.services.tasks = {
+      start: async () => { throw new Error('unused') }, list: () => [],
+      read: async (target) => {
+        readTargets.push(target)
+        return { task: { taskId: 'task-1', sessionId: 'session-1', hostId: 'host-1', connectionId: 'connection-secret', command: 'sudo ./release.sh', state: 'unknown', createdAt: 1 },
+          output: '\u001b[32m发布中\u001b[0m\r\n', offset: 0, nextOffset: 17, availableStartOffset: 0, availableEndOffset: 17, truncatedBefore: false, truncatedAfter: false }
+      }, interrupt: async () => { throw new Error('unused') },
+    }
+    const controller = new AbortController()
+    const facade = createServerOpsAgentFacade({ sessionId: 'session-1', dependencies: deps, runSignal: controller.signal })!
+    deps.services.connections.getState = () => ({ hostId: 'host-1', phase: 'disconnected' })
+    expect(typeof facade.taskRead).toBe('function')
+    const result = await facade.taskRead!({ taskId: 'task-1', offset: 0, waitMs: 1000 })
+    expect(result.output).toBe('发布中\n')
+    expect(result.task.state).toBe('unknown')
+    expect(readTargets).toEqual([{ sessionId: 'session-1', taskId: 'task-1', offset: 0, waitMs: 1000 }])
+    controller.abort()
+    await expect(facade.taskRead!({ taskId: 'task-1' })).rejects.toThrow('SERVER_OPS_AGENT_RUN_CANCELLED')
+  })
+
   test('Given 目录紧凑 JSON 未超限但实际正文超过 64 KiB When Agent 读取 Then 拒绝结果并释放 owner', async () => {
     /** 两百个长文件名模拟合法分页，缩进后的真实工具正文会越过预算。 */
     const page: ServerOpsFileListResult = {

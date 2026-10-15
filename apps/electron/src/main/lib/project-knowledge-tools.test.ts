@@ -84,3 +84,28 @@ test('Given 正文存在人工修改 When 工具拒绝 Then 结构化返回targe
   expect(text).toContain('知识正文存在外部修改，拒绝覆盖')
   expect(text).toContain('review_target_preserve_edits')
 })
+
+
+test('Given 来源发现能力 When 注册扫描和导入工具 Then 模型只能选模式且取消信号传给宿主', async () => {
+  const knowledge = knowledgeFixture()
+  knowledge.getWorkflowStatus = async () => ({ initialized: false, revision: 0, paused: false, offset: 0 })
+  knowledge.proposeKnowledgePlan = async () => knowledge.getWorkflowStatus!()
+  knowledge.saveKnowledgeOutline = async () => knowledge.getWorkflowStatus!()
+  knowledge.writeKnowledgeDocument = async () => knowledge.getWorkflowStatus!()
+  knowledge.copyKnowledgeAsset = async () => ({ relativePath: 'a', documentRelativePath: 'a', contentRevision: 'r', byteSize: 1 })
+  const controller = new AbortController()
+  const calls: string[] = []
+  knowledge.scanSources = async (signal) => { expect(signal).toBe(controller.signal); calls.push('scan'); return { initialized: true, scan: { status: 'completed', discovered: 1, indexed: 1, skipped: 0, changed: 1 } } }
+  knowledge.importSources = async (mode, signal) => { expect(signal).toBe(controller.signal); calls.push(mode); return { cancelled: true, imported: 0, unchanged: 0, skippedCount: 0, skipped: [], truncated: false } }
+  const tools = buildProjectKnowledgeTools(sdkFixture(), knowledge)
+  const scan = tools.find((tool) => tool.name === 'proma_knowledge_scan_sources')!
+  const importer = tools.find((tool) => tool.name === 'proma_knowledge_import_sources')!
+  expect(scan.parameters).toMatchObject({ additionalProperties: false, properties: {} })
+  /** 工具 schema 是 TypeBox 的通用 TSchema，用结构化读取得到参数键。 */
+  const importSchema = importer.parameters as unknown as { properties: Record<string, unknown>; additionalProperties: boolean }
+  expect(Object.keys(importSchema.properties)).toEqual(['mode'])
+  expect(importSchema.additionalProperties).toBe(false)
+  await scan.execute('scan', {}, controller.signal, undefined, {} as Parameters<ToolDefinition['execute']>[4])
+  await importer.execute('import', { mode: 'folder' }, controller.signal, undefined, {} as Parameters<ToolDefinition['execute']>[4])
+  expect(calls).toEqual(['scan', 'folder'])
+})

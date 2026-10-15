@@ -109,6 +109,7 @@ const {
   exportCanvasImageArtifact,
   createCanvasNodeReferencesFromSnapshot,
   createNativeCanvasImageCandidateNodeIds,
+  createNativeCanvasImageStatuses,
   createNativeCanvasNodeActivityStates,
   createNativeCanvasJobActivityController,
   commitNativeCanvasArrangeMutation,
@@ -404,6 +405,20 @@ describe('Agent Canvas 共享图与独立视图', () => {
     ]
 
     expect([...createNativeCanvasImageCandidateNodeIds(document, jobs)]).toEqual(['image-1'])
+  })
+
+  test('Given 图片任务失败后重新生成且存在跨模块任务 When 汇总卡片状态 Then 只采用当前模块最新任务并保留准备原因', () => {
+    /** 当前图仅接收本模块的任务与配置事实。 */
+    const document = createEmptyCanvasDocument('project-1', 'canvas-1', 100)
+    document.nodes = [{ id: 'image-1', kind: 'image', title: '图片', imageModuleId: 'module-1', position: { x: 0, y: 0 } }]
+    /** 老失败任务用于验证新任务不会被历史覆盖。 */
+    const failed = { id: 'failed', projectId: 'project-1', target: { kind: 'canvas-image' as const, canvasId: 'canvas-1', nodeId: 'image-1', imageModuleId: 'module-1' }, status: 'failed' as const, createdAt: 100, updatedAt: 400 }
+    expect(createNativeCanvasImageStatuses(document, [failed]).get('image-1')).toEqual({ failed: true })
+    expect(createNativeCanvasImageStatuses(document, [failed, { ...failed, id: 'new', createdAt: 200, updatedAt: 200, status: 'queued' }]).size).toBe(0)
+    expect(createNativeCanvasImageStatuses(document, [{ ...failed, target: { ...failed.target, imageModuleId: 'other' } }]).size).toBe(0)
+    expect(createNativeCanvasImageStatuses(document, [failed], [{ nodeId: 'image-1', preparation: { code: 'MODEL_REQUIRED', message: '请选择生图模型' } }]).get('image-1'))
+      .toEqual({ failed: true, preparationMessage: '请选择生图模型' })
+    expect(createNativeCanvasImageStatuses(document, [], [{ nodeId: 'removed', preparation: { code: 'MODEL_REQUIRED', message: '过期' } }]).size).toBe(0)
   })
 
   test('Given 视口只覆盖部分动态节点 When 计算可见范围 Then 使用真实卡片尺寸判断相交', () => {
@@ -1945,6 +1960,38 @@ describe('原生 Canvas controller 保存', () => {
 })
 
 describe('原生 Canvas controller 权威恢复', () => {
+  test('Given 图片配置变化但图版本不变 When 收到准备事件 Then 重新读取摘要且普通同版图事件不读取', async () => {
+    /** 已加载画布模拟用户修改图片配置而没有图结构变更。 */
+    const harness = createHarness({ phase: 'ready', snapshot: createSnapshot(5) })
+    harness.controller.start()
+    harness.loads[0]?.resolve(createSnapshot(5))
+    await flushPromises()
+    harness.emit({ projectId: 'project-1', canvasId: 'canvas-1', revision: 5, cause: 'graph' })
+    expect(harness.loads.length).toBe(1)
+    harness.emit({ projectId: 'project-1', canvasId: 'canvas-1', revision: 5, cause: 'image-preparation' })
+    expect(harness.loads.length).toBe(2)
+    harness.loads[1]?.resolve({ ...createSnapshot(5), imagePreparations: [] })
+    await flushPromises()
+    expect(harness.getState().snapshot?.imagePreparations).toEqual([])
+    harness.controller.dispose()
+  })
+
+  test('Given 权威恢复正在进行 When 同版图片准备事件到达 Then 恢复完成后追加一次摘要读取', async () => {
+    /** 恢复过程不被配置事件抢占。 */
+    const harness = createHarness({ phase: 'ready', snapshot: createSnapshot(5) })
+    harness.controller.start()
+    harness.loads[0]?.resolve(createSnapshot(5))
+    await flushPromises()
+    harness.emit({ projectId: 'project-1', canvasId: 'canvas-1', revision: 5, cause: 'recovery' })
+    harness.emit({ projectId: 'project-1', canvasId: 'canvas-1', revision: 5, cause: 'image-preparation' })
+    harness.emit({ projectId: 'project-1', canvasId: 'canvas-1', revision: 5, cause: 'image-preparation' })
+    expect(harness.loads.length).toBe(2)
+    harness.loads[1]?.resolve(createSnapshot(5))
+    await flushPromises()
+    expect(harness.loads.length).toBe(3)
+    harness.controller.dispose()
+  })
+
   test('Given 普通 LOAD 返回 recoveredFrom 且旧 SAVE 在途 When 应用恢复快照 Then 旧回调无副作用', async () => {
     const harness = createHarness({
       phase: 'ready',
@@ -2415,6 +2462,19 @@ describe('原生 Canvas 添加 Agent 命令', () => {
     expect(createNativeCanvasLifecycleSuccessUpdate(current, result, null)).toMatchObject({
       snapshot: { imagePreviews: current.snapshot.imagePreviews },
     })
+  })
+
+  test('Given 图片准备摘要已加载 When 旧生命周期快照没有摘要 Then 保留原因而显式空摘要清除', () => {
+    /** 配置准备摘要与图生命周期分别提交，旧结果不能清掉已知错误。 */
+    const current = createInitialNativeCanvasState()
+    /** 独立保留预期摘要，避免测试对可空状态使用断言。 */
+    const imagePreparations = [{ nodeId: 'image-1', preparation: { code: 'MODEL_REQUIRED', message: '请选择模型' } }]
+    current.snapshot = { ...createSnapshot(4), imagePreparations }
+    expect(createNativeCanvasLifecycleSuccessUpdate(current, { snapshot: createSnapshot(5) }, null).snapshot?.imagePreparations)
+      .toEqual(imagePreparations)
+    expect(createNativeCanvasNodeCreationSuccessUpdate(current, { kind: 'document', nodeId: 'new', result: { snapshot: createSnapshot(5) } }).snapshot?.imagePreparations)
+      .toEqual(imagePreparations)
+    expect(createNativeCanvasLifecycleSuccessUpdate(current, { snapshot: { ...createSnapshot(5), imagePreparations: [] } }, null).snapshot?.imagePreparations).toEqual([])
   })
 
   test('Given 创建结果 revision 可接管 When 创建成功 Then 只接管共享图并保留视图字段', () => {

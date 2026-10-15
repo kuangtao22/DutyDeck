@@ -60,6 +60,17 @@ const propsWithLoadMessages: CanvasNodeCardProps = { ...createProps('agent'), lo
 const propsWithHtml: CanvasNodeCardProps = { ...createProps('webview'), html: '<main />' }
 
 describe('Canvas 通用折叠节点卡片', () => {
+  test('Given 图片准备错误与旧媒体终态 When 渲染折叠卡 Then 显示当前配置原因并可完整查看', () => {
+    /** 历史媒体终态不能盖掉当前准备事实。 */
+    const html = renderCard('image', {
+      statusLabel: '待配置', summary: '请选择支持参考图输入的生图模型', activityState: 'idle',
+      mediaProgress: { phase: 'failed', phaseLabel: '生成失败' },
+    })
+    expect(html).toContain('待配置')
+    expect(html).not.toContain('>生成失败<')
+    expect(html).toContain('title="请选择支持参考图输入的生图模型"')
+  })
+
   test.each([
     ['pending', false], ['pending', true], ['prepared', false], ['prepared', true],
   ] as const)('Given 视频模块 %s 未提交且其它 Agent 活跃=%s When 从投影渲染卡片 Then 保持静止', (phase, agentRunning) => {

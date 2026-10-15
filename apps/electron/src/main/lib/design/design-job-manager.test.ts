@@ -103,6 +103,32 @@ describe('Design Job Manager', () => {
 
   afterEach(() => rmSync(cacheRoot, { recursive: true, force: true }))
 
+  test('Given 外部成功图片 When 登记原卡两次 Then 复用同一任务和素材且不启动模型', async () => {
+    /** 外部任务携带准备时冻结的节点配置基线。 */
+    const input: DesignJobRecord = { id: 'attached-one', creativeTaskId: 'attachment-task-one', attemptNumber: 1,
+      projectId: 'project-1', target: { kind: 'canvas-image', canvasId: 'canvas-1', nodeId: 'image-a', imageModuleId: 'module-a' },
+      action: 'generate', status: 'succeeded', prompt: '实际提示词', originalRequest: '实际提示词', contextMode: 'none',
+      canvasImageConfigRevision: 1, canvasImageInitialAdoptedAssetId: null, candidateBatchId: 'attachment-one',
+      traceState: 'unavailable', executionSessionCleanupState: 'completed', createdAt: 1, updatedAt: 2, completedAt: 2 }
+    /** 导入计数用于证明幂等调用不会再次解码与复制图片。 */
+    let imports = 0
+    const importer = async (jobId: string): Promise<DesignAsset> => { imports++; return { ...createAsset('external-output'), sourceJobId: jobId } }
+    const first = await harness.manager.registerExternalCanvasImageResult(input, importer)
+    expect(first.outputAssetId).toBe('external-output')
+    expect(await harness.manager.registerExternalCanvasImageResult(input, importer)).toEqual(first)
+    await expect(harness.manager.registerExternalCanvasImageResult({ ...input, prompt: '不同输入' }, importer)).rejects.toThrow('JOB_CONFLICT')
+    await expect(harness.manager.registerExternalCanvasImageResult({ ...input, sourceSessionId: 'other-session' }, importer)).rejects.toThrow('JOB_CONFLICT')
+    expect(imports).toBe(1)
+    expect(harness.manager.listCanvasImageJobs({ projectId: 'project-1', canvasId: 'canvas-1', nodeId: 'image-a', imageModuleId: 'module-a' })).toHaveLength(1)
+  })
+
+  test('Given 原卡仍有生成任务 When 外部结果回填 Then 在导入前拒绝冲突', async () => {
+    /** 原生排队任务占有同一图片模块，外部回填不能绕过排他。 */
+    const pending = await harness.manager.createCanvasImage(createCanvasImageInput('a'))
+    const input: DesignJobRecord = { ...pending, id: 'attached-conflict', creativeTaskId: 'attachment-task-conflict', status: 'succeeded', candidateBatchId: 'attachment-conflict' }
+    await expect(harness.manager.registerExternalCanvasImageResult(input, async () => { throw new Error('不应导入') })).rejects.toThrow('已有进行中任务')
+  })
+
   test('Given Design 直接提交 When 创建首个 job Then 分配独立创作任务 ID 与 attempt 1', () => {
     const input = createGenerateInput()
 

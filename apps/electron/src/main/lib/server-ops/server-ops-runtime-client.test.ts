@@ -1056,3 +1056,48 @@ describe('Redis 独立消息生命周期', () => {
     fixture.client.stop()
   })
 })
+
+describe('服务器独立 SSH 任务', () => {
+  test('Given 活跃 SSH When 任务极速完成 Then 启动和真实终态都保留且不新建连接', async () => {
+    const fixture = createFixture(); await connectFixture(fixture)
+    const session = { taskId: 'task-fast', hostId: 'host-1', connectionId: 'connection-1' }
+    const exits: unknown[] = []; fixture.client.onTaskExit(event => exits.push(event))
+    const starting = fixture.client.startTask({ ...session, command: 'true', cols: 80, rows: 24 })
+    fixture.port.emit({ type: 'server-ops.task-started', session })
+    fixture.port.emit({ type: 'server-ops.task-exit', event: { ...session, exitCode: 0, message: '已退出' } })
+    expect(await starting).toEqual(session); expect(exits).toHaveLength(1)
+    expect(fixture.getCreateProcessCalls()).toBe(1)
+    await expect(fixture.client.startTask({ ...session, command: 'true', cols: 80, rows: 24 })).rejects.toThrow()
+    fixture.client.stop()
+  })
+  test('Given 启动中 When 取消和迟到 started Then 关闭迟到通道而不恢复任务', async () => {
+    const fixture = createFixture(); await connectFixture(fixture)
+    const session = { taskId: 'task-cancel', hostId: 'host-1', connectionId: 'connection-1' }
+    const starting = fixture.client.startTask({ ...session, command: 'sleep 999', cols: 80, rows: 24 })
+    const rejected = starting.catch((error: unknown) => error)
+    await fixture.client.stopTask(session); expect(await rejected).toMatchObject({ code: 'SERVER_OPS_TASK_CANCELLED' })
+    fixture.port.emit({ type: 'server-ops.task-started', session })
+    expect(fixture.port.messages.at(-1)).toEqual({ type: 'server-ops.task-stop', input: session }); fixture.client.stop()
+  })
+  test('Given 任务运行中 When utility 崩溃 Then 结果未知而不是成功', async () => {
+    const fixture = createFixture(); await connectFixture(fixture)
+    const session = { taskId: 'task-crash', hostId: 'host-1', connectionId: 'connection-1' }
+    const exits: unknown[] = []; fixture.client.onTaskExit(event => exits.push(event))
+    const starting = fixture.client.startTask({ ...session, command: 'sleep 999', cols: 80, rows: 24 })
+    fixture.port.emit({ type: 'server-ops.task-started', session }); await starting
+    fixture.runtimeProcess.emit('exit')
+    expect(exits).toHaveLength(1); expect(exits[0]).not.toHaveProperty('exitCode'); fixture.client.stop()
+  })
+})
+
+
+test('Given 任务启动中 When 主动断连 Then 立即拒绝并报告未知状态', async () => {
+  const fixture = createFixture(); await connectFixture(fixture)
+  const identity = { taskId: 'task-disconnect', hostId: 'host-1', connectionId: 'connection-1' }
+  const exits: unknown[] = []; fixture.client.onTaskExit(event => exits.push(event))
+  const starting = fixture.client.startTask({ ...identity, command: 'sleep 999', cols: 80, rows: 24 }).catch((error: unknown) => error)
+  fixture.client.disconnect(identity.hostId, identity.connectionId)
+  expect(await starting).toMatchObject({ code: 'SERVER_OPS_CONNECTION_CLOSED' })
+  expect(exits).toHaveLength(1); expect(exits[0]).not.toHaveProperty('exitCode')
+  fixture.client.stop()
+})

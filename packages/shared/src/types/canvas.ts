@@ -14,7 +14,7 @@ import {
   parseCanvasMediaPreparationIssue,
   type CanvasMediaPreparationIssue,
 } from './canvas-media'
-import { parseCanvasMediaModelScope } from './canvas-media-model-scope'
+import { isCanvasImageModelSelectionId, parseCanvasGenerationModelId, parseCanvasMediaModelScope } from './canvas-media-model-scope'
 
 /** 原生 Canvas 图文档使用的固定 IPC 通道。 */
 export const CANVAS_IPC_CHANNELS = {
@@ -1263,6 +1263,9 @@ export const CANVAS_IMAGE_CANDIDATE_BATCH_ENTRY_LIMIT = 1000
 /** 初始 LOAD 返回的活跃批次摘要上限。 */
 export const CANVAS_IMAGE_CANDIDATE_BATCH_SUMMARY_LIMIT = 20
 
+/** 折叠画布一次最多展示的图片待配置摘要，避免 LOAD 因坏图卡无限放大。 */
+export const CANVAS_IMAGE_PREPARATION_SUMMARY_LIMIT = 256
+
 /** 解析候选批次使用的固定公开状态集合。 */
 const CANVAS_IMAGE_CANDIDATE_BATCH_STATUSES: readonly CanvasImageCandidateBatchStatus[] = [
   'running', 'partial', 'ready', 'adopted', 'abandoned',
@@ -2268,11 +2271,7 @@ function isOptionalCanvasImageId(value: unknown): value is string | null {
 
 /** 模型选择 ID 兼容旧 profile 与固定版本的 media:<id>:<revision> 命名空间。 */
 function isOptionalCanvasImageModelProfileId(value: unknown): value is string | null {
-  return value === null
-    || isCanvasLifecycleId(value)
-    || (typeof value === 'string'
-      && value.length <= 160
-      && /^media:[A-Za-z0-9_-]{1,128}:[1-9][0-9]*$/.test(value))
+  return value === null || isCanvasImageModelSelectionId(value)
 }
 
 /** 严格解析图片工作流输入值，媒体引用只能指向固定项目素材版本。 */
@@ -2542,6 +2541,28 @@ function parseCanvasImageSnapshotAsset(value: unknown): DesignAsset {
 
 /** 严格重建图片任务固化的生图模型公开快照。 */
 function parseCanvasImageModelSnapshot(value: unknown): ImageGenerationModelSnapshot {
+  if (hasExactCanvasKeys(value, ['profileId', 'name', 'modelId', 'executor', 'imageProfileId'])
+    && typeof value.profileId === 'string'
+    && isCanvasImageSnapshotText(value.name, 128)) {
+    /** 选择 ID 与快照中的实际配置、模型和执行器必须属于同一身份。 */
+    const selection = parseCanvasGenerationModelId(value.profileId)
+    if (selection && selection.profileId === value.imageProfileId && selection.modelId === value.modelId) {
+      /** 独立供应商的执行器映射沿用现有运行合同。 */
+      const executor = selection.provider === 'openai-images' ? 'openai-images'
+        : selection.provider === 'minimax' ? 'minimax-image' : 'dreamina-image'
+      if (value.executor === executor) {
+        /** 公共快照字段不含凭据，执行器通过分支保留联合类型约束。 */
+        const snapshot = {
+          profileId: value.profileId, name: value.name, modelId: selection.modelId,
+          imageProfileId: selection.profileId,
+        }
+        if (executor === 'openai-images') return { ...snapshot, executor }
+        if (executor === 'minimax-image') return { ...snapshot, executor }
+        return { ...snapshot, executor }
+      }
+    }
+    throw new Error('CANVAS_IMAGE_MODULE_SNAPSHOT_INVALID')
+  }
   if (hasExactCanvasKeys(value, ['profileId', 'name', 'modelId', 'executor'])
     && isCanvasLifecycleId(value.profileId)
     && isCanvasImageSnapshotText(value.name, 128)
@@ -3545,6 +3566,8 @@ export interface CanvasWorkspaceSnapshot {
   nodeIssues: CanvasNodeIssue[]
   /** LOAD 提供当前 Canvas 已采用素材的共享缩略图；生命周期旧结果可暂不携带。 */
   imagePreviews?: CanvasImagePreview[]
+  /** 一次 LOAD 提供的有界图片待配置摘要；完整配置仍按节点工作台按需读取。 */
+  imagePreparations?: Array<{ nodeId: string; preparation: CanvasMediaPreparationIssue }>
   /** 仅包含有限活跃摘要；完整条目由独立 IPC 按需读取。 */
   activeImageCandidateBatches?: CanvasImageCandidateBatchSummary[]
   recoveredFrom?: 'tmp' | 'backup'
@@ -3744,6 +3767,22 @@ function parseCanvasWorkspaceImagePreview(value: unknown): CanvasImagePreview {
   }
 }
 
+/** 严格重建折叠画布中的图片待配置摘要，不携带完整模块配置或敏感输入。 */
+function parseCanvasWorkspaceImagePreparation(
+  value: unknown,
+  imageNodeIds: ReadonlySet<string>,
+): { nodeId: string; preparation: CanvasMediaPreparationIssue } {
+  const keys = ['nodeId', 'preparation'] as const
+  if (!hasExactCanvasKeys(value, keys)
+    || !isCanvasLifecycleId(value.nodeId)
+    || !imageNodeIds.has(value.nodeId)) {
+    throw new Error('CANVAS_WORKSPACE_SNAPSHOT_INVALID')
+  }
+  const preparation = parseCanvasMediaPreparationIssue(value.preparation)
+  if (!preparation) throw new Error('CANVAS_WORKSPACE_SNAPSHOT_INVALID')
+  return { nodeId: value.nodeId, preparation }
+}
+
 /** 严格重建工作区快照中的 schema v4 Canvas 文档。 */
 function parseCanvasWorkspaceDocument(value: unknown): CanvasDocument {
   /** 可选范围字段仅在真实存在时参与 exact-key 合同。 */
@@ -3823,6 +3862,8 @@ export function parseCanvasWorkspaceSnapshot(value: unknown): CanvasWorkspaceSna
     const record = value as Record<string, unknown>
     /** 标记图片预览字段是否真实存在，存在时不允许用 undefined 伪装缺省。 */
     const hasImagePreviews = Object.hasOwn(record, 'imagePreviews')
+    /** 标记图片待配置摘要字段是否真实存在，存在时必须是有界数组。 */
+    const hasImagePreparations = Object.hasOwn(record, 'imagePreparations')
     /** 标记恢复来源字段是否真实存在，存在时必须命中公开枚举。 */
     const hasRecoveredFrom = Object.hasOwn(record, 'recoveredFrom')
     /** 活跃候选摘要存在时必须是有界数组。 */
@@ -3830,6 +3871,7 @@ export function parseCanvasWorkspaceSnapshot(value: unknown): CanvasWorkspaceSna
     /** 工作区快照的必填公开字段。 */
     const keys = ['document', 'writable', 'nodeIssues']
     if (hasImagePreviews) keys.push('imagePreviews')
+    if (hasImagePreparations) keys.push('imagePreparations')
     if (hasActiveImageCandidateBatches) keys.push('activeImageCandidateBatches')
     if (hasRecoveredFrom) keys.push('recoveredFrom')
     if (!hasExactCanvasKeys(record, keys)
@@ -3837,6 +3879,7 @@ export function parseCanvasWorkspaceSnapshot(value: unknown): CanvasWorkspaceSna
       || !Array.isArray(record.nodeIssues)
       || (hasRecoveredFrom && record.recoveredFrom !== 'tmp' && record.recoveredFrom !== 'backup')
       || (hasActiveImageCandidateBatches && !Array.isArray(record.activeImageCandidateBatches))
+      || (hasImagePreparations && !Array.isArray(record.imagePreparations))
       || (hasImagePreviews && !Array.isArray(record.imagePreviews))) {
       throw new Error('CANVAS_WORKSPACE_SNAPSHOT_INVALID')
     }
@@ -3860,6 +3903,16 @@ export function parseCanvasWorkspaceSnapshot(value: unknown): CanvasWorkspaceSna
       const previewAssetIds = new Set(imagePreviews.map((preview) => preview.assetId))
       if (previewAssetIds.size !== imagePreviews.length) throw new Error('CANVAS_WORKSPACE_SNAPSHOT_INVALID')
     }
+    /** 图片待配置摘要只允许指向图片节点，并拒绝重复节点和超限载荷。 */
+    const imageNodeIds = new Set(document.nodes.filter((node) => node.kind === 'image').map((node) => node.id))
+    const imagePreparations = !hasImagePreparations
+      ? undefined
+      : (record.imagePreparations as unknown[]).map((item) => parseCanvasWorkspaceImagePreparation(item, imageNodeIds))
+    if (imagePreparations
+      && (imagePreparations.length > CANVAS_IMAGE_PREPARATION_SUMMARY_LIMIT
+        || new Set(imagePreparations.map((item) => item.nodeId)).size !== imagePreparations.length)) {
+      throw new Error('CANVAS_WORKSPACE_SNAPSHOT_INVALID')
+    }
     const activeImageCandidateBatches = !hasActiveImageCandidateBatches
       ? undefined
       : (record.activeImageCandidateBatches as unknown[])
@@ -3881,6 +3934,7 @@ export function parseCanvasWorkspaceSnapshot(value: unknown): CanvasWorkspaceSna
       writable: true,
       nodeIssues,
       ...(imagePreviews === undefined ? {} : { imagePreviews }),
+      ...(imagePreparations === undefined ? {} : { imagePreparations }),
       ...(activeImageCandidateBatches === undefined ? {} : { activeImageCandidateBatches }),
       ...(hasRecoveredFrom ? { recoveredFrom: record.recoveredFrom as 'tmp' | 'backup' } : {}),
     }
@@ -3905,7 +3959,8 @@ export interface CanvasChangeSource {
 /** 原生 Canvas 文档变化事件，始终携带项目和 Canvas 双重身份。 */
 export interface CanvasChangeEvent extends CanvasTarget {
   revision: number
-  cause: 'graph' | 'recovery'
+  /** 图片配置准备摘要独立变化时允许与图 revision 相同，Renderer 仍需刷新摘要。 */
+  cause: 'graph' | 'recovery' | 'image-preparation'
   /** 人工编辑和旧生图可无来源；存在时禁止携带 prompt 等私有内容。 */
   source?: CanvasChangeSource
 }
@@ -3920,7 +3975,7 @@ export function parseCanvasChangeEvent(value: unknown): CanvasChangeEvent {
     || !isCanvasLifecycleId(record.projectId)
     || !isCanvasLifecycleId(record.canvasId)
     || !Number.isSafeInteger(record.revision) || (record.revision as number) < 0
-    || (record.cause !== 'graph' && record.cause !== 'recovery')) {
+    || (record.cause !== 'graph' && record.cause !== 'recovery' && record.cause !== 'image-preparation')) {
     throw new Error('CANVAS_CHANGE_EVENT_INVALID')
   }
   let source: CanvasChangeSource | undefined

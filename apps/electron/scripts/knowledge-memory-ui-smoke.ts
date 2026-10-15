@@ -268,36 +268,128 @@ async function verifyKnowledgeErrorIsolation(window: BrowserWindow, fixtureUrl: 
   assert.equal(await window.webContents.executeJavaScript(`document.querySelector('.cm-content[contenteditable="true"]') !== null`), true, '知识库错误下记忆编辑器不可编辑')
 }
 
-/** 实际点击补充入口，核对会话归属、导入反馈及索引迟到隔离。 */
+/** Given 长目录 When 点击、重试和取消正文读取 Then 左栏稳定且旧请求不能重新打开正文。 */
+async function verifyKnowledgeReadingIsolation(window: BrowserWindow, fixtureUrl: string): Promise<void> {
+  await window.loadURL(`${fixtureUrl}?case=reading`)
+  await waitFor(window, `document.querySelector('[aria-label="打开文档10.md"]')`, '阅读目录未就绪')
+  await window.webContents.executeJavaScript(`(() => {
+    const directory = document.querySelector('[data-testid="project-knowledge-scroll"]');
+    const folder = directory.querySelector('details');
+    folder.open = false;
+    directory.scrollTop = 220;
+    const button = directory.querySelector('[aria-label="打开文档10.md"]');
+    window.__readingEvidence = { directory, folder, button, top: button.getBoundingClientRect().top, scroll: directory.scrollTop, calls: window.__knowledgeMemorySmoke.state.knowledgeCalls.length };
+    window.__knowledgeMemorySmoke.delayRead('knowledge-engineering-10');
+    button.click();
+  })()`)
+  await waitFor(window, `window.__knowledgeMemorySmoke.hasPendingRead('knowledge-engineering-10')`, '未建立正文延迟请求')
+  /** 逐项断言 DOM 身份、折叠、几何位置和请求范围，不能用静态快照代替交互验证。 */
+  assert.deepEqual(await window.webContents.executeJavaScript(`(() => {
+    const saved = window.__readingEvidence;
+    const directory = document.querySelector('[data-testid="project-knowledge-scroll"]');
+    return { sameNode: directory === saved.directory, collapsed: !saved.folder.open, scroll: Math.abs(directory.scrollTop - saved.scroll) <= 2, top: Math.abs(saved.button.getBoundingClientRect().top - saved.top) <= 2, loaderInDirectory: directory.textContent.includes('正在读取正文'), calls: window.__knowledgeMemorySmoke.state.knowledgeCalls.slice(saved.calls) };
+  })()`), { sameNode: true, collapsed: true, scroll: true, top: true, loaderInDirectory: false, calls: ['read:knowledge-engineering-10'] })
+  await waitFor(window, `document.querySelector('.project-knowledge-preview')?.textContent?.includes('正在读取正文')`, '加载状态未限制在正文区域')
+  assert.equal(await window.webContents.executeJavaScript(`document.querySelector('[aria-label="打开文档10.md"]')?.getAttribute('aria-current')`), 'page')
+  await waitFor(window, `document.querySelector('[aria-label="打开文档10.md"]')`, '重复点击时目录文件丢失')
+  await window.webContents.executeJavaScript(`document.querySelector('[aria-label="打开文档10.md"]')?.click()`)
+  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.state.knowledgeCalls.filter(call => call === 'read:knowledge-engineering-10').length`), 1, '加载中重复点击创建重复读取')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.releaseRead('knowledge-engineering-10')`)
+  await waitFor(window, `document.querySelector('.project-knowledge-preview h3')?.textContent === '工程文档 10'`, '正文未加载')
+  await waitFor(window, `document.querySelector('[aria-label="打开文档10.md"]')`, '正文加载后目录文件丢失')
+  await window.webContents.executeJavaScript(`(() => {
+    window.__readingEvidence.editor = document.querySelector('.project-knowledge-preview .cm-editor');
+    document.querySelector('[aria-label="打开文档10.md"]')?.click();
+  })()`)
+  assert.equal(await window.webContents.executeJavaScript(`window.__readingEvidence.editor === document.querySelector('.project-knowledge-preview .cm-editor') && window.__knowledgeMemorySmoke.state.knowledgeCalls.filter(call => call === 'read:knowledge-engineering-10').length === 1`), true, '重复点击重置当前正文或重新读取')
+
+  // 读取失败后目录仍可用；再次点击同一文件可以恢复。
+  await waitFor(window, `document.querySelector('[aria-label="打开文档11.md"]')`, '缺少失败场景文件')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.failKnowledgeRead('knowledge-engineering-11', true); document.querySelector('[aria-label="打开文档11.md"]')?.click()`)
+  await waitFor(window, `document.querySelector('.project-knowledge-preview')?.textContent?.includes('fixture 正文读取失败')`, '正文错误未在右栏展示')
+  assert.equal(await window.webContents.executeJavaScript(`document.querySelector('[data-testid="project-knowledge-scroll"]') === window.__readingEvidence.directory && !window.__readingEvidence.folder.open`), true, '读取失败卸载目录或重置折叠')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.failKnowledgeRead('knowledge-engineering-11', false); document.querySelector('[aria-label="打开文档11.md"]')?.click()`)
+  await waitFor(window, `document.querySelector('.project-knowledge-preview h3')?.textContent === '工程文档 11'`, '正文失败后无法重新选择')
+
+  // 快速切换后迟到结果不得覆盖新正文；加载时关闭也不得被重新打开。
+  await waitFor(window, `document.querySelector('[aria-label="打开文档12.md"]')`, '缺少迟到场景文件')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.delayRead('knowledge-engineering-12'); document.querySelector('[aria-label="打开文档12.md"]')?.click()`)
+  await waitFor(window, `window.__knowledgeMemorySmoke.hasPendingRead('knowledge-engineering-12')`, '快速切换未进入延迟')
+  await window.webContents.executeJavaScript(`document.querySelector('[aria-label="打开文档13.md"]')?.click()`)
+  await waitFor(window, `document.querySelector('.project-knowledge-preview h3')?.textContent === '工程文档 13'`, '新正文未显示')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.releaseRead('knowledge-engineering-12')`)
+  await waitFor(window, `!window.__knowledgeMemorySmoke.hasPendingRead('knowledge-engineering-12')`, '迟到请求未返回')
+  assert.equal(await window.webContents.executeJavaScript(`document.querySelector('.project-knowledge-preview h3')?.textContent`), '工程文档 13')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.delayRead('knowledge-engineering-14'); document.querySelector('[aria-label="打开文档14.md"]')?.click()`)
+  await waitFor(window, `window.__knowledgeMemorySmoke.hasPendingRead('knowledge-engineering-14')`, '取消场景未进入延迟')
+  await window.webContents.executeJavaScript(`document.querySelector('[aria-label="关闭正文预览"]').click(); window.__knowledgeMemorySmoke.releaseRead('knowledge-engineering-14')`)
+  await waitFor(window, `!window.__knowledgeMemorySmoke.hasPendingRead('knowledge-engineering-14')`, '取消后的请求未返回')
+  assert.equal(await window.webContents.executeJavaScript(`document.querySelector('.project-knowledge-preview') === null`), true, '关闭后迟到结果重新打开正文')
+
+  // 暂时不可用的正文恢复后可以重试；分页重试成功必须清除旧错误。
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.unavailableKnowledgeRead('knowledge-engineering-15', true); document.querySelector('[aria-label="打开文档15.md"]').click()`)
+  await waitFor(window, `document.querySelector('.project-knowledge-preview')?.textContent?.includes('当前无法读取来源正文')`, '不可用回执未显示')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.unavailableKnowledgeRead('knowledge-engineering-15', false); document.querySelector('[aria-label="打开文档15.md"]').click()`)
+  await waitFor(window, `document.querySelector('.project-knowledge-preview .cm-editor')`, '来源恢复后重复点击未重新读取')
+  await window.webContents.executeJavaScript(`document.querySelector('[aria-label="打开文档20.md"]').click()`)
+  await waitFor(window, `document.querySelector('.project-knowledge-preview h3')?.textContent === '工程文档 20'`, '分页正文未就绪')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.failKnowledgeRead('knowledge-engineering-20:5', true)`)
+  await click(window, '加载下一页正文')
+  await waitFor(window, `document.querySelector('.project-knowledge-preview [role="alert"]')`, '分页错误未显示')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.failKnowledgeRead('knowledge-engineering-20:5', false)`)
+  await click(window, '加载下一页正文')
+  await waitFor(window, `document.querySelector('.project-knowledge-preview .cm-content')?.textContent?.includes('第一页正文第二页正文')`, '分页重试未保留并追加正文')
+  assert.equal(await window.webContents.executeJavaScript(`document.querySelector('.project-knowledge-preview [role="alert"]') === null`), true, '分页成功后仍残留旧错误')
+
+  // 同一文件的新版本不能被旧版本在途请求去重，迟到旧正文也不能覆盖新版。
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.delayRead('knowledge-engineering-17:knowledge-r1'); document.querySelector('[aria-label="打开文档17.md"]').click()`)
+  await waitFor(window, `window.__knowledgeMemorySmoke.hasPendingRead('knowledge-engineering-17:knowledge-r1')`, '旧版本未进入延迟读取')
+  await window.webContents.executeJavaScript(`window.__readingEvidence.searchCalls = window.__knowledgeMemorySmoke.state.knowledgeCalls.filter(call => call === 'search:knowledge').length; window.__knowledgeMemorySmoke.updateKnowledgeRevision('knowledge-engineering-17', 'knowledge-r2')`)
+  await waitFor(window, `window.__knowledgeMemorySmoke.state.knowledgeCalls.filter(call => call === 'search:knowledge').length > window.__readingEvidence.searchCalls && !document.querySelector('.project-knowledge-directory')?.textContent?.includes('正在刷新')`, '新版本目录未完成刷新')
+  await window.webContents.executeJavaScript(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
+  await window.webContents.executeJavaScript(`document.querySelector('[aria-label="打开文档17.md"]').click()`)
+  await waitFor(window, `document.querySelector('.project-knowledge-preview .cm-content')?.textContent?.includes('knowledge-r2')`, '同 ID 新版本被旧请求去重或未显示')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.releaseRead('knowledge-engineering-17:knowledge-r1')`)
+  await waitFor(window, `!window.__knowledgeMemorySmoke.hasPendingRead('knowledge-engineering-17:knowledge-r1')`, '旧版本延迟请求未返回')
+  await window.webContents.executeJavaScript(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
+  assert.equal(await window.webContents.executeJavaScript(`document.querySelector('.project-knowledge-preview .cm-content')?.textContent?.includes('knowledge-r2')`), true, '迟到的旧正文覆盖了新版')
+
+  // 窄屏切换文件时保持目录高度，避免加载态在上下布局间跳动。
+  window.setContentSize(360, 760)
+  await waitFor(window, `document.querySelector('.project-knowledge-directory')?.getBoundingClientRect().height === 190`, '窄屏目录未保持受限高度')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.delayRead('knowledge-engineering-18'); document.querySelector('[aria-label="打开文档18.md"]').click()`)
+  await waitFor(window, `window.__knowledgeMemorySmoke.hasPendingRead('knowledge-engineering-18')`, '窄屏场景未进入读取')
+  assert.equal(await window.webContents.executeJavaScript(`document.querySelector('.project-knowledge-directory')?.getBoundingClientRect().height`), 190, '窄屏加载时目录高度跳变')
+  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.releaseRead('knowledge-engineering-18')`)
+  await waitFor(window, `document.querySelector('.project-knowledge-preview h3')?.textContent === '工程文档 18'`, '窄屏正文未显示')
+  assert.equal(await window.webContents.executeJavaScript(`document.querySelector('.project-knowledge-directory')?.getBoundingClientRect().height`), 190, '窄屏正文返回后目录高度跳变')
+  window.setContentSize(1180, 820)
+}
+
+/** Given Agent 自动选择补充方式 When 浏览知识库 Then 无场景按钮，单篇引用和索引恢复仍可使用。 */
 async function verifyKnowledgeSupplement(window: BrowserWindow, fixtureUrl: string): Promise<void> {
   await window.loadURL(`${fixtureUrl}?case=supplement`)
-  await click(window, '补充当前会话')
-  await waitFor(window, `window.__knowledgeMemorySmoke.workflowState().pendingPrompt`, '会话补充未投递')
-  assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.workflowState().pendingPrompt.sessionId`), 'session-knowledge-memory-smoke')
+  await waitFor(window, `document.querySelector('[aria-label="知识目录"]')`, '知识目录未就绪')
+  assert.deepEqual(await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).map(button => button.textContent?.trim()).filter(label => ['导入旧库文件', '导入旧库目录', '分析项目', '补充当前会话', '整理目录'].includes(label))`), [], '补充方式不应要求用户通过按钮选择')
   await waitFor(window, `document.querySelector('[aria-label="打开产品原则.md"]')`, '补充单篇前目录尚未就绪')
-  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.consumePrompt(); document.querySelector('[aria-label="打开产品原则.md"]').click()`)
+  await window.webContents.executeJavaScript(`document.querySelector('[aria-label="打开产品原则.md"]').click()`)
   await click(window, '补充此篇')
   await waitFor(window, `window.__knowledgeMemorySmoke.workflowState().pendingPrompt`, '单篇补充未投递')
   assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.workflowState().pendingPrompt.sessionId`), 'session-knowledge-memory-smoke')
   await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.consumePrompt(); window.__knowledgeMemorySmoke.removeCurrentSession()`)
-  await click(window, '补充当前会话')
+  await click(window, '补充此篇')
   await waitFor(window, `document.body.textContent.includes('请先打开当前项目的普通 Agent 会话')`, '无普通会话未报错')
   assert.equal(await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.state.createdSessions.length`), 0)
-  await click(window, '导入旧库文件')
-  await waitFor(window, `document.body.textContent.includes('凭据文件不可导入')`, '全部跳过未提供原因')
-  await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.state.importResult = { rootRelativePath: '.context/knowledge-imports', imported: 1, unchanged: 2, files: [{ relativePath: 'old.md', kind: 'document' }], skipped: [] }`)
-  await click(window, '导入旧库目录')
-  await waitFor(window, `document.body.textContent.includes('已导入 1 个文件，已有 2 个文件未变化')`, '成功与幂等计数不可见')
   await click(window, '检查索引')
   await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('summary')).find(item => item.textContent === '查看重建前后内容')?.click()`)
   await waitFor(window, `document.body.innerText.includes('# 人工索引原文') && document.body.innerText.includes('# 重建索引正文')`, '重建前后内容不可见')
   await click(window, '备份并重建索引')
   await waitFor(window, `window.__knowledgeMemorySmoke.state.knowledgeCalls.some(call => call === 'rebuild:workspace-knowledge-memory-smoke:index-r1')`, '重建未绑定预览版本')
-  for (const operation of ['index-preview', 'index-rebuild', 'scan']) {
+  for (const operation of ['index-preview', 'index-rebuild']) {
     await window.loadURL(`${fixtureUrl}?case=supplement`)
     if (operation === 'index-rebuild') { await click(window, '检查索引'); await waitFor(window, `document.body.textContent.includes('查看重建前后内容')`, '预览未加载') }
-    await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.delayRead(${JSON.stringify(operation)}); window.__knowledgeMemorySmoke.state.importResult = { rootRelativePath: '.context/knowledge-imports', imported: 1, unchanged: 0, files: [{ relativePath: 'old.md', kind: 'document' }], skipped: [] }`)
-    await click(window, operation === 'scan' ? '导入旧库文件' : operation === 'index-rebuild' ? '备份并重建索引' : '检查索引')
+    await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.delayRead(${JSON.stringify(operation)})`)
+    await click(window, operation === 'index-rebuild' ? '备份并重建索引' : '检查索引')
     await waitFor(window, `window.__knowledgeMemorySmoke.hasPendingRead(${JSON.stringify(operation)})`, '未进入延迟 IPC')
     await window.webContents.executeJavaScript(`window.__knowledgeMemorySmoke.switchWorkspace()`)
     /** 等待组件已按新项目请求快照，再释放旧项目响应，避免测试抢在 React 提交前继续。 */
@@ -324,6 +416,7 @@ async function runElectronSmoke(app: import('electron').App, BrowserWindowCtor: 
     }
   })
   try {
+    await verifyKnowledgeReadingIsolation(window, fixtureUrl)
     await verifyKnowledgeSupplement(window, fixtureUrl)
     await verifyKnowledgeExecutionRoutes(window, fixtureUrl)
     await verifyConversationCreationFailure(window, fixtureUrl)
@@ -335,7 +428,7 @@ async function runElectronSmoke(app: import('electron').App, BrowserWindowCtor: 
     const unexpectedErrors = errors.filter((message) => !message.includes('[工作区记忆] 自动保存失败') && !message.includes('[创建会话] 创建 Agent 会话失败: Error: fixture 新建会话失败'))
     assert.deepEqual(unexpectedErrors, [], `页面控制台错误：${unexpectedErrors.join(' | ')}`)
     console.log('[Knowledge Memory UI smoke] screenshots: /private/tmp/knowledge-memory-ui-smoke-execution.png, /private/tmp/knowledge-memory-ui-smoke-knowledge.png, /private/tmp/knowledge-memory-ui-smoke.png, /private/tmp/knowledge-memory-ui-smoke-narrow-memory.png')
-    console.log('[Knowledge Memory UI smoke] PASS: 宿主执行无重复提示、持久会话续接、准入详情、局部重试、规划会话、顶部 Tabs、知识目录/来源、暂停知识库下的记忆编辑、CAS、跨 Tab 草稿与冲突、冲突切换阻断、迟到读取隔离、变更导航、知识错误隔离均已验证；未访问真实用户数据')
+    console.log('[Knowledge Memory UI smoke] PASS: 目录点击稳定、正文局部加载与错误、同版本去重及新版本重读、分页恢复、窄屏知识布局、宿主执行无重复提示、持久会话续接、准入详情、局部重试、规划会话、顶部 Tabs、知识目录/来源、暂停知识库下的记忆编辑、CAS、跨 Tab 草稿与冲突、冲突切换阻断、迟到读取隔离、变更导航、知识错误隔离均已验证；未访问真实用户数据')
   } finally {
     window.destroy()
   }

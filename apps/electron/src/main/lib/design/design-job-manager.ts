@@ -38,6 +38,7 @@ import {
 } from '@proma/shared'
 import { removeFileAtomic, writeJsonFileAtomic } from '../safe-file'
 import { getConversationAttachmentsDir, resolveAttachmentPath } from '../config-paths'
+import type { ConfigRootResolver } from '../config-paths'
 import type { AgentRunExtensions } from '../agent-service'
 import type { HeadlessAgentRunTerminalOptions } from '../agent-headless-runner-registry'
 import type { CanvasImageModelRuntime } from '../media/image-generation-canvas-source'
@@ -306,21 +307,23 @@ export function getDefaultDesignJobManager(): DesignJobManager | undefined {
 /**
  * 验证 Nano Banana 附件精确属于当前 Design Job 会话。
  * @param sessionId 当前任务可见 Agent 会话 ID。
- * @param localPath tool_result 返回的附件相对路径。
+ * @param localPath 附件受管引用、旧相对路径或历史读取已投影的绝对路径。
  * @returns 归属有效的真实绝对路径，否则返回 undefined。
  */
-export function resolveOwnedDesignJobOutputPath(sessionId: string, localPath: string): string | undefined {
-  if (!localPath || isAbsolute(localPath)) return undefined
-  const expectedRoot = getConversationAttachmentsDir(sessionId)
-  const candidate = resolveAttachmentPath(localPath)
-  const lexicalRelative = relative(expectedRoot, candidate)
-  if (lexicalRelative === '..' || lexicalRelative.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
-    || isAbsolute(lexicalRelative)) return undefined
+export function resolveOwnedDesignJobOutputPath(sessionId: string, localPath: string, resolver?: ConfigRootResolver): string | undefined {
+  if (!localPath) return undefined
   try {
+    /** 路径解析失败与越界都代表资源不归当前任务所有，清理应直接跳过。 */
+    const expectedRoot = getConversationAttachmentsDir(sessionId, resolver)
+    const candidate = resolveAttachmentPath(localPath, resolver)
+    const lexicalRelative = relative(expectedRoot, candidate)
+    if (!lexicalRelative || lexicalRelative === '..' || lexicalRelative.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
+    || isAbsolute(lexicalRelative)) return undefined
+    if (lstatSync(candidate).isSymbolicLink()) return undefined
     const actualRoot = realpathSync(expectedRoot)
     const actualPath = realpathSync(candidate)
     const actualRelative = relative(actualRoot, actualPath)
-    if (actualRelative === '..' || actualRelative.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
+    if (!actualRelative || actualRelative === '..' || actualRelative.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
       || isAbsolute(actualRelative)) return undefined
     const stats = lstatSync(actualPath)
     return stats.isFile() && !stats.isSymbolicLink() ? actualPath : undefined
@@ -395,6 +398,50 @@ export class DesignJobManager {
   /** 创建只归属 Canvas 图片模块的 queued journal，不修改旧 Design 节点。 */
   async createCanvasImage(input: CreateDesignJobInput): Promise<DesignJobRecord> {
     return clonePublicDesignJob(await this.createCanvasImageInternal(input))
+  }
+
+  /** 将已验证外部产物登记为原图片卡的成功任务；导入回调在目标运行排他期间执行，不启动模型。 */
+  async registerExternalCanvasImageResult(
+    input: DesignJobRecord,
+    importAsset: (jobId: string) => Promise<DesignAsset>,
+  ): Promise<DesignJobRecord> {
+    if (input.target?.kind !== 'canvas-image' || input.status !== 'succeeded'
+      || !input.candidateBatchId || input.outputAssetId || !isStoredDesignJob({ ...input, status: 'queued' })) {
+      throw new Error('CANVAS_IMAGE_ATTACHMENT_JOB_INVALID')
+    }
+    /** 重试先复用相同任务，不能再次导入素材。 */
+    const existing = this.getProjectJob(input.projectId, input.id)
+    if (existing) {
+      if (existing.target?.kind !== 'canvas-image'
+        || existing.target.canvasId !== input.target.canvasId
+        || existing.target.nodeId !== input.target.nodeId
+        || existing.target.imageModuleId !== input.target.imageModuleId
+        || existing.candidateBatchId !== input.candidateBatchId
+        || existing.sourceSessionId !== input.sourceSessionId
+        || existing.prompt !== input.prompt || existing.originalRequest !== input.originalRequest
+        || existing.canvasImageConfigRevision !== input.canvasImageConfigRevision
+        || existing.canvasImageInitialAdoptedAssetId !== input.canvasImageInitialAdoptedAssetId
+        || existing.status !== 'succeeded' || !existing.outputAssetId) {
+        throw new Error('CANVAS_IMAGE_ATTACHMENT_JOB_CONFLICT')
+      }
+      return existing
+    }
+    /** 复用原生生成的预留，防止回填与新生成/重试交叉提交。 */
+    const release = this.reserveCanvasImageTarget(input.projectId, input.target)
+    try {
+      await this.dependencies.canvasImageTargetAdapter?.assertTarget(input.projectId, input.target)
+      /** 素材必须由可信导入器绑定到本任务，候选采用继续走原血缘校验。 */
+      const asset = await importAsset(input.id)
+      if (asset.sourceJobId !== input.id) throw new Error('CANVAS_IMAGE_ATTACHMENT_ASSET_INVALID')
+      await this.dependencies.canvasImageTargetAdapter?.assertTarget(input.projectId, input.target)
+      /** 不使用终态运行逻辑，避免触发首次自动采用。 */
+      const job: StoredDesignJob = { ...structuredClone(input), target: structuredClone(input.target), outputAssetId: asset.id }
+      this.writeJob(job)
+      this.emit(job)
+      return clonePublicDesignJob(job)
+    } finally {
+      release()
+    }
   }
 
   /**

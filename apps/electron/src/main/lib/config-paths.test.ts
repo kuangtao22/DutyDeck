@@ -13,6 +13,9 @@ import {
   removeRetiredDefaultSkills,
   RETIRED_DEFAULT_SKILL_SLUGS,
   resolveAgentSessionWorkspacePath,
+  createDataRootPathResolver,
+  createDataRootPathSerializer,
+  resolveAttachmentPath,
 } from './config-paths'
 import { DataRootLocator } from './data-root-locator'
 
@@ -123,4 +126,44 @@ test('Given 已删除的旧生图 Skill 缓存 When 清理退役默认 Skill The
   expect(isRetiredDefaultSkill('proma-generate-image')).toBe(true)
   expect(existsSync(join(defaultSkillsDir, 'proma-generate-image'))).toBe(false)
   expect(existsSync(join(defaultSkillsDir, 'user-installed-skill'))).toBe(true)
+})
+
+test('Given 历史路径位于已知旧根 When 创建读取投影 Then 只重定向旧根后代且不触碰外部项目', () => {
+  /** 当前根与旧根都由宿主提供，未读取任何旧文件。 */
+  const parent = join(tmpdir(), 'path-projection')
+  const oldRoot = join(parent, 'old')
+  const currentRoot = join(parent, 'current')
+  const resolvePath = createDataRootPathResolver({
+    requireActiveRoot: () => currentRoot,
+    getHistoricalRoots: () => [oldRoot],
+  })
+  expect(resolvePath(join(oldRoot, 'agent-workspaces/a/attachments/image.png'))).toBe(join(currentRoot, 'agent-workspaces/a/attachments/image.png'))
+  for (const path of [join(currentRoot, 'image.png'), join(`${oldRoot}-copy`, 'image.png'), join(oldRoot, '..', 'project/image.png'), join(parent, 'project/.proma/file.png'), 'session/image.png', oldRoot]) {
+    expect(resolvePath(path)).toBe(path)
+  }
+})
+
+test('Given 数据根采用不同目录分隔语义 When 读取当前平台路径 Then 使用平台路径边界', () => {
+  const { homeDir, locator } = createLocator()
+  /** 临时路径由当前操作系统生成，兼容 Windows 与 POSIX 测试环境。 */
+  const root = join(homeDir, '.DutyDeck')
+  mkdirSync(root)
+  locator.write({ version: 1, activeRoot: root })
+  expect(createDataRootPathResolver(locator)(join(homeDir, '.proma', 'attachments', 'image.png')))
+    .toBe(join(root, 'attachments', 'image.png'))
+})
+
+test('Given 新旧附件引用 When 使用统一入口 Then 根据根类型解析而非猜测目录名称', () => {
+  /** 无 I/O 定位器模拟已完成的自定义迁移。 */
+  const root = join(tmpdir(), 'custom-data')
+  const previous = join(tmpdir(), 'previous-data')
+  const resolver = { requireActiveRoot: () => root, getHistoricalRoots: () => [previous] }
+  const serialize = createDataRootPathSerializer(resolver)
+  const file = join(root, 'agent-workspaces/default/s1/attachments/a b.png')
+  expect(serialize(file)).toBe('dutydeck-data:/agent-workspaces/default/s1/attachments/a%20b.png')
+  expect(resolveAttachmentPath(serialize(file), resolver)).toBe(file)
+  expect(resolveAttachmentPath(join(previous, 'agent-workspaces/default/s1/attachments/a b.png'), resolver)).toBe(file)
+  expect(resolveAttachmentPath('c1/a.png', resolver)).toBe(join(root, 'attachments/c1/a.png'))
+  expect(resolveAttachmentPath('', resolver)).toBe(join(root, 'attachments'))
+  expect(resolveAttachmentPath(join(tmpdir(), 'external/a.png'), resolver)).toBe(join(tmpdir(), 'external/a.png'))
 })

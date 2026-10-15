@@ -7,6 +7,7 @@ import type {
   KnowledgeDocumentWriteInput,
   KnowledgeEntry,
   KnowledgeKind,
+  KnowledgeImportMode,
   KnowledgeOutlineInput,
   KnowledgePlanSource,
   KnowledgePlanProposalInput,
@@ -73,8 +74,29 @@ export interface ProjectKnowledgeAgentMaintenanceOptions {
   now?: () => number
 }
 
+/** 来源发现回执仅返回计数和扫描状态，正文仍须正式读取。 */
+export interface KnowledgeAgentScanResult {
+  initialized: boolean
+  scan: KnowledgeSnapshot['scan']
+}
+/** 导入回执保留有界跳过明细，不返回宿主绝对路径或整份文件列表。 */
+export interface KnowledgeAgentImportResult {
+  cancelled: boolean
+  imported: number
+  unchanged: number
+  skippedCount: number
+  skipped: Array<{ path: string; reason: string }>
+  truncated: boolean
+  rootRelativePath?: string
+  scan?: KnowledgeSnapshot['scan']
+}
+
 /** 核心服务拥有的流程事务，Agent 侧只补当前工作区和本轮证据。 */
 export interface ProjectKnowledgeAgentWorkflowPorts {
+  /** 扫描当前项目并等待完成，信号只来自工具执行宿主。 */
+  scanSources?(workspaceId: string, signal?: AbortSignal): Promise<KnowledgeAgentScanResult>
+  /** 原生选择器决定路径，模型只能指定选择模式。 */
+  importSources?(workspaceId: string, mode: KnowledgeImportMode, signal?: AbortSignal): Promise<KnowledgeAgentImportResult>
   getSnapshot(workspaceId: string): Promise<KnowledgeSnapshot>
   proposePlan(input: KnowledgePlanProposalInput): Promise<KnowledgeSnapshot>
   saveOutline(input: KnowledgeOutlineInput): Promise<KnowledgeSnapshot>
@@ -279,6 +301,10 @@ export function compactKnowledgeWorkflowStatus(
 
 /** 当前 Agent 可见的最小维护能力。 */
 export interface ProjectKnowledgeAgentMaintenance {
+  /** 在当前普通会话授权下发现新来源。 */
+  scanSources?: (signal?: AbortSignal) => Promise<KnowledgeAgentScanResult>
+  /** 仅通过宿主选择器导入，随后扫描已保留的来源。 */
+  importSources?: (mode: KnowledgeImportMode, signal?: AbortSignal) => Promise<KnowledgeAgentImportResult>
   /** 受写租约保护的定向刷新；不登记已读。 */
   refreshSources?: (sources: KnowledgePlanSource[]) => Promise<KnowledgeEntry[]>
   next(): Promise<{ refs: KnowledgeSourceRef[]; remaining: number }>
@@ -739,5 +765,13 @@ export function createProjectKnowledgeAgentMaintenance(
   const refreshSources = options.workflow.refreshSources
     ? (sources: KnowledgePlanSource[]) => runWorkflowWrite((workflow) => workflow.refreshSources!(options.workspaceId, sources))
     : undefined
-  return { next, observeRead, submit, status, proposePlan, saveOutline, writeDocument, copyAsset, refreshSources, observeUserEvidence }
+  /** 来源发现沿用现有写权限和工作区租约，完成后再次检查撤权。 */
+  const scanSources = options.workflow.scanSources
+    ? (signal?: AbortSignal) => runWorkflowWrite((workflow) => workflow.scanSources!(options.workspaceId, signal))
+    : undefined
+  /** 导入模式在服务入口继续复核，不能通过类型断言注入路径。 */
+  const importSources = options.workflow.importSources
+    ? (mode: KnowledgeImportMode, signal?: AbortSignal) => runWorkflowWrite((workflow) => workflow.importSources!(options.workspaceId, mode, signal))
+    : undefined
+  return { next, observeRead, submit, status, proposePlan, saveOutline, writeDocument, copyAsset, refreshSources, observeUserEvidence, scanSources, importSources }
 }

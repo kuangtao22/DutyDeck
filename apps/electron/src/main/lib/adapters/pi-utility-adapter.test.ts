@@ -99,6 +99,8 @@ describe('Pi utility 强制关闭合同', () => {
     const evaluations: AbortSignal[] = []
     const input = {
       ...createQueryInput('session-completion'),
+      // 宿主固定的根快照必须完整穿过 utility RPC，子进程不能重猜 cwd。
+      dataRootPaths: { activeRoot: '/current-data', historicalRoots: ['/previous-data'] },
       evaluateCompletion: async (signal: AbortSignal) => {
         evaluations.push(signal)
         return { action: 'complete' as const }
@@ -112,6 +114,7 @@ describe('Pi utility 强制关闭合同', () => {
     const startPayload = runtimeStates[0]!.requestPayloads[0] as { input?: Record<string, unknown> }
     expect(startPayload.input?.evaluateCompletion).toBeUndefined()
     expect(startPayload.input?.completionEvaluationEnabled).toBe(true)
+    expect(startPayload.input?.dataRootPaths).toEqual(input.dataRootPaths)
     await expect(adapter.handleRuntimeRequest(createAgentRuntimeRequest(
       'agent.capability.evaluateCompletion',
       { queryId: 'query-completion', sessionId: 'session-completion' },

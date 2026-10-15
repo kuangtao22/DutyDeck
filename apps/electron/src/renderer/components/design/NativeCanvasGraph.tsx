@@ -59,6 +59,7 @@ import type {
   NativeCanvasDocumentFlowNode,
   NativeCanvasFlowNode,
   NativeCanvasImageFlowNode,
+  NativeCanvasImageStatus,
   NativeCanvasMediaFlowNode,
   NativeCanvasWebviewFlowNode,
 } from './native-canvas-model'
@@ -551,6 +552,8 @@ export interface NativeCanvasGraphProps {
   nodeActivityStates?: ReadonlyMap<string, CanvasNodeActivityState>
   /** 成功生成但尚未正式采用的生图节点索引。 */
   imageCandidateNodeIds?: ReadonlySet<string>
+  /** 图片配置准备与最近失败状态，不加载完整模块。 */
+  imageStatusByNodeId?: ReadonlyMap<string, NativeCanvasImageStatus>
   /** 按媒体节点 ID 聚合的 Comfy 运行阶段与当前节点采样计数。 */
   mediaProgressByNodeId?: ReadonlyMap<string, MediaRunProgressProjection>
   /** 视频卡片按需读取已正式采用版本的临时预览授权。 */
@@ -673,6 +676,7 @@ export function NativeCanvasGraph({
   runningSessionIds = EMPTY_RUNNING_SESSION_IDS,
   nodeActivityStates = EMPTY_NODE_ACTIVITY_STATES,
   imageCandidateNodeIds = EMPTY_IMAGE_CANDIDATE_NODE_IDS,
+  imageStatusByNodeId,
   mediaProgressByNodeId,
   readCanvasVideoPreview,
   releaseCanvasVideoPreview,
@@ -765,6 +769,7 @@ export function NativeCanvasGraph({
       runningSessionIds,
       nodeActivityStates,
       imageCandidateNodeIds,
+      imageStatusByNodeId,
       mediaProgressByNodeId,
       imagePreviews,
       loadCanvasWebviewPreview: webviewPreviewLoader,
@@ -796,6 +801,7 @@ export function NativeCanvasGraph({
     edges: document.edges,
     nodeIssues,
     imageCandidateNodeIds,
+    imageStatusByNodeId,
     imagePreviews,
     pendingWebviewDeviceNodeIds,
     canCreateChild,
@@ -859,6 +865,7 @@ export function NativeCanvasGraph({
       && previousStaticInputs.edges === document.edges
       && previousStaticInputs.nodeIssues === nodeIssues
       && previousStaticInputs.imageCandidateNodeIds === imageCandidateNodeIds
+      && previousStaticInputs.imageStatusByNodeId === imageStatusByNodeId
       && previousStaticInputs.imagePreviews === imagePreviews
       && previousStaticInputs.pendingWebviewDeviceNodeIds === pendingWebviewDeviceNodeIds
       && previousStaticInputs.canCreateChild === canCreateChild
@@ -914,6 +921,7 @@ export function NativeCanvasGraph({
           nodeActivityStates,
           mediaProgressByNodeId,
           imageCandidateNodeIds,
+          imageStatusByNodeId,
         })
         const patchedProjectionNode = patchNativeCanvasFlowNodeRuntimeState(previousNode, canvasNode, {
           nodeIssues,
@@ -921,6 +929,7 @@ export function NativeCanvasGraph({
           nodeActivityStates,
           mediaProgressByNodeId,
           imageCandidateNodeIds,
+          imageStatusByNodeId,
         })
         nodesChanged = nodesChanged || patchedCurrentNode !== currentNode || patchedProjectionNode !== previousNode
         nextFlowNodes[index] = patchedCurrentNode
@@ -939,6 +948,7 @@ export function NativeCanvasGraph({
         edges: document.edges,
         nodeIssues,
         imageCandidateNodeIds,
+        imageStatusByNodeId,
         imagePreviews,
         pendingWebviewDeviceNodeIds,
         canCreateChild,
@@ -957,6 +967,7 @@ export function NativeCanvasGraph({
       runningSessionIds,
       nodeActivityStates,
       imageCandidateNodeIds,
+      imageStatusByNodeId,
       mediaProgressByNodeId,
       imagePreviews,
       loadCanvasWebviewPreview: webviewPreviewLoader,
@@ -991,6 +1002,7 @@ export function NativeCanvasGraph({
       edges: document.edges,
       nodeIssues,
       imageCandidateNodeIds,
+      imageStatusByNodeId,
       imagePreviews,
       pendingWebviewDeviceNodeIds,
       canCreateChild,
@@ -1000,7 +1012,7 @@ export function NativeCanvasGraph({
       releaseCanvasVideoPreviewEnabled: Boolean(releaseCanvasVideoPreview),
     }
     runtimeProjectionInputsRef.current = { runningSessionIds, nodeActivityStates, mediaProgressByNodeId }
-  }, [canCreateChild, controlledSelectedNodeIdSet, document, imageCandidateNodeIds, imagePreviews, mediaProgressByNodeId, nodeActivityStates, nodeIssues, pendingWebviewDeviceNodeIds, readCanvasVideoPreview, referenceNode, releaseCanvasVideoPreview, runningSessionIds, videoPreviewReader, videoPreviewReleaser, webviewDevicePresetChange, webviewPreviewLoader, workbenchNodeChange, writable, projectionCallbackBridge])
+  }, [canCreateChild, controlledSelectedNodeIdSet, document, imageCandidateNodeIds, imageStatusByNodeId, imagePreviews, mediaProgressByNodeId, nodeActivityStates, nodeIssues, pendingWebviewDeviceNodeIds, readCanvasVideoPreview, referenceNode, releaseCanvasVideoPreview, runningSessionIds, videoPreviewReader, videoPreviewReleaser, webviewDevicePresetChange, webviewPreviewLoader, workbenchNodeChange, writable, projectionCallbackBridge])
 
   React.useEffect(() => {
     /** Jotai 视图回显与用户显式定位共用 document prop，必须按本地提交身份区分。 */

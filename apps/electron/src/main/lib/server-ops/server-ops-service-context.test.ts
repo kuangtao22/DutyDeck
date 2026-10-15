@@ -76,7 +76,7 @@ describe('Server Ops 共享服务上下文', () => {
     const source = readFileSync(new URL('../../ipc.ts', import.meta.url), 'utf8')
     expect(source).toContain('const serverOpsAuditStore = new ServerOpsAuditStore(undefined, { requirePreparedSchema: true })')
     expect(source).toContain('prepareForWrites: () => serverOpsAuditStore.prepareForWrites(acquireServerOpsMutationGuard)')
-    expect(source.match(/audit: serverOpsAudit,/g)).toHaveLength(7)
+    expect(source.match(/audit: serverOpsAudit,/g)).toHaveLength(8)
   })
 
   test('上下文携带唯一观测服务并按日志先于连接的顺序幂等释放', async () => {

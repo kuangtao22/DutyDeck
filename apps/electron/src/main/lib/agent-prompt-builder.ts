@@ -227,6 +227,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     `## Pi 运行时
 使用 DutyDeck 提供的工具；Write 必须同时传入完整 \`path\` 与 \`content\`。附加目录可用其绝对路径访问。${modelRule}`,
     `## 可见终端
+- 运维模块已连接的服务器应使用当前可用的 \`server_task_start\` 创建交互任务终端，\`server_task_read\` 读取进展。此时不要用 \`TerminalExecute\` 或 Bash 再建 SSH 连接；本地项目任务仍按以下规则选择工具。
 - \`TerminalExecute\` 会打开并自动展示给用户的终端 Tab；**是否耗时不是使用它的理由**。只在用户明确要求观看，或命令运行期间确实需要用户观察日志、输入、确认、调试或随时中断时使用。通常仅限开发服务、交互式安装/迁移/部署，或用户明确要求观看的构建和测试。其余命令优先用 Bash 或匹配的专用工具在 Agent 内部执行。
 - 文档与文件处理默认在后台：PDF、Word/DOCX、Excel/CSV、PPT/PPTX、图片/音视频转码、OCR、格式转换、压缩/解压、批量导入导出、数据清洗/生成、文件校验和索引等，即使预计耗时较长也**不得**为此使用 TerminalExecute；只向用户汇报阶段和结果。除非用户明确要求看过程，或工具实际需要其交互输入。
 - 同样不要为了展示普通的读取/搜索、脚本运行、依赖探测、单元测试、类型检查、格式化、构建日志、Git 常规操作、网络下载或 CLI 输出而打开终端；需要可视化结果时交付文件、摘要、进度任务或专用预览，不要把技术日志当作进度。
@@ -238,7 +239,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
       ? `## 服务器运维与数据库变更\n- 新增连接使用 \`ops_connection_prepare\` 生成草稿；在运维面板选择项目、填写凭据、测试并保存，草稿成功不代表已保存或已连接。不要索取聊天中的密码或私钥。\n- 已保存的 MySQL/PostgreSQL/SQLite 连接默认允许只读访问未禁用的业务表；可在运维面板设置持久禁用表，MySQL 系统库与 PostgreSQL 系统 schema 不可访问。PostgreSQL 表必须使用目录返回的 canonical \`"schema"."table"\` 身份，未限定 schema 的 SQL 固定解析到 public。库名未知时用 \`ops_database_tables\` 按需发现，不猜测目标。SSH、Redis 和日志不需要额外的板块授权。服务器保存并连接后可直接使用，Redis 使用已保存配置按请求连接；SSH 隧道须已连接。发现服务不会自动建立 SSH 连接。\n- 用户要求实际修改数据库时，使用当前可用的 \`ops_database_write\` 发起写入：不需要额外的服务器 Agent 授权，每次执行都由 Agent 原生确认弹窗逐次批准，完全自动模式也不能跳过，不先追加一轮文字确认。写入支持直连 MySQL、本地 SQLite，以及已连接 SSH 主机上的 SQLite 文件；PostgreSQL 与 SSH MySQL/Redis 写入不支持。先核对目标库和数据范围，说明预期影响及恢复方式；MySQL DDL 不承诺事务回滚。只要求生成 SQL 时交付可审查脚本；运维只读/计划模式不可写，不能自动切换或扩大权限。断线、超时或取消可能返回「结果未知」；结果为 \`partial\` 或 \`unknown\` 时必须先核对实际数据，不能承诺已回滚或直接重试。\n- 数据库的数据、字段、索引、备注等变更先准备可审查脚本或程序，再按当前工具能力和逐次审批执行。先使用 \`ops_database_change_context\` 取得允许读取的结构证据。\n${SERVER_OPS_DATABASE_CHANGE_WORKFLOW.map((step) => `- ${step}`).join('\n')}\n- 运维只读模式没有项目文件读写能力时，明确缺少程序上下文，并以代码块交付待完善草稿；不能切换工具或自动扩大权限。`
       : undefined,
     ctx.serverOpsWriteAvailable
-      ? '## 服务器与 Redis 运维\n- 当前会话可调用受控服务器、Docker、远程文件和数据库工具。服务器修改命令、容器动作、文件变更、断开连接及数据库/Redis 写入都要先核对目标并经过 Agent 原生单次确认，完全自动模式不能跳过或永久授权；只读操作直接执行，不先追加文字确认。结果必须写入审计；不得索取或输出凭据。Redis 使用 ops_redis_read / ops_redis_write 执行有界单键操作，不支持脚本、管理命令或跨逻辑库；unknown 结果必须先核对实际状态，不能直接重试。\n- `ops_database_write` 支持直连 MySQL、本地 SQLite，以及已连接 SSH 主机上的 SQLite 文件，目标受已保存数据源、非系统库、禁用表和当前会话身份约束。写入结果按 `committed`、`rolled-back`、`partial` 或 `unknown` 处理；`partial`/`unknown` 先核对实际数据，绝不直接重试。PostgreSQL 与 SSH MySQL/Redis 不可写。'
+      ? '## 服务器与 Redis 运维\n- 对运维模块已连接的服务器，短命令使用 `server_exec`；交互发布、sudo 或长任务使用 `server_task_start`，复用现有 SSH 的独立任务终端。不要通过本地终端重新 SSH。需要 sudo 密码时请用户直接在运维任务终端输入，不得索取密码或放进工具参数。使用 `server_task_read` 的 nextOffset/waitMs 等待日志和退出结果，不使用 Bash sleep；启动成功不代表命令成功，只有 exited 且 exitCode=0 才能宣称命令成功。unknown/interrupted 先核对实际状态，`server_task_interrupt` 仅关闭该任务通道，不承诺远端回滚。\n- 当前会话可调用受控服务器、Docker、远程文件和数据库工具。服务器修改命令、容器动作、文件变更、断开连接及数据库/Redis 写入都要先核对目标并经过 Agent 原生单次确认，完全自动模式不能跳过或永久授权；只读操作直接执行，不先追加文字确认。结果必须写入审计；不得索取或输出凭据。Redis 使用 ops_redis_read / ops_redis_write 执行有界单键操作，不支持脚本、管理命令或跨逻辑库；unknown 结果必须先核对实际状态，不能直接重试。\n- `ops_database_write` 支持直连 MySQL、本地 SQLite，以及已连接 SSH 主机上的 SQLite 文件，目标受已保存数据源、非系统库、禁用表和当前会话身份约束。写入结果按 `committed`、`rolled-back`、`partial` 或 `unknown` 处理；`partial`/`unknown` 先核对实际数据，绝不直接重试。PostgreSQL 与 SSH MySQL/Redis 不可写。'
       : undefined,
     planningPrompt,
     ctx.collaborationAvailable

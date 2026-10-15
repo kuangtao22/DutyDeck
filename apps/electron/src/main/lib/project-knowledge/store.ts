@@ -201,7 +201,8 @@ export function createProjectKnowledgeStore(
   }
 
   /** 在跨进程锁内首次建立空清单。 */
-  async function initialize(project: ResolvedKnowledgeProject, workspaceId?: string): Promise<KnowledgeManifest> {
+  async function initialize(project: ResolvedKnowledgeProject, workspaceId?: string, assertCurrent?: () => void): Promise<KnowledgeManifest> {
+    assertCurrent?.()
     ensureKnowledgeDirectories(project)
     /** 当前项目的短临界区锁释放函数。 */
     const release = acquireMediaFileLock(getKnowledgeLockPath(project))
@@ -210,6 +211,8 @@ export function createProjectKnowledgeStore(
       const existing = readManifest(project)
       if (existing) return existing
       if (workspaceId && dependencies.assertWritable) await dependencies.assertWritable(workspaceId)
+      /** Agent 首次扫描等待写门禁后必须重新复核，不能迟到初始化。 */
+      assertCurrent?.()
       /** 首次发布的空清单。 */
       const manifest: KnowledgeManifest = {
         schemaVersion: 1,
@@ -441,6 +444,7 @@ export function createProjectKnowledgeStore(
     expectedRevision: number,
     commits: KnowledgeEntryCommit[],
     workspaceId?: string,
+    assertCurrent?: () => void,
   ): Promise<KnowledgeManifest> {
     ensureKnowledgeDirectories(project)
     /** 当前提交持有的跨进程锁释放函数。 */
@@ -452,6 +456,8 @@ export function createProjectKnowledgeStore(
       const current = readManifest(project)
       if (!current) throw new Error('知识库尚未初始化')
       if (current.revision !== expectedRevision) throw new Error('知识库版本冲突')
+      /** 扫描授权在锁内发布前复核，不为断言额外加载全部条目。 */
+      assertCurrent?.()
       return publishLocked(project, current, { commits })
     } finally {
       release()

@@ -228,3 +228,18 @@ test('Given 主 locator cleanup 与 activeRoot 不匹配 When bak 有效 Then CL
 
   expect(resolveConfigDir({}, { homeDir, env: {} })).toBe(activeRoot)
 })
+
+test('Given 默认移动请求待处理 When CLI 解析定位根 Then 重命名前后均拒绝启动且不回退旧备份', () => {
+  /** 仅创建隔离 fixture，验证 pending 优先于目录可用性。 */
+  const { homeDir, activeRoot } = createCliPathFixture()
+  /** 主 locator 的请求优先于 fixture 中仍有效的旧 Proma locator。 */
+  const locatorPath = join(homeDir, '.DutyDeck-location.json')
+  writeFileSync(locatorPath, JSON.stringify({
+    version: 1,
+    activeRoot,
+    defaultRootMoveRequest: { sourceRoot: activeRoot, targetRoot: join(homeDir, '.DutyDeck'), dev: '1', ino: '42' },
+  }))
+  expect(() => resolveConfigDir({}, { homeDir, env: {} })).toThrow('默认数据根移动尚未完成')
+  rmSync(activeRoot, { recursive: true })
+  expect(() => resolveConfigDir({}, { homeDir, env: {} })).toThrow('默认数据根移动尚未完成')
+})

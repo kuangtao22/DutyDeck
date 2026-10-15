@@ -4,6 +4,7 @@ const DELIVERY_TOOLS = new Set([
   'canvas_update_artifact', 'canvas_update_image_config', 'canvas_update_agent_config', 'canvas_update_media_config',
   'canvas_run_agent', 'canvas_run_nodes', 'canvas_run_workflow', 'canvas_resume_workflow', 'canvas_retry_task',
   'canvas_attach_media_assets', 'canvas_attach_media_run', 'canvas_adopt_media_candidate', 'canvas_adopt_version',
+  'canvas_prepare_image_attachment', 'canvas_attach_image_result',
   'canvas_adopt_image_candidates', 'canvas_adopt_candidate_batch', 'canvas_restore_node', 'canvas_rebuild_agent',
   'media_import_local_file', 'media_import_assets', 'media_import_remote_asset', 'media_execute_run',
 ])

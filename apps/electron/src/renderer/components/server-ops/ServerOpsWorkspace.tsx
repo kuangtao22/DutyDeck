@@ -71,6 +71,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ServerOpsDataSourceDialog } from './ServerOpsDataSourceDialog'
 import { ServerOpsLocalSqliteDropZone } from './ServerOpsLocalSqliteDropZone'
 import { ServerOpsConnectDialog } from './ServerOpsConnectDialog'
+import { ServerOpsTaskTerminalSwitcher } from './ServerOpsTaskTerminal'
+import { serverOpsTaskFocusAtom } from './useServerOpsTaskFocus'
 import { ServerOpsRemoteTerminal } from './ServerOpsRemoteTerminal'
 import { ServerOpsOverviewPanel } from './ServerOpsOverviewPanel'
 import { ServerOpsServicesPanel } from './ServerOpsServicesPanel'
@@ -679,7 +681,7 @@ export function ServerOpsWorkspaceView({
                 connected={connected}
                 active={activeSection === 'overview'}
               />
-            : activeSection === 'terminal' && connected && terminalContent
+            : activeSection === 'terminal' && terminalContent
               ? terminalContent
             : activeSection === 'services'
               ? null
@@ -1082,6 +1084,18 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
   const setSelectedConnectionId = viewPosition.setConnectionId
   const setActiveSection = React.useCallback((section: ServerOpsSection): void => { viewPosition.update({ activeSection: section }) }, [viewPosition])
   const setProjectViewActive = React.useCallback((active: boolean): void => { viewPosition.update({ projectViewActive: active }) }, [viewPosition])
+  /** 自动定位仅响应前台新任务，按主机归属切换项目和终端页。 */
+  const [taskFocus, setTaskFocus] = useAtom(serverOpsTaskFocusAtom)
+  const handledTaskFocus = React.useRef<string | null>(null)
+  React.useEffect(() => {
+    if (!paneActive || !taskFocus || taskFocus.sessionId !== currentAgentSessionId || handledTaskFocus.current === taskFocus.taskId) return
+    const host = hosts.find((item) => item.id === taskFocus.hostId)
+    if (!host) return
+    handledTaskFocus.current = taskFocus.taskId
+    viewPosition.update({ projectId: host.projectId ?? null, connectionId: createServerOpsSshConnectionId(host.id), projectViewActive: false, activeSection: 'terminal' })
+    setTaskFocus(null)
+  }, [taskFocus, paneActive, currentAgentSessionId, hosts, viewPosition, setTaskFocus])
+
   /** 服务器列表抽屉是否展开。 */
   const [drawerOpen, setDrawerOpen] = React.useState(false)
   /** 当前正在编辑的服务器；null 表示新建。 */
@@ -1817,9 +1831,10 @@ export function ServerOpsWorkspace({ viewScope = 'default', paneActive = true }:
           onContainerLogChange={setContainerLog}
           onContainerConsoleChange={setContainerConsole}
           renderWorkspaceToolbar={renderWorkspaceToolbar}
-          terminalContent={selectedConnectionState?.phase === 'connected' && selectedConnectionState.connectionId
-            ? <ServerOpsRemoteTerminal hostId={selectedHost.id} connectionId={selectedConnectionState.connectionId} />
-            : undefined}
+          terminalContent={<ServerOpsTaskTerminalSwitcher sessionId={currentAgentSessionId} hostId={selectedHost.id}
+            manualTerminal={selectedConnectionState?.phase === 'connected' && selectedConnectionState.connectionId
+              ? <ServerOpsRemoteTerminal hostId={selectedHost.id} connectionId={selectedConnectionState.connectionId} />
+              : <div className="p-4 text-sm text-muted-foreground">请先连接服务器以使用手动 SSH 终端。</div>} />}
           auditStatus={auditStatus}
           auditError={auditError}
           auditRecords={auditRecords}

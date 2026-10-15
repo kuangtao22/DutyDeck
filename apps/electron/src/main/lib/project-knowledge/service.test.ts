@@ -62,6 +62,26 @@ describe('项目知识库 1A 核心服务', () => {
     })
   }
 
+  test('Given 两次并发首次扫描 When 初始化等待完成 Then 只注册一个任务且只有启动者持有后台租约', async () => {
+    /** 服务端计数证明实际只进行一次来源枚举，而不仅是返回同一状态。 */
+    let discoveries = 0
+    let starts = 0
+    const service = createService('project-1', {
+      list: async () => { discoveries += 1; return { sources: [], total: 0, truncated: false, skipped: 0 } },
+      read: async () => ({ status: 'unavailable', content: '', truncated: false }),
+    })
+    writeFileSync(join(projectRoot, 'README.md'), '# 并发扫描')
+    const results = await Promise.all([
+      service.startScan('workspace-1', undefined, () => { starts += 1 }),
+      service.startScan('workspace-1', undefined, () => { starts += 1 }),
+    ])
+    expect(results.every((result) => result.scan.status === 'running')).toBe(true)
+    expect(starts).toBe(1)
+    await service.waitForScan('workspace-1')
+    expect(discoveries).toBe(1)
+    expect((await service.getSnapshot('workspace-1')).scan.status).toBe('completed')
+  })
+
   /** 用真实版本存储建立带文件证据的提炼知识，返回发布后的条目。 */
   async function publishDistilled(service: ReturnType<typeof createService>, source: KnowledgeEntry, title = '退款规则') {
     /** 固定知识正文用于检验检索不会返回过期结论。 */

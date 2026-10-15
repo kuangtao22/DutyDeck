@@ -18,6 +18,7 @@ import {
   parseReleaseCanvasImageMediaInput,
   parseSaveCanvasImageModuleInput,
   parseCanvasTrashEntry,
+  parseCanvasMediaPreparationIssue,
   parseCreateCanvasContentNodeInput,
   parseDeleteCanvasNodeInput,
   parseRestoreCanvasNodeInput,
@@ -47,6 +48,7 @@ import type {
   CreateDesignJobInput,
   CanvasRunNodesResult,
   CanvasWorkspaceSnapshot,
+  CanvasMediaPreparationIssue,
   CanvasTextArtifactIdentity,
   CanvasTextArtifactMutationResult,
   CanvasTextArtifactSnapshot,
@@ -94,6 +96,7 @@ import { parseCanvasWorkflowRunListInput, parseCanvasWorkflowRunTarget } from '@
 import { parseListCanvasImageActivityInput, parseCanvasImageJobActivities } from '@proma/shared'
 import type { CanvasArtifactExportService } from './canvas-artifact-export-service'
 import type { CanvasMediaService } from './canvas-media-service'
+import type { CanvasImageResultAttachmentService } from './canvas-image-result-attachment-service'
 import { parseCanvasDocument } from './canvas-document-store'
 import type { CanvasDocumentStore } from './canvas-document-store'
 import type { CanvasAgentNodeCreationService } from './canvas-agent-node-creation'
@@ -247,6 +250,8 @@ export interface CanvasDocumentIpcOptions {
   /** Agent Canvas 音视频工具复用生产进程唯一媒体服务。 */
   canvasMedia?: Pick<CanvasMediaService, 'load' | 'save' | 'run' | 'attachCompletedRun' | 'cancel' | 'adopt'>
     & Partial<Pick<CanvasMediaService, 'attachImportedAssets'>>
+  /** 图片统一媒体结果回填原卡的两阶段服务。 */
+  canvasImageAttachments?: Pick<CanvasImageResultAttachmentService, 'prepare' | 'attach'>
   /** 图片模块只读取 Design 素材公开元数据并创建目录媒体授权。 */
   imageAssets: {
     list: (projectId: string) => DesignAsset[]
@@ -815,10 +820,37 @@ function rebuildCanvasWorkspaceSnapshot(
   const document = parseCanvasDocument(value.document, target).document
   /** 节点问题逐项重建，禁止内部字段穿透。 */
   const nodeIssues = value.nodeIssues.map(rebuildCanvasNodeIssue)
+  /** 生命周期结果可能携带已授权的预览和待配置摘要；只按公开字段重建。 */
+  const hasImagePreviews = Object.hasOwn(value, 'imagePreviews')
+  const hasImagePreparations = Object.hasOwn(value, 'imagePreparations')
+  const imagePreviews = hasImagePreviews
+    ? value.imagePreviews
+    : undefined
+  if (hasImagePreviews && (!Array.isArray(imagePreviews) || imagePreviews.some((preview) => (
+    !isRecord(preview)
+      || typeof preview.assetId !== 'string'
+      || typeof preview.previewUrl !== 'string'
+      || typeof preview.width !== 'number' || !Number.isSafeInteger(preview.width) || preview.width <= 0
+      || typeof preview.height !== 'number' || !Number.isSafeInteger(preview.height) || preview.height <= 0
+  )))) {
+    throw new Error('CANVAS_WORKSPACE_SNAPSHOT_INVALID')
+  }
+  const imagePreparations = hasImagePreparations
+    ? value.imagePreparations
+    : undefined
+  if (hasImagePreparations && (!Array.isArray(imagePreparations) || imagePreparations.some((item) => {
+    if (!isRecord(item) || typeof item.nodeId !== 'string') return true
+    const preparation = parseCanvasMediaPreparationIssue(item.preparation)
+    return preparation === null
+  }))) {
+    throw new Error('CANVAS_WORKSPACE_SNAPSHOT_INVALID')
+  }
   return {
     document,
     writable: true,
     nodeIssues,
+    ...(imagePreviews === undefined ? {} : { imagePreviews: structuredClone(imagePreviews) as CanvasWorkspaceSnapshot['imagePreviews'] }),
+    ...(imagePreparations === undefined ? {} : { imagePreparations: structuredClone(imagePreparations) as CanvasWorkspaceSnapshot['imagePreparations'] }),
     ...(hasRecoveredFrom ? { recoveredFrom: value.recoveredFrom as 'tmp' | 'backup' } : {}),
   }
 }
@@ -1386,6 +1418,35 @@ export function registerCanvasDocumentIpcHandlers(
     return { ...snapshot, imagePreviews }
   }
 
+  /** 一次 LOAD 扫描有界图片节点的公开待配置原因，避免 Renderer 逐卡读取配置。 */
+  const attachCanvasImagePreparations = async (
+    target: LoadCanvasInput,
+    snapshot: CanvasWorkspaceSnapshot,
+  ): Promise<CanvasWorkspaceSnapshot> => {
+    const imageNodes = snapshot.document.nodes
+      .filter((node): node is Extract<CanvasNode, { kind: 'image' }> => node.kind === 'image')
+      .slice(0, 256)
+    const imagePreparations: Array<{ nodeId: string; preparation: CanvasMediaPreparationIssue }> = []
+    await Promise.all(imageNodes.map(async (node) => {
+      try {
+        const config = await options.imageModules.load({
+          projectId: target.projectId,
+          canvasId: target.canvasId,
+          nodeId: node.id,
+          imageModuleId: node.imageModuleId,
+        })
+        if (config.preparation) imagePreparations.push({
+          nodeId: node.id,
+          preparation: structuredClone(config.preparation),
+        })
+      } catch {
+        /** 单张损坏配置由图片工作台报告，不能阻断整张画布的其它卡片加载。 */
+      }
+    }))
+    imagePreparations.sort((left, right) => left.nodeId.localeCompare(right.nodeId))
+    return imageNodes.length === 0 ? snapshot : { ...snapshot, imagePreparations }
+  }
+
   /** 只释放指定 LOAD 代次拥有的 lease，禁止旧请求撤销新 lease。 */
   const releaseImageMediaGeneration = (senderId: number, generation: number): void => {
     const current = imageMediaBySender.get(senderId)
@@ -1640,6 +1701,7 @@ export function registerCanvasDocumentIpcHandlers(
           readNodeContent: readCanvasNodeContent,
           imageRuns: imageRunService,
           imageCandidates: options.imageCandidateBatches,
+          canvasImageAttachments: options.canvasImageAttachments,
           canvasMedia: options.canvasMedia ?? {
             load: async () => { throw new Error('CANVAS_MEDIA_UNAVAILABLE') },
             save: async () => { throw new Error('CANVAS_MEDIA_UNAVAILABLE') },
@@ -2265,6 +2327,14 @@ export function registerCanvasDocumentIpcHandlers(
       })
       assertOwnedImageConfig(config, input)
       broadcastImageModuleChanged(input)
+      /** 图片配置不推进图 revision；专用事件让折叠画布刷新待配置摘要。 */
+      const document = options.store.load(input)
+      broadcastChange(options, {
+        projectId: input.projectId,
+        canvasId: input.canvasId,
+        revision: document.document.revision,
+        cause: 'image-preparation',
+      })
       return config
     })
   ))
@@ -2702,12 +2772,14 @@ export function registerCanvasDocumentIpcHandlers(
       if (outcome.error) throw outcome.error
       if (!agent) throw new Error('CANVAS_AGENT_RECONCILIATION_MISSING')
       try {
-        return attachCanvasImagePreviews(event.sender, input, agent.snapshot)
+        const withPreparations = await attachCanvasImagePreparations(input, agent.snapshot)
+        return attachCanvasImagePreviews(event.sender, input, withPreparations)
       } catch (error) {
         /** 缩略图是可降级展示能力，授权或素材索引失败不能阻断画布本体。 */
         console.error('[CanvasDocumentIPC] Canvas 缩略图加载失败:', error)
         return {
           ...agent.snapshot,
+          imagePreparations: [],
           imagePreviews: [],
         }
       }

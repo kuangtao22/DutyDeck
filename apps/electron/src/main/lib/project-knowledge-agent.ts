@@ -81,6 +81,10 @@ export interface ProjectKnowledgeAgentOptions {
 
 /** 模型可使用的有界项目检索接口。 */
 export interface ProjectKnowledgeAgent {
+  /** 有界发现来源，共享本轮知识工具预算。 */
+  scanSources?: ProjectKnowledgeAgentMaintenance['scanSources']
+  /** 宿主选择并导入旧库，不接受模型文件路径。 */
+  importSources?: ProjectKnowledgeAgentMaintenance['importSources']
   /** 仅对已登记来源定向刷新，不代替重新读取。 */
   refreshSources?: (sources: KnowledgeSourceReferenceInput[]) => Promise<Array<{ sourceRef: string; entryId: string; revision: string; title: string }>>
   /** 获取当前问题相关片段，不接受其他工作区参数。 */
@@ -253,6 +257,12 @@ export function createProjectKnowledgeAgent(options: ProjectKnowledgeAgentOption
     ...(maintenance && !workflowEnabled ? {
       nextMaintenanceSources: () => maintenance.next(),
       submitMaintenance: (input: KnowledgeAgentMaintenanceSubmitInput) => maintenance.submit(input),
+    } : {}),
+    ...(workflowEnabled && maintenance?.scanSources ? {
+      scanSources: (signal?: AbortSignal) => boundedRead(() => maintenance.scanSources!(signal)),
+    } : {}),
+    ...(workflowEnabled && maintenance?.importSources ? {
+      importSources: (mode: 'files' | 'folder', signal?: AbortSignal) => boundedRead(() => maintenance.importSources!(mode, signal)),
     } : {}),
     ...(workflowEnabled && maintenance?.refreshSources ? {
       refreshSources: (sources: KnowledgeSourceReferenceInput[]) => boundedRead(async () => {

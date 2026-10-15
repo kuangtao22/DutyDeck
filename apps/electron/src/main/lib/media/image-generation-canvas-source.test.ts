@@ -141,3 +141,9 @@ describe('独立生成配置的画布来源', () => {
     expect(() => createSource(catalog).source.assertSnapshotAvailable(snapshot)).toThrow('模型已移除')
   })
 })
+
+test('Given 选择中的供应商与配置不一致 When 固化快照 Then 拒绝身份漂移', () => {
+  /** 已存在 OpenAI 配置不能被伪装成 MiniMax 选择。 */
+  const { source } = createSource()
+  expect(() => source.resolveAvailableSnapshot('imagegen:minimax:image-openai:gpt-image-1')).toThrow('请重新选择模型')
+})

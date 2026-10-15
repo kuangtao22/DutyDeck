@@ -23,6 +23,7 @@ import type {
   WorkspaceTargetPurpose,
   WorkspaceTargetSelection,
 } from '@proma/shared'
+import { previewDefaultDataRootMove, requestDefaultDataRootMove } from './data-root-default-move'
 import { DataRootLocator } from './data-root-locator'
 import type { DataRootLocatorResult } from './data-root-locator'
 import { DataRootMigrationCoordinator, type DataRootMigrationPlanOptions } from './data-root-migration'
@@ -171,6 +172,12 @@ export interface RegisterPathManagementIpcOptions {
 
 /** normal 窗口内单次目标授权的服务端状态。 */
 interface DataRootSelectionState extends DataRootSelection {
+  /** 授权发起窗口与目标类型，用于窗口替换及默认移动分流。 */
+  owner: object
+  destination: 'custom' | 'default'
+  /** 默认移动预览绑定的 locator 和源目录身份。 */
+  moveSnapshot?: string
+  sourceIdentity?: { dev: string; ino: string }
   generation: number
   status: 'selected' | 'previewing' | 'previewed' | 'starting'
 }
@@ -279,6 +286,7 @@ export function registerPathManagementIpcHandlers(
       /** normal 状态才读取业务工作区，轻量 recovery/migration 模式保持隔离。 */
       const stateWithWorkspaces: PathManagementState = {
         ...state,
+        defaultRoot: locator.getDefaultRoot(),
         workspaces: options.listWorkspacePathStates?.() ?? [],
       }
       if (state.activeRoot === null || state.availability !== 'available') return stateWithWorkspaces
@@ -305,15 +313,20 @@ export function registerPathManagementIpcHandlers(
       }
       return await (options.inspectOccupiedStorage ?? inspectDataRootOccupied)(state.activeRoot)
     })
-    register(PATH_MANAGEMENT_IPC_CHANNELS.PICK_DATA_ROOT, async () => {
-      if (!options.dialog) throw new Error('当前环境不支持选择数据根目录')
+    register(PATH_MANAGEMENT_IPC_CHANNELS.PICK_DATA_ROOT, async (event, destination = 'custom') => {
+      if (destination !== 'custom' && destination !== 'default') throw new Error('数据根目标类型无效')
+      /** 选择授权仅对发起的主窗口有效。 */
+      const owner = getInvokeSender(event)
+      if (destination === 'custom' && !options.dialog) throw new Error('当前环境不支持选择数据根目录')
       /** 新 pick 一开始即使旧 selection 失效，不等待系统对话框返回。 */
       const generation = selectionGeneration + 1
       selectionGeneration = generation
       currentSelection = null
       /** 用户通过系统对话框选择的迁移目标目录。 */
-      const result = await options.dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
-      if (generation !== selectionGeneration) return null
+      const result = destination === 'default'
+        ? { canceled: false, filePaths: [locator.getDefaultRoot()] }
+        : await options.dialog!.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+      if (generation !== selectionGeneration || owner !== options.getExpectedWebContents() || isWorkspaceOwnerDestroyed(owner)) return null
       const targetRoot = result.canceled ? null : result.filePaths[0] ?? null
       if (targetRoot === null) return null
       if (!isAbsolute(targetRoot)) throw new Error('系统选择器返回的目标数据根不是绝对路径')
@@ -321,22 +334,35 @@ export function registerPathManagementIpcHandlers(
       const selection: DataRootSelectionState = {
         selectionId: createSelectionId(),
         targetRoot,
+        owner,
+        destination,
         generation,
         status: 'selected',
       }
       currentSelection = selection
       return { selectionId: selection.selectionId, targetRoot: selection.targetRoot }
     })
-    register(PATH_MANAGEMENT_IPC_CHANNELS.PREVIEW_DATA_ROOT_MIGRATION, async (_event, rawInput) => {
+    register(PATH_MANAGEMENT_IPC_CHANNELS.PREVIEW_DATA_ROOT_MIGRATION, async (event, rawInput) => {
       const input = assertDataRootSelectionInput(rawInput)
       const selection = requireCurrentSelection(currentSelection, input)
+      if (selection.owner !== getInvokeSender(event) || isWorkspaceOwnerDestroyed(selection.owner)) throw new Error('目标选择已失效')
       if (selection.status === 'starting') throw new Error('目标选择正在启动或已消费')
       if (selection.status === 'previewing') throw new Error('目标选择正在预检')
       const previewTarget = getCoordinator().previewTarget
-      if (!previewTarget) throw new Error('当前环境不支持预检数据根目录')
+      /** 默认移动以磁盘最新 locator 识别源，避免复用业务进程缓存。 */
+      const freshLocator = new DataRootLocator({ homeDir: options.homeDir ?? homedir() })
+      /** 只有旧默认根到新默认根使用零复制移动。 */
+      const useMove = selection.destination === 'default' && freshLocator.inspect().state.activeRoot === freshLocator.getLegacyDefaultRoot()
+      if (!useMove && !previewTarget) throw new Error('当前环境不支持预检数据根目录')
       selection.status = 'previewing'
       try {
-        const preview = await previewTarget.call(getCoordinator(), selection.targetRoot)
+        const preview = useMove ? previewDefaultDataRootMove(freshLocator) : await previewTarget!.call(getCoordinator(), selection.targetRoot)
+        if (useMove && preview.blockers.length === 0) {
+          selection.moveSnapshot = JSON.stringify(freshLocator.inspect().locatorFile ?? null)
+          /** 预览冻结源目录物理身份，确认前不能替换同名目录。 */
+          const identity = lstatSync(freshLocator.getLegacyDefaultRoot())
+          selection.sourceIdentity = { dev: String(identity.dev), ino: String(identity.ino) }
+        }
         if (currentSelection !== selection || selection.generation !== selectionGeneration) {
           throw new Error('目标选择已失效')
         }
@@ -348,9 +374,10 @@ export function registerPathManagementIpcHandlers(
         throw error
       }
     })
-    register(PATH_MANAGEMENT_IPC_CHANNELS.START_DATA_ROOT_MIGRATION, async (_event, rawInput) => {
+    register(PATH_MANAGEMENT_IPC_CHANNELS.START_DATA_ROOT_MIGRATION, async (event, rawInput) => {
       const input = assertDataRootSelectionInput(rawInput)
       const selection = requireCurrentSelection(currentSelection, input)
+      if (selection.owner !== getInvokeSender(event) || isWorkspaceOwnerDestroyed(selection.owner)) throw new Error('目标选择已失效')
       if (selection.status === 'selected') throw new Error('目标选择尚未完成预检')
       if (selection.status === 'previewing') throw new Error('目标选择正在预检')
       if (selection.status === 'starting') throw new Error('目标选择正在启动或已消费')
@@ -359,6 +386,24 @@ export function registerPathManagementIpcHandlers(
       currentSelection = null
       try {
         await assertMigrationCanStart(options)
+        if (selection.moveSnapshot !== undefined) {
+          /** 保存明确请求前阻止其他实例同时进入 normal。 */
+          const guard = await options.acquireMigrationGuard?.()
+          try {
+            await assertMigrationCanStart(options)
+            /** 最后一次重读磁盘，不用预览缓存覆盖其他实例决定。 */
+            const fresh = new DataRootLocator({ homeDir: options.homeDir ?? homedir() })
+            if (JSON.stringify(fresh.inspect().locatorFile ?? null) !== selection.moveSnapshot) throw new Error('数据根定位信息已变化，请重新选择')
+            /** 物理身份必须仍与用户确认时一致。 */
+            const identity = lstatSync(fresh.getLegacyDefaultRoot())
+            if (String(identity.dev) !== selection.sourceIdentity?.dev || String(identity.ino) !== selection.sourceIdentity?.ino) throw new Error('旧数据根目录已变化，请重新选择')
+            requestDefaultDataRootMove(fresh)
+            relaunchNow()
+          } finally {
+            guard?.release()
+          }
+          return
+        }
         /** intent guard 关闭其他 normal 实例的新入口，直到当前进程退出。 */
         const migrationGuard = await options.acquireMigrationGuard?.()
         /** 当前调用使用的协调器；只有实际尝试创建计划后才需要复检 pending。 */

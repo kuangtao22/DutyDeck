@@ -628,6 +628,7 @@ export function AssistantTurnRenderer({ turn, sessionId, allMessages, basePath, 
             basePath={basePath}
             runPaths={runFileChanges?.paths}
             runFiles={runFileChanges?.files}
+            runStatsFinal={runFileChanges?.endedAt !== undefined && runFileChanges?.files !== undefined}
             runObserved={runFileChanges?.observed}
             runUnattributed={runFileChanges?.hasUnattributedChanges === true}
             caseInsensitivePaths={caseInsensitivePaths}

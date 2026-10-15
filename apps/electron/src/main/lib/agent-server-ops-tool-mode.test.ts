@@ -20,7 +20,13 @@ describe('运维受限运行模式', () => {
     expect(names).toContain('server_exec')
     expect(names).toContain('server_docker_action')
     expect(names).toContain('server_files_mutate')
-    expect(names).toHaveLength(26)
+    expect(names).toContain('server_task_start')
+    expect(names).toContain('server_task_read')
+    expect(names).toContain('server_task_interrupt')
+    expect(names).toHaveLength(29)
+    for (const name of ['server_task_start', 'server_task_read', 'server_task_interrupt']) {
+      expect(denyToolOutsideAgentMode(name, 'server-ops-read')?.behavior).toBe('deny')
+    }
     for (const name of names!) expect(denyToolOutsideAgentMode(name, 'server-ops-write')).toBeUndefined()
     for (const name of ['Bash', 'PowerShell', 'read', 'Write', 'Edit', 'BrowserNavigate', 'mcp__other__tool', 'Task', 'ops_connection_prepare', 'ops_database_apply']) {
       expect(denyToolOutsideAgentMode(name, 'server-ops-write')?.behavior).toBe('deny')

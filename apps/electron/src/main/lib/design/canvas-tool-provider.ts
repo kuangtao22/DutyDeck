@@ -60,6 +60,7 @@ import { CanvasArtifactPreflightError } from './canvas-artifact-preflight'
 import type { CanvasTextArtifactService } from './canvas-text-artifact-service'
 import type { CanvasImageRunService } from './canvas-image-run-service'
 import type { CanvasImageCandidateBatchService } from './canvas-image-candidate-batch-service'
+import type { CanvasImageResultAttachmentService } from './canvas-image-result-attachment-service'
 import { createCanvasImageCandidateTools } from './canvas-image-candidate-tools'
 import type { CanvasWorkflowExecutionService } from './canvas-workflow-execution-service'
 import type { CanvasMediaService } from './canvas-media-service'
@@ -647,6 +648,8 @@ export interface CanvasToolProviderDependencies {
   imageRuns: Pick<CanvasImageRunService, 'run'>
   /** 候选检查和采用复用既有图片批次事务。 */
   imageCandidates?: Pick<CanvasImageCandidateBatchService, 'load' | 'adopt'>
+  /** 图片外部结果先冻结原卡，再回填既有 Job/候选链；缺失时不注册伪能力。 */
+  canvasImageAttachments?: Pick<CanvasImageResultAttachmentService, 'prepare' | 'attach'>
   /** 音视频节点配置、运行、进度与采用统一委托 CanvasMediaService。 */
   canvasMedia: Pick<CanvasMediaService, 'load' | 'save' | 'run' | 'attachCompletedRun' | 'cancel' | 'adopt'>
     & Partial<Pick<CanvasMediaService, 'attachImportedAssets' | 'checkPreparation'>>
@@ -832,6 +835,18 @@ function requireCanvasMediaTarget(
   if (!node) throw new Error('CANVAS_NODE_NOT_FOUND')
   if (node.kind !== 'audio' && node.kind !== 'video') throw new Error('CANVAS_MEDIA_NODE_REQUIRED')
   return { ...target, nodeId: node.id, mediaModuleId: node.mediaModuleId, mediaKind: node.kind }
+}
+
+/** 从权威文档解析图片卡目标，模型不能自行改派 imageModuleId。 */
+function requireCanvasImageTarget(
+  document: CanvasDocument,
+  target: CanvasTarget,
+  nodeId: string,
+): CanvasImageTarget {
+  const node = document.nodes.find((candidate) => candidate.id === nodeId)
+  if (!node) throw new Error('CANVAS_NODE_NOT_FOUND')
+  if (node.kind !== 'image') throw new Error('CANVAS_IMAGE_NODE_REQUIRED')
+  return { ...target, nodeId: node.id, imageModuleId: node.imageModuleId }
 }
 
 /** 媒体运行 origin 只取可信父运行上下文和权威节点身份。 */
@@ -3028,6 +3043,96 @@ export function createCanvasToolRun(
   }))
   tools.push(...createCanvasImageCandidateTools(dependencies, toolContext, prepareInspectionThumbnail))
 
+  if (dependencies.canvasImageAttachments) {
+    const attachments = dependencies.canvasImageAttachments
+    tools.push(defineCanvasTool({
+      name: 'canvas_prepare_image_attachment', label: '冻结图片卡回填',
+      description: '把统一媒体生成或已登记图片绑定到现有图片卡并冻结配置、真实请求和输入版本；不会创建新卡、执行模型或自动采用。生成应先准备再执行，完成后用 canvas_attach_image_result。',
+      parameters: Type.Object({
+        canvasId: Type.String({ minLength: 1, maxLength: 128 }),
+        nodeId: Type.String({ minLength: 1, maxLength: 128 }),
+        source: Type.Union([
+          Type.Object({
+            kind: Type.Literal('generation'),
+            runId: Type.String({ minLength: 1, maxLength: 128 }),
+            outputKey: Type.String({ minLength: 1, maxLength: 256 }),
+          }, { additionalProperties: false }),
+          Type.Object({
+            kind: Type.Literal('asset'),
+            asset: Type.Object({
+              assetId: Type.String({ minLength: 1, maxLength: 128 }),
+              revision: Type.Integer({ minimum: 1 }),
+              hash: Type.String({ pattern: '^[a-f0-9]{64}$' }),
+              mediaKind: Type.Literal('image'),
+            }, { additionalProperties: false }),
+          }, { additionalProperties: false }),
+        ]),
+      }, { additionalProperties: false }),
+      execute: async (toolCallId, params) => {
+        dependencies.access.authorizeRead(context)
+        if (context.permissionCeiling === 'plan') throw new Error('CANVAS_EXECUTE_INTENT_REQUIRED')
+        return dependencies.access.runWrite(context, async () => {
+          dependencies.access.requireLinkedCanvas(context, params.canvasId)
+          const canvasTarget = { projectId: context.projectId, canvasId: params.canvasId }
+          const document = dependencies.documents.load(canvasTarget).document
+          const imageTarget = requireCanvasImageTarget(document, canvasTarget, params.nodeId)
+          const receipt = await attachments.prepare({
+            ...imageTarget,
+            sessionId: context.sessionId,
+            source: params.source,
+          })
+          return toolResult({
+            canvasId: params.canvasId,
+            nodeId: params.nodeId,
+            imageModuleId: imageTarget.imageModuleId,
+            attachmentId: receipt.attachmentId,
+            configRevision: receipt.configSnapshot.revision,
+            preparedBeforeCompletion: receipt.preparedBeforeCompletion,
+            sourceKind: receipt.source.kind,
+            navigation: createCanvasToolNavigation(toolContext, params.canvasId, [params.nodeId], 'update', {
+              revision: document.revision, sourceToolCallId: toolCallId,
+            }),
+          })
+        })
+      },
+    }))
+    tools.push(defineCanvasTool({
+      name: 'canvas_attach_image_result', label: '回填图片卡结果',
+      description: '把冻结 attachment 的成功图片结果登记为原图片卡候选；配置已变化时保留旧基线并标记 stale，绝不自动覆盖或采用。',
+      parameters: Type.Object({
+        canvasId: Type.String({ minLength: 1, maxLength: 128 }),
+        attachmentId: Type.String({ pattern: '^[a-f0-9]{64}$' }),
+      }, { additionalProperties: false }),
+      execute: async (toolCallId, params) => {
+        dependencies.access.authorizeRead(context)
+        if (context.permissionCeiling === 'plan') throw new Error('CANVAS_EXECUTE_INTENT_REQUIRED')
+        return dependencies.access.runWrite(context, async () => {
+          dependencies.access.requireLinkedCanvas(context, params.canvasId)
+          const canvasTarget = { projectId: context.projectId, canvasId: params.canvasId }
+          const document = dependencies.documents.load(canvasTarget).document
+          const result = await attachments.attach({
+            ...canvasTarget,
+            sessionId: context.sessionId,
+            attachmentId: params.attachmentId,
+          })
+          return toolResult({
+            canvasId: params.canvasId,
+            attachmentId: result.attachmentId,
+            jobId: result.jobId,
+            batchId: result.batchId,
+            assetId: result.assetId,
+            stale: result.stale,
+            adopted: false,
+            nextAction: '使用 canvas_get_image_candidates 检查后，再用 canvas_adopt_image_candidates 明确采用。',
+            navigation: createCanvasToolNavigation(toolContext, params.canvasId, [], 'update', {
+              revision: document.revision, sourceToolCallId: toolCallId,
+            }),
+          })
+        })
+      },
+    }))
+  }
+
   if (dependencies.canvasMedia.attachImportedAssets) tools.push(defineCanvasTool({
     name: 'canvas_attach_media_assets', label: '回填本地媒体产物',
     description: '把当前会话通过 media_import_local_file 登记的精确资产回填为音视频节点候选。须先配置输出 key 并完整覆盖所有输出；不提交生成，也不自动采用。',
@@ -3236,7 +3341,7 @@ ${CANVAS_PROFESSIONAL_DESIGN_GUIDANCE}
 
 创建或修改前先用 canvas_get_context 获取权威关联；已有合适画布时直接复用，不要要求用户另建已经存在的画布。没有可用画布且用户已明确选择画布产物时，才用 canvas_manage 创建并关联。持久委托内的专业节点由 canvas_update_plan 和 canvas_dispatch 管理；未委托的单项分工仍可由普通 Agent 调用 canvas_create_agent，不要求用户手工创建。已有授权本地图片使用 canvas_import_image 导入为正式采用参考图，不要求用户拖入原生 Canvas。正文只通过 canvas_create_artifact 或 canvas_update_artifact 保存，图片画幅、尺寸、模型或上下文通过 canvas_update_image_config 局部修改，canvas_apply_changes 只处理结构；有关联来源时提供准确 relation。重建流程必须先验证并建立可执行的新链路，再删除旧节点。WebView 创建成功后即可直接预览，不得为 WebView 调用 canvas_run_nodes；图片仅在用户明确要求立即生成时才调用 canvas_run_nodes。图片任务启动不代表已完成；首次成功且节点仍无默认素材、配置未变时，Host 自动将首份素材设为默认，后续生成仍是候选且不覆盖旧版。汇报前读取真实 adopted 状态，默认选中不代表视觉验收通过，也不会自动续跑工作流。可用 canvas_get_image_candidates 读取真实候选缩略图，用户已授权采用时用 canvas_adopt_image_candidates 提交精确 candidateHash。
 
-面向画布的媒体生成先创建或复用对应卡片，再分析工作流。图片用 canvas_create_artifact，音视频用 canvas_create_media；不要等待生成成功才建立节点。通过媒体资源工具检查连接、真实输入输出和素材，立即用 canvas_update_image_config 或 canvas_update_media_config 固定工作流版本、连接与已知值。缺少素材或参数时先保存部分 typed 输入，在原卡片补齐；分析失败保留卡片，用 preparation 记录错误码和具体节点/字段原因，不伪造可执行绑定。修复后传 preparation:null 清除。只有参数完整且用户明确要求生成时才调用 canvas_run_nodes；进度与错误通过原节点查询。运行成功只产生候选，必须用 canvas_adopt_media_candidate 明确采用输出。已授权本地后期产物可经 media_import_local_file 登记，再用 canvas_attach_media_assets 按完整输出 key 回填候选，最后明确采用。metadataOnly 结果不表示你已观看视频或听取音频，内容质量判断必须使用可用的分析工具并保留证据。
+面向画布的媒体生成先创建或复用对应卡片，再分析工作流。图片用 canvas_create_artifact，音视频用 canvas_create_media；不要等待生成成功才建立节点。通过媒体资源工具检查连接、真实输入输出和素材，立即用 canvas_update_image_config 或 canvas_update_media_config 固定工作流版本、连接与已知值。缺少素材或参数时先保存部分 typed 输入，在原卡片补齐；分析失败保留卡片，用 preparation 记录错误码和具体节点/字段原因，不伪造可执行绑定。修复后传 preparation:null 清除。统一媒体图片结果必须先调用 canvas_prepare_image_attachment 冻结原卡与真实输入，完成后调用 canvas_attach_image_result 回填同一张卡；迟到结果只进入候选，不覆盖新配置或已采用版本。只有参数完整且用户明确要求生成时才调用 canvas_run_nodes；进度与错误通过原节点查询。运行成功只产生候选，必须用 canvas_adopt_media_candidate 明确采用输出。已授权本地后期产物可经 media_import_local_file 登记，再用 canvas_attach_media_assets 按完整输出 key 回填候选，最后明确采用。metadataOnly 结果不表示你已观看视频或听取音频，内容质量判断必须使用可用的分析工具并保留证据。
 
 用户只要求核对、检查或评审画布图片时保持只读：先用 canvas_list_nodes 分页枚举同一 revision 的全部图片节点，再用 canvas_inspect_images 每批最多四张读取当前正式采用缩略图。检查未采用候选或历史版本时，先用 canvas_read 获取 jobHistory 中成功任务的 id，再用 canvas_inspect_images 的 versions=[{nodeId,jobId}] 精确看图，无需先采用或要求用户截图。不存在的版本不得用正式图替代。不得只比较提示词或使用当前画布截图后声称已完成全量视觉核对；未明确要求修正时，不更新提示词、不运行节点、不采用候选。
 

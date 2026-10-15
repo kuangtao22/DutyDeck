@@ -57,6 +57,10 @@ test('Given 运维工具可用 When 构建提示词 Then 数据库写入使用�
   const operationsPrompt = buildSystemPrompt({ ...context, serverOpsAvailable: true, serverOpsWriteAvailable: true })
   expect(operationsPrompt).toContain('ops_redis_read / ops_redis_write')
   expect(operationsPrompt).toContain('完全自动模式不能跳过或永久授权')
+  expect(operationsPrompt).toContain('server_task_start')
+  expect(operationsPrompt).toContain('server_task_read')
+  expect(operationsPrompt).toContain('sudo 密码')
+  expect(operationsPrompt).toContain('不要通过本地终端重新 SSH')
   expect(buildSystemPrompt(context)).not.toContain('ops_database_change_context')
 })
 

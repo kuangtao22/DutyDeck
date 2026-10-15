@@ -52,6 +52,49 @@ describe('DataRootLocator', () => {
     rmSync(homeDir, { recursive: true, force: true })
   })
 
+  test('Given 两次自定义根迁移 When 再次启动 Then 最初旧引用仍映射当前根且不读取旧副本', async () => {
+    /** 三个独立自定义根，不依赖默认目录名。 */
+    const first = join(homeDir, 'custom-a')
+    const second = join(homeDir, 'custom-b')
+    const third = join(homeDir, 'custom-c')
+    for (const root of [first, second, third]) mkdirSync(root)
+    const locator = new DataRootLocator({ homeDir })
+    locator.write({ version: 1, activeRoot: first })
+    /** 完整迁移状态机只模拟控制面，不需要复制任何真实数据。 */
+    for (const [index, [sourceRoot, targetRoot]] of [[first, second], [second, third]].entries()) {
+      const id = `move-${index}`
+      locator.beginMigration({ id, sourceRoot: sourceRoot!, targetRoot: targetRoot!, stage: 'pending', completedBytes: 0, totalBytes: 0, startedAt: 1, updatedAt: 1 })
+      for (const stage of ['copying', 'verifying', 'rebasing', 'switching'] as const) locator.updateMigration(id, { stage, updatedAt: 2 })
+      locator.commitMigration(id)
+      locator.clearPostCommitCleanup(id)
+    }
+    /** 旧目录全部消失也不能影响别名解析或当前数据根的可用性。 */
+    rmSync(first, { recursive: true })
+    rmSync(second, { recursive: true })
+    const reopened = new DataRootLocator({ homeDir })
+    const { createDataRootPathResolver } = await import('./config-paths')
+    expect(reopened.getHistoricalRoots()).toContain(first)
+    expect(reopened.getHistoricalRoots()).toContain(second)
+    expect(createDataRootPathResolver(reopened)(join(first, 'attachments', 'image.png'))).toBe(join(third, 'attachments', 'image.png'))
+    expect(reopened.inspect().locatorFile?.historicalRoots).toEqual([first])
+    expect(existsSync(first)).toBe(false)
+    // 开始与取消后续计划不能丢失已累计的别名。
+    reopened.beginMigration({ id: 'cancel-next', sourceRoot: third, targetRoot: join(homeDir, 'next'), stage: 'pending', completedBytes: 0, totalBytes: 0, startedAt: 3, updatedAt: 3 })
+    expect(reopened.inspect().locatorFile?.historicalRoots).toEqual([first])
+    reopened.cancelMigration('cancel-next')
+    expect(reopened.getHistoricalRoots()).toContain(first)
+  })
+
+  test('Given 默认根按需创建且保留历史别名 When 创建目录 Then 缓存仍保留定位文件字段', () => {
+    /** 显式取消默认迁移允许按需建立空根，别名仍只映射当前根。 */
+    const locator = new DataRootLocator({ homeDir })
+    const historicalRoot = join(homeDir, 'old-custom')
+    locator.write({ version: 1, activeRoot: locator.getDefaultRoot(), defaultMigrationDismissed: true, historicalRoots: [historicalRoot] })
+    locator.requireActiveRoot({ createDefault: true })
+    expect(locator.inspect().locatorFile?.historicalRoots).toEqual([historicalRoot])
+    expect(locator.getHistoricalRoots()).toContain(historicalRoot)
+  })
+
   test('Given no locator file When inspecting Then the default root is ready without filesystem side effects', () => {
     /** 默认数据根在定位文件缺失时仅被解析，不应被创建。 */
     const defaultRoot = join(homeDir, '.DutyDeck')

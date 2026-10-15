@@ -63,6 +63,10 @@ export function resolveConfigDir(
 
   /** 首个 schema-valid 候选即为权威 locator；可用性失败时禁止尝试旧备份。 */
   const locatorFile = readFirstValidLocatorFile(existingCandidates)
+  /** 默认移动期间禁止新 CLI 继续使用旧根，也不能在 rename 后误建旧路径。 */
+  if (locatorFile.defaultRootMoveRequest !== undefined) {
+    throw new Error('默认数据根移动尚未完成，请先打开 DutyDeck 完成迁移后再启动 CLI')
+  }
   assertReadableDataRoot(locatorFile.activeRoot)
   return locatorFile.activeRoot
 }

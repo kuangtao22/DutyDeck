@@ -8,6 +8,8 @@ import { normalizePiTokenUsage, type TokenUsageObserver } from '../token-usage-o
 
 import { randomUUID } from 'node:crypto'
 import { installCanvasMediaSampleLifecycle } from './pi-canvas-media-samples'
+import { installPiAttachmentPathProjection } from './pi-attachment-path-projection'
+import type { DataRootPathSnapshot } from '../data-root-reference'
 import { spawn } from 'node:child_process'
 import type { Dispatcher } from 'undici'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
@@ -263,6 +265,8 @@ export interface PiAgentQueryOptions extends AgentQueryInput {
   resumeSessionId?: string
   piAgentDir: string
   piSessionDir: string
+  /** 宿主解析的业务数据根，仅用于历史附件请求投影。 */
+  dataRootPaths?: DataRootPathSnapshot
   customTools?: ToolDefinition[]
   /** 本轮真正暴露给模型的 Pi 工具名；缺失时保持普通 Agent 的完整工具集合。 */
   activeToolNames?: string[]
@@ -1799,6 +1803,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       session.agent.transformContext = async (messages, signal) => sanitizePiMessageImageContent(
         await previousTransformContext?.(messages, signal) ?? messages,
       )
+      installPiAttachmentPathProjection(session.agent, input.dataRootPaths)
       if (projectInstructionScope) {
         installPendingSystemPromptTranscript(
           session.agent,

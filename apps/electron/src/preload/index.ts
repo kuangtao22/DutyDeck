@@ -36,6 +36,8 @@ import { createServerOpsDockerPreload } from './server-ops-docker-preload'
 import type { ServerOpsDockerPreload } from './server-ops-docker-preload'
 import { createServerOpsFilesPreload } from './server-ops-files-preload'
 import type { ServerOpsFilesPreload } from './server-ops-files-preload'
+import { createServerOpsTaskPreload } from './server-ops-task-preload'
+import type { ServerOpsTaskPreloadApi } from './server-ops-task-preload'
 import { createServerOpsConsolePreload } from './server-ops-console-preload'
 import type { ServerOpsConsolePreloadApi } from './server-ops-console-preload'
 import { createServerOpsTransferPreload } from './server-ops-transfer-preload'
@@ -310,7 +312,7 @@ import { QUICK_TASK_IPC_CHANNELS, TRAY_IPC_CHANNELS, VOICE_DICTATION_IPC_CHANNEL
 /**
  * 暴露给渲染进程的 API 接口定义
  */
-export interface ElectronAPI extends TokenUsageAPI, LanBridgePreloadApi, NormalPathManagementPreloadApi, DesignPreloadApi, ServerOpsTrustPreload, ServerOpsDockerPreload, ServerOpsFilesPreload, ServerOpsConsolePreloadApi, ServerOpsTransferPreload, ServerOpsDataPreload, ServerOpsProjectPreload, ServerOpsScriptPreload, ServerOpsAgentReadPreload, ServerOpsConnectionDraftPreload, MediaPreloadApi, CanvasMediaPreloadApi, ProjectKnowledgeApi {
+export interface ElectronAPI extends ServerOpsTaskPreloadApi, TokenUsageAPI, LanBridgePreloadApi, NormalPathManagementPreloadApi, DesignPreloadApi, ServerOpsTrustPreload, ServerOpsDockerPreload, ServerOpsFilesPreload, ServerOpsConsolePreloadApi, ServerOpsTransferPreload, ServerOpsDataPreload, ServerOpsProjectPreload, ServerOpsScriptPreload, ServerOpsAgentReadPreload, ServerOpsConnectionDraftPreload, MediaPreloadApi, CanvasMediaPreloadApi, ProjectKnowledgeApi {
   // ===== 运行时相关 =====
 
   /**
@@ -1640,6 +1642,7 @@ const electronAPI: ElectronAPI = {
     return () => ipcRenderer.removeListener(channel, handler)
   }),
   ...createServerOpsConsolePreload(ipcRenderer),
+  ...createServerOpsTaskPreload(ipcRenderer),
   ...createServerOpsTransferPreload((channel, input) => ipcRenderer.invoke(channel, input), (channel, listener) => {
     /** 隔离 Electron 事件对象，只向文件视图传递严格解析的进度。 */
     const bridge = (_event: unknown, value: unknown): void => listener(value)

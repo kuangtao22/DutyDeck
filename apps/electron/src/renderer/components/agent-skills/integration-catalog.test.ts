@@ -58,3 +58,16 @@ test('Given GitHub MCP When 展示 OAuth 目录 Then 只包含公开元数据且
   })
   expect(JSON.stringify(github.entry.oauth)).not.toContain('clientSecret"')
 })
+
+test('Given 小红书 MCP 目录项 When 上游 transport 和登录契约仍需核验 Then 使用引导模式且不猜测连接参数', () => {
+  const xiaohongshu = MCP_INTEGRATION_CATALOG.find((integration) => integration.id === 'xiaohongshu-mcp')
+
+  expect(xiaohongshu && isCatalogIntegrationVisible(xiaohongshu)).toBe(true)
+  expect(xiaohongshu?.kind).toBe('guided')
+  if (!xiaohongshu || xiaohongshu.kind !== 'guided') throw new Error('missing Xiaohongshu MCP integration')
+  expect(xiaohongshu.serverName).toBeUndefined()
+  expect(xiaohongshu.setupUrl).toBe('https://github.com/xpzouying/xiaohongshu-mcp')
+  expect(xiaohongshu.agentPrompt).toContain('不要把 GitHub 仓库地址直接当作 MCP endpoint')
+  expect(xiaohongshu.agentPrompt).toContain('真实 MCP handshake 和 listTools 验证')
+  expect(xiaohongshu.agentPrompt).toContain('不要代替我输入密码、验证码或读取/导出 Cookie')
+})

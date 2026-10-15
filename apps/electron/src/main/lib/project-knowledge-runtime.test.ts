@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentSessionMeta } from '@proma/shared'
@@ -42,15 +42,16 @@ mock.module('./agent-session-manager', () => ({
   readPersistedAgentEvidence: (id: string) => ({ sessionId: id, records: [userEvidence, supplementControl].filter((record): record is PersistedAgentEvidenceRecord => Boolean(record)), truncated: false, skipped: 0 }),
 }))
 
-const { getProjectKnowledgeService, recoverProjectKnowledge, getProjectKnowledgeBinding, registerKnowledgeExecutionHost } = await import('./project-knowledge-runtime')
+const { getProjectKnowledgeService, recoverProjectKnowledge, getProjectKnowledgeBinding, registerKnowledgeExecutionHost, registerKnowledgeImportSelector, registerProjectKnowledgeSources } = await import('./project-knowledge-runtime')
 const { createProjectKnowledgeAgent } = await import('./project-knowledge-agent')
 
 beforeEach(() => {
-  configRoot = mkdtempSync(join(tmpdir(), 'knowledge-runtime-agent-'))
+  configRoot = realpathSync(mkdtempSync(join(tmpdir(), 'knowledge-runtime-agent-')))
   projectRoot = join(configRoot, 'project')
   mkdirSync(projectRoot)
   session = { id: 's1', title: '项目对话', workspaceId: 'w1', createdAt: 1, updatedAt: 1 }
   deleting = false; active = true; writable = true; leases = 0; receiptLookups = []
+  registerProjectKnowledgeSources({ list: async () => ({ sources: [], total: 0, truncated: false, skipped: 0 }), read: async () => ({ status: 'unavailable', content: '', truncated: false }) })
   supplementControl = undefined
   /** 固定用户原文及真实内容散列。 */
   const text = '决定：项目数据保存在本地。'
@@ -215,4 +216,183 @@ describe('知识库 runtime 与当前 Agent Skill 链路', () => {
     expect((await service.getSnapshot('w1')).workflow?.execution?.status).toBe('paused')
     expect(leases).toBe(0)
   })
+})
+
+
+describe('Agent 来源扫描与保真导入', () => {
+  test('Given 未建库项目 When Agent 扫描 Then 建立来源且返回有界摘要', async () => {
+    writeFileSync(join(projectRoot, 'README.md'), '# 项目概览')
+    const { agent } = currentAgent()
+    const result = await agent.scanSources!()
+    expect(result.initialized).toBe(true)
+    expect(result.scan.status).toBe('completed')
+    expect(result.scan.indexed).toBeGreaterThan(0)
+    expect(await agent.search('', 0, 'sources')).toHaveProperty('total', 1)
+    expect(leases).toBe(0)
+  })
+  for (const mode of ['files', 'folder'] as const) {
+    test(`Given 用户选择 ${mode} When Agent 导入 Then 保留来源并完成扫描`, async () => {
+      const source = join(configRoot, 'old-library')
+      mkdirSync(source)
+      writeFileSync(join(source, 'old.md'), '# 旧知识正文')
+      registerKnowledgeImportSelector(async (requested) => { expect(requested).toBe(mode); return [mode === 'files' ? join(source, 'old.md') : source] })
+      const { agent } = currentAgent()
+      const result = await agent.importSources!(mode)
+      expect(result.imported).toBe(1)
+      expect(result.scan?.status).toBe('completed')
+      expect((await agent.search('', 0, 'sources')).total).toBeGreaterThan(0)
+      expect(leases).toBe(0)
+    })
+  }
+  test('Given 取消原生选择 When Agent 导入 Then 不建库不扫描', async () => {
+    registerKnowledgeImportSelector(async () => [])
+    const { agent, service } = currentAgent()
+    expect((await agent.importSources!('files')).cancelled).toBe(true)
+    expect((await service.getSnapshot('w1')).initialized).toBe(false)
+    expect(leases).toBe(0)
+  })
+  for (const change of ['permission', 'project', 'cancel', 'session'] as const) {
+    test(`Given 选择期间发生 ${change} When 返回文件 Then 拒绝迟到导入`, async () => {
+      const source = join(configRoot, 'old.md')
+      writeFileSync(source, '# 旧库')
+      registerKnowledgeImportSelector(async () => {
+        if (change === 'permission') writable = false
+        if (change === 'project') session = { ...session, workspaceId: 'other' }
+        if (change === 'cancel') active = false
+        if (change === 'session') session = { ...session, toolMode: 'server-ops-read' }
+        return [source]
+      })
+      const { agent } = currentAgent()
+      await expect(agent.importSources!('files')).rejects.toThrow()
+      expect(leases).toBe(0)
+    })
+  }
+  test('Given 计划模式 When 扫描或导入 Then 不执行选择器或初始化', async () => {
+    let selected = false
+    registerKnowledgeImportSelector(async () => { selected = true; return [] })
+    const { agent, service } = currentAgent()
+    writable = false
+    await expect(agent.scanSources!()).rejects.toThrow('权限')
+    await expect(agent.importSources!('folder')).rejects.toThrow('权限')
+    expect(selected).toBe(false)
+    expect((await service.getSnapshot('w1')).initialized).toBe(false)
+  })
+})
+
+
+test('Given 扫描期间撤权 When 后台准备提交 Then 不发布来源且释放租约', async () => {
+  writeFileSync(join(projectRoot, 'README.md'), '# 不应发布')
+  registerProjectKnowledgeSources({
+    list: async () => { writable = false; return { sources: [], total: 0, truncated: false, skipped: 0 } },
+    read: async () => ({ status: 'unavailable', content: '', truncated: false }),
+  })
+  const { agent, service } = currentAgent()
+  await expect(agent.scanSources!()).rejects.toThrow('权限')
+  expect((await service.getSnapshot('w1')).totalEntries).toBe(0)
+  expect(leases).toBe(0)
+})
+
+test('Given 单个工具取消 When 选择器返回 Then 不导入且不重新弹框', async () => {
+  const controller = new AbortController()
+  let calls = 0
+  registerKnowledgeImportSelector(async () => { calls += 1; controller.abort(); return [join(configRoot, 'old.md')] })
+  const { agent, service } = currentAgent()
+  await expect(agent.importSources!('files', controller.signal)).rejects.toThrow()
+  expect(calls).toBe(1)
+  expect((await service.getSnapshot('w1')).initialized).toBe(false)
+})
+
+test('Given 来源工具预算耗尽 When 再次请求导入 Then 不打开选择器', async () => {
+  let calls = 0
+  registerKnowledgeImportSelector(async () => { calls += 1; return [] })
+  const { agent } = currentAgent()
+  for (let index = 0; index < 12; index += 1) await agent.importSources!('files')
+  await expect(agent.importSources!('files')).rejects.toThrow('预算')
+  expect(calls).toBe(12)
+})
+
+
+test('Given 面板已有扫描 When 等待它的 Agent 取消 Then 共享扫描仍完成', async () => {
+  writeFileSync(join(projectRoot, 'README.md'), '# 面板扫描来源')
+  let releaseScan!: () => void
+  const waiting = new Promise<void>((resolve) => { releaseScan = resolve })
+  registerProjectKnowledgeSources({
+    list: async () => { await waiting; return { sources: [], total: 0, truncated: false, skipped: 0 } },
+    read: async () => ({ status: 'unavailable', content: '', truncated: false }),
+  })
+  const { agent, service } = currentAgent()
+  await service.startScan('w1')
+  const controller = new AbortController()
+  const attempt = agent.scanSources!(controller.signal).then(() => null, (error: unknown) => error)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  controller.abort()
+  /** 未释放共享扫描前，Agent 自己的等待和写租约已结束。 */
+  expect(await attempt).toBeInstanceOf(Error)
+  expect(leases).toBe(1)
+  releaseScan()
+  await service.waitForScan('w1')
+  const result = await service.getSnapshot('w1')
+  expect(result.scan.status).toBe('completed')
+  expect(result.totalEntries).toBeGreaterThan(0)
+  expect(leases).toBe(0)
+})
+
+test('Given 非普通顶层会话 When 创建来源工具能力 Then 拒绝准入', () => {
+  session = { ...session, toolMode: 'server-ops-read' }
+  const service = getProjectKnowledgeService()
+  expect(() => service.createAgentMaintenance({ sessionId: 's1', userMessageId: 'u1', assertRunActive: () => undefined, canMutate: () => true })).toThrow()
+})
+
+
+test('Given 原生选择器仍打开 When 工具取消 Then 立即退出等待并忽略迟到路径', async () => {
+  let releaseDialog!: (paths: string[]) => void
+  let opened!: () => void
+  const ready = new Promise<void>((resolve) => { opened = resolve })
+  registerKnowledgeImportSelector(async () => { opened(); return new Promise<string[]>((resolve) => { releaseDialog = resolve }) })
+  const { agent, service } = currentAgent()
+  const controller = new AbortController()
+  const attempt = agent.importSources!('files', controller.signal).then(() => null, (error: unknown) => error)
+  await ready
+  controller.abort()
+  expect(await attempt).toBeInstanceOf(Error)
+  expect(leases).toBe(0)
+  releaseDialog([join(configRoot, 'late.md')])
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  expect((await service.getSnapshot('w1')).initialized).toBe(false)
+})
+
+test('Given 导入时已有扫描 When 旧扫描完成 Then 新一轮扫描包含本次导入', async () => {
+  const source = join(configRoot, 'old.md')
+  writeFileSync(source, '# 新导入资料')
+  let releaseScan!: () => void
+  let began!: () => void
+  let scans = 0
+  const ready = new Promise<void>((resolve) => { began = resolve })
+  const waiting = new Promise<void>((resolve) => { releaseScan = resolve })
+  registerProjectKnowledgeSources({
+    list: async () => { scans += 1; if (scans === 1) { began(); await waiting }; return { sources: [], total: 0, truncated: false, skipped: 0 } },
+    read: async () => ({ status: 'unavailable', content: '', truncated: false }),
+  })
+  registerKnowledgeImportSelector(async () => [source])
+  const { agent, service } = currentAgent()
+  await service.startScan('w1')
+  await ready
+  const importing = agent.importSources!('files')
+  /** 让导入异步 I/O 有机会完成，然后结束旧扫描；仍必须新扫一次。 */
+  await new Promise<void>((resolve) => setTimeout(resolve, 30))
+  releaseScan()
+  const result = await importing
+  expect(result.imported).toBe(1)
+  expect(result.scan?.status).toBe('completed')
+  expect(scans).toBe(2)
+  expect((await agent.search('', 0, 'sources')).total).toBeGreaterThan(0)
+})
+
+
+test('Given 首次初始化等待写门禁时撤权 When 获得锁内权限 Then 不发布空清单', async () => {
+  let allowed = true
+  const project = { projectId: 'w1', projectRoot, memoryRoot: join(configRoot, 'memory'), cacheRoot: join(configRoot, 'cache') }
+  const store = createProjectKnowledgeStore({ resolveProject: () => project, assertWritable: async () => { allowed = false } })
+  await expect(store.initialize(project, 'w1', () => { if (!allowed) throw new Error('已撤权') })).rejects.toThrow('已撤权')
+  expect(store.readManifest(project)).toBeNull()
 })

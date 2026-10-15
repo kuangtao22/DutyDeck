@@ -49,6 +49,112 @@ class FakeProcess implements ManagedProcess {
 }
 
 describe('LocalModelRuntime', () => {
+  test('Given 代理下载已写入部分数据 When 取消并重试 Then 关闭连接且从断点续传', async () => {
+    /** 三字节夹具便于精确验证取消后 Range 与最终哈希。 */
+    const { root, entry, bytes } = createCatalog('abc')
+    let attempts = 0
+    let closed = 0
+    let cancelled = 0
+    const ranges: Array<string | null> = []
+    const runtime = new LocalModelRuntime({
+      catalog: [entry], store: new LocalModelStore({ configDir: root }),
+      fetch: async () => { throw new Error('下载不应调用回环传输层') },
+      onProgress: (event) => { if (attempts === 1 && event.completedBytes === 1) runtime.cancelDownload({ assetId: entry.assetId }) },
+      createDownloadTransport: async () => {
+        const attempt = ++attempts
+        return {
+          fetch: async (_url, init) => {
+            ranges.push(new Headers(init?.headers).get('Range'))
+            if (attempt === 1) return new Response(new ReadableStream({
+              start: (controller) => { controller.enqueue(bytes.slice(0, 1)) },
+              cancel: () => { cancelled++ },
+            }))
+            return new Response(new Blob([bytes.slice(1)]), { status: 206, headers: { 'Content-Range': 'bytes 1-2/3' } })
+          },
+          close: async () => { closed++ },
+        }
+      },
+    })
+    try {
+      await expect(runtime.download({ assetId: entry.assetId })).rejects.toThrow('取消')
+      expect(cancelled).toBe(1)
+      expect(closed).toBe(1)
+      await runtime.download({ assetId: entry.assetId })
+      expect(ranges).toEqual([null, 'bytes=1-'])
+      expect(closed).toBe(2)
+      expect(runtime.listSnapshot().assets[0]?.status).toBe('installed')
+    } finally { runtime.shutdown() }
+  })
+
+  test('Given 非法续传响应仍在传输 When 拒绝下载 Then 先取消响应流再关闭代理', async () => {
+    /** 错误 Content-Range 不得拼入文件，未结束响应也必须回收。 */
+    const { root, entry } = createCatalog()
+    const events: string[] = []
+    const runtime = new LocalModelRuntime({ catalog: [entry], store: new LocalModelStore({ configDir: root }),
+      fetch: async () => { throw new Error('下载不应调用回环传输层') },
+      createDownloadTransport: async () => ({
+        fetch: async () => new Response(new ReadableStream({ cancel: () => { events.push('cancel') } }), { status: 206 }),
+        close: async () => { events.push('close') },
+      }),
+    })
+    try {
+      await expect(runtime.download({ assetId: entry.assetId })).rejects.toThrow('Content-Range')
+      expect(events).toEqual(['cancel', 'close'])
+    } finally { runtime.shutdown() }
+  })
+
+  test('Given 远程下载使用代理 When 加载模型 Then 回环健康检查仍独立直连', async () => {
+    /** 模型、子进程和回环响应均为受控夹具。 */
+    const { root, entry, bytes } = createCatalog()
+    let downloads = 0
+    let closed = 0
+    const localRequests: string[] = []
+    const runtime = new LocalModelRuntime({
+      catalog: [entry], store: new LocalModelStore({ configDir: root }),
+      enginePath: '/fake/llama-server', engineVersion: 'b9000', spawn: () => new FakeProcess(),
+      findFreePort: async () => 43123, healthTimeoutMs: 100, stopTimeoutMs: 1,
+      fetch: async (input) => { localRequests.push(String(input)); return new Response('ok') },
+      createDownloadTransport: async () => ({
+        fetch: async () => { downloads++; return new Response(new Blob([bytes])) },
+        close: async () => { closed++ },
+      }),
+    })
+    try {
+      await runtime.download({ assetId: entry.assetId })
+      await runtime.start({ assetId: entry.assetId })
+      expect(downloads).toBe(1)
+      expect(closed).toBe(1)
+      expect(localRequests).toEqual(['http://127.0.0.1:43123/health'])
+    } finally { runtime.shutdown() }
+  })
+
+  test('Given 下载连接超时 When 重试 Then 重新读取代理并回收每次连接', async () => {
+    /** 首次超时，第二次返回完整数据，模拟用户修改代理后重试。 */
+    const { root, entry, bytes } = createCatalog()
+    let created = 0
+    let closed = 0
+    const runtime = new LocalModelRuntime({
+      catalog: [entry], store: new LocalModelStore({ configDir: root }),
+      fetch: async () => { throw new Error('不应直连下载') },
+      createDownloadTransport: async () => {
+        const attempt = ++created
+        return {
+          fetch: async () => {
+            if (attempt === 1) throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect timeout'), { code: 'UND_ERR_CONNECT_TIMEOUT' }) })
+            return new Response(new Blob([bytes]))
+          },
+          close: async () => { closed++ },
+        }
+      },
+    })
+    await expect(runtime.download({ assetId: entry.assetId })).rejects.toThrow('连接超时')
+    expect(runtime.listSnapshot().assets[0]?.lastError).toContain('UND_ERR_CONNECT_TIMEOUT')
+    await runtime.download({ assetId: entry.assetId })
+    expect(created).toBe(2)
+    expect(closed).toBe(2)
+    expect(runtime.listSnapshot().assets[0]?.status).toBe('installed')
+  })
+
   test('下载流式写入，哈希通过后才登记为 installed', async () => {
     const { root, entry, bytes } = createCatalog()
     const runtime = new LocalModelRuntime({

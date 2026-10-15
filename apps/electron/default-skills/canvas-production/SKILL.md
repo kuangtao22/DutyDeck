@@ -2,7 +2,7 @@
 name: canvas-production
 description: DutyDeck 画布生产与 Agent 编排 Skill。仅在用户本轮明确要求使用画布、引用或继续已有画布产物，或业务确需多个可关联且持续复用的画布产物时使用，例如产品套图、整套交互视觉稿、漫剧分镜或多镜头视频。通过 DutyDeck 内置 canvas_* 工具制作与评审；普通代码修改、一次性 HTML 原型、文本回答或不需要长期产物图的任务不要强行转入画布。
 group: proma
-version: "1.0.41"
+version: "1.0.42"
 ---
 
 # 画布生产
@@ -249,7 +249,7 @@ WebView 创建后即可预览，文档和 WebView 不需要单独运行；保存
    完整目录仍无匹配时说明缺口：`ask` 模式先询问是否根据当前服务器已有模型和节点生成工作流并保存本地，等待明确同意后传 `creationIntent=user-confirmed`；`automatic` 模式可直接新建，传 `creationIntent=automatic-policy`，Host 会复核最新设置，无需再次询问。分页未完成、名称筛选无结果、读取失败、同步失败、转换失败均不能当作服务器没有匹配；继续分页、清除筛选或报告具体问题。两种模式都用 `media_list_resources` 查询实际 `models`/`nodes`，用 `media_get_node_schema`、`media_inspect_workflow` 校验真实接口、模型枚举、连线及输出，最后调用 `media_save_local_workflow` 保存可跨项目复用的本地模板。不得虚构模型或节点，保存不等于生成成功。
 3. 用 `media_inspect_workflow` 检查缺失参数，用 `media_match_assets` 匹配项目素材。用户附件通过 `media_list_sources` / `media_import_assets` 导入，本地 Shell/Skill 的明确产物通过 `media_import_local_file` 导入。上传和远端素材标识填充由 prepare 链路完成，不猜测远端文件名。
 4. 图片通过 `canvas_update_image_config` 固定服务器执行快照或本地模板版本、连接和输入；音视频通过 `canvas_update_media_config` 固定 typed 输入与输出。根据真实 `nodeId + input` 绑定填入已知参数、默认值和稳定素材引用；缺少的字段先省略，立即保存待配置草稿，让用户在原卡片查看和补齐。不要猜测素材或把未知映射当成可执行字段。已有任务保留准备时的连接，不能因为画布默认连接改变而改派。只有字段完整并符合用户生成意图时调用 `canvas_run_nodes`；普通画布任务不得直接调用独立 `media_prepare_run`。无 Canvas 目标的媒体任务与父编排 handoff 仍可使用准备入口。
-5. 独立远端任务可用 `canvas_attach_media_run` 回到画布。普通 Agent 或手动画布 Agent 需要把素材交给 Shell/ffmpeg 时，用 `media_get_asset_file` 传入精确资产引用，取得当前授权根内经过校验的本地文件。本地剪辑成品使用 `media_import_local_file` 导入，再用 `canvas_attach_media_assets` 按已配置的完整输出 key 回填候选，最后调用 `canvas_adopt_media_candidate` 采用。候选、正式采用与远端任务成功是不同事实。
+5. 图片统一媒体结果必须先用 `canvas_prepare_image_attachment` 冻结原卡、配置 revision、真实请求和输入版本，再执行或等待统一媒体运行；完成后用 `canvas_attach_image_result` 回填原卡候选。重复回执复用同一 Job，配置已变化或已有采用时只保留 stale 候选，不自动覆盖或采用。独立远端任务可用 `canvas_attach_media_run` 回到画布。普通 Agent 或手动画布 Agent 需要把素材交给 Shell/ffmpeg 时，用 `media_get_asset_file` 传入精确资产引用，取得当前授权根内经过校验的本地文件。本地剪辑成品使用 `media_import_local_file` 导入，再用 `canvas_attach_media_assets` 按已配置的完整输出 key 回填候选，最后调用 `canvas_adopt_media_candidate` 采用。候选、正式采用与远端任务成功是不同事实。
 6. `metadataOnly` 只证明时长、尺寸、编码等技术信息，不能表示 Agent 已观看视频或听取音频。内容检查须使用当前真实可用的分析工具或保留用户验收。
 
 工作流无法转换或参数准备失败时，用对应节点更新工具的 `preparation: {code, message}` 保存有界错误码和节点、字段、中文原因，保留原参数；不得写入原始服务响应、路径或凭据。只有更新诊断时省略其它字段。解决后传 `preparation: null` 清除，并继续编辑和运行同一节点。进度、失败及输出留在原卡片，不把“已保存草稿”描述为“已经可以生成”。

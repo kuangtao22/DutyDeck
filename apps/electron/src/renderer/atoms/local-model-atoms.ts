@@ -18,13 +18,20 @@ export const acceptLocalModelSnapshotAtom = atom(null, (get, set, snapshot: Loca
   if (snapshot.updatedAt >= (get(localModelSnapshotAtom)?.updatedAt ?? 0)) set(localModelSnapshotAtom, snapshot)
 })
 
+/** 接收 IPC 异常，返回去除 Electron 通道包装的可读诊断；普通业务错误保持原文。 */
+function localModelErrorMessage(error: unknown): string {
+  // Electron invoke 拒绝在业务诊断外添加通道与异常类型，界面不需要展示这些协议细节。
+  const message = error instanceof Error ? error.message : String(error)
+  return message.replace(/^Error invoking remote method '[^']+':\s*(?:[A-Za-z]*Error:\s*)?/, '')
+}
+
 /** 重新读取权威状态；读取失败保留当前内容并显示可重试错误。 */
 export const refreshLocalModelsAtom = atom(null, async (_get, set) => {
   try {
     set(acceptLocalModelSnapshotAtom, await window.electronAPI.listLocalModels())
     set(localModelLoadErrorAtom, null)
   } catch (error) {
-    set(localModelLoadErrorAtom, error instanceof Error ? error.message : String(error))
+    set(localModelLoadErrorAtom, localModelErrorMessage(error))
   }
 })
 
@@ -35,7 +42,7 @@ export const performLocalModelActionAtom = atom(null, async (get, set, input: Lo
   const { action } = input
   const assetId = input.assetId ?? 'engine'
   // 取消下载和停止加载有独立槽位，不能被它们所取消的长操作阻挡。
-  const key = action === 'cancel' || action === 'stop' ? `${assetId}:cancel` : assetId
+  const key = action === 'engine-cancel' || action === 'cancel' || action === 'stop' ? `${assetId}:cancel` : assetId
   if (get(localModelPendingAtom)[key]) return
   set(localModelPendingAtom, (previous) => ({ ...previous, [key]: action }))
   set(localModelErrorsAtom, (previous) => ({ ...previous, [assetId]: undefined }))
@@ -57,7 +64,7 @@ export const performLocalModelActionAtom = atom(null, async (get, set, input: Lo
       await window.electronAPI.setLocalModelEnabled({ assetId, enabled: !asset.enabled })
     }
   } catch (error) {
-    set(localModelErrorsAtom, (previous) => ({ ...previous, [assetId]: error instanceof Error ? error.message : String(error) }))
+    set(localModelErrorsAtom, (previous) => ({ ...previous, [assetId]: localModelErrorMessage(error) }))
   } finally {
     set(localModelPendingAtom, (previous) => ({ ...previous, [key]: undefined }))
     await set(refreshLocalModelsAtom)

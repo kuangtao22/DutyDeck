@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, realpath, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AgentRunFileTracker, AGENT_RUN_FILE_TRACKER_LIMITS } from './agent-run-file-tracker'
+import { AgentRunFileTracker, AGENT_RUN_FILE_BASELINE_LIMITS, AGENT_RUN_FILE_TRACKER_LIMITS } from './agent-run-file-tracker'
 
 const cleanupPaths: string[] = []
 
@@ -101,7 +101,7 @@ describe('AgentRunFileTracker', () => {
     expect(tracker.snapshot()[0]).not.toHaveProperty('additions')
   })
 
-  test('Given watcher 只有事后路径 When observe Then 不伪造旧基线', async () => {
+  test('Given watcher 先看到路径 When 后续受控写入 Then 升级为真实基线', async () => {
     const root = await createFixture()
     const file = join(root, 'terminal-created.txt')
     const tracker = new AgentRunFileTracker({ cwd: root, roots: [root] })
@@ -113,7 +113,7 @@ describe('AgentRunFileTracker', () => {
     await tracker.before(file)
     await writeFile(file, 'later controlled write\n')
     await tracker.after(file)
-    expect(tracker.snapshot()).toEqual([{ path: file, status: 'unknown', statsState: 'unavailable' }])
+    expect(tracker.snapshot()).toEqual([{ path: file, status: 'added', statsState: 'complete', additions: 1, deletions: 0 }])
   })
 
   test('Given 新建和删除文件 When 工具执行 Then 不依赖 Git 也能识别操作类型', async () => {
@@ -251,6 +251,21 @@ test('Given 文件数量超限 When watcher 继续报告 Then 标记不完整且
   expect(tracker.truncated).toBe(true)
 })
 
+test('Given watcher 占满预算 When 受控写入随后到来 Then 淘汰未知占位保留真实文件', async () => {
+  const root = await createFixture()
+  const controlled = join(root, 'controlled-after-overflow.txt')
+  const tracker = new AgentRunFileTracker({ cwd: root, roots: [root] })
+  tracker.observe(Array.from({ length: AGENT_RUN_FILE_TRACKER_LIMITS.maxFiles }, (_, index) => join(root, `observed-${index}.txt`)))
+
+  await tracker.before(controlled)
+  await writeFile(controlled, 'controlled\n')
+  await tracker.after(controlled)
+
+  expect(tracker.snapshot()).toHaveLength(AGENT_RUN_FILE_TRACKER_LIMITS.maxFiles)
+  expect(tracker.snapshot().at(-1)).toMatchObject({ path: controlled, status: 'added', statsState: 'complete', additions: 1 })
+  expect(tracker.truncated).toBe(true)
+})
+
 
 test('Given 授权根是软链别名 When 工具和 watcher 使用两种路径 Then 只记录同一文件一次', async () => {
   const root = await createFixture()
@@ -268,4 +283,22 @@ test('Given 授权根是软链别名 When 工具和 watcher 使用两种路径 T
   expect(tracker.hasControlledPath(join(alias, 'same.ts'))).toBe(true)
   expect(tracker.snapshot()).toHaveLength(1)
   expect(tracker.snapshot()[0]?.additions).toBe(1)
+})
+
+test('Given 基线正文预算已用尽 When 后续受控写入 Then 仍保留精确统计', async () => {
+  const root = await createFixture()
+  // 用多个小于单文件上限的文本文件占满基线正文预算，避免误测 too_large 分支。
+  const baselineBytes = Math.ceil(AGENT_RUN_FILE_BASELINE_LIMITS.maxRetainedBytes / 1024) * 1024
+  for (let index = 0; index < 5; index += 1) {
+    await writeFile(join(root, `baseline-${index}.txt`), 'x'.repeat(Math.ceil(baselineBytes / 5)))
+  }
+  const controlled = join(root, 'controlled.ts')
+  const tracker = new AgentRunFileTracker({ cwd: root, roots: [root], startedAt: Date.now() })
+  await tracker.waitForBaseline()
+
+  await tracker.before(controlled)
+  await writeFile(controlled, 'controlled\n')
+  await tracker.after(controlled)
+
+  expect(tracker.snapshot()).toEqual([{ path: controlled, status: 'added', statsState: 'complete', additions: 1, deletions: 0 }])
 })

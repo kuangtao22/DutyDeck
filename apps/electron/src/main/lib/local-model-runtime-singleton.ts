@@ -4,6 +4,7 @@ import { LocalModelRuntime } from './local-model-runtime'
 import { LocalModelEngineManager } from './local-model-engine-manager'
 import { LOCAL_MODEL_CATALOG } from './local-model-catalog'
 import { getConfigDir } from './config-paths'
+import { createLocalModelDownloadTransport } from './local-model-download-network'
 
 /** 单个应用进程只持有一份模型调度器。 */
 let runtime: LocalModelRuntime | undefined
@@ -13,8 +14,8 @@ export function getLocalModelRuntime(): LocalModelRuntime {
   if (!runtime) {
     const { app } = require('electron') as { app: { isPackaged: boolean } }
     const root = app.isPackaged ? process.resourcesPath : join(__dirname, 'resources')
-    const engineManager = new LocalModelEngineManager({ configDir: getConfigDir(), bundledRoot: join(root, 'local-model-engine') })
-    runtime = new LocalModelRuntime({ catalog: LOCAL_MODEL_CATALOG, engineManager })
+    const engineManager = new LocalModelEngineManager({ configDir: getConfigDir(), bundledRoot: join(root, 'local-model-engine'), createDownloadTransport: createLocalModelDownloadTransport })
+    runtime = new LocalModelRuntime({ catalog: LOCAL_MODEL_CATALOG, engineManager, createDownloadTransport: createLocalModelDownloadTransport })
   }
   return runtime
 }

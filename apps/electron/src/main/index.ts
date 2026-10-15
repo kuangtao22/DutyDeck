@@ -799,12 +799,12 @@ function createDataRootManagementWindow(mode: Exclude<DataRootStartupMode, 'norm
  *
  * 该窗口只暴露一次性选择 bridge，真正的目录移动仍由主进程完成。
  */
-function requestDefaultRootMigration(legacyRoot: string, targetRoot: string): Promise<boolean> {
+function requestDefaultRootMigration(legacyRoot: string, targetRoot: string): Promise<boolean | null> {
   return new Promise((resolveChoice) => {
     /** 防止按钮、关闭事件和加载失败同时结算 Promise。 */
     let settled = false
     /** 结束确认流程并移除一次性 IPC handler。 */
-    const finish = (confirmed: boolean): void => {
+    const finish = (confirmed: boolean | null): void => {
       if (settled) return
       settled = true
       ipcMain.removeHandler(DEFAULT_ROOT_MIGRATION_IPC_CHANNELS.CHOOSE)
@@ -835,13 +835,13 @@ function requestDefaultRootMigration(legacyRoot: string, targetRoot: string): Pr
     /** 只接受当前窗口、布尔值和单次提交，避免其它 renderer 伪造迁移结果。 */
     ipcMain.handle(DEFAULT_ROOT_MIGRATION_IPC_CHANNELS.CHOOSE, (event, rawConfirmed) => {
       if (event.sender !== migrationWindow.webContents) throw new Error('迁移确认窗口来源无效')
-      if (typeof rawConfirmed !== 'boolean') throw new Error('迁移确认结果无效')
+      if (rawConfirmed !== null && typeof rawConfirmed !== 'boolean') throw new Error('迁移确认结果无效')
       finish(rawConfirmed)
     })
     migrationWindow.once('ready-to-show', () => migrationWindow.show())
-    migrationWindow.once('closed', () => finish(false))
+    migrationWindow.once('closed', () => finish(null))
     /** 读取失败时按取消处理，避免启动永久等待确认。 */
-    migrationWindow.webContents.once('did-fail-load', () => finish(false))
+    migrationWindow.webContents.once('did-fail-load', () => finish(null))
     /** 开发窗口通过 URL 传参，Electron 打包窗口使用同一组 query 字段。 */
     const query = new URLSearchParams({ window: 'default-root-migration', legacyRoot, targetRoot })
     if (app.isPackaged) {
@@ -927,7 +927,16 @@ async function bootstrap(): Promise<void> {
       ? defaultMigration.error
       : new Error('迁移旧数据根前无法取得独占启动保护')
   } else if (defaultMigration.status === 'failed') {
-    console.warn('[启动] 历史数据根移动失败，将继续使用旧数据根:', defaultMigration.error)
+    console.warn('[启动] 历史数据根移动失败:', defaultMigration.error)
+    if (dataRootLocator.inspect().locatorFile?.defaultRootMoveRequest) {
+      dataRootBusinessStartupBlocked = true
+      /** 显式移动失败保持请求与原路径，显示可诊断信息并阻止业务启动。 */
+      const reason = defaultMigration.error instanceof Error ? defaultMigration.error.message : String(defaultMigration.error)
+      dialog.showErrorBox('默认数据位置迁移未完成',
+        `${reason}\n\n原位置：${defaultMigration.legacyRoot}\n默认位置：${defaultMigration.targetRoot}\n定位文件：${dataRootLocator.getLocatorPath()}\n\n迁移请求已保留。请先处理目录占用或访问问题，再重新打开 DutyDeck；不要删除或覆盖任一数据目录。`)
+      app.quit()
+      return
+    }
   }
   /** normal gate 前准备受控默认根和关键目录，异常直接转入轻量恢复模式。 */
   const locatorResult = inspectDataRootStartup(dataRootLocator, true)

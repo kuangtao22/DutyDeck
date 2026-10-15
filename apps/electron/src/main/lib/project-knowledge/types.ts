@@ -120,7 +120,7 @@ export interface KnowledgeScanTask {
 /** Store 提供给 1B/1C 复用的版本发布边界。 */
 export interface ProjectKnowledgeStore {
   readManifest: (project: ResolvedKnowledgeProject) => KnowledgeManifest | null
-  initialize: (project: ResolvedKnowledgeProject, workspaceId?: string) => Promise<KnowledgeManifest>
+  initialize: (project: ResolvedKnowledgeProject, workspaceId?: string, assertCurrent?: () => void) => Promise<KnowledgeManifest>
   readEntries: (project: ResolvedKnowledgeProject, manifest: KnowledgeManifest) => KnowledgeEntry[]
   readEntry: (project: ResolvedKnowledgeProject, manifest: KnowledgeManifest, entryId: string) => KnowledgeEntry
   readContent: (project: ResolvedKnowledgeProject, manifest: KnowledgeManifest, entryId: string) => string | null
@@ -129,6 +129,7 @@ export interface ProjectKnowledgeStore {
     expectedRevision: number,
     commits: KnowledgeEntryCommit[],
     workspaceId?: string,
+    assertCurrent?: () => void,
   ) => Promise<KnowledgeManifest>
   transact: (
     project: ResolvedKnowledgeProject,

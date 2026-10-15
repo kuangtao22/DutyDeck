@@ -7,17 +7,21 @@
  */
 
 import { createHash } from 'node:crypto'
-import { join, basename, relative, resolve } from 'node:path'
+import { join, basename, relative, resolve, isAbsolute } from 'node:path'
 import { mkdirSync, existsSync, cpSync, rmSync, readdirSync, readFileSync, copyFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { rmSyncWithRetry } from './fs-retry'
 import { DataRootLocator, type RequireActiveRootOptions } from './data-root-locator'
 import { readJsonFileSafe, writeJsonFileAtomic } from './safe-file'
+import { createDataRootReferenceCodec, isDataRootReference } from './data-root-reference'
+import type { DataRootReferenceCodec, DataRootPathSnapshot } from './data-root-reference'
 
 /** 配置路径只依赖活动数据根解析能力，便于测试按实例隔离。 */
 export interface ConfigRootResolver {
   /** 返回当前进程固定使用的活动数据根。 */
   requireActiveRoot(options?: RequireActiveRootOptions): string
+  /** 历史数据根只作为路径别名，不作为可读取的授权根。 */
+  getHistoricalRoots?(): string[]
 }
 
 /** 默认定位器延迟到首次路径调用创建，之后进程内唯一且不会热切换。 */
@@ -53,6 +57,36 @@ export function getConfigDir(resolver?: ConfigRootResolver): string {
   /** 显式注入优先，否则首次调用时创建进程级默认 locator。 */
   const activeResolver = resolver ?? getDefaultConfigRootResolver()
   return activeResolver.requireActiveRoot({ createDefault: true })
+}
+
+/**
+ * 为一次历史读取捕获固定数据根，返回无 I/O 的路径投影函数。
+ * @param resolver 当前进程定位器；测试可传独立实例。
+ * @returns 解析带根类型的相对引用与已知旧根绝对路径；调用方仍须验证文件授权。
+ */
+export function createDataRootPathResolver(resolver?: ConfigRootResolver): (path: string) => string {
+  return getDataRootReferenceCodec(resolver).resolve
+}
+
+/**
+ * 为一次持久化创建编码器，外部项目路径和普通文本不属于受管转换范围。
+ * @param resolver 当前进程定位器或隔离测试定位器。
+ * @returns 将受管绝对路径转换为可迁移引用的纯函数。
+ */
+export function createDataRootPathSerializer(resolver?: ConfigRootResolver): (path: string) => string {
+  return getDataRootReferenceCodec(resolver).serialize
+}
+
+/** 同次转换共享定位器快照，不在遍历每条附件时重新读取磁盘。 */
+function getDataRootReferenceCodec(resolver?: ConfigRootResolver): DataRootReferenceCodec {
+  const snapshot = getDataRootPathSnapshot(resolver)
+  return createDataRootReferenceCodec(snapshot.activeRoot, snapshot.historicalRoots)
+}
+
+/** 将宿主已固定的数据根传给子运行时；返回值不提供额外文件授权。 */
+export function getDataRootPathSnapshot(resolver?: ConfigRootResolver): DataRootPathSnapshot {
+  const activeResolver = resolver ?? getDefaultConfigRootResolver()
+  return { activeRoot: getConfigDir(activeResolver), historicalRoots: activeResolver.getHistoricalRoots?.() ?? [] }
 }
 
 /**
@@ -129,8 +163,8 @@ export function getConversationMessagesPath(id: string): string {
  *
  * @returns 默认路径为 ~/.DutyDeck/attachments/
  */
-export function getAttachmentsDir(): string {
-  const dir = join(getConfigDir(), 'attachments')
+export function getAttachmentsDir(resolver?: ConfigRootResolver): string {
+  const dir = join(getConfigDir(resolver), 'attachments')
 
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true })
@@ -148,8 +182,8 @@ export function getAttachmentsDir(): string {
  * @param conversationId 对话 ID
  * @returns 默认路径为 ~/.DutyDeck/attachments/{conversationId}/
  */
-export function getConversationAttachmentsDir(conversationId: string): string {
-  const dir = join(getAttachmentsDir(), conversationId)
+export function getConversationAttachmentsDir(conversationId: string, resolver?: ConfigRootResolver): string {
+  const dir = join(getAttachmentsDir(resolver), conversationId)
 
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true })
@@ -159,13 +193,15 @@ export function getConversationAttachmentsDir(conversationId: string): string {
 }
 
 /**
- * 解析附件相对路径为完整路径
+ * 统一解析新数据根引用、历史绝对路径与旧 Chat 附件相对路径。
  *
- * @param localPath 相对路径 {conversationId}/{uuid}.ext
- * @returns 默认完整路径为 ~/.DutyDeck/attachments/{conversationId}/{uuid}.ext
+ * @param localPath 带命名空间的引用、绝对路径或旧 {conversationId}/{uuid}.ext。
+ * @param resolver 可选的独立数据根定位器。
+ * @returns 当前实际路径，业务调用方仍须检查授权范围。
  */
-export function resolveAttachmentPath(localPath: string): string {
-  return join(getAttachmentsDir(), localPath)
+export function resolveAttachmentPath(localPath: string, resolver?: ConfigRootResolver): string {
+  if (isDataRootReference(localPath) || isAbsolute(localPath)) return createDataRootPathResolver(resolver)(localPath)
+  return join(getConfigDir(resolver), 'attachments', localPath)
 }
 
 /**

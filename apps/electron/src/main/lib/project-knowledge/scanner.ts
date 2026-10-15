@@ -97,6 +97,8 @@ export interface KnowledgeScannerDependencies {
   manifest: KnowledgeManifest
   now: () => number
   isCancelled: () => boolean
+  /** Agent 来源发现的动态授权断言，锁内提交前再次执行。 */
+  assertCurrent?: () => void
   onProgress: (progress: { discovered?: number; indexed?: number; skipped?: number; changed?: number }) => void
   /** 受控业务来源只通过宿主服务纯读接口进入扫描。 */
   controlledSources?: ProjectKnowledgeSources
@@ -723,8 +725,10 @@ export async function scanProjectKnowledge(
       dependencies.manifest.revision,
       commits,
       dependencies.workspaceId,
+      dependencies.assertCurrent,
     )
     : dependencies.manifest
+  dependencies.assertCurrent?.()
   /** 与发布清单精确绑定的可重建缓存。 */
   const cache: KnowledgeIndexCache = {
     schemaVersion: 1,

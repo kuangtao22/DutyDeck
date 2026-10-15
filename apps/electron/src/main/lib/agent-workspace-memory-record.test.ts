@@ -81,6 +81,9 @@ let journal: WorkspaceMemoryJournalTestApi
 
 mock.module('./config-paths', () => ({
   ...realConfigPaths,
+  /** 此组测试不涉及迁移，路径投影恒等且不访问真实定位器。 */
+  createDataRootPathResolver: () => (path: string) => path,
+  createDataRootPathSerializer: () => (path: string) => path,
   /** 测试工作区索引固定放在当前临时数据根。 */
   getAgentWorkspacesIndexPath: () => join(temporaryHome, '.proma', 'agent-workspaces.json'),
   /** 返回测试专用的工作区父目录。 */

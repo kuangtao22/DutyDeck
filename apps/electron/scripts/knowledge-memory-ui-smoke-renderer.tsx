@@ -7,7 +7,6 @@ import type {
   AgentWorkspace,
   AgentSessionMeta,
   KnowledgeEntry,
-  KnowledgeImportResult,
   KnowledgeExecutionStartInput,
   KnowledgeReadResult,
   KnowledgeSearchResult,
@@ -52,8 +51,6 @@ interface KnowledgeMemorySmokeState {
   createdSessions: AgentSessionMeta[]
   /** 宿主执行调用记录，用于证明没有同时发送普通 prompt。 */
   executionCalls: KnowledgeExecutionStartInput[]
-  /** 可变导入回执用于验证全跳过、成功与幂等反馈。 */
-  importResult: KnowledgeImportResult
 }
 
 const state: KnowledgeMemorySmokeState = {
@@ -68,18 +65,21 @@ const state: KnowledgeMemorySmokeState = {
   forceKnowledgeError: new URLSearchParams(location.search).has('knowledge-error'),
   createdSessions: [],
   executionCalls: [],
-  importResult: { rootRelativePath: ".context/knowledge-imports", imported: 0, unchanged: 0, files: [], skipped: [{ path: "secret.pem", reason: "凭据文件不可导入" }] },
 }
 
 /** 可控读取延迟只用于覆盖快速切换的迟到响应，不进行真实 I/O。 */
 const delayedReads = new Set<string>()
 const pendingReadReleases = new Map<string, () => void>()
+/** 指定正文读取失败，用于验证错误仅影响正文区域。 */
+const failedKnowledgeReads = new Set<string>()
+/** 读取不可用是正常回执，区别于 IPC 异常，恢复后仍应允许用户重试。 */
+const unavailableKnowledgeReads = new Set<string>()
 /** 暂停首次目录请求，验证用户从大纲打开正文后，目录返回不能清空选择。 */
 let delayInitialSearch = new URLSearchParams(location.search).has('hold-search')
 let releaseInitialSearch: (() => void) | undefined
 
-/** 复用内存延迟控制面覆盖导入扫描与索引 IPC。 */
-async function waitForSupplement(key: string): Promise<void> {
+/** 复用内存延迟控制面覆盖索引 IPC。 */
+async function waitForIndexRecovery(key: string): Promise<void> {
   if (!delayedReads.has(key)) return
   await new Promise<void>((resolve) => { pendingReadReleases.set(key, resolve) })
   pendingReadReleases.delete(key)
@@ -124,6 +124,16 @@ const sourceEntry: KnowledgeEntry = {
   document: undefined,
   admission: undefined,
 }
+
+/** 阅读回归提供长目录，验证滚动位置和其它文件夹折叠不受点击影响。 */
+const knowledgeEntries = new URLSearchParams(location.search).get('case') === 'reading'
+  ? [knowledgeEntry, ...Array.from({ length: 30 }, (_, index): KnowledgeEntry => ({
+    ...knowledgeEntry,
+    id: `knowledge-engineering-${index}`,
+    title: `工程文档 ${index}`,
+    document: { ...knowledgeEntry.document!, relativePath: `工程/文档${index}.md` },
+  }))]
+  : [knowledgeEntry]
 
 /** 已确认且暂停的流程用于证明知识工作流状态不影响独立记忆。 */
 const snapshot: KnowledgeSnapshot = {
@@ -197,7 +207,7 @@ const memoryTree: SkillFileNode[] = [
 
 /** 返回知识或来源目录，保持生产组件的分页契约。 */
 function searchKnowledge(scope: 'knowledge' | 'sources' | 'all' | undefined): KnowledgeSearchResult {
-  const entries = scope === 'sources' ? [sourceEntry] : scope === 'all' ? [knowledgeEntry, sourceEntry] : [knowledgeEntry]
+  const entries = scope === 'sources' ? [sourceEntry] : scope === 'all' ? [...knowledgeEntries, sourceEntry] : knowledgeEntries
   return {
     revision: snapshot.revision,
     items: entries.map((entry) => ({ entry, snippet: entry.summary, line: 1, score: 1 })),
@@ -222,10 +232,25 @@ const knowledgeApi: ProjectKnowledgeApi = {
     return structuredClone(searchKnowledge(input.scope))
   },
   readProjectKnowledge: async (input): Promise<KnowledgeReadResult> => {
-    const entry = input.entryId === sourceEntry.id ? sourceEntry : knowledgeEntry
+    state.knowledgeCalls.push(`read:${input.entryId}`)
+    /** 请求开始时固定正文版本，使迟到的旧版本回执不会跟随目录变化。 */
+    const entry = structuredClone(input.entryId === sourceEntry.id ? sourceEntry : knowledgeEntries.find((candidate) => candidate.id === input.entryId)!)
+    /** 可按条目及版本暂停旧请求，同时允许同一条目的新版立即返回。 */
+    const delayKey = delayedReads.has(`${input.entryId}:${input.expectedRevision}`) ? `${input.entryId}:${input.expectedRevision}` : input.entryId
+    if (delayedReads.has(delayKey)) {
+      await new Promise<void>((resolve) => { pendingReadReleases.set(delayKey, resolve) })
+      pendingReadReleases.delete(delayKey)
+    }
+    if (failedKnowledgeReads.has(input.entryId) || failedKnowledgeReads.has(`${input.entryId}:${input.offset}`)) throw new Error('fixture 正文读取失败')
+    if (unavailableKnowledgeReads.has(input.entryId)) return { entry: structuredClone(entry), content: '', status: 'unavailable', offset: 0, truncated: false }
+    if (entry.id === 'knowledge-engineering-20') return {
+      entry: structuredClone(entry), content: input.offset ? '第二页正文' : '第一页正文',
+      status: 'readable', offset: input.offset ?? 0, truncated: !input.offset,
+      nextOffset: input.offset ? undefined : 5,
+    }
     return {
       entry: structuredClone(entry),
-      content: entry.id === sourceEntry.id ? '# README\n\nDutyDeck 是一个本地优先的桌面 Agent。' : '# 产品原则\n\n1. 本地优先\n2. 用户确认后生成结构化资料\n',
+      content: entry.id === sourceEntry.id ? '# README\n\nDutyDeck 是一个本地优先的桌面 Agent。' : `# 产品原则\n\n1. 本地优先\n2. 用户确认后生成结构化资料\n\n正文版本：${entry.revision}\n`,
       status: 'readable',
       offset: 0,
       truncated: false,
@@ -248,7 +273,6 @@ const knowledgeApi: ProjectKnowledgeApi = {
   },
   scanProjectKnowledge: async () => {
     state.knowledgeCalls.push('scan')
-    await waitForSupplement('scan')
     return structuredClone(snapshot)
   },
   cancelProjectKnowledgeScan: async () => structuredClone(snapshot),
@@ -258,14 +282,14 @@ const knowledgeApi: ProjectKnowledgeApi = {
   organizeProjectKnowledge: async () => structuredClone(snapshot),
   undoProjectKnowledgeOperation: async () => structuredClone(snapshot),
   excludeProjectKnowledgeSession: async () => structuredClone(snapshot),
-  importProjectKnowledge: async () => structuredClone(state.importResult),
+  importProjectKnowledge: async () => ({ rootRelativePath: '.context/knowledge-imports', imported: 0, unchanged: 0, files: [], skipped: [] }),
   previewProjectKnowledgeIndex: async () => {
-    await waitForSupplement('index-preview')
+    await waitForIndexRecovery('index-preview')
     return { planRevision: 2, outlineRevision: 1, currentContent: '# 人工索引原文', generatedContent: '# 重建索引正文', currentRevision: 'index-r1' }
   },
   rebuildProjectKnowledgeIndex: async (input) => {
     state.knowledgeCalls.push(`rebuild:${input.workspaceId}:${input.expectedContentRevision}`)
-    await waitForSupplement('index-rebuild')
+    await waitForIndexRecovery('index-rebuild')
     return { backupRelativePath: '.context/backup.json' }
   },
   previewProjectKnowledgeMemory: async () => ({ projectId: workspace.id, inspected: 2, truncated: false, proposals: [] }),
@@ -377,6 +401,25 @@ Object.defineProperty(window, '__knowledgeMemorySmoke', {
     },
     setExternalProfile: (content: string): void => { state.memoryFiles[profilePath] = content },
     delayRead: (relativePath: string): void => { delayedReads.add(relativePath) },
+    /** 按条目身份切换失败，恢复后允许点击目录重试。 */
+    failKnowledgeRead: (entryId: string, failed: boolean): void => {
+      if (failed) failedKnowledgeReads.add(entryId)
+      else failedKnowledgeReads.delete(entryId)
+    },
+    /** 模拟已登记来源暂时不可用及恢复。 */
+    unavailableKnowledgeRead: (entryId: string, unavailable: boolean): void => {
+      if (unavailable) unavailableKnowledgeReads.add(entryId)
+      else unavailableKnowledgeReads.delete(entryId)
+    },
+    /** 修改指定条目版本并发出宿主通知，模拟读取期间目录被更新；无返回值。 */
+    updateKnowledgeRevision: (entryId: string, revision: string): void => {
+      /** 只更新测试内存中确实存在的条目，保持文件路径与身份不变。 */
+      const entry = knowledgeEntries.find((candidate) => candidate.id === entryId)
+      if (!entry) throw new Error(`fixture 缺少知识条目：${entryId}`)
+      entry.revision = revision
+      snapshot.revision += 1
+      for (const listener of knowledgeListeners) listener({ workspaceId: workspace.id })
+    },
     hasPendingRead: (relativePath: string): boolean => pendingReadReleases.has(relativePath),
     releaseRead: (relativePath: string): void => {
       delayedReads.delete(relativePath)

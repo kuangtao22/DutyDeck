@@ -295,3 +295,20 @@ describe('Server Ops utility runtime 返回协议', () => {
     }
   })
 })
+
+describe('独立任务严格协议', () => {
+  const identity = { taskId: 'task-1', hostId: 'host-1', connectionId: 'connection-1' }
+  test('Given 完整任务命令 When 解析 Then 保留独立身份与 PTY 尺寸', () => {
+    const request = { type: 'server-ops.task-start' as const, input: { ...identity, command: 'sudo deploy', cols: 80, rows: 24 } }
+    expect(parseServerOpsRuntimeRequest(request)).toEqual(request)
+    expect(() => parseServerOpsRuntimeRequest({ ...request, input: { ...request.input, containerId: 'extra' } })).toThrow()
+    expect(() => parseServerOpsRuntimeRequest({ ...request, input: { ...request.input, command: 'bad\0command' } })).toThrow()
+    expect(() => parseServerOpsRuntimeRequest({ ...request, input: { ...request.input, cols: 0 } })).toThrow()
+  })
+  test('Given 未知退出状态 When 解析 Then 不补零且拒绝伪造状态字段', () => {
+    const message = { type: 'server-ops.task-exit' as const, event: { ...identity, message: '连接关闭' } }
+    expect(parseServerOpsRuntimeMessage(message)).toEqual(message)
+    expect(() => parseServerOpsRuntimeMessage({ ...message, event: { ...message.event, exitCode: -1 } })).toThrow()
+    expect(() => parseServerOpsRuntimeMessage({ ...message, event: { ...message.event, success: true } })).toThrow()
+  })
+})

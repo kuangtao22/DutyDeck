@@ -16,6 +16,8 @@ let manager: AgentSessionManager
 let contextPrompt: AgentSessionContextPrompt
 let workspaceManager: AgentWorkspaceManager
 let tempHome: string
+/** 测试夹具与真实 manager 共用 locator 解析后的隔离数据根。 */
+let testDataRoot: string
 const originalHome = process.env.HOME
 const originalPromaDev = process.env.PROMA_DEV
 
@@ -87,7 +89,7 @@ function jsonl(rows: string[]): string {
 }
 
 function writeAgentSessionJsonl(sessionId: string, rows: string[]): void {
-  const dir = join(tempHome, '.proma', 'agent-sessions')
+  const dir = join(testDataRoot, 'agent-sessions')
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, `${sessionId}.jsonl`), jsonl(rows), 'utf-8')
 }
@@ -129,7 +131,7 @@ function writeAgentSessionsIndex(sessions: Array<{
   delegationDepth?: number
   delegationGoal?: string
 }>): void {
-  const dir = join(tempHome, '.proma')
+  const dir = testDataRoot
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'agent-sessions.json'), JSON.stringify({ version: 1, sessions }), 'utf-8')
 }
@@ -142,7 +144,7 @@ function writeAgentWorkspacesIndex(workspaces: Array<{
   updatedAt: number
   projectRootPath?: string
 }>): void {
-  const dir = join(tempHome, '.proma')
+  const dir = testDataRoot
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'agent-workspaces.json'), JSON.stringify({ version: 2, workspaces }), 'utf-8')
 }
@@ -167,6 +169,7 @@ beforeAll(async () => {
   process.env.HOME = tempHome
   process.env.PROMA_DEV = '0'
   manager = await import('./agent-session-manager')
+  testDataRoot = (await import('./config-paths')).getConfigDir()
   contextPrompt = await import('./agent-session-context-prompt')
   workspaceManager = await import('./agent-workspace-manager')
 })
@@ -186,6 +189,63 @@ afterAll(() => {
 })
 
 describe('Agent 会话 JSONL 读取', () => {
+  test('Given 有效消息之间存在 null 记录 When 读取历史 Then 保留前后消息且不改写磁盘', async () => {
+    /** 使用生产路径创建异常记录 fixture，不依赖历史默认根。 */
+    const { getAgentSessionMessagesPath } = await import('./config-paths')
+    const sessionId = 'null-between-valid-messages'
+    const filePath = getAgentSessionMessagesPath(sessionId)
+    /** 两侧正常消息用于判断单条异常是否扩大到整份历史。 */
+    const before: SDKMessage = { type: 'user', uuid: 'before-null', message: { content: '前一条消息' } }
+    const after: SDKMessage = { type: 'assistant', uuid: 'after-null', message: { content: '后一条消息' } }
+    const original = jsonl([JSON.stringify(before), 'null', JSON.stringify(after)])
+    writeFileSync(filePath, original)
+    // 同步读取维持原始记录语义，展示读取沿用逐行跳过异常的策略。
+    expect(manager.getAgentSessionSDKMessages(sessionId) as unknown[]).toEqual([before, null, after])
+    expect(await manager.getAgentSessionSDKMessagesForDisplay(sessionId)).toEqual([before, after])
+    expect(readFileSync(filePath, 'utf8')).toBe(original)
+  })
+
+  test('Given 有效消息之间存在损坏附件引用 When 同步和展示读取 Then 三条正文均保留且磁盘不变', async () => {
+    /** 逐条引用失败不能扩大为整份会话失败。 */
+    const { getAgentSessionMessagesPath } = await import('./config-paths')
+    const sessionId = 'malformed-attachment-between-valid'
+    const filePath = getAgentSessionMessagesPath(sessionId)
+    const badPath = 'dutydeck-data:/attachments/%2Fsecret.txt'
+    const messages: SDKMessage[] = [
+      { type: 'user', uuid: 'before-bad', message: { content: '前文' } },
+      { type: 'user', uuid: 'bad-attachment', attachments: [{ localPath: badPath }], message: { content: `<attached_files>\n- bad: ${badPath}\n</attached_files>\n此条正文不能丢失` } },
+      { type: 'assistant', uuid: 'after-bad', message: { content: '后文' } },
+    ]
+    const original = jsonl(messages.map((message) => JSON.stringify(message)))
+    writeFileSync(filePath, original)
+    expect(manager.getAgentSessionSDKMessages(sessionId)).toEqual(messages)
+    expect(await manager.getAgentSessionSDKMessagesForDisplay(sessionId)).toEqual(messages)
+    expect(readFileSync(filePath, 'utf8')).toBe(original)
+  })
+
+  test('Given 数据根迁移后消息保留旧附件引用 When 加载展示与媒体历史 Then 使用当前路径且磁盘证据原样保留', async () => {
+    /** 使用生产路径定位 fixture，避免依赖其他测试的旧默认根假设。 */
+    const { getAgentSessionMessagesPath, getConfigDir } = await import('./config-paths')
+    const sessionId = 'migrated-attachment-history'
+    const filePath = getAgentSessionMessagesPath(sessionId)
+    /** 默认移动已完成，只有引用仍保留原始路径。 */
+    const oldPath = join(tempHome, '.proma', 'agent-workspaces', 'workspace-a', sessionId, 'attachments', 'image.png')
+    const currentPath = join(getConfigDir(), 'agent-workspaces', 'workspace-a', sessionId, 'attachments', 'image.png')
+    const message = { type: 'user', uuid: 'migrated-user', parent_tool_use_id: null,
+      mediaAttachments: [{ targetPath: oldPath, filename: 'image.png', mediaType: 'image/png' }],
+      message: { content: [{ type: 'text', text: `<attached_files>\n- image.png: ${oldPath}\n</attached_files>\n正文记录 ${oldPath}` }] } }
+    /** 保存原始字节以验证只读投影不重写 JSONL 和既有证据。 */
+    const original = JSON.stringify(message) + '\n'
+    writeFileSync(filePath, original)
+    for (const messages of [manager.getAgentSessionSDKMessages(sessionId), await manager.getAgentSessionSDKMessagesForDisplay(sessionId)]) {
+      expect(messages).toHaveLength(1)
+      expect(messages[0]).toMatchObject({ mediaAttachments: [{ targetPath: currentPath }] })
+      expect(JSON.stringify(messages[0])).toContain(`- image.png: ${currentPath}`)
+      expect(JSON.stringify(messages[0])).toContain(`正文记录 ${oldPath}`)
+    }
+    expect(readFileSync(filePath, 'utf8')).toBe(original)
+  })
+
   test('Given 知识补充取证的尾部从中文中间开始 When 读取 Then 仍返回完整用户行和正确字节位置', async () => {
     /** 使用生产会话和配置路径隔离 fixture，不依赖旧数据根名称。 */
     const session = manager.createAgentSession('中文尾部取证')
@@ -321,7 +381,7 @@ describe('Agent 会话 JSONL 读取', () => {
     /** 使用生产创建与删除链路验证真实磁盘副作用。 */
     const session = manager.createAgentSession('删除回归')
     /** 当前会话的真实临时 JSONL 路径。 */
-    const transcriptPath = join(tempHome, '.proma', 'agent-sessions', `${session.id}.jsonl`)
+    const transcriptPath = join(testDataRoot, 'agent-sessions', `${session.id}.jsonl`)
     manager.appendAgentMessage(session.id, { id: 'before', role: 'user', content: '删除前', createdAt: 1 })
     manager.deleteAgentSession(session.id)
 
@@ -339,7 +399,7 @@ describe('Agent 会话 JSONL 读取', () => {
     const retained = manager.createAgentSession('继续运行')
     manager.appendAgentMessage(deleting.id, { id: 'before', role: 'user', content: '原文', createdAt: 1 })
     /** 标记前的真实文本，不能被待停止 runtime 改写。 */
-    const transcriptPath = join(tempHome, '.proma', 'agent-sessions', `${deleting.id}.jsonl`)
+    const transcriptPath = join(testDataRoot, 'agent-sessions', `${deleting.id}.jsonl`)
     const originalText = readFileSync(transcriptPath, 'utf-8')
     expect(typeof manager.markAgentSessionDeleting).toBe('function')
     manager.markAgentSessionDeleting(deleting.id)
@@ -353,9 +413,8 @@ describe('Agent 会话 JSONL 读取', () => {
   })
 
   test('Given SDK 批次写入 When 使用持久回执读取 Then 只返回 user/assistant 纯文本并保留字节身份', () => {
-    const sessionId = 'persisted-evidence'
-    indexSessionForAppend(sessionId)
-    writeAgentSessionJsonl(sessionId, [])
+    /** 通过生产入口创建会话，遵循定位器的当前数据根。 */
+    const sessionId = manager.createAgentSession('persisted-evidence').id
     const receipt = manager.appendSDKMessages(sessionId, [
       { type: 'user', uuid: 'user-evidence', message: { content: [{ type: 'text', text: '用户需求' }] } } as SDKMessage,
       { type: 'tool_result', uuid: 'tool-evidence', message: { content: [{ type: 'text', text: '工具内部' }] } } as SDKMessage,
@@ -380,7 +439,7 @@ describe('Agent 会话 JSONL 读取', () => {
     indexSessionForAppend(sessionId)
     writeAgentSessionJsonl(sessionId, [])
     const receipt = manager.appendSDKMessages(sessionId, [{ type: 'user', uuid: 'replace-user', message: { content: [{ type: 'text', text: '原始' }] } } as SDKMessage])
-    const path = join(tempHome, '.proma', 'agent-sessions', `${sessionId}.jsonl`)
+    const path = join(testDataRoot, 'agent-sessions', `${sessionId}.jsonl`)
     const replacement = `${path}.replacement`
     writeFileSync(replacement, readFileSync(path))
     rmSync(path)
@@ -534,7 +593,7 @@ describe('Agent 会话 JSONL 读取', () => {
     manager.appendSDKMessages(sessionId, [message])
 
     expect(message).toEqual(original)
-    const line = readFileSync(join(tempHome, '.proma', 'agent-sessions', `${sessionId}.jsonl`), 'utf-8').trimEnd()
+    const line = readFileSync(join(testDataRoot, 'agent-sessions', `${sessionId}.jsonl`), 'utf-8').trimEnd()
     expect(Buffer.byteLength(line, 'utf8')).toBeLessThanOrEqual(256 * 1024)
     const stored = JSON.parse(line) as {
       message: { content: Array<{ content: Array<Record<string, unknown>> }> }
@@ -573,7 +632,7 @@ describe('Agent 会话 JSONL 读取', () => {
 
   test('Given 展示历史路径不可读取 When 加载 Then 拒绝请求而不是返回成功的空历史', async () => {
     /** 目录占据文件路径可确定性触发 I/O 错误，不依赖平台权限位。 */
-    const directory = join(tempHome, '.proma', 'agent-sessions', 'display-unreadable.jsonl')
+    const directory = join(testDataRoot, 'agent-sessions', 'display-unreadable.jsonl')
     mkdirSync(directory, { recursive: true })
     await expect(manager.getAgentSessionSDKMessagesForDisplay('display-unreadable')).rejects.toThrow()
   })
@@ -756,7 +815,7 @@ describe('Agent 会话 runtime 元数据', () => {
       updatedAt: 1,
       agentRuntime: 'pi',
       sdkSessionId: 'sdk-stable',
-      piSessionFile: join(tempHome, '.proma', 'sdk-config', 'session.jsonl'),
+      piSessionFile: join(testDataRoot, 'sdk-config', 'session.jsonl'),
       piEntryBindings: { 'assistant-1': 'entry-1' },
       forkSourceDir: join(sourceRoot, 'fork'),
       attachedDirectories: [sourceRoot, join(sourceRoot, 'docs'), outsideRoot],
@@ -771,7 +830,7 @@ describe('Agent 会话 runtime 元数据', () => {
     expect(session?.attachedDirectories).toEqual([targetRoot, join(targetRoot, 'docs'), outsideRoot])
     expect(session?.attachedFiles).toEqual([join(targetRoot, 'README.md'), join(outsideRoot, 'note.md')])
     expect(session?.sdkSessionId).toBe('sdk-stable')
-    expect(session?.piSessionFile).toBe(join(tempHome, '.proma', 'sdk-config', 'session.jsonl'))
+    expect(session?.piSessionFile).toBe(join(testDataRoot, 'sdk-config', 'session.jsonl'))
     expect(session?.piEntryBindings).toEqual({ 'assistant-1': 'entry-1' })
   })
 
@@ -779,7 +838,7 @@ describe('Agent 会话 runtime 元数据', () => {
     /** 迁移路径和会话索引候选。 */
     const sourceRoot = join(tempHome, 'strict-session-source')
     const targetRoot = join(tempHome, 'strict-session-target')
-    const indexPath = join(tempHome, '.proma', 'agent-sessions.json')
+    const indexPath = join(testDataRoot, 'agent-sessions.json')
     const validIndex = {
       version: 2,
       sessions: [{
@@ -791,7 +850,7 @@ describe('Agent 会话 runtime 元数据', () => {
         forkSourceDir: join(sourceRoot, 'fork'),
       }],
     }
-    mkdirSync(join(tempHome, '.proma'), { recursive: true })
+    mkdirSync(testDataRoot, { recursive: true })
     writeFileSync(indexPath, '{ 主文件损坏', 'utf8')
     writeFileSync(`${indexPath}.bak`, JSON.stringify(validIndex), 'utf8')
     rmSync(`${indexPath}.tmp`, { force: true })
@@ -806,8 +865,8 @@ describe('Agent 会话 runtime 元数据', () => {
     ['所有候选语法损坏', ['{ bad-main', '{ bad-tmp', '{ bad-backup']],
     ['候选 schema 非法', [JSON.stringify({ version: 2, sessions: [{ id: 'missing-fields' }] }), '{ bad-tmp', '{ bad-backup']],
   ])('Given 会话索引%s When 迁移重写 Then 抛错且不生成空索引', (_label, candidates) => {
-    const indexPath = join(tempHome, '.proma', 'agent-sessions.json')
-    mkdirSync(join(tempHome, '.proma'), { recursive: true })
+    const indexPath = join(testDataRoot, 'agent-sessions.json')
+    mkdirSync(testDataRoot, { recursive: true })
     writeFileSync(indexPath, candidates[0]!, 'utf8')
     writeFileSync(`${indexPath}.tmp`, candidates[1]!, 'utf8')
     writeFileSync(`${indexPath}.bak`, candidates[2]!, 'utf8')
@@ -847,13 +906,13 @@ describe('Agent 会话 runtime 元数据', () => {
       attachedFiles: [join(realpathSync(sourceRoot), 'README.md')],
     }])
     /** 创建真实 workspace config 以覆盖第二步 rebase。 */
-    const workspaceDirectory = join(tempHome, '.proma', 'agent-workspaces', workspaceSlug)
+    const workspaceDirectory = join(testDataRoot, 'agent-workspaces', workspaceSlug)
     const configPath = join(workspaceDirectory, 'config.json')
     mkdirSync(workspaceDirectory, { recursive: true })
     writeFileSync(configPath, JSON.stringify({ attachedDirectories: [realpathSync(sourceRoot)] }), 'utf8')
 
     const relocator = new WorkspaceProjectRelocator({
-      getConfigDir: () => join(tempHome, '.proma'),
+      getConfigDir: () => testDataRoot,
       getWorkspace: workspaceManager.getAgentWorkspace,
       getManagedProjectRoot: () => sourceRoot,
       acquireWorkspaceOperation: () => () => {},
@@ -872,7 +931,7 @@ describe('Agent 会话 runtime 元数据', () => {
     expect(readFileSync(join(sourceRoot, 'README.md'), 'utf8')).toBe('integrated-copy')
     expect(readFileSync(join(targetRoot, 'README.md'), 'utf8')).toBe('integrated-copy')
     expect(workspaceManager.getAgentWorkspace(workspaceId)?.projectRootPath).toBe(realpathSync(targetRoot))
-    const sessionIndex = JSON.parse(readFileSync(join(tempHome, '.proma', 'agent-sessions.json'), 'utf8')) as {
+    const sessionIndex = JSON.parse(readFileSync(join(testDataRoot, 'agent-sessions.json'), 'utf8')) as {
       sessions: Array<{ attachedDirectories?: string[]; attachedFiles?: string[] }>
     }
     const workspaceConfig = JSON.parse(readFileSync(configPath, 'utf8')) as { attachedDirectories?: string[] }
@@ -900,7 +959,7 @@ describe('Agent 会话 runtime 元数据', () => {
       updatedAt: 1,
     }])
     /** 工作区配置文件所在目录。 */
-    const workspaceDirectory = join(tempHome, '.proma', 'agent-workspaces', workspaceSlug)
+    const workspaceDirectory = join(testDataRoot, 'agent-workspaces', workspaceSlug)
     const configPath = join(workspaceDirectory, 'config.json')
     mkdirSync(workspaceDirectory, { recursive: true })
     writeFileSync(configPath, JSON.stringify({
@@ -917,7 +976,7 @@ describe('Agent 会话 runtime 元数据', () => {
       attachedDirectories: string[]
       attachedFiles: string[]
     }
-    const index = JSON.parse(readFileSync(join(tempHome, '.proma', 'agent-workspaces.json'), 'utf8')) as {
+    const index = JSON.parse(readFileSync(join(testDataRoot, 'agent-workspaces.json'), 'utf8')) as {
       workspaces: Array<{ projectRootPath?: string }>
     }
     expect(config.attachedDirectories).toEqual([realpathSync(targetRoot), join(realpathSync(targetRoot), 'docs'), outsideRoot])
@@ -928,10 +987,10 @@ describe('Agent 会话 runtime 元数据', () => {
   test('Given 工作区索引主文件损坏但 backup 有效 When 迁移最终提交 Then 恢复 backup 后切换项目根', () => {
     /** 最终提交使用的真实目标根和索引候选。 */
     const targetRoot = join(tempHome, 'strict-workspace-index-target')
-    const indexPath = join(tempHome, '.proma', 'agent-workspaces.json')
+    const indexPath = join(testDataRoot, 'agent-workspaces.json')
     const workspaceId = 'strict-workspace-index'
     mkdirSync(targetRoot, { recursive: true })
-    mkdirSync(join(tempHome, '.proma'), { recursive: true })
+    mkdirSync(testDataRoot, { recursive: true })
     writeFileSync(indexPath, '{ 主文件损坏', 'utf8')
     writeFileSync(`${indexPath}.bak`, JSON.stringify({
       version: 2,
@@ -965,7 +1024,7 @@ describe('Agent 会话 runtime 元数据', () => {
   ])('Given 工作区索引%s When 迁移最终提交 Then 严格拒绝且零写入', (_label, candidates) => {
     /** 隔离 strict 最终提交目标与三个索引候选。 */
     const targetRoot = join(tempHome, 'strict-workspace-invalid-target')
-    const indexPath = join(tempHome, '.proma', 'agent-workspaces.json')
+    const indexPath = join(testDataRoot, 'agent-workspaces.json')
     mkdirSync(targetRoot, { recursive: true })
     writeFileSync(indexPath, candidates[0]!, 'utf8')
     writeFileSync(`${indexPath}.tmp`, candidates[1]!, 'utf8')
@@ -981,7 +1040,7 @@ describe('Agent 会话 runtime 元数据', () => {
     const workspaceSlug = 'strict-config-backup'
     const sourceRoot = join(tempHome, 'strict-config-source')
     const targetRoot = join(tempHome, 'strict-config-target')
-    const configDirectory = join(tempHome, '.proma', 'agent-workspaces', workspaceSlug)
+    const configDirectory = join(testDataRoot, 'agent-workspaces', workspaceSlug)
     const configPath = join(configDirectory, 'config.json')
     mkdirSync(configDirectory, { recursive: true })
     writeFileSync(configPath, '{ 主文件损坏', 'utf8')
@@ -998,7 +1057,7 @@ describe('Agent 会话 runtime 元数据', () => {
     ['候选 schema 非法', [JSON.stringify({ attachedDirectories: [1] }), '{ bad-tmp', '{ bad-backup']],
   ])('Given 工作区配置%s When 迁移重写 Then 抛错且不写空配置', (_label, candidates) => {
     const workspaceSlug = 'strict-config-invalid'
-    const configDirectory = join(tempHome, '.proma', 'agent-workspaces', workspaceSlug)
+    const configDirectory = join(testDataRoot, 'agent-workspaces', workspaceSlug)
     const configPath = join(configDirectory, 'config.json')
     mkdirSync(configDirectory, { recursive: true })
     writeFileSync(configPath, candidates[0]!, 'utf8')
@@ -1014,8 +1073,8 @@ describe('Agent 会话 runtime 元数据', () => {
   })
 
   test('Given 已保存 OpenAI medium 默认值 When 新建会话 Then 始终创建并持久化 Pi 会话', () => {
-    const settingsPath = join(tempHome, '.proma', 'settings.json')
-    mkdirSync(join(tempHome, '.proma'), { recursive: true })
+    const settingsPath = join(testDataRoot, 'settings.json')
+    mkdirSync(testDataRoot, { recursive: true })
     writeFileSync(settingsPath, JSON.stringify({
       agentThinking: { type: 'adaptive' },
       agentEffort: 'max',
@@ -1085,7 +1144,7 @@ describe('Agent 会话 runtime 元数据', () => {
       piSessionFile: '/tmp/pi-session.jsonl',
       piEntryBindings: { 'assistant-1': 'entry-1' },
     }])
-    mkdirSync(join(tempHome, '.proma', 'agent-workspaces', 'workspace-a', 'pi-session-to-move'), { recursive: true })
+    mkdirSync(join(testDataRoot, 'agent-workspaces', 'workspace-a', 'pi-session-to-move'), { recursive: true })
 
     const moved = manager.moveSessionToWorkspace('pi-session-to-move', 'workspace-b')
 
@@ -1093,14 +1152,14 @@ describe('Agent 会话 runtime 元数据', () => {
     expect(moved.sdkSessionId).toBeUndefined()
     expect(moved.piSessionFile).toBeUndefined()
     expect(moved.piEntryBindings).toBeUndefined()
-    expect(existsSync(join(tempHome, '.proma', 'agent-workspaces', 'workspace-b', 'pi-session-to-move'))).toBe(true)
+    expect(existsSync(join(testDataRoot, 'agent-workspaces', 'workspace-b', 'pi-session-to-move'))).toBe(true)
   })
 
   test('Given 新安装用户保存关闭思考 When 连续新建会话 Then 不被旧版迁移改回 high', () => {
-    const settingsPath = join(tempHome, '.proma', 'settings.json')
-    const indexPath = join(tempHome, '.proma', 'agent-sessions.json')
+    const settingsPath = join(testDataRoot, 'settings.json')
+    const indexPath = join(testDataRoot, 'agent-sessions.json')
     const indexBackupPath = `${indexPath}.bak`
-    mkdirSync(join(tempHome, '.proma'), { recursive: true })
+    mkdirSync(testDataRoot, { recursive: true })
     rmSync(indexPath, { force: true })
     rmSync(indexBackupPath, { force: true })
     writeFileSync(settingsPath, JSON.stringify({
@@ -1150,7 +1209,7 @@ describe('Agent 会话 runtime 元数据', () => {
     }))
     expect(manager.listVisibleAgentSessions()).not.toContainEqual(expect.objectContaining({ id: session.id }))
     const persisted = JSON.parse(
-      readFileSync(join(tempHome, '.proma', 'agent-sessions.json'), 'utf8'),
+      readFileSync(join(testDataRoot, 'agent-sessions.json'), 'utf8'),
     ) as { sessions: Array<Record<string, unknown>> }
     expect(persisted.sessions.find((candidate) => candidate.id === session.id)).toMatchObject({
       sourceDesignProjectId: 'workspace-design',
@@ -1200,7 +1259,7 @@ describe('Agent 会话 runtime 元数据', () => {
     expect(second).toEqual(first)
     expect(manager.listAgentSessions().filter((session) => session.id === input.trustedSessionId)).toHaveLength(1)
     expect(existsSync(join(
-      tempHome, '.proma', 'agent-workspaces', 'workspace-canvas', input.trustedSessionId,
+      testDataRoot, 'agent-workspaces', 'workspace-canvas', input.trustedSessionId,
     ))).toBe(true)
   })
 
@@ -1821,5 +1880,118 @@ describe('Agent 会话引用 prompt', () => {
         writable: true,
       })
     }
+  })
+})
+
+describe('可移植会话存储合同', () => {
+  test('Given 保存的新附件引用 When 经 SDK 历史解析后交给 Design Then 仍识别本会话输出', async () => {
+    /** 覆盖实际 IPC 使用的历史读取链路，不能只用原始持久化引用测试。 */
+    const paths = await import('./config-paths')
+    const { saveAttachment } = await import('./attachment-service')
+    const { resolveOwnedDesignJobOutputPath } = await import('./design/design-job-manager')
+    const session = manager.createAgentSession('portable-design-output')
+    const { attachment } = saveAttachment({ conversationId: session.id, filename: 'output.png', mediaType: 'image/png', data: Buffer.from('image-fixture').toString('base64') })
+    expect(attachment.localPath).toStartWith('dutydeck-data:/')
+    manager.appendSDKMessages(session.id, [{ type: 'user', uuid: 'portable-design-image', imageAttachments: [attachment], message: { content: '图片输出' } } as SDKMessage])
+    const history = manager.getAgentSessionSDKMessages(session.id)
+    const image = (history[0] as SDKMessage & { imageAttachments: Array<{ localPath: string }> }).imageAttachments[0]!
+    expect(image.localPath).toBe(paths.resolveAttachmentPath(attachment.localPath))
+    expect(resolveOwnedDesignJobOutputPath(session.id, image.localPath)).toBe(realpathSync(image.localPath))
+    expect(resolveOwnedDesignJobOutputPath('different-session', image.localPath)).toBeUndefined()
+    expect(readFileSync(paths.getAgentSessionMessagesPath(session.id), 'utf8')).toContain(attachment.localPath)
+  })
+
+  test('Given 受管附件 When 追加读取并截断 Then 磁盘引用可迁移且原消息和证据保持一致', async () => {
+    /** fixture 使用生产路径，避免旧默认目录的测试假设。 */
+    const paths = await import('./config-paths')
+    const session = manager.createAgentSession('portable-message')
+    const attachment = join(paths.getConfigDir(), 'agent-workspaces', 'default', session.id, 'attachments', '图片 a.png')
+    const message: SDKMessage = { type: 'user', uuid: 'portable-user', message: { content: `<attached_files>\n- 图片 a.png: ${attachment}\n</attached_files>\n普通正文 ${attachment}` } }
+    const original = JSON.stringify(message)
+    const receipt = manager.appendSDKMessages(session.id, [message])
+    const filePath = paths.getAgentSessionMessagesPath(session.id)
+    const stored = readFileSync(filePath, 'utf8')
+    const reference = paths.createDataRootPathSerializer()(attachment)
+    expect(reference).toStartWith('dutydeck-data:/')
+    expect(stored).toContain(reference)
+    expect(stored).toContain(`普通正文 ${attachment}`)
+    expect(JSON.stringify(message)).toBe(original)
+    expect(manager.getAgentSessionSDKMessages(session.id)).toEqual([message])
+    expect(await manager.getAgentSessionSDKMessagesForDisplay(session.id)).toEqual([message])
+    expect(receipt.messages?.[0]?.byteLength).toBe(Buffer.byteLength(stored))
+    expect(receipt.messages?.[0]?.sha256).toBe(new Bun.CryptoHasher('sha256').update(stored.trimEnd()).digest('hex'))
+    expect(manager.truncateSDKMessages(session.id, 'portable-user')).toEqual([message])
+    expect(readFileSync(filePath, 'utf8')).toBe(stored)
+    expect(manager.readPersistedAgentEvidence(session.id, [receipt]).records).toHaveLength(1)
+  })
+
+  test('Given 索引混合受管和外部路径 When 保存与重新读取 Then 磁盘相对引用而 API 返回绝对路径', async () => {
+    const paths = await import('./config-paths')
+    const session = manager.createAgentSession('portable-index')
+    const managed = join(paths.getConfigDir(), 'sdk', 'sessions', 'pi-session.jsonl')
+    const external = join(tempHome, 'external-project')
+    manager.updateAgentSessionMeta(session.id, { piSessionFile: managed, forkSourceDir: external, attachedFiles: [managed, external], attachedDirectories: [paths.getConfigDir(), external], activeWorktree: { path: managed, mainRepoRoot: external, branch: 'portable-test', selectedAt: 1 } })
+    /** 重写相同 JSON 内容以更改文件状态，确保下一次读取不依赖缓存。 */
+    const indexPath = paths.getAgentSessionsIndexPath()
+    const index = JSON.parse(readFileSync(indexPath, 'utf8')) as { sessions: Array<{ id: string; piSessionFile?: string; forkSourceDir?: string; attachedFiles?: string[]; activeWorktree?: { path: string; mainRepoRoot: string } }> }
+    const stored = index.sessions.find((entry) => entry.id === session.id)!
+    expect(stored.piSessionFile).toBe(paths.createDataRootPathSerializer()(managed))
+    expect(stored.forkSourceDir).toBe(external)
+    expect(stored.activeWorktree).toMatchObject({ path: paths.createDataRootPathSerializer()(managed), mainRepoRoot: external })
+    expect(stored.attachedFiles).toEqual([paths.createDataRootPathSerializer()(managed), external])
+    writeFileSync(indexPath, JSON.stringify(index) + '\n\n')
+    expect(manager.getAgentSessionMeta(session.id)).toMatchObject({ piSessionFile: managed, forkSourceDir: external, attachedFiles: [managed, external], attachedDirectories: [paths.getConfigDir(), external], activeWorktree: { path: managed, mainRepoRoot: external } })
+    // 反向混合验证 mainRepoRoot 也编码，外部 worktree 路径保持原样。
+    manager.updateAgentSessionMeta(session.id, { activeWorktree: { path: external, mainRepoRoot: managed, branch: 'portable-test', selectedAt: 2 } })
+    const reversedIndex = JSON.parse(readFileSync(indexPath, 'utf8')) as typeof index
+    expect(reversedIndex.sessions.find((entry) => entry.id === session.id)?.activeWorktree).toMatchObject({ path: external, mainRepoRoot: paths.createDataRootPathSerializer()(managed) })
+    writeFileSync(indexPath, JSON.stringify(reversedIndex) + '\n\n')
+    expect(manager.getAgentSessionMeta(session.id)?.activeWorktree).toMatchObject({ path: external, mainRepoRoot: managed })
+  })
+
+  test('Given 旧消息事件附件 When 追加再读取 Then 只转换明确字段并保留工具结果原文', async () => {
+    const paths = await import('./config-paths')
+    const session = manager.createAgentSession('portable-legacy')
+    const path = join(paths.getConfigDir(), 'attachments', 'legacy.png')
+    /** 旧事件保留真实工具正文，但结构化图片引用须可迁移。 */
+    const message = { id: 'legacy', role: 'assistant' as const, content: `<attached_files>\n- legacy.png: ${path}\n</attached_files>`, createdAt: 1, events: [{ type: 'tool_result' as const, toolUseId: 'tool', result: path, isError: false, imageAttachments: [{ localPath: path, filename: 'legacy.png', mediaType: 'image/png' }] }] }
+    manager.appendAgentMessage(session.id, message)
+    const stored = readFileSync(paths.getAgentSessionMessagesPath(session.id), 'utf8')
+    expect(stored).toContain(paths.createDataRootPathSerializer()(path))
+    expect(stored).toContain(`"result":"${path}"`)
+    expect(manager.getAgentSessionMessages(session.id)).toEqual([message])
+  })
+
+  test('Given 已存相对引用 When 分叉会话 Then 新附件指向副本且源历史字节不变', async () => {
+    const paths = await import('./config-paths')
+    /** project cwd 在 fork 前后相同，但会话工作台附件必须换到副本目录。 */
+    const projectRootPath = join(tempHome, 'portable-fork-project')
+    mkdirSync(projectRootPath, { recursive: true })
+    const workspace = { id: 'portable-fork-workspace', name: 'portable', slug: 'portable', projectRootPath, createdAt: 1, updatedAt: 1 }
+    writeFileSync(paths.getAgentWorkspacesIndexPath(), JSON.stringify({ version: 2, workspaces: [workspace] }))
+    const source = manager.createAgentSession('portable-fork', undefined, workspace.id)
+    const sourceDir = manager.resolveAgentWorkbenchDir(workspace, source.id)!
+    const attachment = join(sourceDir, 'attachments', 'fork.png')
+    mkdirSync(join(sourceDir, 'attachments'), { recursive: true })
+    writeFileSync(attachment, 'image')
+    const piSessionFile = join(paths.getConfigDir(), 'portable-pi.jsonl')
+    writeFileSync(piSessionFile, '')
+    manager.updateAgentSessionMeta(source.id, { piSessionFile, piEntryBindings: { 'portable-keep': 'entry-keep' } })
+    manager.appendSDKMessages(source.id, [
+      { type: 'user', uuid: 'portable-fork-user', message: { content: `<attached_files>\n- fork.png: ${attachment}\n</attached_files>` } },
+      { type: 'assistant', uuid: 'portable-keep', message: { content: '完成' } },
+    ])
+    const original = readFileSync(paths.getAgentSessionMessagesPath(source.id), 'utf8')
+    const fork = await manager.forkAgentSession({ sessionId: source.id, upToMessageUuid: 'portable-keep' })
+    const destination = join(manager.resolveAgentWorkbenchDir(workspace, fork.id)!, 'attachments', 'fork.png')
+    expect(existsSync(destination)).toBe(true)
+    expect(JSON.stringify(manager.getAgentSessionSDKMessages(fork.id))).toContain(destination)
+    expect(readFileSync(paths.getAgentSessionMessagesPath(fork.id), 'utf8')).toContain(paths.createDataRootPathSerializer()(destination))
+    expect(readFileSync(paths.getAgentSessionMessagesPath(source.id), 'utf8')).toBe(original)
+    // 回退沿用同一存储合同，不把已保存的引用写回旧绝对路径。
+    manager.appendSDKMessages(source.id, [{ type: 'user', uuid: 'discard-after-fork', message: { content: '应回退' } }])
+    expect(await manager.rewindPiAgentSession(source.id, 'portable-keep')).toBe(2)
+    expect(readFileSync(paths.getAgentSessionMessagesPath(source.id), 'utf8')).toBe(original)
+    expect(JSON.stringify(manager.getAgentSessionSDKMessages(source.id))).toContain(attachment)
   })
 })

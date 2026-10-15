@@ -68,7 +68,7 @@ import { getPersistedAgentMessageReceipt, readPersistedAgentEvidence } from './a
 import { getAgentWorkspace, getProjectFilesPath, getWorkspaceMcpConfig, getWorkspaceAttachedDirectories, getWorkspaceAttachedFiles, getWorkspaceAgentsMdPath, readWorkspaceAgentsMd, getWorkspaceMemoryGuidance, isWorkspaceProjectKnowledgeMaintenanceApproved } from './agent-workspace-manager'
 import { getLocalProjectRootStatus } from './project-root-health'
 import { getMcpApiKeyEnvironment, getMcpOAuthHeaders } from './mcp-oauth-service'
-import { getAgentWorkspacePath, getAgentSessionWorkspacePath, getSdkConfigDir, getWorkspaceSkillsDir } from './config-paths'
+import { getAgentWorkspacePath, getAgentSessionWorkspacePath, getSdkConfigDir, getWorkspaceSkillsDir, getDataRootPathSnapshot } from './config-paths'
 import { getRuntimeStatus } from './runtime-init'
 import { recordTokenUsage } from './token-usage-recorder'
 import { getSettings } from './settings-service'
@@ -342,6 +342,8 @@ export class AgentOrchestrator {
   private activeSessions = new Map<string, number>()
   /** 当前代际的远端只读调用取消控制器；旧代际收尾不得清除新代际。 */
   private activeRunControllers = new Map<string, AgentRunIdentity>()
+  /** 发布任务只在用户显式停止本轮时取消，正常回复后仍可在运维终端输入。 */
+  private activeServerTaskControllers = new Map<string, { generation: number; controller: AbortController }>()
   private activeSessionStartedAt = new Map<string, number>()
   private nextRunGenerationBySession = new Map<string, number>()
 
@@ -880,6 +882,8 @@ export class AgentOrchestrator {
       if (runGeneration === 0) return
       const ownsActiveRun = this.activeSessions.get(sessionId) === runGeneration
       if (ownsActiveRun) {
+        /** 正常释放只摘除取消入口，不中断已交给运维任务服务的命令。 */
+        if (this.activeServerTaskControllers.get(sessionId)?.generation === runGeneration) this.activeServerTaskControllers.delete(sessionId)
         const activeController = this.activeRunControllers.get(sessionId)
         if (activeController && activeController.generation === runGeneration) {
           activeController.abort()
@@ -974,6 +978,9 @@ export class AgentOrchestrator {
       && (getAgentSessionMeta(sessionId)?.toolMode ?? AGENT_DEFAULT_TOOL_MODE) === runToolMode
     ))
     this.activeRunControllers.set(sessionId, runIdentity)
+    /** 独立于工具闭包失效信号，避免正常对话结束误杀等待 sudo 的任务。 */
+    const serverTaskController = new AbortController()
+    this.activeServerTaskControllers.set(sessionId, { generation: runGeneration, controller: serverTaskController })
     this.activeSessions.set(sessionId, runGeneration)
     this.activeSessionStartedAt.set(sessionId, streamStartedAt)
     this.latestRunGenerations.set(sessionId, runGeneration)
@@ -1347,6 +1354,7 @@ export class AgentOrchestrator {
         triggeredBy: input.triggeredBy,
         getSession: getAgentSessionMeta,
         runSignal: runIdentity.signal, assertRunActive: runIdentity.assertActive,
+        taskSignal: serverTaskController.signal,
       }) : undefined
       /** 数据库能力复用真实运行身份；普通会话写入另走单次审批，内部来源不继承权限。 */
       const serverOpsReadFacade = createServerOpsAgentReadFacade({
@@ -1780,7 +1788,7 @@ export class AgentOrchestrator {
 
         /** 知识写工具经过通用参数、次数和扩展守卫，计划模式不会隐式写入。 */
         const knowledgeWriteTools = new Set([
-          'proma_knowledge_submit', 'proma_knowledge_plan', 'proma_knowledge_outline', 'proma_knowledge_document', 'proma_knowledge_asset', 'proma_knowledge_refresh_sources',
+          'proma_knowledge_submit', 'proma_knowledge_plan', 'proma_knowledge_outline', 'proma_knowledge_document', 'proma_knowledge_asset', 'proma_knowledge_refresh_sources', 'proma_knowledge_scan_sources', 'proma_knowledge_import_sources',
         ])
         if (toolName === 'proma_knowledge_status') {
           if (!projectKnowledge || options.signal.aborted) return { behavior: 'deny', message: '当前运行不能读取项目知识流程' }
@@ -1899,7 +1907,7 @@ export class AgentOrchestrator {
         }
 
         // 远程命令使用独立窄只读语法。未知或高风险命令在 plan 中拒绝，其他模式也必须逐次审批。
-        if (toolName === 'server_exec' || toolName === 'server_docker_action' || toolName === 'server_files_mutate' || toolName === 'server_disconnect') {
+        if (toolName === 'server_exec' || toolName === 'server_task_start' || toolName === 'server_task_interrupt' || toolName === 'server_docker_action' || toolName === 'server_files_mutate' || toolName === 'server_disconnect') {
           if (!serverOpsFacade) return { behavior: 'deny' as const, message: '当前运行不具备服务器操作能力。' }
           const command = typeof input.command === 'string' ? input.command : ''
           if (toolName === 'server_exec' && isServerOpsReadOnlyCommand(command)) return { behavior: 'allow' as const, updatedInput: input }
@@ -2408,6 +2416,7 @@ export class AgentOrchestrator {
         initialUserMessageUuid,
         piAgentDir: getSdkConfigDir(),
         piSessionDir: join(getSdkConfigDir(), 'sessions'),
+        dataRootPaths: getDataRootPathSnapshot(),
         activeToolNames: runToolMode === 'server-ops-read' || runToolMode === 'server-ops-write' ? resolveAgentModeToolNames(runToolMode) : resolvePiActiveToolNames(
           extensions.allowedToolNames,
           extensions.allowedToolNamesMode,
@@ -3122,6 +3131,12 @@ export class AgentOrchestrator {
   /** 同步撤销运行身份并等待适配器收尾；失败直接返回给删除调用方。 */
   async stopAndDrain(sessionId: string, stopBeforeRun = false): Promise<void> {
     const runGeneration = this.activeSessions.get(sessionId)
+    /** 显式停止先关闭本轮发起的任务；其它会话及已完成轮次不受影响。 */
+    const taskController = this.activeServerTaskControllers.get(sessionId)
+    if (taskController && taskController.generation === runGeneration) {
+      taskController.controller.abort()
+      this.activeServerTaskControllers.delete(sessionId)
+    }
     const activeController = this.activeRunControllers.get(sessionId)
     if (activeController && activeController.generation === runGeneration) {
       activeController.abort()

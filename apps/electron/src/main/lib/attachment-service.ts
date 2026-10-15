@@ -2,7 +2,7 @@
  * 附件存储服务
  *
  * 负责文件附件的本地存储、读取和删除。
- * 存储路径：~/.proma/attachments/{conversationId}/{uuid}.ext
+ * 存储路径：当前数据根/attachments/{conversationId}/{uuid}.ext
  *
  * - 保存：base64 解码 → 写入文件
  * - 读取：文件 → base64 编码（用于 API 发送）
@@ -10,15 +10,19 @@
  * - 文件选择对话框：Electron dialog → 小文件读取为 base64，大文件返回本地路径引用
  */
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, rmSync, statSync } from 'node:fs'
-import { extname, basename, join, isAbsolute, normalize } from 'node:path'
+import { readFileSync, writeFileSync, unlinkSync, existsSync, rmSync, statSync, realpathSync, lstatSync } from 'node:fs'
+import { extname, basename, join, isAbsolute, relative, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { dialog, BrowserWindow } from 'electron'
 import {
   getConfigDir,
+  createDataRootPathSerializer,
   getConversationAttachmentsDir,
   resolveAttachmentPath,
 } from './config-paths'
+import type { ConfigRootResolver } from './config-paths'
+import { isDataRootReference } from './data-root-reference'
+import { openAuthorizedAgentMediaSource } from './design/design-session-bridge'
 import type {
   FileAttachment,
   AttachmentSaveInput,
@@ -129,12 +133,13 @@ export function getMimeType(ext: string): string {
  * 保存附件到本地
  *
  * 将 base64 编码的文件数据解码后写入
- * ~/.proma/attachments/{conversationId}/{uuid}.ext
+ * 当前数据根/attachments/{conversationId}/{uuid}.ext
  *
  * @param input 保存附件参数
+ * @param resolver 可选独立数据根定位器，默认使用生产定位器
  * @returns 保存结果，包含附件元信息
  */
-export function saveAttachment(input: AttachmentSaveInput): AttachmentSaveResult {
+export function saveAttachment(input: AttachmentSaveInput, resolver?: ConfigRootResolver): AttachmentSaveResult {
   const { conversationId, filename, mediaType, data } = input
 
   // 防御性检查：base64 数据量不应超过 100MB 限制
@@ -144,14 +149,15 @@ export function saveAttachment(input: AttachmentSaveInput): AttachmentSaveResult
   }
 
   // 确保目录存在
-  const dir = getConversationAttachmentsDir(conversationId)
+  const dir = getConversationAttachmentsDir(conversationId, resolver)
 
   // 生成唯一文件名
   const ext = extname(filename) || '.bin'
   const id = randomUUID()
   const storedFilename = `${id}${ext}`
-  const localPath = `${conversationId}/${storedFilename}`
   const fullPath = join(dir, storedFilename)
+  /** 持久化显式数据根引用，迁移无需重写附件元数据。 */
+  const localPath = createDataRootPathSerializer(resolver)(fullPath)
 
   // base64 解码并写入
   const buffer = Buffer.from(data, 'base64')
@@ -172,43 +178,73 @@ export function saveAttachment(input: AttachmentSaveInput): AttachmentSaveResult
 /**
  * 读取附件并返回 base64 编码
  *
- * 支持两种路径格式：
- * 1. 相对路径 {conversationId}/{uuid}.ext → 解析到 ~/.proma/attachments/
- * 2. 绝对路径（Agent 工作区附件）→ 需在 ~/.proma/ 目录下，直接读取
+ * 支持三种路径格式：
+ * 1. 相对路径 {conversationId}/{uuid}.ext → 当前数据根的 attachments/
+ * 2. Agent 绝对路径 → 已知旧根先映射到当前根，再复核实际文件的授权边界
+ * 3. dutydeck-data:/ 数据根引用 → 当前根下对应文件
  *
  * @param localPath 相对路径或绝对路径
+ * @param resolver 可选的独立定位器，用于隔离测试；生产使用进程固定定位器
  * @returns base64 编码的文件数据
  */
-export function readAttachmentAsBase64(localPath: string): string {
-  let fullPath: string
+export function readAttachmentAsBase64(localPath: string, resolver?: ConfigRootResolver): string {
+  return readAttachmentBytes(localPath, resolver).toString('base64')
+}
 
-  if (isAbsolute(localPath)) {
-    // 绝对路径：验证在 ~/.proma/ 目录下，防止路径穿越
-    const configDir = getConfigDir()
-    const normalized = normalize(localPath)
-    if (!normalized.startsWith(configDir)) {
-      throw new Error(`附件路径不在安全目录内: ${localPath}`)
-    }
-    fullPath = normalized
-  } else {
-    fullPath = resolveAttachmentPath(localPath)
+/** 从受控附件引用读取稳定字节，供预览和文档解析共享安全边界。 */
+export function readAttachmentBytes(localPath: string, resolver?: ConfigRootResolver): Buffer {
+  /** 历史根只作别名；所有字节最终必须来自当前根。 */
+  const configDir = getConfigDir(resolver)
+  const absolute = isAbsolute(localPath) || isDataRootReference(localPath)
+  const allowedRoot = absolute ? configDir : join(configDir, 'attachments')
+  const fullPath = resolveAttachmentPath(localPath, resolver)
+  /** 先做词法边界检查，再由稳定句柄检查 realpath 和文件身份。 */
+  const suffix = relative(allowedRoot, fullPath)
+  if (!suffix || suffix === '..' || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) {
+    throw new Error(`附件路径不在安全目录内: ${localPath}`)
   }
 
   if (!existsSync(fullPath)) {
     throw new Error(`附件文件不存在: ${localPath}`)
   }
 
-  const buffer = readFileSync(fullPath)
-  return buffer.toString('base64')
+  /** attachments 根本身也不能通过目录链接将读取权限扩展到数据根之外。 */
+  if (!absolute) assertAttachmentDescendant(realpathSync(configDir), realpathSync(allowedRoot))
+  /** 复用媒体读取的 no-follow、普通文件、大小及读取前后身份验证。 */
+  const source = openAuthorizedAgentMediaSource({ inputPath: fullPath, baseDir: configDir,
+    allowedRoots: [allowedRoot], maxBytes: MAX_ATTACHMENT_SIZE, label: '媒体' })
+  try {
+    return source.readBytes()
+  } finally {
+    source.close()
+  }
+}
+
+/** 校验候选路径为授权根的严格后代；不以同名前缀代替目录边界。 */
+function assertAttachmentDescendant(root: string, candidate: string): void {
+  /** 相对后缀不可为空、向上穿越或指向另一驱动器。 */
+  const suffix = relative(root, candidate)
+  if (!suffix || suffix === '..' || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) {
+    throw new Error('附件路径不在安全目录内')
+  }
 }
 
 /**
  * 删除单个附件
  *
- * @param localPath 相对路径 {conversationId}/{uuid}.ext
+ * @param localPath 新数据根引用或旧 Chat 路径；只能删除 attachments 下的文件
+ * @param resolver 可选独立数据根定位器
  */
-export function deleteAttachment(localPath: string): void {
-  const fullPath = resolveAttachmentPath(localPath)
+export function deleteAttachment(localPath: string, resolver?: ConfigRootResolver): void {
+  /** 删除权限只覆盖 Chat 附件，不能扩大至整个业务数据根。 */
+  const fullPath = resolveAttachmentPath(localPath, resolver)
+  const root = join(getConfigDir(resolver), 'attachments')
+  assertAttachmentDescendant(root, fullPath)
+  if (existsSync(fullPath)) {
+    assertAttachmentDescendant(realpathSync(root), realpathSync(fullPath))
+    assertAttachmentDescendant(realpathSync(getConfigDir(resolver)), realpathSync(fullPath))
+    if (lstatSync(fullPath).isSymbolicLink()) throw new Error('附件路径不能是符号链接')
+  }
 
   if (existsSync(fullPath)) {
     try {
@@ -223,7 +259,7 @@ export function deleteAttachment(localPath: string): void {
 /**
  * 删除对话的全部附件
  *
- * 删除整个 ~/.proma/attachments/{conversationId}/ 目录。
+ * 删除整个当前数据根/attachments/{conversationId}/ 目录。
  *
  * @param conversationId 对话 ID
  */

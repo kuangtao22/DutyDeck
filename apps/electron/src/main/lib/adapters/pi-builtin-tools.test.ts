@@ -259,6 +259,16 @@ describe('Pi Server Ops 工具合同', () => {
     expect(JSON.stringify(tools.map((tool) => tool.parameters))).not.toMatch(/sessionId|credentialRef|candidateId/)
   })
 
+  test('Given 已接通任务终端 When 注册工具 Then 模型仅可启动读取中断且不能传入密码或会话身份', () => {
+    /** 三项能力一起接通，输入只能来自用户终端，不开放模型键盘工具。 */
+    const facade = { taskStart: async () => ({}), taskRead: async () => ({}), taskInterrupt: async () => ({}) } as unknown as ServerOpsAgentFacade
+    const tasks = buildServerOpsTools(sdk, facade).filter((tool) => tool.name.startsWith('server_task_'))
+    expect(tasks.map((tool) => tool.name)).toEqual(['server_task_start', 'server_task_read', 'server_task_interrupt'])
+    expect(JSON.stringify(tasks.map((tool) => tool.parameters))).not.toMatch(/sessionId|connectionId|password|credential|data/)
+    expect(tasks[0]?.description).toContain('已连接')
+    expect(tasks[1]?.description).toContain('退出')
+  })
+
   test('Given 服务器变更工具 When 构建审批元数据 Then 确认卡使用清晰中文说明风险和影响', () => {
     /** 提供会触发逐次确认的可选能力，验证它们传给审批卡的用户可见说明。 */
     const facade = {

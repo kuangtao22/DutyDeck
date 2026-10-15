@@ -123,6 +123,17 @@ export class DataRootLocator {
     return join(dirname(this.locatorPath), LEGACY_DEFAULT_DATA_ROOT_DIRECTORY_NAME)
   }
 
+  /** 返回历史引用可识别的数据根名称；仅用于映射到当前根，不授予旧目录读取权限。 */
+  getHistoricalRoots(): string[] {
+    /** 从已校验的定位器快照读取别名，不访问历史目录。 */
+    const locatorFile = this.inspect().locatorFile
+    return [...new Set([
+      this.getLegacyDefaultRoot(), this.defaultRoot,
+      ...(locatorFile?.previousRoot ? [locatorFile.previousRoot] : []),
+      ...(locatorFile?.historicalRoots ?? []),
+    ])]
+  }
+
   /**
    * 无副作用地解析并检查当前数据根，首次解析后返回缓存结果。
    *
@@ -168,13 +179,15 @@ export class DataRootLocator {
     const result = this.inspect()
     /** invalid 状态为 null，其余可用状态必须收窄为绝对路径。 */
     const activeRoot = result.state.activeRoot
+    if (result.locatorFile?.defaultRootMoveRequest) throw new Error('默认数据根移动尚未完成，请重启恢复')
     /** 无 locator 或用户明确取消默认迁移后，固定默认根拥有自动创建权限。 */
     const usesControlledDefault = activeRoot === this.defaultRoot
       && (result.locatorFile === undefined || result.locatorFile.defaultMigrationDismissed === true)
 
     if (result.status === 'ready' && result.state.availability === 'missing' && usesControlledDefault && options.createDefault) {
       mkdirSync(this.defaultRoot, { recursive: true })
-      this.cachedResult = this.createResultForRoot(this.defaultRoot, undefined, true)
+      // 按需创建目录不能把已持久化的历史别名或拒绝标记从缓存丢弃。
+      this.cachedResult = this.createResultForRoot(this.defaultRoot, result.locatorFile, result.locatorFile === undefined)
       return this.defaultRoot
     }
 
@@ -215,7 +228,7 @@ export class DataRootLocator {
     const result = this.inspect()
     const activeRoot = result.state.activeRoot
     if (activeRoot === null || result.state.availability !== 'available') throw new Error('当前活动数据根不可用')
-    if (result.locatorFile?.migration !== undefined) throw new Error('已有数据根迁移正在进行')
+    if (result.locatorFile?.migration !== undefined || result.locatorFile?.defaultRootMoveRequest !== undefined) throw new Error('已有数据根迁移正在进行')
     if (result.locatorFile?.postCommitCleanup !== undefined) throw new Error('上一次数据根迁移尚未完成清理')
     if (migration.sourceRoot !== activeRoot) throw new Error('迁移源根必须是当前活动数据根')
     if (migration.stage !== 'pending' || migration.completedBytes !== 0) throw new Error('新迁移必须从 pending 零进度开始')
@@ -223,6 +236,7 @@ export class DataRootLocator {
       version: 1,
       activeRoot,
       ...(result.locatorFile?.previousRoot === undefined ? {} : { previousRoot: result.locatorFile.previousRoot }),
+      ...(result.locatorFile?.historicalRoots?.length ? { historicalRoots: result.locatorFile.historicalRoots } : {}),
       ...(result.locatorFile?.defaultMigrationDismissed === undefined
         ? {}
         : { defaultMigrationDismissed: result.locatorFile.defaultMigrationDismissed }),
@@ -320,6 +334,7 @@ export class DataRootLocator {
         version: 1,
         activeRoot: migration.targetRoot,
         defaultMigrationDismissed: true,
+        ...(locatorFile.historicalRoots?.length ? { historicalRoots: locatorFile.historicalRoots } : {}),
       })
     }
     return this.write(remaining)
@@ -352,10 +367,14 @@ export class DataRootLocator {
       throw new Error('迁移目标根不可用')
     }
 
+    /** defaults 与新 previousRoot 已能表达的根无需重复持久化；旧自定义根必须累积。 */
+    const historicalRoots = this.getHistoricalRoots().filter((root) => root !== migration.targetRoot
+      && root !== migration.sourceRoot && root !== this.defaultRoot && root !== this.getLegacyDefaultRoot())
     return this.write({
       version: 1,
       activeRoot: migration.targetRoot,
       previousRoot: migration.sourceRoot,
+      ...(historicalRoots.length ? { historicalRoots } : {}),
       postCommitCleanup: {
         migrationId: migration.id,
         targetRoot: migration.targetRoot,
@@ -435,7 +454,9 @@ export class DataRootLocator {
     /** 默认根缺失仍可进入 ready，等待调用方显式创建。 */
     const controlledDefault = activeRoot === this.defaultRoot
       && (implicitDefault || locatorFile?.defaultMigrationDismissed === true)
-    const status: DataRootLocatorStatus = migration !== null
+    const status: DataRootLocatorStatus = locatorFile?.defaultRootMoveRequest !== undefined
+      ? 'unavailable'
+      : migration !== null
       ? 'migration'
       : availability === 'available' || (controlledDefault && availability === 'missing')
         ? 'ready'

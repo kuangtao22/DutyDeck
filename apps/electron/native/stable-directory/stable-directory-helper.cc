@@ -550,7 +550,6 @@ std::string CanvasContentMoveResultJson(const CanvasIntentWriteOutcome& outcome)
   out << '}';
   return out.str();
 }
-
 // 序列化 Canvas 内容文件读取结果；不返回路径，仅返回稳定身份与内存正文。
 std::string CanvasContentReadResultJson(const std::string& status, const std::string& content,
                                         std::uint64_t size, const std::string& volume,

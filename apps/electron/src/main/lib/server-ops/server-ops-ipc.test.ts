@@ -1,4 +1,4 @@
-import { SERVER_OPS_AGENT_ACCESS_MANAGEMENT_CHANNELS } from '@proma/shared'
+import { SERVER_OPS_AGENT_ACCESS_MANAGEMENT_CHANNELS, SERVER_OPS_TASK_IPC_CHANNELS } from '@proma/shared'
 import { describe, expect, spyOn, test } from 'bun:test'
 import { SERVER_OPS_IPC_CHANNELS, SERVER_OPS_TRUST_CHANNELS, SERVER_OPS_DOCKER_CHANNELS, SERVER_OPS_FILE_CHANNELS, SERVER_OPS_CONSOLE_IPC_CHANNELS, SERVER_OPS_TRANSFER_CHANNELS, SERVER_OPS_DATA_CHANNELS, SERVER_OPS_DATA_SCHEMA_CHANNELS, SERVER_OPS_PROJECT_CHANNELS, SERVER_OPS_SCRIPT_CHANNELS, SERVER_OPS_SCRIPT_DRAFT_CHANNELS, SERVER_OPS_DATA_WRITE_CHANNELS } from '@proma/shared'
 import type { AgentSessionMeta, ServerOpsAuditListResult, ServerOpsConnectionState, ServerOpsHost, ServerOpsLogExitEvent, ServerOpsLogOutputEvent, ServerOpsTerminalExitEvent, ServerOpsTerminalOutputEvent, ServerOpsUpsertHostInput } from '@proma/shared'
@@ -95,6 +95,7 @@ function createAgentAccessHarness(options: {
   docker?: ServerOpsIpcOptions['docker']
   files?: ServerOpsIpcOptions['files']
   console?: ServerOpsIpcOptions['console']
+  tasks?: ServerOpsIpcOptions['tasks']
   transfers?: ServerOpsIpcOptions['transfers']
   fileLeases?: ServerOpsIpcOptions['fileLeases']
   data?: ServerOpsIpcOptions['data']
@@ -143,6 +144,7 @@ function createAgentAccessHarness(options: {
     docker: options.docker,
     files: options.files,
     console: options.console,
+    tasks: options.tasks,
     transfers: options.transfers,
     fileLeases: options.fileLeases,
     data: options.data,
@@ -1060,6 +1062,7 @@ describe('服务器运维 IPC', () => {
     ] as readonly string[]).includes(channel)).flatMap((channel) => channel === SERVER_OPS_IPC_CHANNELS.REVOKE_AGENT_ACCESS_SESSION ? [channel, ...Object.values(SERVER_OPS_AGENT_ACCESS_MANAGEMENT_CHANNELS)] : [channel]), SERVER_OPS_AGENT_READ_CHANNELS.GET, SERVER_OPS_AGENT_READ_CHANNELS.SET, 'server-ops:get-database-agent-policy', 'server-ops:set-database-agent-policy', SERVER_OPS_CONNECTION_DRAFT_CHANNELS.LIST, SERVER_OPS_CONNECTION_DRAFT_CHANNELS.DISMISS, ...Object.values(SERVER_OPS_TRUST_CHANNELS), ...Object.values(SERVER_OPS_DOCKER_CHANNELS),
       ...Object.values(SERVER_OPS_FILE_CHANNELS),
       ...Object.values(SERVER_OPS_CONSOLE_IPC_CHANNELS).filter((channel) => channel !== SERVER_OPS_CONSOLE_IPC_CHANNELS.OUTPUT && channel !== SERVER_OPS_CONSOLE_IPC_CHANNELS.EXIT),
+      ...Object.values(SERVER_OPS_TASK_IPC_CHANNELS).filter((channel) => channel !== SERVER_OPS_TASK_IPC_CHANNELS.CHANGED),
       ...Object.values(SERVER_OPS_TRANSFER_CHANNELS).filter((channel) => channel !== SERVER_OPS_TRANSFER_CHANNELS.PROGRESS),
       ...Object.values(SERVER_OPS_DATA_CHANNELS),
       ...Object.values(SERVER_OPS_DATA_SCHEMA_CHANNELS),
@@ -1434,7 +1437,7 @@ describe('服务器运维 IPC', () => {
       'unsubscribe-connection-state',
     ])
     /** 数量随 SERVER_OPS_* 通道常量增长：新增通道必须同步这里。 */
-    expect(cleanup.filter((entry) => entry.startsWith('remove-handler:'))).toHaveLength(91)
+    expect(cleanup.filter((entry) => entry.startsWith('remove-handler:'))).toHaveLength(96)
   })
 
   test('dispose 中首个 unsubscribe 失败仍解绑 closed listener、释放 owner 和全部 handler', async () => {
@@ -1454,7 +1457,7 @@ describe('服务器运维 IPC', () => {
     expect(cleanup).toContain('remove-closed')
     expect(cleanup).toContain('dispose-owner:window:7')
     /** 与上一处保持同一口径：新增 IPC 通道后两处都要更新。 */
-    expect(cleanup.filter((entry) => entry.startsWith('remove-handler:'))).toHaveLength(91)
+    expect(cleanup.filter((entry) => entry.startsWith('remove-handler:'))).toHaveLength(96)
     expect(handlers.size).toBe(0)
     expect(() => registration.dispose()).not.toThrow()
     expect(cleanup).toEqual(afterFirstDispose)
@@ -1664,3 +1667,26 @@ function createMinimalRegistrationOptions(
     requireUserVisibleSession: () => createAgentSession(),
   }
 }
+
+
+test('Given 任务终端 IPC When 非授权窗口或归档会话访问 Then 拒绝且不转发键盘输入', async () => {
+  /** 通过真实注册器验证新增 IPC 与现有窗口、会话准入共用边界。 */
+  const writes: unknown[] = []
+  const tasks = { list: () => [], read: async () => { throw new Error('unused') },
+    write: (input: unknown) => { writes.push(input) }, resize: () => {}, interrupt: async () => { throw new Error('unused') },
+    onChanged: () => () => {}, disposeSession: () => {},
+  }
+  const harness = createAgentAccessHarness({ tasks })
+  expect(harness.handlers.has(SERVER_OPS_TASK_IPC_CHANNELS.WRITE)).toBe(true)
+  await expect(invoke(harness.handlers, SERVER_OPS_TASK_IPC_CHANNELS.WRITE, createSender(99),
+    { sessionId: 'session-1', taskId: 'task-1', data: 'secret' })).rejects.toThrow('SERVER_OPS_ACCESS_DENIED')
+  expect(writes).toHaveLength(0)
+  const archived = createAgentAccessHarness({ tasks, session: createAgentSession({ archived: true }) })
+  await expect(invoke(archived.handlers, SERVER_OPS_TASK_IPC_CHANNELS.WRITE, archived.sender,
+    { sessionId: 'session-1', taskId: 'task-1', data: 'secret' })).rejects.toThrow('SERVER_OPS_AGENT_SESSION_NOT_ALLOWED')
+  expect(writes).toHaveLength(0)
+  await invoke(harness.handlers, SERVER_OPS_TASK_IPC_CHANNELS.WRITE, harness.sender,
+    { sessionId: 'session-1', taskId: 'task-1', data: 'input' })
+  expect(writes).toEqual([{ sessionId: 'session-1', taskId: 'task-1', data: 'input' }])
+  harness.registration.dispose(); archived.registration.dispose()
+})

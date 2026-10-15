@@ -31,8 +31,8 @@ export function DefaultRootMigrationPrompt({
   const [isBusy, setIsBusy] = useState(false)
   /** IPC 失败时保留弹窗，让用户可以重试或取消。 */
   const [error, setError] = useState<string | null>(null)
-  /** Dialog 关闭手势统一视为继续使用旧目录。 */
-  const choose = async (confirmed: boolean): Promise<void> => {
+  /** 只有明确选择旧目录才记住拒绝；关闭手势仅结束本次提示。 */
+  const choose = async (confirmed: boolean | null): Promise<void> => {
     if (isBusy) return
     setIsBusy(true)
     setError(null)
@@ -48,7 +48,7 @@ export function DefaultRootMigrationPrompt({
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-background px-5 py-8 text-foreground">
-      <Dialog open onOpenChange={(open) => { if (!open) void choose(false) }}>
+      <Dialog open onOpenChange={(open) => { if (!open) void choose(null) }}>
         <DialogContent
           hideClose
           className="max-w-lg rounded-xl"

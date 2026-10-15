@@ -1,3 +1,4 @@
+import { ServerOpsTaskRuntimeController } from './server-ops-task-runtime'
 import { Client, type ClientChannel, type ConnectConfig } from 'ssh2'
 import type { Duplex } from 'node:stream'
 import { connect as connectTcp } from 'node:net'
@@ -70,6 +71,7 @@ interface ManagedSshConnection {
   logStreams: Map<string, ManagedLogStream>
   logController: RuntimeLogStreamController
   /** Docker Console 使用独立 exec PTY，不与主机终端 channel 混用。 */
+  taskController: ServerOpsTaskRuntimeController<ReturnType<typeof setTimeout>>
   consoleController: ServerOpsConsoleRuntimeController<ReturnType<typeof setTimeout>>
   /** 懒建立 SFTP channel，随 SSH 连接统一释放。 */
   sftp: ServerOpsSftpRuntime
@@ -212,6 +214,27 @@ function handleRequest(raw: unknown): void {
       emitExitWhenDrained(connection)
       return
     }
+    case 'server-ops.task-start': {
+      const connection = connections.get(request.input.connectionId)
+      if (!connection || connection.hostId !== request.input.hostId) {
+        post({ type: 'server-ops.task-exit', event: { taskId: request.input.taskId, hostId: request.input.hostId, connectionId: request.input.connectionId, message: 'SSH 连接未激活' } })
+        return
+      }
+      connection.taskController.start(request.input)
+      return
+    }
+    case 'server-ops.task-stop':
+      connections.get(request.input.connectionId)?.taskController.stop(request.input)
+      return
+    case 'server-ops.task-input':
+      connections.get(request.input.connectionId)?.taskController.write(request.input)
+      return
+    case 'server-ops.task-resize':
+      connections.get(request.input.connectionId)?.taskController.resize(request.input)
+      return
+    case 'server-ops.task-ack':
+      connections.get(request.input.connectionId)?.taskController.acknowledge(request.input)
+      return
     case 'server-ops.console-start': {
       const connection = connections.get(request.input.connectionId)
       if (!connection || connection.hostId !== request.input.hostId) {
@@ -343,6 +366,17 @@ function connect(input: ServerOpsRuntimeConnectRequest): void {
         clearTimer: (timer) => clearTimeout(timer),
       })
       /** 每个 SSH 连接拥有独立 Console 控制器与 channel 集合。 */
+      const taskController = new ServerOpsTaskRuntimeController<ReturnType<typeof setTimeout>>({
+        execute: (command, options, callback) => {
+          client.exec(command, { pty: options.pty }, (execError, consoleChannel) => {
+            if (execError) { callback(execError); return }
+            callback(undefined, { ...createRuntimeConsoleChannel(consoleChannel), onceError: (listener) => { consoleChannel.once('error', listener) } })
+          })
+        },
+        post,
+        setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+        clearTimer: (timer) => clearTimeout(timer),
+      })
       const consoleController = new ServerOpsConsoleRuntimeController<ReturnType<typeof setTimeout>>({
         execute: (command, options, callback) => {
           client.exec(command, { pty: options.pty }, (execError, consoleChannel) => {
@@ -366,6 +400,7 @@ function connect(input: ServerOpsRuntimeConnectRequest): void {
         logStreams,
         logController,
         consoleController,
+        taskController,
         sftp: new ServerOpsSftpRuntime({ hostId: input.hostId, connectionId: input.connectionId, client }),
       }
       connections.set(input.connectionId, managed)
@@ -1123,6 +1158,7 @@ function closeManagedConnection(connection: ManagedSshConnection, message: strin
   if (connections.get(connection.connectionId) !== connection) return
   connection.sftp.dispose()
   connection.logController.finishAll('connection-closed')
+  connection.taskController.dispose(message)
   connection.consoleController.dispose(message)
   failDataReadsForConnection(connection, message)
   for (const execChannel of connection.execChannels) { try { execChannel.close() } catch { /* exec channel 已关闭时可幂等收束。 */ } }
@@ -1153,6 +1189,7 @@ function disconnect(connectionId: string, message: string, notify = true): void 
   connection.sftp.dispose()
   if (connection.flushTimer) clearTimeout(connection.flushTimer)
   connection.logController.finishAll('connection-closed')
+  connection.taskController.dispose(message)
   connection.consoleController.dispose(message)
   failDataReadsForConnection(connection, message)
   try { connection.channel.close() } catch { /* channel 已关闭时可幂等收束。 */ }

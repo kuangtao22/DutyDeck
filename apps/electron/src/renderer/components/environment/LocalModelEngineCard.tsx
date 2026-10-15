@@ -65,7 +65,8 @@ export function LocalModelEngineCard(): React.ReactElement {
   const ready = engine ? isEngineReady(engine) : false
   const busy = engine?.state === 'downloading' || engine?.state === 'verifying' || engine?.state === 'installing'
   const pendingEngine = Boolean(pending.engine)
-  const errorMessage = errors.engine ?? engine?.message ?? loadError
+  // 安装失败以主进程快照诊断为准，避免迟到的 IPC 拒绝覆盖具体原因。
+  const errorMessage = (engine?.state === 'error' ? engine.message : undefined) ?? errors.engine ?? engine?.message ?? loadError
   const StatusIcon = !engine ? Loader2 : ready ? CheckCircle2 : engine.state === 'error' ? XCircle : AlertCircle
   const statusColor = !engine ? 'text-muted-foreground' : ready ? 'text-green-600 dark:text-green-500' : engine.state === 'error' ? 'text-red-600 dark:text-red-500' : 'text-yellow-600 dark:text-yellow-500'
 
@@ -86,7 +87,7 @@ export function LocalModelEngineCard(): React.ReactElement {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {busy ? (
-              <Button size="sm" variant="outline" disabled={pendingEngine} onClick={() => void perform({ action: 'engine-cancel' })}>
+              <Button size="sm" variant="outline" disabled={Boolean(pending['engine:cancel'])} onClick={() => void perform({ action: 'engine-cancel' })}>
                 取消安装
               </Button>
             ) : !ready ? (

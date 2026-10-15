@@ -18,9 +18,11 @@ export async function downloadModelFile(entry: LocalModelCatalogEntry, path: str
     signal.throwIfAborted()
     if (completed === entry.sizeBytes) return
     const response = await fetchImpl(entry.downloadUrl, { signal, redirect: 'follow', headers: completed ? { Range: `bytes=${completed}-` } : {} })
+    // HTTP 或续传头非法时也回收响应流，避免代理连接等待未消费的 body。
+    reader = response.body?.getReader()
     signal.throwIfAborted()
     if (response.url && new URL(response.url).protocol !== 'https:') throw new Error('模型下载重定向必须使用 HTTPS')
-    if (!response.ok || !response.body) throw new Error(`模型下载失败（HTTP ${response.status}）`)
+    if (!response.ok || !reader) throw new Error(`模型下载失败（HTTP ${response.status}）`)
     if (response.status === 206) {
       const range = response.headers.get('content-range')?.match(/^bytes (\d+)-(\d+)\/(\d+)$/)
       if (!range || Number(range[1]) !== completed || Number(range[2]) !== entry.sizeBytes - 1 || Number(range[3]) !== entry.sizeBytes) throw new Error('模型续传 Content-Range 不匹配')
@@ -29,7 +31,6 @@ export async function downloadModelFile(entry: LocalModelCatalogEntry, path: str
     } else throw new Error('模型下载响应状态非法')
     const length = response.headers.get('content-length')
     if (length !== null && Number(length) !== entry.sizeBytes - completed) throw new Error('模型下载 Content-Length 不匹配')
-    reader = response.body.getReader()
     while (true) {
       signal.throwIfAborted()
       const chunk = await reader.read()

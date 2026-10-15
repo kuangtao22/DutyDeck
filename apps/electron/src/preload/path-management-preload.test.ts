@@ -319,3 +319,13 @@ describe('路径管理 preload API', () => {
     expect((await getState()).occupiedIssue?.code).toBe('SCAN_TIMEOUT')
   })
 })
+
+test('Given 默认或自定义目的地 When normal pick Then 仅转发目的地枚举并保持无参兼容', async () => {
+  /** 记录桥参数，确保 renderer 不需要提交可信默认路径。 */
+  const recorded = createRecordedIpc()
+  const api = pathManagementPreload.createNormalPathManagementPreloadApi(recorded.ipc)
+  await api.pickDataRoot('default')
+  await api.pickDataRoot('custom')
+  await api.pickDataRoot()
+  expect(recorded.invokes.map((call) => call.args)).toEqual([['default'], ['custom'], []])
+})

@@ -1,12 +1,13 @@
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { getAgentWorkspace } from './agent-workspace-manager'
 import { getConfigDir, resolveWorkspaceFilesDir } from './config-paths'
 import { acquireWorkspaceWriteLease, getWorkspaceOperationBlockReason } from './workspace-operation-lock'
 import { isWorkspaceSlug } from './workspace-slug'
 import { createProjectKnowledgeService } from './project-knowledge/service'
+import type { KnowledgeScanGuard } from './project-knowledge/service'
 import { isOrdinaryTopLevelAgentSession } from '@proma/shared'
-import type { KnowledgeExecution, KnowledgeExecutionStartInput, KnowledgeSnapshot } from '@proma/shared'
+import type { KnowledgeExecution, KnowledgeExecutionStartInput, KnowledgeImportMode, KnowledgeSnapshot } from '@proma/shared'
 import type { ProjectKnowledgeIpcService } from './project-knowledge-ipc'
 import type { ResolvedKnowledgeProject } from './project-knowledge/types'
 import { getAgentSessionMeta, getLatestPersistedUserEvidence, getPersistedAgentMessageReceipt, isAgentSessionDeleting, readPersistedAgentEvidence } from './agent-session-manager'
@@ -27,6 +28,27 @@ let executionHost: {
   cancel?(sessionId: string, dispatchId: string): Promise<void>
   changed(workspaceId: string, generation: number): void
 } | undefined
+
+/** 路径只由 Electron 宿主的原生选择器提供，不进入模型工具参数。 */
+let importSelector: ((mode: KnowledgeImportMode) => Promise<string[]>) | undefined
+/** 由主进程注入与面板共用的选择器；运行时不直接依赖 Electron。 */
+export function registerKnowledgeImportSelector(select: NonNullable<typeof importSelector>): void {
+  importSelector = select
+}
+
+/** 只中断本轮等待，不取消共享后台扫描或关闭用户已打开的系统对话框。 */
+async function awaitKnowledgeSourceOperation<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation
+  signal.throwIfAborted()
+  /** 移除监听器避免长期运行的会话累积取消处理器。 */
+  let onAbort: (() => void) | undefined
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason ?? new Error('知识来源操作已取消'))
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  try { return await Promise.race([operation, cancelled]) }
+  finally { if (onAbort) signal.removeEventListener('abort', onAbort) }
+}
 
 /** 绑定宿主已有会话队列，禁止另建后台模型执行器。 */
 export function registerKnowledgeExecutionHost(host: NonNullable<typeof executionHost>): void {
@@ -189,12 +211,15 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
   }
   /** 每次扫描持有迁移租约直到后台任务结束，IPC 返回 running 不释放租约。 */
   const startScan = service.startScan.bind(service)
-  service.startScan = async (workspaceId: string): Promise<KnowledgeSnapshot> => {
+  service.startScan = async (workspaceId: string, guard?: KnowledgeScanGuard): Promise<KnowledgeSnapshot> => {
     /** 租约从初始化前开始持有；同步失败与后台完成都必须释放。 */
     const release = acquireWorkspaceWriteLease(workspaceId)
     try {
-      const snapshot = await startScan(workspaceId)
-      void service.waitForScan(workspaceId).catch(() => undefined).finally(release)
+      /** 只有本次真正启动的后台任务才持有额外租约，共享等待不新增长期租约。 */
+      let ownsScan = false
+      const snapshot = await startScan(workspaceId, guard, () => { ownsScan = true })
+      if (ownsScan) void service.waitForScan(workspaceId).catch(() => undefined).finally(release)
+      else release()
       return snapshot
     } catch (error) {
       release()
@@ -236,6 +261,25 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
       const task = service.store.readManifest(resolveProject(workspaceId))?.workflow?.execution
       if (!input.canMutate() || (!input.execution && task && ['queued', 'running'].includes(task.status))) throw new Error('当前模式没有项目知识写入权限')
     }
+    /** 来源扫描逐步与提交前复核本轮身份，取消只影响该轮新建扫描。 */
+    const scanSources = async (signal?: AbortSignal) => {
+      /** 工具取消与整轮撤权都不能继续发现或发布来源。 */
+      const assertScanCurrent = (): void => { signal?.throwIfAborted(); assertMutable() }
+      assertScanCurrent()
+      await awaitKnowledgeSourceOperation(service.startScan(workspaceId, {
+        assertCurrent: assertScanCurrent,
+        isCancelled: () => {
+          try { signal?.throwIfAborted(); input.assertRunActive(); return false }
+          catch { return true }
+        },
+      }), signal)
+      assertScanCurrent()
+      await awaitKnowledgeSourceOperation(service.waitForScan(workspaceId), signal)
+      assertScanCurrent()
+      const snapshot = await service.getSnapshot(workspaceId)
+      assertScanCurrent()
+      return { initialized: snapshot.initialized, scan: { ...snapshot.scan, message: snapshot.scan.message?.slice(0, 320) } }
+    }
     return createProjectKnowledgeAgentMaintenance({
       workspaceId, sessionId: input.sessionId, userMessageId: maintenanceUserMessageId,
       store: service.store, resolveProject, readSource: service.read,
@@ -264,6 +308,30 @@ export function getProjectKnowledgeService(): ProjectKnowledgeRuntime {
         finally { release() }
       },
       workflow: {
+        scanSources: (_workspaceId, signal) => scanSources(signal),
+        importSources: async (_workspaceId, mode, signal) => {
+          /** 所有异步边界使用相同的运行与动态权限检查。 */
+          const assertImportCurrent = (): void => { signal?.throwIfAborted(); assertMutable() }
+          assertImportCurrent()
+          if (mode !== 'files' && mode !== 'folder') throw new Error('知识库导入模式无效')
+          if (!importSelector) throw new Error('原生知识库导入选择器尚未就绪')
+          const paths = await awaitKnowledgeSourceOperation(importSelector(mode), signal)
+          assertImportCurrent()
+          if (paths.length === 0) return { cancelled: true, imported: 0, unchanged: 0, skippedCount: 0, skipped: [], truncated: false }
+          const imported = await service.importSources(workspaceId, paths, assertImportCurrent)
+          assertImportCurrent()
+          /** 等待可能早于导入开始的扫描结束，再发起新的发现，避免旧扫描漏掉刚导入文件。 */
+          if (imported.files.length) {
+            await awaitKnowledgeSourceOperation(service.waitForScan(workspaceId), signal)
+            assertImportCurrent()
+          }
+          const scanned = imported.files.length ? await scanSources(signal) : undefined
+          assertImportCurrent()
+          return { cancelled: false, imported: imported.imported, unchanged: imported.unchanged,
+            rootRelativePath: imported.rootRelativePath, skippedCount: imported.skipped.length,
+            skipped: imported.skipped.slice(0, 12).map((item) => ({ path: basename(item.path).slice(0, 240), reason: item.reason.slice(0, 160) })),
+            truncated: imported.skipped.length > 12, scan: scanned?.scan }
+        },
         getSnapshot: service.getSnapshot,
         proposePlan: async (proposal) => {
           await service.proposePlan(proposal, assertMutable)

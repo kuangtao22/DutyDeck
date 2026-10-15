@@ -57,6 +57,22 @@ export function buildProjectKnowledgeTools(sdk: PiSdk, knowledge: ProjectKnowled
       revision: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
       quote: Type.String({ minLength: 1, maxLength: 5000 }),
     }, { additionalProperties: false })
+    if (knowledge.scanSources) tools.push(sdk.defineTool({
+      name: 'proma_knowledge_scan_sources', label: '扫描项目知识来源',
+      description: '在用户要求分析项目或发现新增资料时扫描当前项目并等待完成。只更新来源索引，不返回正文，也不计为 Agent 已读证据，不启动新 Agent；随后用 search/read 核对证据。不要在普通检索或每轮对话中重复扫描。',
+      parameters: Type.Object({}, { additionalProperties: false }),
+      async execute(_toolCallId: string, _input: Record<string, never>, signal?: AbortSignal) {
+        return result(await knowledge.scanSources!(signal))
+      },
+    }) as ToolDefinition)
+    if (knowledge.importSources) tools.push(sdk.defineTool({
+      name: 'proma_knowledge_import_sources', label: '导入旧知识库来源',
+      description: '用户要求导入旧知识库时打开原生文件或目录选择器；保留正文、附件、链接和来源版本，然后扫描。模型不得传入路径；取消选择不写入。根据导入回执继续检索、读取和智能归档。',
+      parameters: Type.Object({ mode: Type.Union([Type.Literal('files'), Type.Literal('folder')]) }, { additionalProperties: false }),
+      async execute(_toolCallId: string, input: { mode: 'files' | 'folder' }, signal?: AbortSignal) {
+        return result(await knowledge.importSources!(input.mode, signal))
+      },
+    }) as ToolDefinition)
     if (knowledge.refreshSources) tools.push(sdk.defineTool({
       name: 'proma_knowledge_refresh_sources', label: '刷新已登记知识来源',
       description: 'Refresh one to four already registered and authorized sources after a file change. It does not scan directories or count as reading. Read the returned sourceRef again before citing.',

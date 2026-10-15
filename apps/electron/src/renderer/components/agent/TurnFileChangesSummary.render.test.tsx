@@ -149,6 +149,72 @@ describe('本轮文件改动汇总渲染', () => {
 
 
 describe('结构化文件行统计', () => {
+  test('Given 终态快照与过期监听路径 When 渲染 Then 不把过期路径计入总数', () => {
+    const html = renderSummary({
+      turnMessages: [],
+      runPaths: ['/p/stale.ts'],
+      runFiles: [{ path: '/p/actual.ts', status: 'modified', statsState: 'complete', additions: 4, deletions: 1 }],
+      runStatsFinal: true,
+    })
+    expect(html).toContain('本轮文件改动 1')
+    expect(html).toContain('actual.ts')
+    expect(html).not.toContain('stale.ts')
+  })
+
+  test('Given 终态快照为空 When 渲染 Then 不回退到旧监听路径', () => {
+    const html = renderSummary({
+      turnMessages: [],
+      runPaths: ['/p/stale.ts'],
+      runFiles: [],
+      runStatsFinal: true,
+      runObserved: true,
+    })
+    expect(html).not.toContain('stale.ts')
+    expect(html).toContain('未检测到')
+  })
+
+  test('Given 终态快照为空但启动事件迟到 When 渲染 Then 仍显示已确认的空结果', () => {
+    const html = renderSummary({
+      turnMessages: [],
+      runFiles: [],
+      runStatsFinal: true,
+      runObserved: false,
+    })
+
+    expect(html).toContain('本轮未检测到受管范围内的文件改动')
+  })
+
+  test('Given 成功写工具路径未进入终态快照 When 渲染 Then 不把旧工具路径计入总数', () => {
+    const toolMessage = {
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: 'call-stale-write',
+          name: 'Write',
+          input: { file_path: '/p/stale.ts' },
+        }],
+      },
+    } as unknown as Parameters<typeof TurnFileChangesSummary>[0]['turnMessages'][number]
+    const toolResult = {
+      type: 'user',
+      parent_tool_use_id: null,
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 'call-stale-write', is_error: false, content: 'ok' }],
+      },
+    } as unknown as Parameters<typeof TurnFileChangesSummary>[0]['turnMessages'][number]
+    const html = renderSummary({
+      turnMessages: [toolMessage, toolResult],
+      runFiles: [{ path: '/p/actual.ts', status: 'modified', statsState: 'complete', additions: 2, deletions: 1 }],
+      runStatsFinal: true,
+    })
+
+    expect(html).toContain('本轮文件改动 1')
+    expect(html).toContain('actual.ts')
+    expect(html).not.toContain('stale.ts')
+  })
+
   test('Given 精确和未知混合 When 渲染 Then 标明部分总计且未知不伪造零值', () => {
     const html = renderSummary({ turnMessages: [], runFiles: [
       { path: '/p/src/a.ts', status: 'modified', statsState: 'complete', additions: 4, deletions: 2 },

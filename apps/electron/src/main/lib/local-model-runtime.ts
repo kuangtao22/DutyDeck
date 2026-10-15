@@ -28,6 +28,7 @@ import type {
   LocalModelTestResult,
 } from '@proma/shared'
 import { downloadModelFile } from './local-model-download'
+import { getLocalModelDownloadNetworkMessage, type LocalModelDownloadTransport } from './local-model-download-network'
 import { LocalModelStore } from './local-model-store'
 import type { LocalModelEngineManager } from './local-model-engine-manager'
 
@@ -74,6 +75,8 @@ export interface LocalModelRuntimeDependencies {
   engineManager?: LocalModelEngineManager
   /** 注入网络实现以验证取消、断点和错误。 */
   fetch?: FetchFunction
+  /** 仅用于远程 GGUF 下载；回环健康检查和能力测试继续独立直连。 */
+  createDownloadTransport?: () => Promise<LocalModelDownloadTransport>
   /** 注入子进程构造器以隔离真实原生二进制。 */
   spawn?: SpawnProcess
   /** 测试时注入时钟。 */
@@ -132,6 +135,8 @@ export class LocalModelRuntime {
   /** 区分任务触发与用户手动加载，最后任务取消只回收自己发起的加载。 */
   private leaseLoading = false
   private readonly fetchImpl: FetchFunction
+  /** 每次下载独立创建并释放连接，使代理设置修改在重试时生效。 */
+  private readonly createDownloadTransport?: () => Promise<LocalModelDownloadTransport>
   /** 回环探测独立直连 dispatcher，不继承 Pi 或环境代理。 */
   private readonly directAgent?: Agent
   private readonly localFetchImpl: FetchFunction
@@ -161,6 +166,7 @@ export class LocalModelRuntime {
     this.engineVersion = dependencies.engineVersion
     this.engineManager = dependencies.engineManager
     this.fetchImpl = dependencies.fetch ?? fetch
+    this.createDownloadTransport = dependencies.createDownloadTransport
     this.directAgent = dependencies.fetch ? undefined : new Agent({ allowH2: false })
     this.localFetchImpl = dependencies.fetch ?? ((input, init) => undiciFetch(input as Parameters<typeof undiciFetch>[0], { ...init, dispatcher: this.directAgent, redirect: 'error' } as Parameters<typeof undiciFetch>[1]) as unknown as Promise<Response>)
     this.spawnImpl = dependencies.spawn ?? ((file, args, options) => nodeSpawn(file, args, options) as ManagedProcess)
@@ -249,6 +255,8 @@ export class LocalModelRuntime {
     this.transient.set(entry.assetId, { state: 'downloading', totalBytes: entry.sizeBytes })
     this.emitChanged()
 
+    /** 本次远程下载连接；本地完整文件恢复时不创建网络资源。 */
+    let transport: LocalModelDownloadTransport | undefined
     try {
       // 崩溃可能发生于 rename 后、清单提交前，先验证正式文件以幂等恢复。
       if (existsSync(finalPath)) {
@@ -263,7 +271,9 @@ export class LocalModelRuntime {
           return recovered
         }
       }
-      await downloadModelFile(entry, stagingPath, controller.signal, this.fetchImpl, (completedBytes) => {
+      if (this.createDownloadTransport) transport = await this.createDownloadTransport()
+      controller.signal.throwIfAborted()
+      await downloadModelFile(entry, stagingPath, controller.signal, transport?.fetch ?? this.fetchImpl, (completedBytes) => {
         this.transient.set(entry.assetId, { state: 'downloading', completedBytes, totalBytes: entry.sizeBytes })
         this.emitProgress({ assetId: entry.assetId, state: 'downloading', completedBytes, totalBytes: entry.sizeBytes })
       })
@@ -282,13 +292,14 @@ export class LocalModelRuntime {
       this.emitChanged()
       return installed
     } catch (error) {
-      const message = toErrorMessage(error)
+      const message = controller.signal.aborted ? '下载已取消，可继续下载' : getLocalModelDownloadNetworkMessage(error) ?? toErrorMessage(error)
       this.transient.set(entry.assetId, { state: 'error', message })
       const saved = this.store.getAsset(entry.assetId)
       if (saved) this.store.updateStatus(entry.assetId, 'error', message)
       this.emitChanged()
       throw new Error(message, { cause: error })
     } finally {
+      await transport?.close().catch(() => undefined)
       this.downloadControllers.delete(entry.assetId)
     }
   }

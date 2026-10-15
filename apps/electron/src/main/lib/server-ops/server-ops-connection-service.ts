@@ -1,3 +1,4 @@
+import type { ServerOpsTaskIdentity, ServerOpsTaskStartInput, ServerOpsTaskInput, ServerOpsTaskResizeInput, ServerOpsTaskAck, ServerOpsTaskOutputEvent, ServerOpsTaskExitEvent } from '@proma/shared'
 import { randomUUID } from 'node:crypto'
 import { readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -76,6 +77,13 @@ export interface ServerOpsConnectionRuntime {
   onExit: (listener: (event: ServerOpsTerminalExitEvent) => void) => () => void
   onLogOutput: (listener: (event: ServerOpsRuntimeLogOutputEvent) => void) => () => void
   onLogExit: (listener: (event: ServerOpsRuntimeLogExitEvent) => void) => () => void
+  startTask?: (input: ServerOpsTaskStartInput) => Promise<ServerOpsTaskIdentity>
+  stopTask?: (input: ServerOpsTaskIdentity) => Promise<void>
+  inputTask?: (input: ServerOpsTaskInput) => void
+  resizeTask?: (input: ServerOpsTaskResizeInput) => void
+  acknowledgeTask?: (input: ServerOpsTaskAck) => void
+  onTaskOutput?: (listener: (event: ServerOpsTaskOutputEvent) => void) => () => void
+  onTaskExit?: (listener: (event: ServerOpsTaskExitEvent) => void) => () => void
   startConsole?: (input: import('../../../utility/server-ops/server-ops-console-runtime').ServerOpsConsoleRuntimeStart) => Promise<void>
   stopConsole?: (input: ServerOpsConsoleIdentity) => Promise<void>
   inputConsole?: (input: ServerOpsConsoleInput) => void
@@ -115,6 +123,8 @@ export interface ServerOpsConnectionLogExitEvent extends ServerOpsRuntimeLogExit
   generation: number
 }
 
+export interface ServerOpsConnectionTaskOutputEvent extends ServerOpsTaskOutputEvent { generation: number }
+export interface ServerOpsConnectionTaskExitEvent extends ServerOpsTaskExitEvent { generation: number }
 export interface ServerOpsConnectionConsoleOutputEvent extends ServerOpsConsoleOutputEvent { generation: number }
 export interface ServerOpsConnectionConsoleExitEvent extends ServerOpsConsoleExitEvent { generation: number }
 
@@ -171,6 +181,9 @@ export class ServerOpsConnectionService {
   private readonly logOutputListeners = new Set<(event: ServerOpsConnectionLogOutputEvent) => void>()
   /** 只向 Log Service 暴露的日志终态订阅。 */
   private readonly logExitListeners = new Set<(event: ServerOpsConnectionLogExitEvent) => void>()
+  private readonly taskOutputListeners = new Set<(event: ServerOpsConnectionTaskOutputEvent) => void>()
+  private readonly taskExitListeners = new Set<(event: ServerOpsConnectionTaskExitEvent) => void>()
+  private readonly activeTasks = new Map<string, ServerOpsActiveConnectionIdentity>()
   private readonly consoleOutputListeners = new Set<(event: ServerOpsConnectionConsoleOutputEvent) => void>()
   private readonly consoleExitListeners = new Set<(event: ServerOpsConnectionConsoleExitEvent) => void>()
   private readonly activeConsoles = new Map<string, ServerOpsActiveConnectionIdentity & { containerId: string }>()
@@ -182,6 +195,8 @@ export class ServerOpsConnectionService {
   private readonly disposeRuntimeLogOutput: () => void
   /** runtime 日志终态订阅清理器。 */
   private readonly disposeRuntimeLogExit: () => void
+  private readonly disposeRuntimeTaskOutput: () => void
+  private readonly disposeRuntimeTaskExit: () => void
   private readonly disposeRuntimeConsoleOutput: () => void
   private readonly disposeRuntimeConsoleExit: () => void
 
@@ -213,6 +228,19 @@ export class ServerOpsConnectionService {
       if (!identity || identity.connectionId !== event.connectionId) return
       this.notifyLogExit({ ...event, generation: identity.generation })
     })
+    this.disposeRuntimeTaskOutput = dependencies.runtime.onTaskOutput?.((event) => {
+      const owned = this.activeTasks.get(event.taskId)
+      if (!owned || owned.hostId !== event.hostId || owned.connectionId !== event.connectionId
+        || !this.isActiveIdentity(owned)) return
+      this.notifyTaskOutput({ ...event, generation: owned.generation })
+    }) ?? (() => undefined)
+    this.disposeRuntimeTaskExit = dependencies.runtime.onTaskExit?.((event) => {
+      const owned = this.activeTasks.get(event.taskId)
+      if (!owned || owned.hostId !== event.hostId || owned.connectionId !== event.connectionId) return
+      this.activeTasks.delete(event.taskId)
+      this.decrementPendingOperation(event.hostId)
+      this.notifyTaskExit({ ...event, generation: owned.generation })
+    }) ?? (() => undefined)
     this.disposeRuntimeConsoleOutput = dependencies.runtime.onConsoleOutput?.((event) => {
       const owned = this.activeConsoles.get(event.consoleId)
       if (!owned || owned.hostId !== event.hostId || owned.connectionId !== event.connectionId
@@ -259,6 +287,8 @@ export class ServerOpsConnectionService {
     return () => this.logExitListeners.delete(listener)
   }
 
+  onTaskOutput(listener: (event: ServerOpsConnectionTaskOutputEvent) => void): () => void { this.taskOutputListeners.add(listener); return () => this.taskOutputListeners.delete(listener) }
+  onTaskExit(listener: (event: ServerOpsConnectionTaskExitEvent) => void): () => void { this.taskExitListeners.add(listener); return () => this.taskExitListeners.delete(listener) }
   onConsoleOutput(listener: (event: ServerOpsConnectionConsoleOutputEvent) => void): () => void { this.consoleOutputListeners.add(listener); return () => this.consoleOutputListeners.delete(listener) }
   onConsoleExit(listener: (event: ServerOpsConnectionConsoleExitEvent) => void): () => void { this.consoleExitListeners.add(listener); return () => this.consoleExitListeners.delete(listener) }
 
@@ -508,6 +538,50 @@ export class ServerOpsConnectionService {
     await this.dependencies.runtime.closeSftpOwner?.(ownerKey)
   }
 
+  /** 启动独立 SSH 任务，并在整个 channel 生命周期内占用信任变更门禁。 */
+  async startTask(identity: ServerOpsActiveConnectionIdentity, taskId: string, command: string, cols: number, rows: number): Promise<ServerOpsTaskIdentity> {
+    if (!this.dependencies.runtime.startTask) throw new Error('SERVER_OPS_TASK_UNAVAILABLE')
+    this.assertActiveIdentity(identity)
+    const session = { taskId, hostId: identity.hostId, connectionId: identity.connectionId }
+    if (this.activeTasks.has(taskId)) throw new Error('SERVER_OPS_TASK_ALREADY_ACTIVE')
+    const owned = { ...identity }
+    this.activeTasks.set(taskId, owned)
+    this.incrementPendingOperation(identity.hostId)
+    try {
+      await this.dependencies.runtime.startTask({ ...session, command, cols, rows })
+      // 启动期间可能已经取消或自然退出；直接清理 runtime，不能再次依赖已删除的服务身份。
+      if (this.activeTasks.get(taskId) !== owned) await this.dependencies.runtime.stopTask?.(session)
+      this.assertActiveIdentity(identity)
+      return session
+    } catch (error) {
+      if (this.activeTasks.get(taskId) === owned) { this.activeTasks.delete(taskId); this.decrementPendingOperation(identity.hostId) }
+      try { await this.dependencies.runtime.stopTask?.(session) } catch { /* 启动失败后的清理不覆盖原错误。 */ }
+      throw error
+    }
+  }
+
+  async stopTask(input: ServerOpsTaskIdentity): Promise<void> {
+    const owned = this.requireTask(input)
+    try { await this.dependencies.runtime.stopTask?.(input) } finally {
+      if (this.activeTasks.get(input.taskId) === owned) {
+        this.activeTasks.delete(input.taskId)
+        this.decrementPendingOperation(input.hostId)
+      }
+    }
+  }
+
+  writeTask(input: ServerOpsTaskInput): void { this.requireTask(input); this.dependencies.runtime.inputTask?.(input) }
+  resizeTask(input: ServerOpsTaskResizeInput): void { this.requireTask(input); this.dependencies.runtime.resizeTask?.(input) }
+  /** ACK 仅推进已接收输出，不发起远程动作；以内存任务身份与连接代次过滤高频批次。 */
+  acknowledgeTask(input: ServerOpsTaskAck): void {
+    /** 登记时已验证的任务连接所有权，断连和任务退出会同步移除。 */
+    const owned = this.activeTasks.get(input.taskId)
+    if (!owned || owned.hostId !== input.hostId || owned.connectionId !== input.connectionId || !this.isActiveIdentity(owned)) {
+      throw new Error('SERVER_OPS_TASK_NOT_ACTIVE')
+    }
+    this.dependencies.runtime.acknowledgeTask?.(input)
+  }
+
   /** 启动独立容器 Console，并在整个 channel 生命周期内占用信任变更门禁。 */
   async startConsole(identity: ServerOpsActiveConnectionIdentity, consoleId: string, containerId: string, cols: number, rows: number): Promise<ServerOpsConsoleIdentity> {
     if (!this.dependencies.runtime.startConsole) throw new Error('SERVER_OPS_CONSOLE_UNAVAILABLE')
@@ -648,6 +722,8 @@ export class ServerOpsConnectionService {
     this.disposeRuntimeExit()
     this.disposeRuntimeLogOutput()
     this.disposeRuntimeLogExit()
+    this.disposeRuntimeTaskOutput()
+    this.disposeRuntimeTaskExit()
     this.disposeRuntimeConsoleOutput()
     this.disposeRuntimeConsoleExit()
     /** states 与 lifecycles 的并集覆盖活跃和仅在途的主机。 */
@@ -795,6 +871,23 @@ export class ServerOpsConnectionService {
     }
   }
 
+  private notifyTaskOutput(event: ServerOpsConnectionTaskOutputEvent): void {
+    for (const listener of this.taskOutputListeners) { try { listener({ ...event }) } catch { /* 消费者异常不能阻断 Task。 */ } }
+  }
+
+  private notifyTaskExit(event: ServerOpsConnectionTaskExitEvent): void {
+    for (const listener of this.taskExitListeners) { try { listener({ ...event }) } catch { /* 消费者异常不能阻断清理。 */ } }
+  }
+
+  private requireTask(input: ServerOpsTaskIdentity): ServerOpsActiveConnectionIdentity {
+    const owned = this.activeTasks.get(input.taskId)
+    if (!owned || owned.hostId !== input.hostId || owned.connectionId !== input.connectionId) {
+      throw new Error('SERVER_OPS_TASK_NOT_ACTIVE')
+    }
+    this.assertActiveIdentity(owned)
+    return owned
+  }
+
   private notifyConsoleOutput(event: ServerOpsConnectionConsoleOutputEvent): void {
     for (const listener of this.consoleOutputListeners) { try { listener({ ...event }) } catch { /* 消费者异常不能阻断 Console。 */ } }
   }
@@ -846,6 +939,12 @@ export class ServerOpsConnectionService {
     const activeConnectionId = lifecycle?.activeConnectionId ?? this.states.get(hostId)?.connectionId
     if (activeConnectionId) connectionIds.add(activeConnectionId)
     if (lifecycle?.pendingConnectionId) connectionIds.add(lifecycle.pendingConnectionId)
+    for (const [taskId, owned] of this.activeTasks) {
+      if (owned.hostId !== hostId) continue
+      this.activeTasks.delete(taskId)
+      this.decrementPendingOperation(hostId)
+      this.notifyTaskExit({ taskId, ...owned, message: 'SSH 连接已失效，远程任务结果未知' })
+    }
     this.lifecycles.set(hostId, { generation })
     for (const connectionId of connectionIds) {
       this.pendingOutput.delete(connectionId)

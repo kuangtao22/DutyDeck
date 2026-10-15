@@ -23,6 +23,8 @@ import {
   getAgentWorkspacePath,
   getSdkConfigDir,
   getPiSessionsDir,
+  createDataRootPathResolver,
+  createDataRootPathSerializer,
 } from './config-paths'
 import {
   getAgentWorkspace,
@@ -60,6 +62,7 @@ import { copyForkWorkspaceFiles } from './agent-fork-workspace-copy'
 import { isAgentSessionsIndex } from './owned-path-rebaser-schema'
 import { hasValidCanvasAgentOwnership, isAgentSessionUserVisible } from './agent-session-visibility'
 import { projectSDKMessageForDisplay } from './agent-message-display'
+import { projectSessionAttachmentPaths } from './session-attachment-path-compat'
 import { getWorkspaceOperationBlockReason } from './workspace-operation-lock'
 
 /**
@@ -275,6 +278,31 @@ function cacheIndex(data: AgentSessionsIndex): void {
   }
 }
 
+/** 只转换会话元数据中有明确文件语义的字段；外部项目路径由 mapper 原样保留。 */
+function projectSessionMetadataPaths(session: AgentSessionMeta, mapPath: (path: string) => string): AgentSessionMeta {
+  /** 浅复制保证持久化转换不会污染运行时索引缓存。 */
+  const result = { ...session }
+  for (const key of ['piSessionFile', 'forkSourceDir'] as const) {
+    /** 可选的单个受管文件/目录。 */
+    const path = session[key]
+    if (typeof path === 'string') result[key] = mapPath(path)
+  }
+  if (session.activeWorktree) {
+    // worktree 可能位于受管根或外部项目，两个路径字段采用相同持久化合同。
+    result.activeWorktree = {
+      ...session.activeWorktree,
+      path: mapPath(session.activeWorktree.path),
+      mainRepoRoot: mapPath(session.activeWorktree.mainRepoRoot),
+    }
+  }
+  for (const key of ['attachedFiles', 'attachedDirectories'] as const) {
+    /** 附加项目引用可能混合受管与外部路径。 */
+    const paths = session[key]
+    if (paths) result[key] = paths.map(mapPath)
+  }
+  return result
+}
+
 /**
  * 读取会话索引文件
  */
@@ -294,6 +322,9 @@ function readIndex(): AgentSessionsIndex {
 
   const data = readJsonFileSafe<AgentSessionsIndex>(indexPath)
   if (data) {
+    /** 一次读取使用同一数据根快照，缓存只保存运行时绝对路径。 */
+    const resolvePath = createDataRootPathResolver()
+    data.sessions = data.sessions.map((session) => projectSessionMetadataPaths(session, resolvePath))
     const permissionModeMigrated = migrateLegacyPermissionMode(data)
     const thinkingDefaultMigrated = migrateLegacyOpenAIThinkingDefault(data)
     const retiredClaudeRuntimeMigrated = migrateRetiredClaudeRuntime(data)
@@ -330,7 +361,12 @@ function readIndexForRelocation(): AgentSessionsIndex {
     validate: isAgentSessionsIndexForRelocation,
     description: 'Agent 会话索引',
   })
-  return data ?? {
+  if (data) {
+    /** 严格迁移读取同样遵循运行时绝对路径合同。 */
+    const resolvePath = createDataRootPathResolver()
+    return { ...data, sessions: data.sessions.map((session) => projectSessionMetadataPaths(session, resolvePath)) }
+  }
+  return {
     version: INDEX_VERSION,
     sessions: [],
     openAIThinkingDefaultEnabledMigrationCompleted: true,
@@ -349,7 +385,9 @@ function writeIndex(index: AgentSessionsIndex): void {
   const indexPath = getAgentSessionsIndexPath()
 
   try {
-    writeJsonFileAtomic(indexPath, index)
+    /** 磁盘保存根相对引用，内存与 API 继续使用绝对路径。 */
+    const serializePath = createDataRootPathSerializer()
+    writeJsonFileAtomic(indexPath, { ...index, sessions: index.sessions.map((session) => projectSessionMetadataPaths(session, serializePath)) })
     cacheIndex(index)
   } catch (error) {
     console.error('[Agent 会话] 写入索引文件失败:', error)
@@ -758,7 +796,10 @@ export function getAgentSessionMessages(id: string): AgentMessage[] {
   try {
     const raw = readFileSync(filePath, 'utf-8')
     const lines = raw.split('\n').filter((line) => line.trim())
+    /** 旧格式消息读取也统一为当前数据根的绝对路径。 */
+    const resolvePath = createDataRootPathResolver()
     return parseJsonlLenient<AgentMessage>(lines, `读取会话消息 (${id})`)
+      .map((message) => projectSessionAttachmentPaths(message, resolvePath))
   } catch (error) {
     console.error(`[Agent 会话] 读取消息失败 (${id}):`, error)
     return []
@@ -777,7 +818,7 @@ export function appendAgentMessage(id: string, message: AgentMessage): void {
     const index = readIndex()
     const idx = index.sessions.findIndex((s) => s.id === id)
     if (idx === -1) return
-    const line = JSON.stringify(message) + '\n'
+    const line = JSON.stringify(projectSessionAttachmentPaths(message, createDataRootPathSerializer())) + '\n'
     appendFileSync(filePath, line, 'utf-8')
 
     // 追加消息时更新 updatedAt，若已归档则自动恢复活跃
@@ -1030,8 +1071,10 @@ export function appendSDKMessages(id: string, messages: SDKMessage[]): SDKMessag
     const serializedMessages: Array<{ message: SDKMessage; line: string }> = []
     /** 先在本批 SDK 序列内验证 tool_use 身份，再允许提升图片附件标记。 */
     const messagesWithVerifiedImages = attachToolResultImages(messages)
+    /** 批量写入共用一次根快照。 */
+    const serializePath = createDataRootPathSerializer()
     for (const message of messagesWithVerifiedImages) {
-      const line = serializeSDKMessageForStorage(message)
+      const line = serializeSDKMessageForStorage(message, undefined, undefined, serializePath)
       serializedMessages.push({ message, line })
       payload += line + '\n'
     }
@@ -1234,7 +1277,10 @@ export function getAgentSessionSDKMessages(id: string): SDKMessage[] {
   try {
     const raw = readFileSync(filePath, 'utf-8')
     const lines = raw.split('\n').filter((line) => line.trim())
-    return parseJsonlLenient<unknown>(lines, `读取 SDKMessage (${id})`).map(normalizePersistedSDKMessage)
+    /** 一次读取只捕获一次根快照，投影不修改 JSONL 或证据字节索引。 */
+    const resolvePath = createDataRootPathResolver()
+    return parseJsonlLenient<unknown>(lines, `读取 SDKMessage (${id})`)
+      .map((message) => projectSessionAttachmentPaths(normalizePersistedSDKMessage(message), resolvePath))
   } catch (error) {
     console.error(`[Agent 会话] 读取 SDKMessage 失败 (${id}):`, error)
     return []
@@ -1250,6 +1296,8 @@ export async function getAgentSessionSDKMessagesForDisplay(id: string): Promise<
   /** 路径仍通过原有会话路径校验，不接受任意文件位置。 */
   const filePath = getAgentSessionMessagesPath(id)
   if (!existsSync(filePath)) return []
+  /** 旧附档协议文本与结构化媒体共用路径投影，文件预览拿到当前有效路径。 */
+  const resolvePath = createDataRootPathResolver()
   /** readline 只保留当前行，处理后的数组不再引用整份原始文件字符串。 */
   const input = createReadStream(filePath, { encoding: 'utf-8' })
   const lines = createInterface({ input, crlfDelay: Infinity })
@@ -1261,7 +1309,7 @@ export async function getAgentSessionSDKMessagesForDisplay(id: string): Promise<
       if (!line.trim()) continue
       try {
         /** 在下一行读入前丢弃原始图片，只保留轻量投影。 */
-        const message = normalizePersistedSDKMessage(JSON.parse(line))
+        const message = projectSessionAttachmentPaths(normalizePersistedSDKMessage(JSON.parse(line)), resolvePath)
         messages.push(projectSDKMessageForDisplay(message))
       } catch {
         console.warn(`[Agent 会话] 读取展示消息 (${id}) — JSONL 第 ${lineNumber} 行解析失败，已跳过`)
@@ -1672,6 +1720,8 @@ async function forkPiAgentSession(sourceMeta: AgentSessionMeta, input: ForkSessi
       upToMessageUuid: targetUuid,
       sourceDir,
       destDir,
+      sourceWorkbenchDir,
+      destWorkbenchDir,
     })
     return newMeta
   } catch (error) {
@@ -1702,7 +1752,7 @@ export async function rewindPiAgentSession(sessionId: string, assistantMessageUu
   const cutIndex = originalMessages.findIndex((message) => 'uuid' in message && (message as { uuid?: string }).uuid === assistantMessageUuid)
   if (cutIndex < 0) throw new Error(`[Agent 会话] 截断失败: 未找到 uuid=${assistantMessageUuid}, sessionId=${sessionId}`)
   const kept = originalMessages.slice(0, cutIndex + 1)
-  const truncatedContent = kept.map((message) => JSON.stringify(message)).join('\n') + (kept.length > 0 ? '\n' : '')
+  const truncatedContent = serializeSDKTranscript(kept)
 
   const workspace = meta.workspaceId ? getAgentWorkspace(meta.workspaceId) : undefined
   const cwd = resolveAgentCwd(workspace, meta.id, meta.agentCwdMode, meta.activeWorktree) ?? process.cwd()
@@ -1744,6 +1794,9 @@ interface CopyForkStoredSDKMessagesInput {
   upToMessageUuid?: string
   sourceDir?: string
   destDir?: string
+  /** 工作台附件始终复制到新会话；项目 cwd 相同也需单独重绑。 */
+  sourceWorkbenchDir?: string
+  destWorkbenchDir?: string
 }
 
 async function copyForkStoredSDKMessages({
@@ -1752,6 +1805,8 @@ async function copyForkStoredSDKMessages({
   upToMessageUuid,
   sourceDir,
   destDir,
+  sourceWorkbenchDir,
+  destWorkbenchDir,
 }: CopyForkStoredSDKMessagesInput): Promise<number> {
   const sourcePath = getAgentSessionMessagesPath(sourceSessionId)
   if (!existsSync(sourcePath)) return 0
@@ -1759,10 +1814,24 @@ async function copyForkStoredSDKMessages({
   const destPath = getAgentSessionMessagesPath(destSessionId)
   const out = createWriteStream(destPath, { flags: 'a', encoding: 'utf-8' })
   let copiedCount = 0
+  /** 整份复制共用根快照，避免每行重新检查 locator。 */
+  const resolvePath = createDataRootPathResolver()
+  const serializePath = createDataRootPathSerializer()
+  /** 附件只重绑源工作台的严格后代，不替换同名前缀或外部路径。 */
+  const rebindAttachment = (path: string): string => {
+    /** 旧绝对引用和新受管引用先得到同一种运行时路径。 */
+    const current = resolvePath(path)
+    if (!sourceWorkbenchDir || !destWorkbenchDir || !isAbsolute(current)) return current
+    /** 分段相对位置用于保护源会话之外的路径。 */
+    const suffix = relative(sourceWorkbenchDir, current)
+    return suffix && suffix !== '..' && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix)
+      ? join(destWorkbenchDir, suffix)
+      : current
+  }
 
   try {
     for await (const msg of readStoredSDKMessages(sourcePath)) {
-      await writeJsonlLine(out, serializeSDKMessageForStorage(msg, sourceDir, destDir))
+      await writeJsonlLine(out, serializeSDKMessageForStorage(projectSessionAttachmentPaths(msg, rebindAttachment), sourceDir, destDir, serializePath))
       copiedCount += 1
 
       if (upToMessageUuid && getStoredMessageUuid(msg) === upToMessageUuid) {
@@ -1807,21 +1876,32 @@ function serializeSDKMessageForStorage(
   msg: SDKMessage,
   sourceDir?: string,
   destDir?: string,
+  /** 批量调用可传快照，单条写入默认按当前根创建。 */
+  serializePath = createDataRootPathSerializer(),
 ): string {
-  let serialized = JSON.stringify(msg)
-  if (sourceDir && destDir) {
-    serialized = rewriteSourceToDest(serialized, sourceDir, destDir)
-  }
+  /** 先保持 fork 原有路径重绑语义，再将已知字段写成可移植引用。 */
+  const rebound = sourceDir && destDir
+    ? JSON.parse(rewriteSourceToDest(JSON.stringify(msg), sourceDir, destDir)) as SDKMessage
+    : msg
+  /** 无副作用的存储投影不会修改发送给 Agent 的原消息。 */
+  const stored = projectSessionAttachmentPaths(rebound, serializePath)
+  const serialized = JSON.stringify(stored)
   if (serialized.length <= MAX_SDK_MESSAGE_LENGTH) return serialized
 
-  let sanitized = JSON.stringify(sanitizeOversizedMessage(msg, serialized.length))
-  if (sourceDir && destDir) {
-    sanitized = rewriteSourceToDest(sanitized, sourceDir, destDir)
-  }
+  /** 截断针对最终存储表示执行，避免再次引入绝对路径。 */
+  const sanitized = JSON.stringify(sanitizeOversizedMessage(stored, serialized.length))
   if (sanitized.length > MAX_SDK_MESSAGE_LENGTH) {
     console.warn(`[Agent 会话] 消息截断后仍超限 (${(sanitized.length / 1024).toFixed(0)}K chars)`)
   }
   return sanitized
+}
+
+/** 已有截断/修订操作只更新已知路径，不对历史大消息重新执行内容截断。 */
+function serializeSDKTranscript(messages: SDKMessage[]): string {
+  /** 整份受请求重写的 transcript 使用同一根快照。 */
+  const serializePath = createDataRootPathSerializer()
+  return messages.map((message) => JSON.stringify(projectSessionAttachmentPaths(message, serializePath))).join('\n')
+    + (messages.length ? '\n' : '')
 }
 
 /** 旧版 Nano Banana MCP 写入工具文本的附件标记，仅供显式 legacy 兼容解析。 */
@@ -2010,11 +2090,13 @@ export function truncateSDKMessages(id: string, upToUuidInclusive: string): SDKM
   }
   const kept = messages.slice(0, cutIndex + 1)
 
-  const content = kept.map((m) => JSON.stringify(m)).join('\n') + (kept.length > 0 ? '\n' : '')
+  const content = serializeSDKTranscript(kept)
   rewriteSDKTranscript(filePath, content)
 
   console.log(`[Agent 会话] 消息已截断: sessionId=${id}, 保留 ${kept.length}/${messages.length} 条`)
-  return kept
+  /** 返回 API 仍提供当前绝对路径，磁盘引用仅是存储细节。 */
+  const resolvePath = createDataRootPathResolver()
+  return kept.map((message) => projectSessionAttachmentPaths(message, resolvePath))
 }
 
 /**
@@ -2037,7 +2119,7 @@ export function removeSDKErrorMessage(id: string, errorUuid: string): boolean {
   if (targetIndex < 0) return false
 
   const kept = messages.filter((_, index) => index !== targetIndex)
-  const content = kept.map((message) => JSON.stringify(message)).join('\n') + (kept.length > 0 ? '\n' : '')
+  const content = serializeSDKTranscript(kept)
   rewriteSDKTranscript(filePath, content)
   console.log(`[Agent 会话] 已删除重试前错误: sessionId=${id}, uuid=${errorUuid}`)
   return true
@@ -2072,7 +2154,7 @@ export function updateSDKUserMessageSkillActivations(
   if (JSON.stringify(merged) === JSON.stringify(target.skill_activations ?? [])) return true
 
   messages[targetIndex] = { ...target, skill_activations: merged }
-  const content = messages.map((message) => JSON.stringify(message)).join('\n') + '\n'
+  const content = serializeSDKTranscript(messages)
   rewriteSDKTranscript(filePath, content)
   return true
 }

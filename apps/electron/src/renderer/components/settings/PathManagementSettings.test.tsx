@@ -20,12 +20,18 @@ interface ExpectedPathManagementSettingsModule {
   requestDataRootMigration: (
     state: PathManagementState,
     dependencies: {
-      pickDataRoot: () => Promise<DataRootSelection | null>
+      pickDataRoot: (destination?: 'custom' | 'default') => Promise<DataRootSelection | null>
       previewDataRootMigration: (selection: DataRootSelection) => Promise<DataRootMigrationPreview>
       confirmMigration: (preview: DataRootMigrationPreview) => Promise<boolean>
       startDataRootMigration: (selection: DataRootSelection) => Promise<void>
     },
+    destination?: 'custom' | 'default',
   ) => Promise<'cancelled' | 'started'>
+  getDataRootMigrationConfirmation: (preview: DataRootMigrationPreview | null) => {
+    description: string
+    confirmLabel: string
+    showCapacity: boolean
+  }
   getDataRootDeviceRisk: (deviceType: PathManagementState['deviceType']) => string | null
   mergePathManagementStatus: (
     state: PathManagementState,
@@ -633,5 +639,68 @@ describe('PathManagementSettings', () => {
     expect(settingsPanelSource).toContain('{ id: "migration", label: "路径与迁移"')
     expect(settingsPanelSource).toContain('return <PathManagementSettings />')
     expect(settingsTabSource).toContain("'migration'")
+  })
+})
+
+describe('默认与自定义数据位置选择', () => {
+  for (const destination of ['custom', 'default'] as const) {
+    test(`Given 用户选择 ${destination} When 确认迁移 Then 原样传递目标类型并只启动一次`, async () => {
+      /** 捕获真实编排函数送给主进程的选择类型和最终授权。 */
+      const choices: Array<'custom' | 'default' | undefined> = []
+      const started: DataRootSelection[] = []
+      /** 默认目录由主进程返回，renderer 不根据用户名拼接路径。 */
+      const selection = { selectionId: 'selection-from-main', targetRoot: '/Users/example/.DutyDeck' }
+      const result = await getExpectedModule().requestDataRootMigration(createState(), {
+        pickDataRoot: async (choice) => { choices.push(choice); return selection },
+        previewDataRootMigration: async () => createPreview({ targetRoot: selection.targetRoot }),
+        confirmMigration: async () => true,
+        startDataRootMigration: async (input) => { started.push(input) },
+      }, destination)
+
+      expect(result).toBe('started')
+      expect(choices).toEqual([destination])
+      expect(started).toEqual([selection])
+    })
+  }
+
+  test('Given 默认位置已被占用 When 查看阻断预览 Then 即使确认也不启动', async () => {
+    /** 记录被阻断时是否错误发起迁移。 */
+    let started = false
+    const result = await getExpectedModule().requestDataRootMigration(createState(), {
+      pickDataRoot: async () => ({ selectionId: 'blocked-default', targetRoot: '/Users/example/.DutyDeck' }),
+      previewDataRootMigration: async () => createPreview({ blockers: [{ code: 'TARGET_NOT_EMPTY', message: '默认位置已有数据' }] }),
+      confirmMigration: async () => true,
+      startDataRootMigration: async () => { started = true },
+    }, 'default')
+
+    expect(result).toBe('cancelled')
+    expect(started).toBe(false)
+  })
+
+  test('Given 默认根直接移动 When 展示确认 Then 不承诺复制或保留旧目录', () => {
+    /** move 由主进程预检确定，不能仅凭用户选择默认位置就推断移动策略。 */
+    const preview = { ...createPreview(), strategy: 'move' as const }
+    const confirmation = getExpectedModule().getDataRootMigrationConfirmation(preview)
+
+    expect(confirmation.description).toContain('直接移动')
+    expect(confirmation.description).toContain('不会复制第二份数据')
+    expect(confirmation.description).not.toContain('源目录始终保留')
+    expect(confirmation.confirmLabel).toBe('确认并重启移动')
+    expect(confirmation.showCapacity).toBe(false)
+  })
+
+  test('Given 自定义根返回默认位置仍需复制 When 展示确认 Then 保留复制校验及容量说明', () => {
+    const confirmation = getExpectedModule().getDataRootMigrationConfirmation(createPreview())
+
+    expect(confirmation.description).toContain('复制和校验')
+    expect(confirmation.description).toContain('源目录始终保留')
+    expect(confirmation.showCapacity).toBe(true)
+  })
+
+  test('Given 迁移方式尚未确定 When 预检进行中 Then 不提前承诺复制或直接移动', () => {
+    const confirmation = getExpectedModule().getDataRootMigrationConfirmation(null)
+
+    expect(confirmation.description).toContain('正在检查')
+    expect(confirmation.showCapacity).toBe(false)
   })
 })

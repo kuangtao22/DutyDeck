@@ -21,7 +21,7 @@ export interface FileAttachment {
   filename: string
   /** MIME 类型 */
   mediaType: string
-  /** 相对路径: {conversationId}/{uuid}.ext */
+  /** 受管根引用 dutydeck-data:/attachments/...；兼容旧 {conversationId}/{uuid}.ext。 */
   localPath: string
   /** 文件大小（字节） */
   size: number

@@ -7,8 +7,8 @@ export interface DefaultRootMigrationPreloadIpc {
 }
 /** 默认数据根确认窗口只允许回传一次用户决定。 */
 export interface DefaultRootMigrationPreloadApi {
-  /** 回传用户是否确认把旧数据根移动到新目录。 */
-  choose: (confirmed: boolean) => Promise<void>
+  /** true 确认移动，false 明确继续旧目录，null 仅关闭本次提示。 */
+  choose: (confirmed: boolean | null) => Promise<void>
 }
 
 /** 创建默认根迁移确认窗口的最小 bridge。 */

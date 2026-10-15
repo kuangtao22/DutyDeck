@@ -167,6 +167,7 @@ import {
 } from '@/components/design/CanvasWorkspaceAdapter'
 import { designAdapter } from '@/lib/design-adapter'
 import { removeCanvasSessionAtom, upsertCanvasSessionAtom } from '@/atoms/canvas-session-atoms'
+import { useServerOpsTaskFocus } from '@/components/server-ops/useServerOpsTaskFocus'
 import { ServerOpsWorkspace } from '@/components/server-ops/ServerOpsWorkspace'
 import { ApiWorkbench } from '@/components/api-workbench/ApiWorkbench'
 import { apiWorkbenchOpenRunTargetAtom } from '@/atoms/api-workbench-atoms'
@@ -1335,6 +1336,12 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
     window.addEventListener('proma:open-api-run', handleOpenApiRun)
     return () => window.removeEventListener('proma:open-api-run', handleOpenApiRun)
   }, [handleWorkspaceTabChange, sessionId, setApiWorkbenchOpenRunTarget, setIsOpen, setWorkspaceComponentTabs])
+
+  useServerOpsTaskFocus(sessionId, () => {
+    setWorkspaceComponentTabs((previous) => previous.includes('server-ops') ? previous : [...previous, 'server-ops'])
+    setIsOpen(true)
+    handleWorkspaceTabChange('server-ops')
+  })
 
   /** 登记用户明确打开的 Canvas 标签；具体画布会替换仅用于选取画布的 launcher。 */
   const rememberOpenedCanvasWorkspaceTab = React.useCallback((tab: AgentSidePanelTab, makeActive: boolean): void => {

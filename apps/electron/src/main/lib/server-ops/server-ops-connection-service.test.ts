@@ -1,3 +1,4 @@
+import type { ServerOpsTaskOutputEvent, ServerOpsTaskExitEvent } from '@proma/shared'
 import { describe, expect, test } from 'bun:test'
 import type {
   ServerOpsConnectionState,
@@ -40,6 +41,8 @@ function createDependencies(
     acquireMutationGuard?: () => Promise<() => void>
     sftp?: (input: ServerOpsSftpCall) => Promise<ServerOpsSftpResult>
     console?: boolean
+    taskImmediateExit?: boolean
+    taskStartDelay?: Promise<void>
   } = {},
 ) {
   /** runtime 收到的真实连接请求。 */
@@ -54,6 +57,10 @@ function createDependencies(
   const logStops: Array<{ hostId: string; connectionId: string; streamId: string }> = []
   /** runtime 收到的日志 ACK。 */
   const logAcks: Array<{ hostId: string; connectionId: string; streamId: string; sequence: number }> = []
+  /** 模拟持久化主机与信任读取次数，用于输出热路径回归。 */
+  const storageReads = { hosts: 0, trust: 0 }
+  /** 任务 ACK 只确认本地输出批次，不发送远程命令。 */
+  const taskAcks: number[] = []
   /** 当前 Host Key 固定值。 */
   let trustedKey: { algorithm: string; fingerprint: string } | undefined = initialTrustedKey
   /** 当前短期或已解密凭据。 */
@@ -72,6 +79,8 @@ function createDependencies(
   let logExitListener: ((event: ServerOpsRuntimeLogExitEvent) => void) | undefined
   let consoleOutputListener: ((event: ServerOpsConsoleOutputEvent) => void) | undefined
   let consoleExitListener: ((event: ServerOpsConsoleExitEvent) => void) | undefined
+  let taskOutputListener: ((event: ServerOpsTaskOutputEvent) => void) | undefined
+  let taskExitListener: ((event: ServerOpsTaskExitEvent) => void) | undefined
   const consoleCalls: Array<{ type: string; input: unknown }> = []
   /** 连续生成 connection/candidate ID 的计数。 */
   let nextId = 0
@@ -80,7 +89,7 @@ function createDependencies(
 
   const service = new ServerOpsConnectionService({
     hosts: {
-      get: (hostId) => hostExists && hostId === host.id ? { ...host } : undefined,
+      get: (hostId) => { storageReads.hosts++; return hostExists && hostId === host.id ? { ...host } : undefined },
       setCredentialRef: (_hostId, ref) => { credentialRef = ref; return { ...host, credentialRef: ref } },
     },
     credentials: {
@@ -90,7 +99,7 @@ function createDependencies(
       getCredentialRef: () => credentialRef,
     },
     trust: {
-      get: () => trustedKey,
+      get: () => { storageReads.trust++; return trustedKey },
       check: (_host, observed) => !trustedKey
         ? { status: 'unknown', observed }
         : trustedKey.algorithm === observed.algorithm && trustedKey.fingerprint === observed.fingerprint
@@ -99,6 +108,11 @@ function createDependencies(
       trust: (_host, key) => { trustedKey = key },
     },
     runtime: {
+      startTask: async (input) => { await options.taskStartDelay; if (options.taskImmediateExit) taskExitListener?.({ taskId: input.taskId, hostId: input.hostId, connectionId: input.connectionId, exitCode: 0, message: '已退出' }); return input },
+      stopTask: async (input) => { consoleCalls.push({ type: 'task-stop', input }); taskExitListener?.({ ...input, message: '已关闭' }) },
+      inputTask: () => {}, resizeTask: () => {}, acknowledgeTask: (input) => { taskAcks.push(input.sequence) },
+      onTaskOutput: listener => { taskOutputListener = listener; return () => { taskOutputListener = undefined } },
+      onTaskExit: listener => { taskExitListener = listener; return () => { taskExitListener = undefined } },
       connect: async (input) => { connects.push(input); return results.shift() ?? { status: 'connected', hostKey: trustedKey! } },
       exec: async () => pendingExec ?? { stdout: '', stderr: '', truncated: false },
       ...(options.sftp ? { sftp: options.sftp } : {}),
@@ -131,12 +145,16 @@ function createDependencies(
 
   return {
     service,
+    storageReads,
+    taskAcks,
     connects,
     disconnects,
     logStarts,
     logStops,
     logAcks,
     consoleCalls,
+    emitTaskOutput: (event: ServerOpsTaskOutputEvent) => taskOutputListener?.(event),
+    emitTaskExit: (event: ServerOpsTaskExitEvent) => taskExitListener?.(event),
     writes,
     emitConsoleOutput: (event: ServerOpsConsoleOutputEvent) => consoleOutputListener?.(event),
     emitConsoleExit: (event: ServerOpsConsoleExitEvent) => consoleExitListener?.(event),
@@ -777,5 +795,83 @@ describe('服务器运维连接 Service', () => {
     expect(fixture.logAcks).toEqual([])
     expect(fixture.logStops).toEqual([])
     expect(outputs).toEqual([])
+  })
+})
+
+
+describe('任务连接生命周期', () => {
+  test('Given 启动立即退出 When await 返回 Then 终态已转发且信任门禁不泄漏', async () => {
+    const hostKey = { algorithm: 'ssh-ed25519', fingerprint: 'SHA256:task' }
+    const fixture = createDependencies([{ status: 'connected', hostKey }], createHost(), hostKey, { taskImmediateExit: true })
+    await fixture.service.connect({ hostId: 'host-1', cols: 80, rows: 24, credential: { kind: 'password', password: 'secret', remember: false } })
+    const identity = fixture.service.getActiveIdentity('host-1')
+    const exits: unknown[] = []; fixture.service.onTaskExit(event => exits.push(event))
+    await fixture.service.startTask(identity, 'task-fast', 'true', 80, 24)
+    expect(exits).toEqual([{ taskId: 'task-fast', ...identity, exitCode: 0, message: '已退出' }])
+    expect(fixture.service.hasPendingOperations('host-1')).toBe(false)
+    fixture.service.dispose()
+  })
+  test('Given 运行任务 When 连接失效 Then 释放信任门禁且报告未知退出状态', async () => {
+    const hostKey = { algorithm: 'ssh-ed25519', fingerprint: 'SHA256:task' }
+    const fixture = createDependencies([{ status: 'connected', hostKey }], createHost(), hostKey)
+    await fixture.service.connect({ hostId: 'host-1', cols: 80, rows: 24, credential: { kind: 'password', password: 'secret', remember: false } })
+    const identity = fixture.service.getActiveIdentity('host-1')
+    const exits: unknown[] = []; fixture.service.onTaskExit(event => exits.push(event))
+    await fixture.service.startTask(identity, 'task-live', 'sleep 999', 80, 24)
+    expect(fixture.service.hasPendingOperations('host-1')).toBe(true)
+    fixture.service.dispose()
+    expect(fixture.service.hasPendingOperations('host-1')).toBe(false)
+    expect(exits).toHaveLength(1); expect(exits[0]).not.toHaveProperty('exitCode')
+  })
+})
+
+
+test('Given runtime 启动未返回 When 服务取消后迟到启动 Then 直接清理迟到 runtime 通道', async () => {
+  let release!: () => void
+  const taskStartDelay = new Promise<void>(resolve => { release = resolve })
+  const hostKey = { algorithm: 'ssh-ed25519', fingerprint: 'SHA256:task' }
+  const fixture = createDependencies([{ status: 'connected', hostKey }], createHost(), hostKey, { taskStartDelay })
+  await fixture.service.connect({ hostId: 'host-1', cols: 80, rows: 24, credential: { kind: 'password', password: 'secret', remember: false } })
+  const identity = fixture.service.getActiveIdentity('host-1')
+  const starting = fixture.service.startTask(identity, 'task-late', 'sleep 999', 80, 24)
+  await fixture.service.stopTask({ taskId: 'task-late', hostId: identity.hostId, connectionId: identity.connectionId })
+  release(); await starting
+  expect(fixture.consoleCalls.filter(call => call.type === 'task-stop')).toHaveLength(2)
+  expect(fixture.service.hasPendingOperations('host-1')).toBe(false)
+  fixture.service.dispose()
+})
+
+
+describe('任务输出 ACK 热路径', () => {
+  test('Given 已登记活跃任务 When 连续100批输出并ACK Then 零持久化读取且全部确认', async () => {
+    const hostKey = { algorithm: 'ssh-ed25519', fingerprint: 'SHA256:task-ack' }
+    const fixture = createDependencies([{ status: 'connected', hostKey }], createHost(), hostKey)
+    await fixture.service.connect({ hostId: 'host-1', cols: 80, rows: 24, credential: { kind: 'password', password: 'secret', remember: false } })
+    const identity = fixture.service.getActiveIdentity('host-1')
+    const task = await fixture.service.startTask(identity, 'task-ack', 'sleep 999', 80, 24)
+    fixture.service.onTaskOutput(event => fixture.service.acknowledgeTask({ ...task, sequence: event.sequence }))
+    const before = { ...fixture.storageReads }
+    for (let sequence = 1; sequence <= 100; sequence++) fixture.emitTaskOutput({ ...task, sequence, data: 'chunk' })
+    expect(fixture.storageReads).toEqual(before)
+    expect(fixture.taskAcks).toHaveLength(100)
+    expect(() => fixture.service.acknowledgeTask({ ...task, hostId: 'other-host', sequence: 101 })).toThrow('SERVER_OPS_TASK_NOT_ACTIVE')
+    expect(() => fixture.service.acknowledgeTask({ ...task, connectionId: 'other-connection', sequence: 101 })).toThrow('SERVER_OPS_TASK_NOT_ACTIVE')
+    fixture.service.disconnect(identity.hostId)
+    expect(() => fixture.service.acknowledgeTask({ ...task, sequence: 101 })).toThrow('SERVER_OPS_TASK_NOT_ACTIVE')
+    expect(fixture.taskAcks).toHaveLength(100)
+    fixture.service.dispose()
+  })
+  test('Given 磁盘信任已更换 When 用户继续输入 Then 仍复核信任并拒绝旧任务', async () => {
+    const hostKey = { algorithm: 'ssh-ed25519', fingerprint: 'SHA256:task-ack' }
+    const fixture = createDependencies([{ status: 'connected', hostKey }], createHost(), hostKey)
+    await fixture.service.connect({ hostId: 'host-1', cols: 80, rows: 24, credential: { kind: 'password', password: 'secret', remember: false } })
+    const identity = fixture.service.getActiveIdentity('host-1')
+    const task = await fixture.service.startTask(identity, 'task-input', 'sleep 999', 80, 24)
+    const before = fixture.storageReads.trust
+    fixture.setTrustedKey({ algorithm: 'ssh-ed25519', fingerprint: 'SHA256:changed' })
+    expect(() => fixture.service.writeTask({ ...task, data: 'password' })).toThrow('SERVER_OPS_HOST_KEY_CHANGED')
+    expect(fixture.storageReads.trust).toBeGreaterThan(before)
+    expect(fixture.disconnects).toContainEqual({ hostId: task.hostId, connectionId: task.connectionId })
+    fixture.service.dispose()
   })
 })

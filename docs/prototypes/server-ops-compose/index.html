@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>运维 · 部署页签原型</title>
+  <link rel="icon" href="data:,">
+  <style>
+    /* 直接对齐当前运维 Pane 的主题语义：内容区最深，卡片只抬一层。 */
+    :root {
+      color-scheme: dark;
+      --background: #191919;
+      --content: #121212;
+      --card: #202020;
+      --card-soft: #1b1b1b;
+      --muted: #292929;
+      --line: #363636;
+      --text: #f1f1f1;
+      --subtle: #9c9c9c;
+      --primary: #f4f4f4;
+      --primary-ink: #161616;
+      --success: #7ac694;
+      --success-bg: #1b3022;
+      --warning: #ddb878;
+      --warning-bg: #32291b;
+      --danger: #e38b83;
+      --danger-bg: #3b2222;
+      --radius: 8px;
+    }
+    [data-theme="light"] {
+      color-scheme: light;
+      --background: #f5f5f4;
+      --content: #fbfbfa;
+      --card: #ffffff;
+      --card-soft: #f6f6f5;
+      --muted: #ededeb;
+      --line: #dededb;
+      --text: #242424;
+      --subtle: #767674;
+      --primary: #242424;
+      --primary-ink: #ffffff;
+      --success: #3d8754;
+      --success-bg: #e9f5eb;
+      --warning: #976825;
+      --warning-bg: #fff3d9;
+      --danger: #aa443d;
+      --danger-bg: #ffebe8;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body { background: var(--content); color: var(--text); font: 13px/1.5 Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+    button, input, select { font: inherit; }
+    button { border: 0; color: inherit; cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+    [hidden] { display: none !important; }
+
+    /* 当前组件的外层：没有独立产品侧栏，直接占满运维面板。 */
+    .workspace { min-height: 100vh; display: flex; flex-direction: column; background: var(--content); }
+    .toolbar { display: grid; grid-template-columns: 180px minmax(0, 1fr) auto auto; grid-template-areas: "project identity access controls"; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent); background: var(--background); }
+    .project-selector { grid-area: project; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--line) 75%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--content) 65%, transparent); font-size: 12px; }
+    .project-selector span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; text-align: left; }
+    .toolbar-identity { grid-area: identity; min-width: 0; display: flex; align-items: center; gap: 7px; }
+    .back-button, .icon-button, .link-button { padding: 6px 7px; border-radius: 6px; background: transparent; color: var(--subtle); }
+    .back-button:hover, .icon-button:hover, .link-button:hover { background: var(--muted); color: var(--text); }
+    .identity-copy { min-width: 0; }
+    .identity-title { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
+    .identity-title .protocol { color: var(--subtle); font-size: 10px; font-weight: 400; }
+    .identity-address { overflow: hidden; color: var(--subtle); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .toolbar-access, .toolbar-controls { display: flex; align-items: center; gap: 5px; }
+    .toolbar-access { grid-area: access; }
+    .toolbar-controls { grid-area: controls; }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 28px; padding: 5px 9px; border-radius: 6px; background: transparent; color: var(--subtle); font-size: 11px; white-space: nowrap; }
+    .button:hover { background: var(--muted); color: var(--text); }
+    .button.outline { border: 1px solid var(--line); color: var(--text); }
+    .button.primary { background: var(--primary); color: var(--primary-ink); font-weight: 600; }
+    .button.primary:hover { opacity: .85; background: var(--primary); color: var(--primary-ink); }
+    .status-badge { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 3px 8px; border: 1px solid color-mix(in srgb, var(--success) 38%, var(--line)); border-radius: 999px; color: var(--success); font-size: 10px; white-space: nowrap; }
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+    /* 页签与当前 ServerOpsWorkspace 的固定能力顺序保持一致。 */
+    .tabs { display: flex; min-height: 40px; align-items: center; gap: 2px; overflow-x: auto; padding: 5px 12px; border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent); background: var(--background); }
+    .tab { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 5px 10px; border-radius: 6px; background: transparent; color: var(--subtle); font-size: 11px; white-space: nowrap; }
+    .tab:hover { background: color-mix(in srgb, var(--muted) 70%, transparent); color: var(--text); }
+    .tab.active { background: var(--muted); color: var(--text); font-weight: 600; }
+    .tab-icon { width: 14px; text-align: center; color: currentColor; font-size: 12px; }
+
+    .page { width: min(1120px, 100%); margin: 0 auto; padding: 18px 20px 42px; }
+    .page-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+    .page-heading h1 { font-size: 17px; letter-spacing: -.02em; font-weight: 600; }
+    .page-heading p { margin-top: 4px; color: var(--subtle); font-size: 11px; }
+    .page-actions { display: flex; gap: 6px; }
+    .connection-note { display: flex; align-items: center; gap: 8px; padding: 9px 11px; margin-bottom: 14px; border: 1px solid color-mix(in srgb, var(--success) 24%, var(--line)); border-radius: var(--radius); background: color-mix(in srgb, var(--success-bg) 55%, var(--card)); color: var(--subtle); font-size: 11px; }
+    .connection-note strong { color: var(--success); font-weight: 600; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(300px, .88fr); gap: 12px; }
+    .card { min-width: 0; border: 1px solid color-mix(in srgb, var(--line) 78%, transparent); border-radius: var(--radius); background: color-mix(in srgb, var(--card) 82%, transparent); overflow: hidden; }
+    .card-header { display: flex; align-items: start; justify-content: space-between; gap: 12px; padding: 14px 15px 12px; border-bottom: 1px solid color-mix(in srgb, var(--line) 78%, transparent); }
+    .card-header h2 { font-size: 13px; font-weight: 600; }
+    .card-header p { margin-top: 3px; color: var(--subtle); font-size: 10px; }
+    .card-body { padding: 14px 15px; }
+    .pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border-radius: 999px; font-size: 10px; white-space: nowrap; }
+    .pill.success { color: var(--success); background: var(--success-bg); }
+    .pill.warning { color: var(--warning); background: var(--warning-bg); }
+    .pill.neutral { color: var(--subtle); background: var(--muted); }
+    .target-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .target-field { min-width: 0; padding: 10px; border-radius: 6px; background: var(--card-soft); }
+    .target-field span { display: block; margin-bottom: 4px; color: var(--subtle); font-size: 10px; }
+    .target-field strong { display: block; overflow: hidden; font-size: 11px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+    .target-field code { font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .card-footer { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 11px 15px; border-top: 1px solid color-mix(in srgb, var(--line) 75%, transparent); color: var(--subtle); font-size: 10px; }
+    .card-footer-actions { display: flex; gap: 5px; }
+    .candidate-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .candidate-stat { padding: 9px 8px; border-radius: 6px; background: var(--card-soft); text-align: center; }
+    .candidate-stat strong { display: block; font-size: 16px; letter-spacing: -.04em; }
+    .candidate-stat span { display: block; margin-top: 2px; color: var(--subtle); font-size: 9px; }
+    .candidate-lines { display: grid; gap: 7px; margin-top: 12px; }
+    .candidate-line { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--line) 72%, transparent); border-radius: 6px; }
+    .candidate-line div { min-width: 0; }
+    .candidate-line strong { display: block; font-size: 11px; font-weight: 550; }
+    .candidate-line small { display: block; margin-top: 2px; overflow: hidden; color: var(--subtle); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .risk-note { display: flex; gap: 8px; margin-top: 12px; padding: 9px 10px; border-radius: 6px; background: var(--warning-bg); color: var(--warning); font-size: 10px; }
+    .section-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 17px 0 8px; }
+    .section-row h2 { font-size: 13px; font-weight: 600; }
+    .section-row span { color: var(--subtle); font-size: 10px; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    th { padding: 8px 10px; background: color-mix(in srgb, var(--muted) 55%, transparent); color: var(--subtle); font-size: 10px; font-weight: 500; text-align: left; white-space: nowrap; }
+    td { padding: 9px 10px; border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); vertical-align: top; white-space: nowrap; }
+    tbody tr:hover { background: color-mix(in srgb, var(--muted) 32%, transparent); }
+    td:first-child { color: var(--text); font-weight: 550; }
+    td small { display: block; margin-top: 2px; color: var(--subtle); font-size: 10px; font-weight: 400; }
+    code { color: var(--subtle); }
+    .history-list { display: grid; gap: 5px; }
+    .history-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 9px 10px; border: 1px solid transparent; border-radius: 6px; }
+    .history-row:hover { background: var(--card-soft); border-color: var(--line); }
+    .history-mark { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 6px; background: var(--success-bg); color: var(--success); font-size: 11px; }
+    .history-mark.unknown { background: var(--warning-bg); color: var(--warning); }
+    .history-row strong { display: block; font-size: 11px; font-weight: 550; }
+    .history-row small { display: block; overflow: hidden; margin-top: 2px; color: var(--subtle); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .history-state { color: var(--subtle); font-size: 10px; white-space: nowrap; }
+    .history-state.success { color: var(--success); }
+    .history-state.unknown { color: var(--warning); }
+    .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px; background: rgb(0 0 0 / .58); backdrop-filter: blur(7px); }
+    .modal-backdrop[hidden] { display: none; }
+    .modal { width: min(560px, 100%); max-height: 92vh; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--card); box-shadow: 0 22px 55px rgb(0 0 0 / .38); }
+    .modal-header { display: flex; justify-content: space-between; gap: 12px; align-items: start; padding: 15px 16px 12px; border-bottom: 1px solid var(--line); }
+    .modal-header h2 { font-size: 14px; font-weight: 600; }
+    .modal-header p { margin-top: 3px; color: var(--subtle); font-size: 10px; }
+    .modal-body { padding: 15px 16px 16px; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+    .field { display: grid; gap: 5px; }
+    .field.full { grid-column: 1 / -1; }
+    .field label { color: var(--subtle); font-size: 10px; }
+    .field input, .field select { width: 100%; height: 34px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--card-soft); color: var(--text); }
+    .field small { color: var(--subtle); font-size: 9px; }
+    .modal-footer { display: flex; justify-content: flex-end; gap: 6px; margin-top: 17px; }
+    .confirm-list { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+    .confirm-line { display: flex; justify-content: space-between; gap: 12px; padding: 9px 10px; font-size: 11px; }
+    .confirm-line + .confirm-line { border-top: 1px solid var(--line); }
+    .confirm-line span { color: var(--subtle); }
+    .confirm-line strong { text-align: right; font-weight: 550; }
+    .confirm-warning { margin-top: 11px; color: var(--warning); font-size: 10px; }
+    .run-state { text-align: center; padding: 10px 0 2px; }
+    .run-state-mark { width: 48px; height: 48px; display: grid; place-items: center; margin: 0 auto 12px; border: 1px solid var(--success); border-radius: 50%; color: var(--success); animation: pulse 1.5s ease-in-out infinite; }
+    .run-state h3 { font-size: 15px; font-weight: 600; }
+    .run-state p { margin-top: 4px; color: var(--subtle); font-size: 10px; }
+    .run-progress { height: 5px; margin: 16px 0 9px; overflow: hidden; border-radius: 999px; background: var(--muted); }
+    .run-progress span { display: block; width: 30%; height: 100%; border-radius: inherit; background: var(--success); animation: progress 2.1s ease-in-out forwards; }
+    .run-log { padding: 10px; border-radius: 6px; background: #0b0b0b; color: #a8c6ad; font: 10px/1.8 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; }
+    .modal-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 14px; }
+    .danger-link { color: var(--danger); background: transparent; font-size: 10px; }
+    .toast { position: fixed; z-index: 40; right: 18px; bottom: 18px; padding: 8px 11px; border-radius: 6px; background: var(--text); color: var(--content); box-shadow: 0 12px 30px rgb(0 0 0 / .28); font-size: 10px; }
+    .toast[hidden] { display: none; }
+    @keyframes pulse { 50% { transform: scale(1.05); box-shadow: 0 0 0 8px color-mix(in srgb, var(--success) 12%, transparent); } }
+    @keyframes progress { from { width: 25%; } to { width: 100%; } }
+    @media (max-width: 840px) {
+      .toolbar { grid-template-columns: 160px minmax(0, 1fr) auto; grid-template-areas: "project identity controls" "project access controls"; }
+      .toolbar-access { justify-content: flex-start; }
+    }
+    @media (max-width: 680px) {
+      .toolbar { grid-template-columns: 1fr auto; grid-template-areas: "project controls" "identity controls" "access controls"; padding: 8px 10px; }
+      .toolbar-controls { align-self: center; }
+      .toolbar-access { padding-left: 28px; }
+      .page { padding: 15px 12px 35px; }
+      .page-heading { display: block; }
+      .page-actions { margin-top: 11px; }
+      .page-actions .button { flex: 1; }
+      .grid { grid-template-columns: 1fr; }
+      .card-footer { align-items: start; flex-direction: column; }
+      .card-footer-actions { width: 100%; }
+      .card-footer-actions .button { flex: 1; }
+      .service-table th:nth-child(3), .service-table td:nth-child(3) { display: none; }
+    }
+    @media (max-width: 420px) {
+      .project-selector { width: 150px; }
+      .identity-address { max-width: 180px; }
+      .toolbar-access { padding-left: 26px; }
+      .tab { padding: 5px 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="workspace">
+    <!-- 对应 ServerOpsWorkspaceToolbar：项目、当前 SSH 身份、连接切换和连接操作。 -->
+    <header class="toolbar" data-server-ops-workspace-toolbar>
+      <button class="project-selector" type="button" data-action="project"><span>▣</span><span>运营平台</span><span style="color:var(--subtle)">⌄</span></button>
+      <div class="toolbar-identity"><button class="back-button" type="button" aria-label="返回项目连接列表" title="返回项目连接列表">‹</button><div class="identity-copy"><div class="identity-title"><span>▣</span><span>库存生产</span><span class="protocol">SSH</span></div><div class="identity-address">deploy@api-01.example.com:22</div></div></div>
+      <div class="toolbar-access"><button class="link-button" type="button" data-action="switch-connection">⇄ <span>切换连接</span>⌄</button><button class="link-button" type="button" data-action="reference">↗ <span>引用</span></button></div>
+      <div class="toolbar-controls"><span class="status-badge"><span class="status-dot"></span>已连接</span><button class="button outline" type="button" data-action="disconnect">⇥ <span>断开</span></button><button class="icon-button" type="button" data-action="more" aria-label="更多服务器操作">•••</button><button class="icon-button" type="button" data-action="theme" aria-label="切换主题">◐</button></div>
+    </header>
+
+    <!-- 与当前 SERVER_OPS_SECTIONS 同级；部署是新增页签，其余顺序保持不变。 -->
+    <nav class="tabs" aria-label="服务器控制台">
+      <button class="tab" type="button" data-section="overview"><span class="tab-icon">◒</span>概览</button><button class="tab" type="button" data-section="terminal"><span class="tab-icon">›_</span>终端</button><button class="tab" type="button" data-section="services"><span class="tab-icon">⚙</span>服务</button><button class="tab" type="button" data-section="logs"><span class="tab-icon">▤</span>日志</button><button class="tab" type="button" data-section="files"><span class="tab-icon">□</span>文件</button><button class="tab" type="button" data-section="docker"><span class="tab-icon">▦</span>Docker</button><button class="tab active" type="button" data-section="deploy" aria-current="page"><span class="tab-icon">↗</span>部署</button><button class="tab" type="button" data-section="audit"><span class="tab-icon">≡</span>审计</button>
+    </nav>
+
+    <main class="page" data-deployment-page>
+      <div class="page-heading"><div><h1>部署</h1><p>管理当前服务器上已经存在的 Compose 项目。</p></div><div class="page-actions"><button class="button outline" type="button" data-action="verify">↻ 验证目标</button><button class="button primary" type="button" data-action="new-target">＋ 新建绑定</button></div></div>
+      <div class="connection-note"><span class="status-dot" style="color:var(--success)"></span><span><strong>SSH 已连接</strong> · 预览和发布将绑定当前连接代次；切换连接后候选会失效。</span></div>
+
+      <section class="grid" aria-label="部署目标和发布候选">
+        <article class="card"><header class="card-header"><div><h2>当前部署绑定</h2><p>本地只保存目标引用，不复制服务器配置。</p></div><span class="pill success">✓ 已验证</span></header><div class="card-body"><div class="target-grid"><div class="target-field"><span>部署名称</span><strong id="target-title">库存服务 · 生产</strong></div><div class="target-field"><span>Compose 项目</span><strong id="target-project">inventory</strong></div><div class="target-field"><span>项目目录</span><strong><code id="target-directory">/srv/inventory</code></strong></div><div class="target-field"><span>入口文件</span><strong><code>compose.yaml</code></strong></div><div class="target-field"><span>来源标签</span><strong><code>io.dutydeck…a92e</code></strong></div><div class="target-field"><span>连接代次</span><strong>generation 18</strong></div></div></div><footer class="card-footer"><span>上次检查 · 今天 10:42 · api-01</span><div class="card-footer-actions"><button class="button" type="button" data-action="edit-target">编辑绑定</button><button class="button" type="button" data-action="refresh-target">重新读取</button></div></footer></article>
+        <article class="card"><header class="card-header"><div><h2>发布候选</h2><p>由远端 Compose 实时解析，等待一次确认。</p></div><span class="pill warning">需要确认</span></header><div class="card-body"><div class="candidate-summary"><div class="candidate-stat"><strong>3</strong><span>服务</span></div><div class="candidate-stat"><strong>1</strong><span>镜像更新</span></div><div class="candidate-stat"><strong>2</strong><span>健康检查</span></div><div class="candidate-stat"><strong>0</strong><span>删除资源</span></div></div><div class="candidate-lines"><div class="candidate-line"><div><strong>配置指纹</strong><small>sha256:71b8…e2a4 · 剩余 04:38</small></div><span class="pill neutral">已冻结</span></div><div class="candidate-line"><div><strong>执行范围</strong><small>up · --no-build · --pull missing · --wait</small></div><span class="pill neutral">固定参数</span></div></div><div class="risk-note"><span>!</span><span>不会执行 down、删卷或自动回滚；断连后的结果会保留为未知。</span></div></div><footer class="card-footer"><span>候选只消费一次</span><button class="button primary" type="button" data-action="confirm">确认并发布</button></footer></article>
+      </section>
+
+      <div class="section-row"><h2>服务摘要</h2><span>只展示安全白名单，不回显环境变量和秘密</span></div>
+      <section class="card table-wrap"><table class="service-table"><thead><tr><th>服务</th><th>镜像 / 变更</th><th>端口 / 挂载</th><th>健康</th><th>风险</th></tr></thead><tbody><tr><td>api<small>应用服务</small></td><td><code>ghcr.io/acme/api@sha256:…9fd1</code><small>stable → digest 已固定</small></td><td>8080:8080<small>无新增挂载</small></td><td><span class="pill success">healthy</span></td><td>无新增风险</td></tr><tr><td>worker<small>后台任务</small></td><td><code>ghcr.io/acme/worker@sha256:…3ab7</code><small>镜像保持不变</small></td><td>无公开端口<small>named volume</small></td><td><span class="pill success">healthy</span></td><td>无新增风险</td></tr><tr><td>db<small>数据服务</small></td><td><code>postgres:16@sha256:…1a20</code><small>镜像保持不变</small></td><td>5432:5432<small>/srv/data → /var/lib</small></td><td><span class="pill neutral">running</span></td><td><span style="color:var(--warning)">外部数据不回滚</span></td></tr></tbody></table></section>
+
+      <div class="section-row"><h2>运行历史</h2><span>运行事实与后续观察分开保存</span></div>
+      <section class="card"><div class="history-list"><div class="history-row"><span class="history-mark">✓</span><div><strong>库存服务 · 生产</strong><small>今天 09:18 · sha256:69b1…a102 · 3 个服务</small></div><span class="history-state success">发布完成</span></div><div class="history-row"><span class="history-mark unknown">?</span><div><strong>库存服务 · 生产</strong><small>昨天 22:41 · SSH 中断 · 最后阶段：up</small></div><button class="button" type="button" data-action="reconcile-history">结果未知 · 核对</button></div><div class="history-row"><span class="history-mark">✓</span><div><strong>库存服务 · 生产</strong><small>周一 16:03 · sha256:32cc…8b11 · 2 个服务</small></div><span class="history-state success">发布完成</span></div></div></section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="modal-backdrop" hidden><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header class="modal-header"><div><h2 id="modal-title">编辑部署绑定</h2><p id="modal-subtitle">当前页面只模拟交互，不连接真实服务器。</p></div><button class="icon-button" type="button" data-action="close-modal" aria-label="关闭">×</button></header><div class="modal-body" id="modal-body"></div></section></div>
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <script>
+    'use strict';
+
+    /** 原型状态只覆盖主题与发布演示，不代表真实运维状态。 */
+    const state = { theme: 'dark', runTimer: null };
+
+    /** 显示短暂反馈，模拟 Sonner toast 的低干扰提示。 */
+    function toast(message) {
+      const element = document.querySelector('#toast');
+      element.textContent = message;
+      element.hidden = false;
+      window.clearTimeout(toast.timer);
+      toast.timer = window.setTimeout(() => { element.hidden = true; }, 2600);
+    }
+
+    /** 在原型中切换明暗主题，映射现有运维主题变量的层级关系。 */
+    function toggleTheme() {
+      state.theme = state.theme === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = state.theme;
+      localStorage.setItem('dutydeck.server-ops-compose.theme', state.theme);
+      toast(state.theme === 'dark' ? '已切换为深色主题' : '已切换为浅色主题');
+    }
+
+    /** 打开目标绑定表单，字段对应未来部署绑定 DTO。 */
+    function openTargetModal() {
+      const body = document.querySelector('#modal-body');
+      document.querySelector('#modal-title').textContent = '编辑部署绑定';
+      document.querySelector('#modal-subtitle').textContent = '只保存当前项目的目标引用，不复制服务器配置和秘密。';
+      body.innerHTML = `<form id="target-form"><div class="form-grid"><div class="field full"><label for="binding-name">部署名称</label><input id="binding-name" value="库存服务 · 生产" required><small>仅用于本地识别，不会修改服务器项目。</small></div><div class="field"><label for="binding-project">Compose 项目名</label><input id="binding-project" value="inventory" required></div><div class="field"><label for="binding-file">入口文件</label><input id="binding-file" value="compose.yaml" required></div><div class="field full"><label for="binding-directory">项目目录</label><input id="binding-directory" value="/srv/inventory" required><small>绝对路径；首期不自动扫描服务器。</small></div></div><div class="modal-footer"><button class="button outline" type="button" data-action="close-modal">取消</button><button class="button primary" type="submit">验证并保存</button></div></form>`;
+      body.querySelector('#target-form').addEventListener('submit', (event) => { event.preventDefault(); saveTarget(); });
+      showModal();
+    }
+
+    /** 将目标表单结果写回卡片，模拟保存成功后的局部刷新。 */
+    function saveTarget() {
+      const name = document.querySelector('#binding-name').value.trim();
+      const project = document.querySelector('#binding-project').value.trim();
+      const directory = document.querySelector('#binding-directory').value.trim();
+      if (!name || !project || !directory) { toast('请补全部署名称、项目名和目录'); return; }
+      document.querySelector('#target-title').textContent = name;
+      document.querySelector('#target-project').textContent = project;
+      document.querySelector('#target-directory').textContent = directory;
+      closeModal();
+      toast('绑定已保存，正在重新验证来源');
+    }
+
+    /** 打开 Compose 发布前确认卡，不接受任意命令或额外参数。 */
+    function openConfirmModal() {
+      const body = document.querySelector('#modal-body');
+      document.querySelector('#modal-title').textContent = '确认并发布';
+      document.querySelector('#modal-subtitle').textContent = '确认只批准当前候选，配置或连接变化后需要重新预览。';
+      body.innerHTML = `<div class="confirm-list"><div class="confirm-line"><span>目标</span><strong>api-01 · /srv/inventory · inventory</strong></div><div class="confirm-line"><span>动作</span><strong>Compose up · 3 个服务</strong></div><div class="confirm-line"><span>镜像</span><strong>1 个 digest 将更新</strong></div><div class="confirm-line"><span>等待</span><strong>running / healthy · 最多 120 秒</strong></div></div><p class="confirm-warning">发布可能重建容器并拉取批准镜像；不会删除孤儿容器、数据卷，也不会在断连后自动重试。</p><div class="modal-footer"><button class="button outline" type="button" data-action="close-modal">返回预览</button><button class="button primary" type="button" data-action="start-run">确认并发布</button></div>`;
+      showModal();
+    }
+
+    /** 展示持久运行记录的处理中状态，并在几秒后模拟成功终态。 */
+    function startRun() {
+      const body = document.querySelector('#modal-body');
+      document.querySelector('#modal-title').textContent = '发布运行中 · run_7K3M';
+      document.querySelector('#modal-subtitle').textContent = '离开部署页也不会丢失运行记录。';
+      body.innerHTML = `<div class="run-state"><div class="run-state-mark">↗</div><h3 id="run-title">正在等待远端准备</h3><p id="run-description">校验项目来源、配置指纹和执行锁</p><div class="run-progress"><span></span></div><div class="run-log" id="run-log">[10:44:02] target locked: api-01 / inventory<br>[10:44:03] compose model verified<br>[10:44:03] waiting for approval channel…</div></div><div class="modal-actions"><button class="danger-link" type="button" data-action="simulate-unknown">模拟连接中断</button><button class="button outline" type="button" data-action="close-modal">后台运行</button></div>`;
+      showModal();
+      window.clearTimeout(state.runTimer);
+      state.runTimer = window.setTimeout(() => finishRun(), 2200);
+    }
+
+    /** 模拟明确成功结果，健康检查缺失的 db 仍只显示 running。 */
+    function finishRun() {
+      const title = document.querySelector('#run-title');
+      const description = document.querySelector('#run-description');
+      const log = document.querySelector('#run-log');
+      if (!title || !description || !log) return;
+      title.textContent = '发布完成';
+      description.textContent = 'api / worker healthy · db running（未配置 healthcheck）';
+      log.innerHTML = '[10:44:08] api     running / healthy<br>[10:44:08] worker  running / healthy<br>[10:44:08] db      running / healthcheck 未配置<br>[10:44:09] run succeeded · 已写入历史';
+      const button = document.querySelector('[data-action="simulate-unknown"]');
+      button.textContent = '查看运行历史';
+      button.className = 'button outline';
+      button.dataset.action = 'show-history';
+      toast('发布完成，健康结果已写入历史');
+    }
+
+    /** 模拟连接中断，明确 unknown 只核对、不自动重放。 */
+    function showUnknown() {
+      window.clearTimeout(state.runTimer);
+      const title = document.querySelector('#run-title');
+      const description = document.querySelector('#run-description');
+      const log = document.querySelector('#run-log');
+      if (!title || !description || !log) return;
+      title.textContent = '结果未知';
+      description.textContent = 'SSH 连接中断，无法确认 up 的最终结果';
+      log.innerHTML = '[10:44:05] api     container recreate requested<br>[10:44:06] connection closed<br>[10:44:06] result unknown · 不会自动重试';
+      const button = document.querySelector('[data-action="simulate-unknown"]');
+      button.textContent = '去历史中核对';
+      button.className = 'button outline';
+      button.dataset.action = 'show-history';
+      toast('已保留未知结果，不会自动重放');
+    }
+
+    /** 打开弹窗并把焦点送到第一个可操作控件。 */
+    function showModal() {
+      const backdrop = document.querySelector('#modal-backdrop');
+      backdrop.hidden = false;
+      backdrop.querySelector('input, select, button')?.focus();
+    }
+
+    /** 关闭弹窗并释放模拟运行计时器。 */
+    function closeModal() {
+      document.querySelector('#modal-backdrop').hidden = true;
+      window.clearTimeout(state.runTimer);
+    }
+
+    /** 页签跳转只模拟当前工作区的导航反馈，避免伪造其他面板内容。 */
+    function switchSection(section) {
+      document.querySelectorAll('[data-section]').forEach((button) => { button.classList.toggle('active', button.dataset.section === section); button.toggleAttribute('aria-current', button.dataset.section === section); });
+      if (section !== 'deploy') toast(`${section === 'overview' ? '概览' : section === 'docker' ? 'Docker' : section === 'audit' ? '审计' : section}页签保持现有实现，本稿聚焦部署页签`);
+    }
+
+    /** 统一处理原型中的按钮动作。 */
+    document.addEventListener('click', (event) => {
+      const target = event.target.closest('[data-action], [data-section]');
+      if (!target) return;
+      if (target.dataset.section) { switchSection(target.dataset.section); return; }
+      const action = target.dataset.action;
+      if (action === 'theme') toggleTheme();
+      else if (action === 'new-target' || action === 'edit-target') openTargetModal();
+      else if (action === 'confirm') openConfirmModal();
+      else if (action === 'start-run') startRun();
+      else if (action === 'simulate-unknown') showUnknown();
+      else if (action === 'show-history' || action === 'reconcile-history') { closeModal(); toast(action === 'show-history' ? '已打开运行历史' : '已读取当前容器状态，历史结果仍保持未知'); }
+      else if (action === 'close-modal') closeModal();
+      else if (action === 'verify' || action === 'refresh-target') toast('已重新读取目标来源；配置未变化');
+      else if (action === 'switch-connection') toast('切换连接沿用当前项目连接选择器');
+      else if (action === 'reference') toast('已准备将服务器引用到当前 Agent 会话');
+      else if (action === 'disconnect') toast('断开操作沿用现有 SSH 连接确认流程');
+      else if (action === 'project') toast('项目选择沿用当前运维项目选择器');
+      else if (action === 'more') toast('更多菜单包含信任、编辑和删除服务器');
+    });
+
+    /** 恢复原型独立的主题偏好。 */
+    const savedTheme = localStorage.getItem('dutydeck.server-ops-compose.theme');
+    if (savedTheme === 'light' || savedTheme === 'dark') { state.theme = savedTheme; document.documentElement.dataset.theme = savedTheme; }
+  </script>
+</body>
+</html>

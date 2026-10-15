@@ -169,8 +169,10 @@ export function CanvasNodeCard({
   /** 默认节点保留原 Tailwind 固定类，动态节点改用精确内联尺寸。 */
   const hasDynamicWidth = resolvedWidth !== 288
   const hasDynamicHeight = resolvedHeight !== 144
-  /** Comfy 阶段优先于普通 Job 状态，但不会写回节点或改变卡片几何。 */
-  const visibleStatusLabel = mediaProgress?.phaseLabel ?? statusLabel
+  /** 图片终态使用统一素材/配置投影，只有执行中的 Comfy 阶段覆盖卡片状态。 */
+  const visibleStatusLabel = kind === 'image' && activityState !== 'running' && activityState !== 'queued'
+    ? statusLabel
+    : mediaProgress?.phaseLabel ?? statusLabel
   /** 辅助技术同时读取阶段与当前节点采样计数。 */
   const accessibleMediaProgress = mediaProgress?.nodeProgressLabel
     ? `，${mediaProgress.nodeProgressLabel}`
@@ -305,7 +307,7 @@ export function CanvasNodeCard({
                 {title}
               </h3>
               <div className="mt-auto flex min-w-0 items-center gap-2 text-xs">
-                <p className="min-w-0 flex-1 truncate text-muted-foreground">{summary}</p>
+                <p className="min-w-0 flex-1 truncate text-muted-foreground" title={summary}>{summary}</p>
                 <span className="min-w-0 shrink text-right font-medium text-foreground" role="status" title={mediaProgress?.nodeProgressLabel}>
                   <span className="flex items-center justify-end gap-1">
                     <CanvasNodeStatusIcon kind={kind} statusLabel={statusLabel} />

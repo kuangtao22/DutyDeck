@@ -15,10 +15,12 @@ describe('默认数据根迁移 preload API', () => {
 
     await api.choose(true)
     await api.choose(false)
+    await api.choose(null)
 
     expect(calls).toEqual([
       { channel: DEFAULT_ROOT_MIGRATION_IPC_CHANNELS.CHOOSE, args: [true] },
       { channel: DEFAULT_ROOT_MIGRATION_IPC_CHANNELS.CHOOSE, args: [false] },
+      { channel: DEFAULT_ROOT_MIGRATION_IPC_CHANNELS.CHOOSE, args: [null] },
     ])
   })
 })

@@ -154,6 +154,8 @@ export interface TurnFileChangesSummaryProps {
   runPaths?: readonly string[]
   /** 本轮已持久化的文件净变化与行数统计；旧会话缺失时保留路径并显示未知统计。 */
   runFiles?: readonly AgentRunFileChange[]
+  /** 是否已收到本轮终态快照；终态时忽略过期的监听候选。 */
+  runStatsFinal?: boolean
   /** 是否从本轮开始前就已在跟踪；仅 true 时才允许断言「本轮无文件改动」。 */
   runObserved?: boolean
   /** 本轮是否存在「看到改动但无法归属到本会话」的共享根事件。 */
@@ -200,6 +202,7 @@ function buildVisibleFileChanges(options: {
   toolPaths: readonly string[]
   runPaths: readonly string[]
   runFiles: readonly AgentRunFileChange[]
+  runStatsFinal: boolean
   caseInsensitive: boolean
   basePath?: string
 }): AgentRunFileChange[] {
@@ -209,7 +212,11 @@ function buildVisibleFileChanges(options: {
   }
   const changes: AgentRunFileChange[] = []
   const seen = new Set<string>()
-  for (const path of [...options.toolPaths, ...options.runPaths, ...options.runFiles.map(file => file.path)]) {
+  /** 终态使用主进程快照，运行中才把工具与监听候选用于即时反馈。 */
+  const evidencePaths = options.runStatsFinal
+    ? options.runFiles.map(file => file.path)
+    : [...options.toolPaths, ...options.runPaths, ...options.runFiles.map(file => file.path)]
+  for (const path of evidencePaths) {
     const key = filePathKey(path, options.caseInsensitive, options.basePath)
     if (seen.has(key)) continue
     seen.add(key)
@@ -225,7 +232,7 @@ function getStatsStateLabel(state: AgentRunFileChange['statsState']): string {
   switch (state) {
     case 'binary': return '二进制文件，暂无行数统计'
     case 'too_large': return '文件过大，暂无行数统计'
-    case 'external_change': return '混有外部修改，暂无可靠行数统计'
+    case 'external_change': return '期间存在未归属写入，暂无可靠行数统计'
     case 'budget_exceeded': return '变化较大，暂无行数统计'
     case 'unavailable': return '暂无行数统计'
     case 'complete': return ''
@@ -284,6 +291,7 @@ export function TurnFileChangesSummary({
   basePath,
   runPaths,
   runFiles,
+  runStatsFinal,
   runObserved,
   runUnattributed,
   caseInsensitivePaths,
@@ -295,9 +303,10 @@ export function TurnFileChangesSummary({
     toolPaths: collectFilePaths(turnMessages),
     runPaths: runPaths ?? [],
     runFiles: runFiles ?? [],
+    runStatsFinal: runStatsFinal === true,
     caseInsensitive: caseInsensitivePaths === true,
     basePath,
-  }), [turnMessages, runPaths, runFiles, caseInsensitivePaths, basePath])
+  }), [turnMessages, runPaths, runFiles, runStatsFinal, caseInsensitivePaths, basePath])
   const paths = React.useMemo(() => changes.map(file => file.path), [changes])
 
   const groups = React.useMemo(() => groupAgentFileChangesByCategory(paths), [paths])
@@ -328,7 +337,9 @@ export function TurnFileChangesSummary({
 
   // 无路径且无法确认本轮已被完整跟踪时保持静默：历史上早于本次运行的 turn 无从判断，
   // 强行显示「无改动」会把遗漏写成结论。
-  if (paths.length === 0 && runObserved !== true && runUnattributed !== true) return null
+  // 终态快照本身就是一次完整采集结论，即使 run_started 事件迟到导致 observed=false，
+  // 也应展示「未检测到」而不是把已确认的空结果静默丢掉。
+  if (paths.length === 0 && runStatsFinal !== true && runObserved !== true && runUnattributed !== true) return null
 
   return (
     <div className="pl-[46px] mt-3">
