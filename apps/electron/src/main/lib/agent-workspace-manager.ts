@@ -15,6 +15,8 @@ import { writeJsonFileAtomic, readJsonFileSafe, readJsonFileStrict, writeTextFil
 import { randomUUID } from 'node:crypto'
 import { join, resolve, relative, isAbsolute, dirname, basename, sep } from 'node:path'
 import {
+  createDataRootPathResolver,
+  createDataRootPathSerializer,
   getAgentWorkspacesIndexPath,
   getAgentWorkspacesDir,
   getAgentWorkspacePath,
@@ -27,6 +29,7 @@ import {
   RETIRED_DEFAULT_SKILL_SLUGS,
   isRetiredDefaultSkill,
 } from './config-paths'
+import { projectWorkspaceConfigPaths, projectWorkspaceIndexPaths } from './workspace-path-projection'
 import { findAllGitRoots, normalizeGitRoot } from './git-diff-service'
 import { listBuiltinMcpServers } from './builtin-mcp/catalog'
 import { RESERVED_BUILTIN_KEYS } from './builtin-mcp/baseline'
@@ -53,7 +56,7 @@ function readIndex(): AgentWorkspacesIndex {
     if ((data.version ?? 1) < INDEX_VERSION) {
       migrateIndex(data)
     }
-    return data
+    return projectWorkspaceIndexPaths(data, createDataRootPathResolver())
   }
 
   return { version: INDEX_VERSION, workspaces: [] }
@@ -66,7 +69,7 @@ function readIndexForRelocation(): AgentWorkspacesIndex {
     validate: isAgentWorkspacesIndexForManager,
     description: '工作区索引',
   })
-  return data ?? { version: INDEX_VERSION, workspaces: [] }
+  return data ? projectWorkspaceIndexPaths(data, createDataRootPathResolver()) : { version: INDEX_VERSION, workspaces: [] }
 }
 
 /** 将共享 JSON schema 收窄为 manager 内部的 AgentWorkspacesIndex。 */
@@ -114,7 +117,7 @@ function writeIndex(index: AgentWorkspacesIndex): void {
   const indexPath = getAgentWorkspacesIndexPath()
 
   try {
-    writeJsonFileAtomic(indexPath, index)
+    writeJsonFileAtomic(indexPath, projectWorkspaceIndexPaths(index, createDataRootPathSerializer()))
   } catch (error) {
     console.error('[Agent 工作区] 写入索引文件失败:', error)
     throw new Error('写入项目配置索引失败')
@@ -1987,10 +1990,13 @@ function readWorkspaceConfig(workspaceSlug: string): WorkspaceConfig {
     return {}
   }
 
+  /** JSON 读取沿用旧容错，路径协议错误必须显式失败以免后续把配置覆盖为空。 */
+  let config: WorkspaceConfig
   try {
     const raw = readFileSync(configPath, 'utf-8')
     const data = JSON.parse(raw) as Partial<WorkspaceConfig>
-    return {
+    config = {
+      ...data,
       attachedDirectories: Array.isArray(data.attachedDirectories)
         ? data.attachedDirectories.filter((dir): dir is string => typeof dir === 'string')
         : undefined,
@@ -2018,14 +2024,17 @@ function readWorkspaceConfig(workspaceSlug: string): WorkspaceConfig {
   } catch {
     return {}
   }
+  return projectWorkspaceConfigPaths(config, createDataRootPathResolver())
 }
 
 /** 迁移提交专用严格读取；候选全部损坏时禁止回退为空配置。 */
 function readWorkspaceConfigForRelocation(workspaceSlug: string): WorkspaceConfig {
-  return readJsonFileStrict<WorkspaceConfig>(getWorkspaceConfigPath(workspaceSlug), {
+  /** 严格校验成功后才解析持久化引用，保持迁移失败边界。 */
+  const config = readJsonFileStrict<WorkspaceConfig>(getWorkspaceConfigPath(workspaceSlug), {
     validate: isWorkspaceConfigForRelocation,
     description: '工作区配置',
   }) ?? {}
+  return projectWorkspaceConfigPaths(config, createDataRootPathResolver())
 }
 
 /** 将共享的保留未知字段 schema 收窄为当前工作区配置业务类型。 */
@@ -2035,7 +2044,7 @@ function isWorkspaceConfigForRelocation(value: unknown): value is WorkspaceConfi
 
 function writeWorkspaceConfig(workspaceSlug: string, config: WorkspaceConfig): void {
   const configPath = getWorkspaceConfigPath(workspaceSlug)
-  writeJsonFileAtomic(configPath, config)
+  writeJsonFileAtomic(configPath, projectWorkspaceConfigPaths(config, createDataRootPathSerializer()))
 }
 
 /**

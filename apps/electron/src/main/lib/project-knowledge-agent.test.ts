@@ -187,7 +187,7 @@ describe('Agent 项目知识接入', () => {
     expect(context).toContain('记忆独立维护，不代表待迁移或待同步')
   })
 
-  test('Given 新版正文处于待核验状态 When 新回合构建上下文 Then 可用作低信任材料且保留状态', async () => {
+  test('Given 新版正文尚无内容准入评估 When 新回合构建上下文 Then 不自动注入为知识', async () => {
     const { options, entry } = fixture()
     entry.source = { kind: 'managed', id: 'vault:workspace-1:overview', revision: 'source-rev' }
     entry.state = 'draft'
@@ -196,9 +196,8 @@ describe('Agent 项目知识接入', () => {
 
     const context = await facade?.buildContext('项目概览')
 
-    expect(context).toContain('使用短信登录')
-    expect(context).toContain('"state":"draft"')
-    expect(context).toContain('"freshness":"unverified"')
+    expect(context).not.toContain('使用短信登录')
+    expect(context).not.toContain('"state":"draft"')
   })
 
   test('Given 原文件还未提炼 When 新回合构建上下文 Then 默认只查询知识且不把原始概览加载进来', async () => {
@@ -403,4 +402,183 @@ describe('Agent 项目知识接入', () => {
       await expect(facade?.buildContext('登录')).rejects.toThrow('归属')
     }
   })
+})
+
+
+describe('Agent 本轮短引用与有效进展', () => {
+  test('Given 搜索短引用 When 读取同一页两次 Then 返回页面引用但只登记一次进展', async () => {
+    const { options } = fixture()
+    const progress: unknown[] = []
+    const budgets: Array<{ calls: number; bytes: number }> = []
+    const agent = createProjectKnowledgeAgent({ ...options, onProgress: (value) => { progress.push(value) }, onBudget: (value) => { budgets.push(value) } })!
+    const search = await agent.search('登录')
+    const sourceRef = search.items[0]!.sourceRef
+    expect(sourceRef).toStartWith('src_')
+    const first = await agent.readReference({ sourceRef })
+    const second = await agent.readReference({ sourceRef })
+    expect(first.pageRef).toStartWith('page_')
+    expect(second.pageRef).toBe(first.pageRef)
+    expect(progress).toHaveLength(1)
+    expect(budgets.at(-1)?.calls).toBe(3)
+    expect(budgets.at(-1)!.bytes).toBeGreaterThan(0)
+    expect(() => agent.readReference({ sourceRef, entryId: 'entry-1' })).toThrow('混用')
+    expect(() => createProjectKnowledgeAgent(options)!.readReference({ sourceRef })).toThrow('本轮')
+  })
+
+  test('Given 大纲超过四项 When 请求第二页 Then offset透传且目标引用绑定所见版本', async () => {
+    const { options } = fixture()
+    const offsets: number[] = []
+    const state = { initialized: true, revision: 9, paused: false, offset: 0,
+      approved: { id: 'plan', revision: 3, title: '计划', groupCount: 0, groups: [] },
+      outline: { revision: 4, planRevision: 3, relativePath: '索引.md', itemCount: 5, statusCounts: { pending: 5, partial: 0, ready: 0, missing: 0 },
+        items: [{ id: 'fifth', groupId: 'g', title: '第五项', relativePath: '第五项.md', summary: '用途', sections: [], status: 'pending' as const }] },
+    }
+    let written: unknown
+    const agent = createProjectKnowledgeAgent({ ...options, maintenance: {
+      next: async () => ({ refs: [], remaining: 0 }), observeRead: () => undefined,
+      submit: async () => ({ status: 'unchanged', published: 0, refreshed: 0, skipped: 0, processedSources: 0, entryIds: [] }),
+      status: async (offset = 0) => { offsets.push(offset); return { ...state, offset } },
+      proposePlan: async () => state, saveOutline: async () => state,
+      writeDocument: async (input) => { written = input; return state },
+      copyAsset: async () => ({ relativePath: 'asset', documentRelativePath: 'asset', contentRevision: 'v', byteSize: 0 }),
+    } })!
+    const status = await agent.getWorkflowStatus!(4)
+    expect(offsets).toEqual([4])
+    expect(status.flowRef).toStartWith('flow_')
+    await agent.writeKnowledgeDocument!({ targetRef: status.outline!.items[0]!.targetRef, content: '# 内容', summary: '概要', complete: false, evidence: [], userQuote: '原话' })
+    expect(written).toMatchObject({ planRevision: 3, outlineRevision: 4, itemId: 'fifth', expectedRevision: null })
+  })
+})
+
+describe('正文局部失败与刷新', () => {
+  test('Given 一项引用失败 When 提交另一项 Then 失败隔离且只有真实保存算进展', async () => {
+    const { options } = fixture()
+    /** 宿主记录实际提交、错误和进度，模拟两个独立文档。 */
+    const failures: string[] = []
+    const progress: string[] = []
+    let revision = 1
+    const status = () => ({ initialized: true, revision, paused: false, offset: 0,
+      outline: { revision, planRevision: 1, relativePath: '索引.md', itemCount: 2, items: [], statusCounts: { pending: 2, partial: 0, ready: 0, missing: 0 } } })
+    const agent = createProjectKnowledgeAgent({ ...options,
+      onItemError: (id) => { failures.push(id) },
+      onProgress: (value) => { if (value.kind === 'document') progress.push(value.itemId) },
+      maintenance: {
+        next: async () => ({ refs: [], remaining: 0 }), observeRead: () => undefined,
+        submit: async () => ({ status: 'unchanged', published: 0, refreshed: 0, skipped: 0, processedSources: 0, entryIds: [] }),
+        status: async () => status(), proposePlan: async () => status(), saveOutline: async () => status(),
+        writeDocument: async (input) => { if (input.itemId === 'broken') throw new Error('来源已变化'); if (input.content !== 'unchanged') revision += 1; return status() },
+        copyAsset: async () => ({ relativePath: 'asset', documentRelativePath: 'asset', contentRevision: 'v', byteSize: 0 }),
+      },
+    })!
+    const input = { planRevision: 1, outlineRevision: 1, itemId: 'broken', expectedRevision: null, content: '正文', summary: '用途', complete: true, evidence: [], userQuote: '用户事实' }
+    await expect(agent.writeKnowledgeDocument!(input)).rejects.toThrow('来源已变化')
+    await agent.writeKnowledgeDocument!({ ...input, itemId: 'healthy' })
+    await agent.writeKnowledgeDocument!({ ...input, itemId: 'healthy', content: 'unchanged' })
+    expect(failures).toEqual(['broken'])
+    expect(progress).toEqual(['healthy'])
+  })
+
+  test('Given 缺位摘要 When 旧接口读取 Then 报参数错误而非文件变化且不消耗I/O', async () => {
+    const { options, state } = fixture()
+    const agent = createProjectKnowledgeAgent(options)!
+    await expect(agent.read('entry-1', 0, 'a'.repeat(63))).rejects.toThrow('invalid_parameters')
+    expect(state.calls).toEqual([])
+  })
+})
+
+describe('本轮用户事实上下文', () => {
+  test('Given 宿主提供已核验的任务原话 When 构建上下文 Then 交付原文后才登记证据身份', async () => {
+    const { options } = fixture()
+    const seen: string[][] = []
+    const agent = createProjectKnowledgeAgent({ ...options, taskUserEvidence: () => [{ id: 'user-evidence', text: '永久会员支持所有图标' }], maintenance: {
+      next: async () => ({ refs: [], remaining: 0 }), observeRead: () => undefined,
+      observeUserEvidence: (ids) => { seen.push(ids) },
+      submit: async () => ({ status: 'unchanged', published: 0, refreshed: 0, skipped: 0, processedSources: 0, entryIds: [] }),
+    } })!
+    const context = await agent.buildContext('会员规则')
+    expect(context).toContain('永久会员支持所有图标')
+    expect(context).toContain('user-evidence')
+    expect(seen).toEqual([['user-evidence']])
+  })
+
+  test('Given 原始消息超过上限 When 构建上下文 Then 不截断假装已读也不发放证据身份', async () => {
+    const { options } = fixture()
+    const seen: string[][] = []
+    const agent = createProjectKnowledgeAgent({ ...options, taskUserEvidence: () => [{ id: 'user-evidence', text: '原'.repeat(4001) }], maintenance: {
+      next: async () => ({ refs: [], remaining: 0 }), observeRead: () => undefined,
+      observeUserEvidence: (ids) => { seen.push(ids) },
+      submit: async () => ({ status: 'unchanged', published: 0, refreshed: 0, skipped: 0, processedSources: 0, entryIds: [] }),
+    } })!
+    await expect(agent.buildContext('会员规则')).rejects.toThrow('有界读取范围')
+    expect(seen).toEqual([])
+  })
+})
+
+describe('来源失败回执与大纲详情', () => {
+  test('Given 单项有六份依赖和章节 When 按详情第二页读取 Then 返回全部剩余详情而非截断摘要', () => {
+    const sources = Array.from({ length: 6 }, (_, index) => ({ entryId: `source-${index}`, revision: `revision-${index}` }))
+    const status = compactKnowledgeWorkflowStatus({ initialized: true, revision: 1, workflow: { paused: false,
+      outline: { revision: 1, planRevision: 1, relativePath: '索引.md', items: [{ id: 'item', groupId: 'g', title: '业务', summary: '业务规则', relativePath: '业务.md', sections: sources.map((_, i) => `章节${i}`), gaps: sources.map((_, i) => `缺口${i}`), sources, status: 'pending' }] },
+    } }, 0, 'item', 4)
+    expect(status.itemDetails?.sources).toEqual(sources.slice(4))
+    expect(status.itemDetails?.sections).toEqual(['章节4', '章节5'])
+    expect(status.itemDetails?.gaps).toEqual(['缺口4', '缺口5'])
+    expect(status.itemDetails?.nextSourceOffset).toBeUndefined()
+  })
+
+  test('Given 来源返回changed When 读取 Then 报准确来源失败但参数错误不伪装来源变化', async () => {
+    const { options } = fixture()
+    const failures: unknown[] = []
+    const agent = createProjectKnowledgeAgent({ ...options, onSourceError: (...args) => { failures.push(args) }, service: { ...options.service, read: async () => ({ ...await options.service.read(), status: 'changed' as const }) } })!
+    await agent.read('entry-1', 0, 'rev-1')
+    expect(failures).toEqual([['entry-1', 'source_changed', '来源版本或原文件已变化，请定向刷新并重新读取，仅阻塞依赖此来源的项', 'rev-1']])
+    await expect(agent.read('entry-1', 0, 'a'.repeat(63))).rejects.toThrow('invalid_parameters')
+    expect(failures).toHaveLength(1)
+  })
+})
+
+test('Given 同版本来源已刷新一次 When 再次自动刷新 Then 不重复消耗恢复额度或读取文件', async () => {
+  const { options, entry } = fixture()
+  /** 恢复额度由宿主记录；刷新不等于正文读取。 */
+  const recoveries: string[] = []
+  let refreshes = 0
+  let observed = 0
+  const status = { initialized: true, revision: 1, paused: false, offset: 0 }
+  const agent = createProjectKnowledgeAgent({ ...options, beforeSourceRecovery: (entryId, revision) => { recoveries.push(`${entryId}:${revision}`) }, maintenance: {
+    next: async () => ({ refs: [], remaining: 0 }), observeRead: () => { observed += 1 },
+    submit: async () => ({ status: 'unchanged', published: 0, refreshed: 0, skipped: 0, processedSources: 0, entryIds: [] }),
+    status: async () => status, proposePlan: async () => status, saveOutline: async () => status, writeDocument: async () => status,
+    copyAsset: async () => ({ relativePath: 'asset', documentRelativePath: 'asset', contentRevision: 'v', byteSize: 0 }),
+    refreshSources: async () => { refreshes += 1; return [{ ...entry, revision: 'new-revision' }] },
+  } })!
+  const source = { entryId: entry.id, revision: entry.revision }
+  const refreshed = await agent.refreshSources!([source])
+  expect(refreshed[0]?.revision).toBe('new-revision')
+  await expect(agent.refreshSources!([source])).rejects.toThrow('恢复一次')
+  expect(recoveries).toEqual([`${entry.id}:${entry.revision}`])
+  expect(refreshes).toBe(1)
+  expect(observed).toBe(0)
+})
+
+test('Given 已批准分组尚无大纲 When 获取第二页详情 Then 保留完整用途来源缺口及预期产物', () => {
+  const sources = Array.from({ length: 6 }, (_, index) => ({ entryId: `source-${index}`, revision: `revision-${index}` }))
+  const snapshot = { initialized: true, revision: 1, workflow: { paused: false, approved: {
+    id: 'plan', revision: 2, title: '计划', rootRelativePath: 'knowledge', createdAt: 1, confirmedAt: 2,
+    groups: [{ id: 'business', title: '业务', summary: '完整用途'.repeat(100), sources, gaps: sources.map((_, index) => `缺口${index}`), outputs: sources.map((_, index) => `产物${index}`) }],
+  } } }
+  const status = compactKnowledgeWorkflowStatus(snapshot, 0, undefined, 4, 'business')
+  expect(status.groupDetails).toMatchObject({ groupId: 'business', planState: 'approved', planRevision: 2, sources: sources.slice(4), gaps: ['缺口4', '缺口5'], outputs: ['产物4', '产物5'], summary: '完整用途'.repeat(100) })
+  expect(status.groupDetails?.nextSourceOffset).toBeUndefined()
+  expect(() => compactKnowledgeWorkflowStatus(snapshot, 0, 'item', 0, 'business')).toThrow('不能混用')
+})
+
+test('Given 旧来源索引版本 When 服务返回changed且当前revision不同 Then 返回stale_revision而非原文变化', async () => {
+  const { options } = fixture()
+  const errors: string[] = []
+  const agent = createProjectKnowledgeAgent({ ...options, onSourceError: (_id, code) => { errors.push(code) }, service: {
+    ...options.service, read: async () => { const value = await options.service.read(); return { ...value, status: 'changed' as const, entry: { ...value.entry, revision: 'new-version' } } },
+  } })!
+  const result = await agent.readReference({ entryId: 'entry-1', expectedRevision: 'rev-1' })
+  expect(result.error).toMatchObject({ code: 'stale_revision', recoverable: true, scope: 'reference', action: 'read_status_or_search' })
+  expect(errors).toEqual(['stale_revision'])
 })

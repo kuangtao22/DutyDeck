@@ -1,9 +1,10 @@
 import type { AgentRunFileChange } from '@proma/shared'
 import { createHash } from 'node:crypto'
-import { open, realpath } from 'node:fs/promises'
+import { lstat, open, opendir, realpath } from 'node:fs/promises'
 import { constants, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { isAgentRunFileNoisePath, shouldTrackAgentRunFilePath } from './agent-run-file-change-path-policy'
 
 /** 单文件、每轮留存、数量与计算预算；超限保持可见但不给伪精确数字。 */
 export const AGENT_RUN_FILE_TRACKER_LIMITS = {
@@ -14,11 +15,30 @@ export const AGENT_RUN_FILE_TRACKER_LIMITS = {
   maxLines: 50_000,
 } as const
 
+/** 轮次基线的独立预算；未变化文件不占展示槽位，只在结束时按元数据筛选。 */
+export const AGENT_RUN_FILE_BASELINE_LIMITS = {
+  maxFiles: 2048,
+  maxDirectories: 4096,
+  maxScanMs: 1500,
+  maxRetainedBytes: 4 * 1024 * 1024,
+} as const
+
+/** 基线扫描中明确跳过的高频目录；显式 write/edit 仍由主 tracker 正常统计。 */
+const BASELINE_NOISE_SEGMENTS = new Set([
+  'node_modules', '.git', 'dist', 'build', '.cache', '__pycache__', '.venv', 'venv',
+  '.turbo', '.parcel-cache', '.svelte-kit', '.gradle',
+])
+
+/** Date.now 只有毫秒精度，给文件系统的亚毫秒时间戳留出边界误差。 */
+const BASELINE_START_TIME_TOLERANCE_MS = 2
+
 /** 编排层传入的显式授权范围；附加单文件不会扩张为整个父目录。 */
 interface AgentRunFileTrackerOptions {
   cwd: string
   roots: string[]
   files?: string[]
+  /** 轮次开始时间，用于识别基线扫描期间才发生的写入。 */
+  startedAt?: number
 }
 
 type StoredFileKind = 'missing' | 'text' | 'binary' | 'too_large' | 'unavailable' | 'budget_exceeded'
@@ -42,6 +62,24 @@ interface TrackedFile {
   cachedChange?: AgentRunFileChange
 }
 
+/** 轮次开始时保存的单文件基线；metadata 用于结束时避免重读未变化正文。 */
+interface BaselineFile {
+  path: string
+  canonicalPath: string
+  snapshot: StoredFileSnapshot
+  metadata?: FileMetadata
+}
+
+/** 文件元数据指纹；只用于判断是否需要读取正文，不作为变更统计依据。 */
+interface FileMetadata {
+  size: number
+  mtimeMs: number
+  ctimeMs: number
+  birthtimeMs: number
+  dev: number
+  ino: number
+}
+
 /** 按行最短编辑距离得出的新增和删除数量。 */
 interface DiffCounts {
   additions: number
@@ -57,7 +95,17 @@ export class AgentRunFileTracker {
   private readonly files: Set<string>
   private readonly lexicalRoots: string[]
   private readonly lexicalFiles: Set<string>
+  private readonly startedAt: number
   private readonly tracked = new Map<string, TrackedFile>()
+  /** 基线与展示槽分离，避免扫描到的未改文件占满 256 个实时统计名额。 */
+  private readonly baseline = new Map<string, BaselineFile>()
+  private baselineRetainedBytes = 0
+  private readonly invalidatedBaseline = new Set<string>()
+  /** 基线尚未完成时收到的共享目录冲突，待基线落地后仍必须保持未知。 */
+  private readonly invalidatedPaths = new Set<string>()
+  private baselineTruncated = false
+  private baselineComplete = false
+  private readonly baselineReady: Promise<void>
   private readonly retainedSnapshots = new Map<StoredFileSnapshot, number>()
   private retainedBytes = 0
   /** 达到文件数量预算时让上层明确提示统计不完整。 */
@@ -67,10 +115,20 @@ export class AgentRunFileTracker {
 
   constructor(options: AgentRunFileTrackerOptions) {
     this.cwd = resolve(this.expandHome(options.cwd))
+    this.startedAt = options.startedAt ?? Date.now()
     this.lexicalRoots = options.roots.map(path => this.resolveInput(path))
     this.lexicalFiles = new Set((options.files ?? []).map(path => this.resolveInput(path)))
     this.roots = options.roots.map(path => this.canonicalizeConfiguredPath(path))
     this.files = new Set((options.files ?? []).map(path => this.canonicalizePotentialPathSync(this.resolveInput(path))))
+    this.baselineReady = this.captureBaseline().catch(() => {
+      this.baselineTruncated = true
+      this.baselineComplete = false
+    })
+  }
+
+  /** 等待轮次基线完成；正常运行不阻塞工具启动，只在轮次结束时作为统计边界。 */
+  async waitForBaseline(): Promise<void> {
+    await this.baselineReady
   }
 
   /** 在受控写工具实际执行前捕获首次基线，并检查此前是否混入外部改动。 */
@@ -79,16 +137,21 @@ export class AgentRunFileTracker {
     const canonicalPath = await this.resolveAllowedPath(path)
     const observedKey = this.observationKey(lexicalPath)
     this.aliases.set(lexicalPath, canonicalPath)
-    const existing = this.tracked.get(canonicalPath) ?? this.tracked.get(observedKey)
-    if (existing) {
-      if (existing.observedOnly) {
-        if (lexicalPath !== canonicalPath) {
-          this.tracked.delete(observedKey)
-          existing.canonicalPath = canonicalPath
-          this.tracked.set(canonicalPath, existing)
-        }
+    let existing = this.tracked.get(canonicalPath) ?? this.tracked.get(observedKey)
+    if (existing?.observedOnly) {
+      // watcher 只能先留下未知占位；真正的 write/edit 到来时必须升级为受控基线，
+      // 否则该文件永远只能显示“暂无行数统计”。
+      this.tracked.delete(observedKey)
+      this.tracked.delete(canonicalPath)
+      const baseline = this.baseline.get(canonicalPath) ?? this.baseline.get(observedKey)
+      if (baseline) {
+        const current = await this.readSnapshot(canonicalPath)
+        this.recordBaselineEvidence(baseline, current, existing.path, !this.snapshotsEqual(baseline.snapshot, current))
         return
       }
+      existing = undefined
+    }
+    if (existing) {
       const actual = await this.readSnapshot(canonicalPath)
       if (!this.snapshotsEqual(existing.current, actual)) {
         existing.externalChange = true
@@ -97,7 +160,7 @@ export class AgentRunFileTracker {
       this.replaceCurrent(existing, actual)
       return
     }
-    if (this.tracked.size >= AGENT_RUN_FILE_TRACKER_LIMITS.maxFiles) { this.truncated = true; return }
+    if (!this.reserveControlledSlot()) return
 
     const baseline = await this.readSnapshot(canonicalPath)
     const retainedBaseline = this.retainSnapshot(baseline)
@@ -118,11 +181,11 @@ export class AgentRunFileTracker {
     const canonicalPath = await this.resolveAllowedPath(path)
     let tracked = this.tracked.get(canonicalPath) ?? this.tracked.get(lexicalPath)
     if (!tracked) {
-      if (this.tracked.size >= AGENT_RUN_FILE_TRACKER_LIMITS.maxFiles) { this.truncated = true; return }
+      if (!this.reserveControlledSlot()) return
       const unavailable = this.createUnavailableSnapshot('missing_baseline')
       tracked = {
         path: lexicalPath,
-      canonicalPath,
+        canonicalPath,
         baseline: unavailable,
         current: unavailable,
         externalChange: false,
@@ -144,6 +207,45 @@ export class AgentRunFileTracker {
         tracked.cachedChange = undefined
       }
       this.replaceCurrent(tracked, actual)
+    }
+  }
+
+  /**
+   * 在轮次结束时收敛脚本、子代理和其它非写工具造成的变化。
+   *
+   * 基线扫描只保留元数据和有界正文；未变化文件不会进入 tracker 展示槽，
+   * 因此脚本批量修改不会把整个项目渲染成“暂无行数统计”。
+   */
+  async finalizeBaseline(): Promise<void> {
+    await this.baselineReady
+    if (this.baselineTruncated || !this.baselineComplete) this.truncated = true
+
+    for (const baseline of this.baseline.values()) {
+      const key = this.observationKey(baseline.canonicalPath)
+      if (this.invalidatedBaseline.has(key) || this.invalidatedPaths.has(key)) continue
+      const tracked = this.tracked.get(baseline.canonicalPath) ?? this.tracked.get(this.observationKey(baseline.path))
+      if (tracked && !tracked.observedOnly) continue
+
+      // watcher 已经报告的路径必须读取一次；其它路径先用 metadata 判断，避免重读全项目正文。
+      const shouldRead = tracked?.observedOnly === true || await this.baselineMetadataChanged(baseline)
+      if (!shouldRead) continue
+      const current = await this.readSnapshot(baseline.canonicalPath)
+      this.recordBaselineEvidence(baseline, current, tracked?.path)
+    }
+
+    // 基线完整时，watcher 报告但基线没有的路径可证明是本轮新建文件；
+    // 基线不完整时保留 unknown，避免把扫描遗漏误报成新增。
+    for (const tracked of [...this.tracked.values()]) {
+      if (!tracked.observedOnly) continue
+      const key = this.observationKey(tracked.canonicalPath)
+      if (this.invalidatedBaseline.has(key) || this.invalidatedPaths.has(key) || this.baseline.has(key) || !this.baselineComplete) continue
+      const canonicalPath = await this.canonicalizePotentialPath(tracked.canonicalPath)
+      const current = await this.readSnapshot(canonicalPath)
+      this.recordBaselineEvidence({
+        path: tracked.path,
+        canonicalPath,
+        snapshot: this.createMissingSnapshot(),
+      }, current, tracked.path)
     }
   }
 
@@ -172,6 +274,27 @@ export class AgentRunFileTracker {
     }
   }
 
+  /**
+   * 为受控写入预留槽位；容量已满时优先淘汰 watcher-only 占位。
+   *
+   * 监听事件只是候选证据，不能挤掉 write/edit 已明确给出的路径。被淘汰的候选会
+   * 通过 truncated 标记反映统计不完整，但不会静默阻断真实写入采集。
+   *
+   * @returns 是否成功获得受控文件槽位。
+   */
+  private reserveControlledSlot(): boolean {
+    if (this.tracked.size < AGENT_RUN_FILE_TRACKER_LIMITS.maxFiles) return true
+    /** 选择最早的 watcher-only 占位，尽量保持已确认路径稳定。 */
+    const observedOnlyKey = [...this.tracked.entries()].find(([, tracked]) => tracked.observedOnly)?.[0]
+    if (observedOnlyKey !== undefined) {
+      this.tracked.delete(observedOnlyKey)
+      this.truncated = true
+      return true
+    }
+    this.truncated = true
+    return false
+  }
+
   /** 不读取磁盘的受管范围判断，同时接受显式根的真实路径别名。 */
   owns(path: string): boolean {
     try { this.assertLexicallyAllowed(this.resolveInput(path)); return true } catch { return false }
@@ -179,16 +302,223 @@ export class AgentRunFileTracker {
 
   /** 多轮同时触碰同一文件时永久撤销精确行数，避免双方冒领相同最终内容。 */
   invalidate(path: string): void {
-    const tracked = this.tracked.get(this.observationKey(this.resolveInput(path)))
-    if (!tracked || tracked.observedOnly) return
-    tracked.externalChange = true
-    tracked.cachedChange = undefined
+    const key = this.observationKey(this.resolveInput(path))
+    const tracked = this.tracked.get(key)
+    if (tracked && !tracked.observedOnly) {
+      tracked.externalChange = true
+      tracked.cachedChange = undefined
+      return
+    }
+    if (this.baseline.has(key)) this.invalidatedBaseline.add(key)
+    else this.invalidatedPaths.add(key)
   }
 
   /** 查询本轮写工具是否已触碰路径，用于共享根的精确归属。 */
   hasControlledPath(path: string): boolean {
     const tracked = this.tracked.get(this.observationKey(this.resolveInput(path)))
-    return tracked !== undefined && !tracked.observedOnly
+    if (tracked !== undefined) return !tracked.observedOnly
+    const key = this.observationKey(this.resolveInput(path))
+    return this.baseline.has(key) && !this.invalidatedBaseline.has(key) && !this.invalidatedPaths.has(key)
+  }
+
+  /** 在轮次开始后异步建立有界文件基线；不阻塞首个模型工具调用。 */
+  private async captureBaseline(): Promise<void> {
+    const scanStartedAt = Date.now()
+    let scannedDirectories = 0
+    const scanBudgetExceeded = (): boolean => Date.now() - scanStartedAt > AGENT_RUN_FILE_BASELINE_LIMITS.maxScanMs
+
+    const scanDirectory = async (directory: string): Promise<void> => {
+      if (this.baselineTruncated) return
+      if (scanBudgetExceeded()) {
+        this.baselineTruncated = true
+        return
+      }
+      if (++scannedDirectories > AGENT_RUN_FILE_BASELINE_LIMITS.maxDirectories) {
+        this.baselineTruncated = true
+        return
+      }
+      let handle: Awaited<ReturnType<typeof opendir>>
+      try {
+        handle = await opendir(directory)
+      } catch {
+        this.baselineTruncated = true
+        return
+      }
+      for await (const entry of handle) {
+        if (this.baselineTruncated) return
+        if (scanBudgetExceeded()) {
+          this.baselineTruncated = true
+          return
+        }
+        const childPath = resolve(directory, entry.name)
+        if (entry.isDirectory()) {
+          if (this.isBaselineNoiseDirectory(childPath)) continue
+          await scanDirectory(childPath)
+          continue
+        }
+        if (!entry.isFile()) continue
+        await this.captureBaselineFile(childPath)
+      }
+    }
+
+    for (const root of this.roots) {
+      if (this.isBaselineNoiseDirectory(root)) continue
+      const metadata = await this.readFileMetadata(root)
+      if (metadata) await this.captureBaselineFile(root)
+      else await scanDirectory(root)
+      if (this.baselineTruncated) return
+    }
+
+    // 附加单文件可能位于 root 之外，必须单独建立基线；显式写入仍允许这些路径。
+    for (const file of this.lexicalFiles) {
+      if (this.baselineTruncated) return
+      if (scanBudgetExceeded()) {
+        this.baselineTruncated = true
+        return
+      }
+      await this.captureBaselineFile(file, true)
+    }
+    this.baselineComplete = !this.baselineTruncated
+  }
+
+  /** 捕获单个基线文件；正文与 tracker 共用 8 MiB 留存预算。 */
+  private async captureBaselineFile(path: string, explicit = false): Promise<void> {
+    if (!shouldTrackAgentRunFilePath(path)) return
+    if (!explicit && (isAgentRunFileNoisePath(path) || this.isBaselineNoiseDirectory(path))) return
+    if (this.baseline.size >= AGENT_RUN_FILE_BASELINE_LIMITS.maxFiles) {
+      this.baselineTruncated = true
+      return
+    }
+    let canonicalPath: string
+    try {
+      canonicalPath = await this.canonicalizePotentialPath(path)
+      this.assertAllowed(canonicalPath)
+    } catch {
+      if (!explicit) this.baselineTruncated = true
+      return
+    }
+    if (this.baseline.has(canonicalPath)) return
+
+    const metadata = await this.readFileMetadata(canonicalPath)
+    const snapshot = metadata
+      ? await this.readStableBaselineSnapshot(canonicalPath, metadata)
+      : this.createMissingSnapshot()
+    this.baseline.set(canonicalPath, {
+      path,
+      canonicalPath,
+      snapshot: this.retainBaselineSnapshot(snapshot),
+      ...(metadata ? { metadata } : {}),
+    })
+  }
+
+  /** 基线读取期间若文件已变化，禁止把变更后的正文当成轮次前内容。 */
+  private async readStableBaselineSnapshot(path: string, initial: FileMetadata): Promise<StoredFileSnapshot> {
+    const boundary = this.startedAt + BASELINE_START_TIME_TOLERANCE_MS
+    if (initial.birthtimeMs > boundary) return this.createMissingSnapshot()
+    if (initial.mtimeMs > boundary || initial.ctimeMs > boundary) {
+      return this.createUnavailableSnapshot('baseline_race')
+    }
+    const snapshot = await this.readSnapshot(path)
+    const final = await this.readFileMetadata(path)
+    if (!final || !this.metadataEqual(initial, final)) return this.createUnavailableSnapshot('baseline_race')
+    return snapshot
+  }
+
+  /** 结束时只对 metadata 发生变化或 watcher 点名的基线文件读取正文。 */
+  private async baselineMetadataChanged(baseline: BaselineFile): Promise<boolean> {
+    if (!baseline.metadata) return true
+    const current = await this.readFileMetadata(baseline.canonicalPath)
+    return current === undefined || !this.metadataEqual(baseline.metadata, current)
+  }
+
+  /** 将基线前后结果放入有限展示槽；watcher-only 会在这里升级为精确记录。 */
+  private recordBaselineEvidence(
+    baseline: BaselineFile,
+    current: StoredFileSnapshot,
+    displayPath?: string,
+    externalChange = false,
+  ): void {
+    const observedKey = this.observationKey(baseline.path)
+    const canonicalKey = this.observationKey(baseline.canonicalPath)
+    const existing = this.tracked.get(canonicalKey) ?? this.tracked.get(observedKey)
+    if (existing?.observedOnly) {
+      this.tracked.delete(observedKey)
+      this.tracked.delete(canonicalKey)
+    } else if (existing) {
+      return
+    }
+    if (!this.reserveControlledSlot()) return
+
+    const retainedBaseline = this.retainSnapshot(baseline.snapshot)
+    const retainedCurrent = this.snapshotsEqual(retainedBaseline, current)
+      ? retainedBaseline
+      : this.retainSnapshot(current)
+    this.tracked.set(canonicalKey, {
+      path: displayPath ?? baseline.path,
+      canonicalPath: baseline.canonicalPath,
+      baseline: retainedBaseline,
+      current: retainedCurrent,
+      externalChange: externalChange || baseline.snapshot.kind === 'unavailable',
+      observedOnly: false,
+    })
+    if (this.baseline.get(baseline.canonicalPath) === baseline) {
+      this.baseline.delete(baseline.canonicalPath)
+      this.releaseBaselineSnapshot(baseline.snapshot)
+    }
+  }
+
+  /** 读取普通文件元数据；目录、符号链接和不可读路径不进入基线。 */
+  private async readFileMetadata(path: string): Promise<FileMetadata | undefined> {
+    try {
+      const stat = await lstat(path)
+      if (!stat.isFile()) return undefined
+      return {
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        ctimeMs: stat.ctimeMs,
+        birthtimeMs: stat.birthtimeMs,
+        dev: stat.dev,
+        ino: stat.ino,
+      }
+    } catch {
+      return undefined
+    }
+  }
+
+  /** 比较元数据指纹；内容统计仍由 snapshot signature 决定。 */
+  private metadataEqual(left: FileMetadata, right: FileMetadata): boolean {
+    return left.size === right.size
+      && left.mtimeMs === right.mtimeMs
+      && left.ctimeMs === right.ctimeMs
+      && left.birthtimeMs === right.birthtimeMs
+      && left.dev === right.dev
+      && left.ino === right.ino
+  }
+
+  /** 基线扫描中的高频目录不值得读取正文；显式文件不会走此判断。 */
+  private isBaselineNoiseDirectory(path: string): boolean {
+    const segments = path.replace(/\\/g, '/').split('/').filter(Boolean).map(segment => segment.toLowerCase())
+    return segments.some(segment => BASELINE_NOISE_SEGMENTS.has(segment))
+  }
+
+  /** 返回不带正文的缺失基线，用于证明完整扫描下 watcher 报告的是新建文件。 */
+  private createMissingSnapshot(): StoredFileSnapshot {
+    return { kind: 'missing', signature: 'missing', retainedBytes: 0 }
+  }
+
+  /** 基线正文使用独立预算，不能挤掉 write/edit 的实时采集预算。 */
+  private retainBaselineSnapshot(snapshot: StoredFileSnapshot): StoredFileSnapshot {
+    if (snapshot.retainedBytes === 0) return snapshot
+    if (this.baselineRetainedBytes + snapshot.retainedBytes > AGENT_RUN_FILE_BASELINE_LIMITS.maxRetainedBytes) {
+      return { kind: 'budget_exceeded', signature: snapshot.signature, retainedBytes: 0 }
+    }
+    this.baselineRetainedBytes += snapshot.retainedBytes
+    return snapshot
+  }
+
+  /** 基线证据升级为变化记录后释放其独立正文预算。 */
+  private releaseBaselineSnapshot(snapshot: StoredFileSnapshot): void {
+    this.baselineRetainedBytes = Math.max(0, this.baselineRetainedBytes - snapshot.retainedBytes)
   }
 
   /** 把已知根别名映射到同一个索引；watcher 热路径不执行 realpath I/O。 */

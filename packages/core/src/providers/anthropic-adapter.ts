@@ -1,3 +1,4 @@
+import { normalizeProviderUsage, usageObject, tokenCount } from './usage.ts'
 /**
  * Anthropic 供应商适配器
  *
@@ -24,7 +25,7 @@
  * - UA 格式：`Proma/<version> (+https://github.com/ErlichLiu/Proma)`
  */
 
-import { extractZhipuCodingTeamApiToken, type ProviderType } from '@proma/shared'
+import { extractZhipuCodingTeamApiToken, type ProviderType, type TokenUsageAmounts } from '@proma/shared'
 import type {
   ProviderAdapter,
   ProviderRequest,
@@ -99,7 +100,16 @@ interface AnthropicSSEEvent {
     partial_json?: string
     /** message_delta 的 stop_reason */
     stop_reason?: string
+    usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
   }
+  /** message_delta 的 usage 位于顶层。 */
+  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
+  message?: { usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } }
+}
+
+/** 将供应商报告归一为统一 Token 口径，未报告字段保持 null。 */
+function normalizeUsage(raw: unknown): TokenUsageAmounts {
+  return normalizeProviderUsage(raw, 'anthropic')
 }
 
 /** Anthropic 标题响应 */
@@ -437,6 +447,9 @@ export class AnthropicAdapter implements ProviderAdapter {
     try {
       const event = JSON.parse(jsonLine) as AnthropicSSEEvent
       const events: StreamEvent[] = []
+      // 每个事件可能只报告部分累计字段；保留未缓存基数供 reader 合并缓存变化。
+      const rawUsage = event.type === 'message_start' ? event.message?.usage : event.type === 'message_delta' ? event.usage ?? event.delta?.usage : undefined
+      if (rawUsage) events.push({ type: 'usage', usage: normalizeUsage(rawUsage), uncachedInputTokens: tokenCount(rawUsage.input_tokens) })
 
       if (event.type === 'error') {
         return [{ type: 'error', error: typeof event.error?.message === 'string'
@@ -520,6 +533,12 @@ export class AnthropicAdapter implements ProviderAdapter {
       headers: this.buildHeaders(input.apiKey),
       body: JSON.stringify(body),
     }
+  }
+
+  /** 提取非流式响应用量，使用与流式相同的协议口径。 */
+  parseUsageResponse(responseBody: unknown): TokenUsageAmounts | null {
+    const raw = usageObject(responseBody)?.usage
+    return usageObject(raw) ? normalizeUsage(raw) : null
   }
 
   parseTitleResponse(responseBody: unknown): string | null {

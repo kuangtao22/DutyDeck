@@ -53,4 +53,6 @@ interface Window {
   __promaPerformance?: PromaPerformanceDiagnostics
   /** 仅路径迁移/恢复窗口由专用 preload 暴露。 */
   pathManagementAPI: import('../preload/path-management-preload').PathManagementPreloadApi
+  /** 仅默认数据根迁移确认窗口由专用 preload 暴露。 */
+  defaultRootMigrationAPI: import('../preload/default-root-migration-preload').DefaultRootMigrationPreloadApi
 }

@@ -10,6 +10,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { EventEmitter } from 'node:events'
 import {
   Client,
+  Agent,
   EnvHttpProxyAgent,
   Pool,
   fetch as undiciFetch,
@@ -61,6 +62,8 @@ export function installPiRequestProxyFetch(): void {
 }
 
 export interface PiRequestProxyOptions {
+  /** 内置模型强制直连，覆盖系统及环境代理。 */
+  direct?: boolean
   proxyUrl?: string
   noProxy?: string
   httpIdleTimeoutMs?: number
@@ -70,6 +73,7 @@ export interface PiRequestProxyOptions {
  * 为单个 Pi 请求创建 dispatcher。调用者必须在请求结束时 close()，以释放连接池。
  */
 export function createPiRequestProxyDispatcher(options: PiRequestProxyOptions): Dispatcher | undefined {
+  if (options.direct) return withUndiciErrorListener(new Agent({ allowH2: false }))
   const proxyUrl = options.proxyUrl?.trim()
   if (!proxyUrl) return undefined
 

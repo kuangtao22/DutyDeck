@@ -148,6 +148,8 @@ import { createNativeCanvasNodeFocusUpdate, createNativeCanvasChangedNodesFocusU
 import { CanvasMediaModelPicker } from './CanvasMediaModelPicker'
 import { useCanvasMediaNodeProgress, useMediaRunProgress } from './use-media-run-progress'
 import type { MediaRunProgressProjection } from './use-media-run-progress'
+import type { NativeCanvasImageStatus } from './native-canvas-model'
+import type { CanvasMediaPreparationIssue } from '@proma/shared'
 import {
   CanvasAgentConversation,
   type CanvasAgentConversationAdapter,
@@ -802,9 +804,12 @@ export function createNativeCanvasNodeCreationSuccessUpdate(
   if (success.kind !== 'agent' && update.snapshot && 'snapshot' in success.result) {
     /** 生命周期旧结果没有刷新预览时沿用当前授权 URL，后续 LOAD 再权威替换。 */
     const imagePreviews = success.result.snapshot.imagePreviews ?? current.snapshot?.imagePreviews
+    /** 旧生命周期结果没有准备摘要时保留已知原因，完整 LOAD 可用空数组清除。 */
+    const imagePreparations = success.result.snapshot.imagePreparations ?? current.snapshot?.imagePreparations
     update.snapshot = {
       ...success.result.snapshot,
       ...(imagePreviews ? { imagePreviews } : {}),
+      ...(imagePreparations ? { imagePreparations } : {}),
       document: update.snapshot.document,
     }
   }
@@ -831,6 +836,9 @@ export function createNativeCanvasLifecycleSuccessUpdate(
     /** 删除或恢复旧结果未携带预览字段时保留当前共享缩略图映射。 */
     snapshot: {
       ...result.snapshot,
+      ...(result.snapshot.imagePreparations === undefined && current.snapshot?.imagePreparations
+        ? { imagePreparations: current.snapshot.imagePreparations }
+        : {}),
       ...(result.snapshot.imagePreviews
         ? {}
         : current.snapshot?.imagePreviews
@@ -1692,6 +1700,8 @@ export function createNativeCanvasWorkspaceController(
   let disposed = false
   /** 当前 controller 是否有权威恢复 LOAD 在途。 */
   let authoritativeRecoveryInFlight = false
+  /** 图片配置不提升图版本；恢复期间合并此类摘要刷新，避免丢失配置变化。 */
+  let deferredImagePreparationRefresh = false
 
   /** 清除尚未触发的保存任务。 */
   const clearSaveTimer = (): void => {
@@ -1772,9 +1782,12 @@ export function createNativeCanvasWorkspaceController(
   const flushDeferredGraphRefresh = (recoveredRevision: number): void => {
     if (disposed) return
     const targetRevision = dependencies.getState().deferredGraphRevision
-    if (targetRevision === null) return
+    /** 无版本变化的图片摘要也需要在权威恢复之后重新读取。 */
+    const shouldRefreshPreparation = deferredImagePreparationRefresh
+    deferredImagePreparationRefresh = false
+    if (targetRevision === null && !shouldRefreshPreparation) return
     dependencies.updateState({ deferredGraphRevision: null })
-    if (targetRevision > recoveredRevision) loadSnapshot(false)
+    if (shouldRefreshPreparation || (targetRevision !== null && targetRevision > recoveredRevision)) loadSnapshot(false)
   }
 
   /** 发起普通或权威 LOAD；两类请求只失效各自旧回调。 */
@@ -1929,12 +1942,13 @@ export function createNativeCanvasWorkspaceController(
         /** recovery 期间只保留最高 graph 目标，禁止普通 LOAD 抢占恢复代次。 */
         const latest = dependencies.getState()
         if (authoritativeRecoveryInFlight || latest.authoritativeRecoveryState !== 'idle') {
+          if (event.cause === 'image-preparation') deferredImagePreparationRefresh = true
           deferGraphRefresh(event.revision)
           return
         }
-        /** 稳定状态下普通图事件只在 revision 单调前进时刷新。 */
+        /** 图片配置独立于图版本；普通图事件仍只在 revision 单调前进时刷新。 */
         const currentRevision = latest.snapshot?.document.revision ?? -1
-        if (event.revision > currentRevision) loadSnapshot(false)
+        if (event.cause === 'image-preparation' || event.revision > currentRevision) loadSnapshot(false)
       })
       /** remount 必须继续 keyed state 中未完成或失败的权威恢复。 */
       if (dependencies.getState().authoritativeRecoveryState !== 'idle') {
@@ -2645,6 +2659,41 @@ export function createNativeCanvasImageCandidateNodeIds(
   return candidateNodeIds
 }
 
+/**
+ * 从完整目标身份匹配的最新图片任务与准备摘要建立卡片索引。
+ * @param document 当前画布文档。
+ * @param jobs 有界任务列表，按创建时间确定最近尝试而非旧任务的迟到更新时间。
+ * @param preparations 主进程在工作区加载时统一提供的配置准备原因。
+ * @returns 仅包含需要提示的节点，既不加载图片也不启动任务。
+ */
+export function createNativeCanvasImageStatuses(
+  document: CanvasDocument,
+  jobs: readonly NativeCanvasActivityJob[],
+  preparations: readonly { nodeId: string; preparation: CanvasMediaPreparationIssue }[] = [],
+): ReadonlyMap<string, NativeCanvasImageStatus> {
+  /** 图片模块索引用于过滤跨画布、跨模块或已删除的任务。 */
+  const modules = new Map(document.nodes.flatMap((node) => node.kind === 'image' ? [[node.id, node.imageModuleId] as const] : []))
+  /** 同节点只保留最近创建的尝试。 */
+  const latestJobs = new Map<string, NativeCanvasActivityJob>()
+  for (const job of jobs) {
+    if (job.projectId !== document.projectId || job.target?.kind !== 'canvas-image'
+      || job.target.canvasId !== document.canvasId || modules.get(job.target.nodeId) !== job.target.imageModuleId) continue
+    /** 更新时间仅在同创建时间时破除同次任务的快照顺序差异。 */
+    const previous = latestJobs.get(job.target.nodeId)
+    if (!previous || job.createdAt > previous.createdAt
+      || (job.createdAt === previous.createdAt && job.updatedAt > previous.updatedAt)) latestJobs.set(job.target.nodeId, job)
+  }
+  /** 失败与准备事实彼此保留，卡片投影负责最终展示优先级。 */
+  const statuses = new Map<string, NativeCanvasImageStatus>()
+  for (const [nodeId, job] of latestJobs) {
+    if (job.status === 'failed') statuses.set(nodeId, { failed: true })
+  }
+  for (const entry of preparations) {
+    if (modules.has(entry.nodeId)) statuses.set(entry.nodeId, { ...statuses.get(entry.nodeId), preparationMessage: entry.preparation.message })
+  }
+  return statuses
+}
+
 /** HMR 与旧测试夹具可能仍携带迁移前视图字段，只在 view atom 首次缺失时读取一次。 */
 interface LegacyNativeCanvasViewFields extends Partial<AgentCanvasViewState> {
   /** 旧字段已无可见用途，仅用于识别迁移前对象。 */
@@ -3092,6 +3141,10 @@ export function NativeCanvasWorkspace({
   const imageCandidateNodeIds = React.useMemo(() => state.snapshot
     ? createNativeCanvasImageCandidateNodeIds(state.snapshot.document, projectCanvasJobs)
     : new Set<string>(), [projectCanvasJobs, state.snapshot])
+  /** 准备摘要来自工作区批量 LOAD，失败状态沿用轻量任务列表。 */
+  const imageStatusByNodeId = React.useMemo(() => state.snapshot
+    ? createNativeCanvasImageStatuses(state.snapshot.document, projectCanvasJobs, state.snapshot.imagePreparations)
+    : new Map<string, NativeCanvasImageStatus>(), [projectCanvasJobs, state.snapshot])
   /** 当前可见范围只依赖轻量节点几何，不读取工作台正文。 */
   const visibleNodeIds = React.useMemo(() => viewDocument
     ? listVisibleNativeCanvasNodeIds(viewDocument, canvasSurfaceSize, canvasNodeSizesById)
@@ -4460,6 +4513,7 @@ export function NativeCanvasWorkspace({
                 runningSessionIds={runningSessionIds}
                 nodeActivityStates={nodeActivityStates}
                 imageCandidateNodeIds={imageCandidateNodeIds}
+                imageStatusByNodeId={imageStatusByNodeId}
                 mediaProgressByNodeId={mediaProgressByNodeId}
                 readCanvasVideoPreview={adapter.canvasMediaReadPreview}
                 releaseCanvasVideoPreview={adapter.canvasMediaReleasePreview}

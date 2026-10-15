@@ -240,3 +240,191 @@ describe('关联授权快照竞态', () => {
     }
   })
 })
+
+describe('当前轮真实画布读取的自动展示', () => {
+  test('Given 当前会话读取具体节点 When 权威读取成功 Then 打开画布但不产生修改摘要', async () => {
+    /** 真实 canvas_read 返回节点包装，正文是否截断不影响导航身份。 */
+    const f = fixture()
+    f.consumer.beginRun('chat')
+    f.consumer.handle('chat', { type: 'tool_start', toolUseId: 'read', toolName: 'canvas_read', input: { canvasId: 'canvas', nodeIds: ['node'] } })
+    f.consumer.handle('chat', { type: 'tool_result', toolUseId: 'read', isError: false,
+      result: JSON.stringify({ canvasId: 'canvas', revision: 3, nodes: [{ node: { id: 'node' }, content: '部分正文' }], truncated: true }) })
+    await flush()
+    expect(f.store.get(agentSidePanelOpenAtomFamily('chat'))).toBe(true)
+    expect(f.store.get(agentCanvasFocusRequestsAtom).get(f.key)).toEqual({ nodeIds: ['node'], revision: 3 })
+    expect(f.store.get(agentCanvasChangeNoticesAtom).size).toBe(0)
+    f.consumer.dispose()
+  })
+
+  test('Given 本轮读取历史正文 When 用户关闭自动展示的面板后继续读取 Then 不再次打开', async () => {
+    const f = fixture()
+    f.consumer.beginRun('chat')
+    for (const toolUseId of ['first', 'second']) {
+      f.consumer.handle('chat', { type: 'tool_start', toolUseId, toolName: 'canvas_read_version', input: { canvasId: 'canvas', nodeId: 'node' } })
+      f.consumer.handle('chat', { type: 'tool_result', toolUseId, isError: false,
+        result: JSON.stringify({ canvasId: 'canvas', nodeId: 'node', content: '正文页', version: { kind: 'webview', revision: 1 } }) })
+      await flush()
+      expect(f.store.get(agentSidePanelOpenAtomFamily('chat'))).toBe(toolUseId === 'first')
+      f.store.set(agentSidePanelOpenAtomFamily('chat'), false)
+    }
+    f.consumer.dispose()
+  })
+
+  test('Given 仅历史关联的上下文 When 查询默认活动画布 Then 不自动打开', async () => {
+    const f = fixture()
+    f.consumer.beginRun('chat')
+    f.start('context', 'canvas_get_context')
+    f.consumer.handle('chat', { type: 'tool_result', toolUseId: 'context', isError: false,
+      result: JSON.stringify({ projectId: 'project', activeCanvasId: 'canvas', linkedCanvasIds: ['canvas'], explicitReferences: [] }) })
+    await flush()
+    expect(f.store.get(agentSidePanelOpenAtomFamily('chat'))).toBe(false)
+    f.consumer.dispose()
+  })
+
+  test('Given 当前轮明确引用节点 When 上下文返回已授权引用 Then 自动展示引用画布', async () => {
+    const f = fixture()
+    f.consumer.beginRun('chat')
+    f.start('context', 'canvas_get_context')
+    f.consumer.handle('chat', { type: 'tool_result', toolUseId: 'context', isError: false,
+      result: JSON.stringify({ projectId: 'project', activeCanvasId: 'canvas', explicitReferences: [{ canvasId: 'canvas', nodeId: 'node' }] }) })
+    await flush()
+    expect(f.store.get(agentSidePanelOpenAtomFamily('chat'))).toBe(true)
+    expect(f.store.get(agentCanvasFocusRequestsAtom).get(f.key)?.nodeIds).toEqual(['node'])
+    expect(f.store.get(agentCanvasChangeNoticesAtom).size).toBe(0)
+    f.consumer.dispose()
+  })
+
+  test('Given 自动任务处于当前页面 When 真实修改画布 Then 不抢焦点但保留修改摘要', async () => {
+    const f = fixture()
+    f.store.set(agentSessionsAtom, [{ id: 'chat', workspaceId: 'project', sourceAutomationId: 'scheduled', title: '自动任务', createdAt: 1, updatedAt: 1 }])
+    f.start('one'); f.result('one'); await flush()
+    expect(f.store.get(agentSidePanelOpenAtomFamily('chat'))).toBe(false)
+    expect(f.store.get(agentCanvasChangeNoticesAtom).get(f.key)?.changes).toBe(1)
+    f.consumer.dispose()
+  })
+
+  test('Given 读取结果目标不符、失败、缺失或未观察到当前轮 When 收到读取结果 Then 不展示', async () => {
+    for (const scenario of ['wrong-canvas', 'error', 'missing', 'no-run', 'background', 'revoked']) {
+      const f = fixture()
+      if (scenario !== 'no-run') f.consumer.beginRun('chat')
+      if (scenario === 'background') f.store.set(currentAgentSessionIdAtom, 'another')
+      if (scenario === 'revoked') f.bindings.length = 0
+      f.consumer.handle('chat', { type: 'tool_start', toolUseId: 'read', toolName: 'canvas_read', input: { canvasId: 'canvas', nodeIds: ['node'] } })
+      f.consumer.handle('chat', { type: 'tool_result', toolUseId: 'read', isError: scenario === 'error',
+        result: JSON.stringify({ canvasId: scenario === 'wrong-canvas' ? 'another' : 'canvas', revision: 1,
+          nodes: scenario === 'missing' ? [] : [{ node: { id: 'node' } }] }) })
+      await flush()
+      expect(f.store.get(agentSidePanelOpenAtomFamily('chat'))).toBe(false)
+      expect(f.store.get(agentCanvasChangeNoticesAtom).size).toBe(0)
+      f.consumer.dispose()
+    }
+  })
+})
+
+describe('画布读取导航与写入共享展示机会', () => {
+  test('Given 空画布的有界枚举成功 When 文本块回执到达 Then 打开具体画布且不创建修改摘要', async () => {
+    const f = fixture()
+    f.consumer.beginRun('chat')
+    f.consumer.handle('chat', { type: 'tool_start', toolUseId: 'list', toolName: 'canvas_list_nodes', input: { canvasId: 'canvas' } })
+    f.consumer.handle('chat', { type: 'tool_result', toolUseId: 'list', isError: false,
+      result: JSON.stringify([{ type: 'text', text: JSON.stringify({ canvasId: 'canvas', revision: 0, nodes: [], total: 0 }) }]) })
+    await flush()
+    expect(f.store.get(agentSidePanelOpenAtomFamily('chat'))).toBe(true)
+    expect(f.store.get(agentDiffPanelTabAtom).get('chat')).toBe('canvas:canvas')
+    expect(f.store.get(agentCanvasChangeNoticesAtom).size).toBe(0)
+    f.store.set(agentSidePanelOpenAtomFamily('chat'), false)
+    f.start('write'); f.result('write'); await flush()
+    expect(f.store.get(agentSidePanelOpenAtomFamily('chat'))).toBe(false)
+    expect(f.store.get(agentCanvasChangeNoticesAtom).get(f.key)?.changes).toBe(1)
+    f.consumer.dispose()
+  })
+
+  test('Given 多个显式画布引用或跨项目上下文 When 响应没有唯一可信目标 Then 不猜测打开', async () => {
+    for (const projectId of ['project', 'another']) {
+      const f = fixture()
+      f.consumer.beginRun('chat')
+      f.start('context', 'canvas_get_context')
+      f.consumer.handle('chat', { type: 'tool_result', toolUseId: 'context', isError: false,
+        result: JSON.stringify({ projectId, explicitReferences: [
+          { canvasId: 'canvas', nodeId: 'node' }, { canvasId: 'another', nodeId: 'node-2' },
+        ] }) })
+      await flush()
+      expect(f.store.get(agentSidePanelOpenAtomFamily('chat'))).toBe(false)
+      f.consumer.dispose()
+    }
+  })
+})
+
+describe('直接进入画布媒体与交付业务', () => {
+  /** 从生产工具返回结构提取导航，测试不先调用 canvas_read。 */
+  const cases = [
+    { name: 'canvas_inspect_images', input: { nodeIds: ['node'], expectedRevision: 4 }, result: [
+      { type: 'text', text: JSON.stringify({ nodeId: 'node', status: 'ready', evidenceId: 'image-proof' }) },
+      { type: 'image', mimeType: 'image/png', data: 'sample' },
+    ] },
+    { name: 'canvas_run_nodes', input: { nodeIds: ['node'] }, result: { canvasId: 'canvas', revision: 4,
+      tasks: [{ nodeId: 'node', taskId: 'job', status: 'queued' }, { nodeId: 'failed', taskId: 'bad', status: 'failed' }] } },
+    { name: 'canvas_inspect_media_content', input: { nodeId: 'node' }, result: [
+      { type: 'text', text: JSON.stringify({ canvasId: 'canvas', nodeId: 'node', inspectionEvidenceId: 'media-proof', inspection: {} }) },
+      { type: 'text', text: '抽样时间：100 ms（仅此帧）' },
+      { type: 'image', mimeType: 'image/png', data: 'sample' },
+    ] },
+    ...['start', 'resume'].map(action => ({ name: 'canvas_task', input: { action, taskId: 'task' },
+      result: { canvasId: 'canvas', taskId: 'task', phase: 'working', requirements: [] } })),
+  ]
+  for (const scenario of cases) {
+    test(`Given 本轮直接调用 ${scenario.name} ${'action' in scenario.input ? scenario.input.action : ''} When 真实结果成功 Then 自动展示且不伪造修改`, async () => {
+      const f = fixture()
+      f.consumer.beginRun('chat')
+      f.consumer.handle('chat', { type: 'tool_start', toolName: scenario.name, toolUseId: 'business', input: { canvasId: 'canvas', ...scenario.input } })
+      f.consumer.handle('chat', { type: 'tool_result', toolUseId: 'business', isError: false, result: JSON.stringify(scenario.result) })
+      await flush()
+      expect(f.store.get(agentSidePanelOpenAtomFamily('chat'))).toBe(true)
+      expect(f.store.get(agentCanvasChangeNoticesAtom).size).toBe(0)
+      expect(f.store.get(agentCanvasFocusRequestsAtom).get(f.key)?.nodeIds).toEqual(scenario.name === 'canvas_task' ? [] : ['node'])
+      f.store.set(agentSidePanelOpenAtomFamily('chat'), false)
+      f.consumer.handle('chat', { type: 'tool_start', toolName: scenario.name, toolUseId: 'again', input: { canvasId: 'canvas', ...scenario.input } })
+      f.consumer.handle('chat', { type: 'tool_result', toolUseId: 'again', isError: false, result: JSON.stringify(scenario.result) })
+      await flush()
+      expect(f.store.get(agentSidePanelOpenAtomFamily('chat'))).toBe(false)
+      f.consumer.dispose()
+    })
+  }
+
+  test('Given 媒体业务来自后台、自动任务或撤销绑定 When 成功回执到达 Then 不抢焦点', async () => {
+    for (const scenario of cases) {
+      for (const boundary of ['background', 'automation', 'revoked']) {
+        const f = fixture()
+        f.consumer.beginRun('chat')
+        if (boundary === 'background') f.store.set(currentAgentSessionIdAtom, 'another')
+        if (boundary === 'automation') f.store.set(agentSessionsAtom, [{ id: 'chat', workspaceId: 'project', sourceAutomationId: 'scheduled', title: '自动', createdAt: 1, updatedAt: 1 }])
+        if (boundary === 'revoked') f.bindings.length = 0
+        f.consumer.handle('chat', { type: 'tool_start', toolName: scenario.name, toolUseId: 'business', input: { canvasId: 'canvas', ...scenario.input } })
+        f.consumer.handle('chat', { type: 'tool_result', toolUseId: 'business', isError: false, result: JSON.stringify(scenario.result) })
+        await flush()
+        expect(f.store.get(agentSidePanelOpenAtomFamily('chat'))).toBe(false)
+        f.consumer.dispose()
+      }
+    }
+  })
+
+  test('Given 状态探测、失败生成、无可读图片或返回其它节点 When 结果到达 Then 不打开画布', async () => {
+    const rejected = [
+      { name: 'canvas_task', input: { action: 'status' }, result: { canvasId: 'canvas', taskId: 'task', phase: 'working' } },
+      { name: 'canvas_task', input: { action: 'resume', taskId: 'expected' }, result: { canvasId: 'canvas', taskId: 'another', phase: 'working' } },
+      { name: 'canvas_run_nodes', input: { nodeIds: ['node'] }, result: { canvasId: 'canvas', revision: 4, tasks: [{ nodeId: 'node', status: 'failed' }] } },
+      { name: 'canvas_inspect_images', input: { nodeIds: ['node'] }, result: [{ type: 'text', text: JSON.stringify({ nodeId: 'node', status: 'image-unavailable' }) }] },
+      { name: 'canvas_inspect_images', input: { nodeIds: ['node'] }, result: [{ type: 'text', text: JSON.stringify({ nodeId: 'another', status: 'ready' }) }] },
+      { name: 'canvas_inspect_media_content', input: { nodeId: 'node' }, result: [{ type: 'text', text: JSON.stringify({ canvasId: 'other', nodeId: 'node', inspectionEvidenceId: 'proof' }) }] },
+    ]
+    for (const scenario of rejected) {
+      const f = fixture()
+      f.consumer.beginRun('chat')
+      f.consumer.handle('chat', { type: 'tool_start', toolName: scenario.name, toolUseId: 'business', input: { canvasId: 'canvas', ...scenario.input } })
+      f.consumer.handle('chat', { type: 'tool_result', toolUseId: 'business', isError: false, result: JSON.stringify(scenario.result) })
+      await flush()
+      expect(f.store.get(agentSidePanelOpenAtomFamily('chat'))).toBe(false)
+      f.consumer.dispose()
+    }
+  })
+})

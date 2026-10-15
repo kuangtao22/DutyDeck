@@ -1,11 +1,15 @@
 import { PROJECT_KNOWLEDGE_IPC_CHANNELS } from '@proma/shared'
-import type { KnowledgeMemoryOrganizationPreview, KnowledgeReadResult, KnowledgeSearchResult, KnowledgeSnapshot, ProjectKnowledgeApi } from '@proma/shared'
+import type { KnowledgeImportResult, KnowledgeIndexPreview, KnowledgeIndexRebuildInput, KnowledgeIndexRebuildResult, KnowledgeMemoryOrganizationPreview, KnowledgeReadResult, KnowledgeSearchResult, KnowledgeSnapshot, ProjectKnowledgeApi } from '@proma/shared'
 
 /** 创建知识库窄桥接；参数合法性与访问范围由主进程核验。 */
 export function createProjectKnowledgePreload(
   invoke: (channel: string, input: unknown) => Promise<unknown>,
+  /** 订阅固定知识状态事件，返回释放监听器的函数。 */
+  subscribe?: (listener: (event: { workspaceId: string; generation?: number }) => void) => () => void,
 ): ProjectKnowledgeApi {
   return {
+    startProjectKnowledgeExecution: (input) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.START_EXECUTION, input) as Promise<KnowledgeSnapshot>,
+    onProjectKnowledgeChanged: (listener) => subscribe?.(listener) ?? (() => undefined),
     confirmProjectKnowledgePlan: (input) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.CONFIRM_PLAN, input) as Promise<KnowledgeSnapshot>,
     pauseProjectKnowledgeWorkflow: (input) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.PAUSE_WORKFLOW, input) as Promise<KnowledgeSnapshot>,
     getProjectKnowledgeSnapshot: (workspaceId) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.SNAPSHOT, { workspaceId }) as Promise<KnowledgeSnapshot>,
@@ -20,5 +24,8 @@ export function createProjectKnowledgePreload(
     undoProjectKnowledgeOperation: (workspaceId, operationId) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.UNDO, { workspaceId, operationId }) as Promise<KnowledgeSnapshot>,
     excludeProjectKnowledgeSession: (workspaceId, sessionId) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.EXCLUDE_SESSION, { workspaceId, sessionId }) as Promise<KnowledgeSnapshot>,
     previewProjectKnowledgeMemory: (workspaceId) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.PREVIEW_MEMORY, { workspaceId }) as Promise<KnowledgeMemoryOrganizationPreview>,
+    importProjectKnowledge: (input) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.IMPORT, input) as Promise<KnowledgeImportResult>,
+    previewProjectKnowledgeIndex: (workspaceId) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.PREVIEW_INDEX, { workspaceId }) as Promise<KnowledgeIndexPreview>,
+    rebuildProjectKnowledgeIndex: (input: KnowledgeIndexRebuildInput) => invoke(PROJECT_KNOWLEDGE_IPC_CHANNELS.REBUILD_INDEX, input) as Promise<KnowledgeIndexRebuildResult>,
   }
 }

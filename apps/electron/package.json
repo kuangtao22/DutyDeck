@@ -1,6 +1,6 @@
 {
   "name": "@proma/electron",
-  "version": "0.19.53-bone.20",
+  "version": "0.19.53-bone.25",
   "description": "DutyDeck，为专业用户设计的 Agent - Electron App",
   "homepage": "https://github.com/kuangtao22/DutyDeck",
   "main": "dist/main.cjs",
@@ -20,12 +20,12 @@
     "build:agent-runtime": "esbuild src/utility/agent-runtime.ts --bundle --platform=node --format=cjs --outfile=dist/agent-runtime.cjs --external:electron --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-ai --external:sharp",
     "build:terminal-runtime": "esbuild src/utility/terminal-runtime.ts --bundle --platform=node --format=cjs --outfile=dist/terminal-runtime.cjs --external:electron --external:node-pty",
     "build:server-ops-runtime": "esbuild src/utility/server-ops-runtime.ts --bundle --platform=node --format=cjs --outfile=dist/server-ops-runtime.cjs --external:electron --external:ssh2 --external:mysql2 --external:ioredis --external:pg",
-    "build:preload": "esbuild src/preload/index.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron && esbuild src/preload/path-management-entry.ts --bundle --platform=node --format=cjs --outfile=dist/path-management-preload.cjs --external:electron",
+    "build:preload": "esbuild src/preload/index.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron && esbuild src/preload/path-management-entry.ts --bundle --platform=node --format=cjs --outfile=dist/path-management-preload.cjs --external:electron && esbuild src/preload/default-root-migration-preload-entry.ts --bundle --platform=node --format=cjs --outfile=dist/default-root-migration-preload.cjs --external:electron",
     "watch:main": "esbuild src/main/index.ts --bundle --platform=node --format=cjs --outfile=dist/main.cjs --external:electron --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-ai --external:sharp --watch=forever",
     "watch:agent-runtime": "esbuild src/utility/agent-runtime.ts --bundle --platform=node --format=cjs --outfile=dist/agent-runtime.cjs --external:electron --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-agent-core --external:@earendil-works/pi-ai --external:sharp --watch=forever",
     "watch:terminal-runtime": "esbuild src/utility/terminal-runtime.ts --bundle --platform=node --format=cjs --outfile=dist/terminal-runtime.cjs --external:electron --external:node-pty --watch=forever",
     "watch:server-ops-runtime": "esbuild src/utility/server-ops-runtime.ts --bundle --platform=node --format=cjs --outfile=dist/server-ops-runtime.cjs --external:electron --external:ssh2 --external:mysql2 --external:ioredis --external:pg --watch=forever",
-    "watch:preload": "concurrently -k -n preload,path-preload -c magenta,blue \"esbuild src/preload/index.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron --watch=forever\" \"esbuild src/preload/path-management-entry.ts --bundle --platform=node --format=cjs --outfile=dist/path-management-preload.cjs --external:electron --watch=forever\"",
+    "watch:preload": "concurrently -k -n preload,path-preload,default-root-preload -c magenta,blue,cyan \"esbuild src/preload/index.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron --watch=forever\" \"esbuild src/preload/path-management-entry.ts --bundle --platform=node --format=cjs --outfile=dist/path-management-preload.cjs --external:electron --watch=forever\" \"esbuild src/preload/default-root-migration-preload-entry.ts --bundle --platform=node --format=cjs --outfile=dist/default-root-migration-preload.cjs --external:electron --watch=forever\"",
     "build:renderer": "vite build",
     "build:resources": "bun run scripts/build-resources.ts",
     "build:agent-island-native": "bun run scripts/build-agent-island-native.ts",
@@ -59,7 +59,8 @@
     "dist:debug": "bun run scripts/dist.ts --current-arch --verbose",
     "test:audio-generation-settings-smoke": "bun run scripts/audio-generation-settings-smoke.ts",
     "build:api-workbench-runtime": "esbuild src/utility/api-workbench-runtime.ts --bundle --platform=node --format=cjs --outfile=dist/api-workbench-runtime.cjs --external:electron",
-    "watch:api-workbench-runtime": "esbuild src/utility/api-workbench-runtime.ts --bundle --platform=node --format=cjs --outfile=dist/api-workbench-runtime.cjs --external:electron --watch=forever"
+    "watch:api-workbench-runtime": "esbuild src/utility/api-workbench-runtime.ts --bundle --platform=node --format=cjs --outfile=dist/api-workbench-runtime.cjs --external:electron --watch=forever",
+    "prepare:local-model-engine": "bun run scripts/prepare-local-model-engine.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "6.20.3",

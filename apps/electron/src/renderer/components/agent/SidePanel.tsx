@@ -1,3 +1,5 @@
+import { InteractionDesignWorkspace } from '@/components/interaction-design/InteractionDesignWorkspace'
+import { MousePointer2 } from 'lucide-react'
 /**
  * SidePanel — Agent 侧面板容器
  *
@@ -165,6 +167,7 @@ import {
 } from '@/components/design/CanvasWorkspaceAdapter'
 import { designAdapter } from '@/lib/design-adapter'
 import { removeCanvasSessionAtom, upsertCanvasSessionAtom } from '@/atoms/canvas-session-atoms'
+import { useServerOpsTaskFocus } from '@/components/server-ops/useServerOpsTaskFocus'
 import { ServerOpsWorkspace } from '@/components/server-ops/ServerOpsWorkspace'
 import { ApiWorkbench } from '@/components/api-workbench/ApiWorkbench'
 import { apiWorkbenchOpenRunTargetAtom } from '@/atoms/api-workbench-atoms'
@@ -1334,6 +1337,12 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
     return () => window.removeEventListener('proma:open-api-run', handleOpenApiRun)
   }, [handleWorkspaceTabChange, sessionId, setApiWorkbenchOpenRunTarget, setIsOpen, setWorkspaceComponentTabs])
 
+  useServerOpsTaskFocus(sessionId, () => {
+    setWorkspaceComponentTabs((previous) => previous.includes('server-ops') ? previous : [...previous, 'server-ops'])
+    setIsOpen(true)
+    handleWorkspaceTabChange('server-ops')
+  })
+
   /** 登记用户明确打开的 Canvas 标签；具体画布会替换仅用于选取画布的 launcher。 */
   const rememberOpenedCanvasWorkspaceTab = React.useCallback((tab: AgentSidePanelTab, makeActive: boolean): void => {
     updateCanvasWorkspaceState((current) => rememberAgentCanvasWorkspaceTab(current, tab, makeActive))
@@ -1801,6 +1810,7 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
         'server-ops': { label: '运维', icon: <ServerCog className="size-3.5" /> },
         'api-workbench': { label: '接口', icon: <Braces className="size-3.5" /> },
         'capability-factory': { label: '工厂', icon: <Factory className="size-3.5" /> },
+        'interaction-design': { label: '交互设计', icon: <MousePointer2 className="size-3.5" /> },
       }
       return { id: component, ...meta[component], closable: true }
     }),
@@ -2220,6 +2230,8 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
       )
     ) : paneTab === 'vault' ? (
       <div className="min-h-0 flex-1 overflow-hidden"><VaultView embedded sessionId={sessionId} /></div>
+    ) : paneTab === 'interaction-design' ? (
+      currentWorkspaceId ? <InteractionDesignWorkspace key={`${sessionId}:${currentWorkspaceId}:${pane ?? 'single'}`} projectId={currentWorkspaceId} sessionId={sessionId} paneActive={paneActive} /> : <div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">当前会话没有有效的所属项目</div>
     ) : paneTab === 'server-ops' ? (
       <ServerOpsWorkspace viewScope={`${sessionId}:${pane ?? 'single'}`} paneActive={paneActive} />
     ) : paneTab === 'api-workbench' ? (

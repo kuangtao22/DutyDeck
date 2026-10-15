@@ -2,7 +2,7 @@ import { lstat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import type { AgentFileChangeCapture, AgentRunFileChangesSnapshot } from '@proma/shared'
-import { shouldTrackAgentRunFilePath } from './agent-run-file-change-path-policy'
+import { shouldTrackAgentFileObservationPath, shouldTrackAgentRunFilePath } from './agent-run-file-change-path-policy'
 import { AgentRunFileTracker } from './agent-run-file-tracker'
 import { subscribeAgentFileObservations } from './agent-file-observation-bus'
 
@@ -28,7 +28,7 @@ function normalizePath(path: string, cwd: string): string {
 }
 // 复用既有监听，不创建第二套 fs.watch；同一共享根只有唯一工具证据才能归属。
 subscribeAgentFileObservations((path) => {
-  if (!shouldTrackAgentRunFilePath(path)) return
+  if (!shouldTrackAgentFileObservationPath(path)) return
   // Git 元数据会触发右侧累计差异刷新，但不属于业务文件修改。
   if (path.split(/[\\/]/).includes('.git')) return
   const candidates = [...activeRuns].filter(run => run.owns(path))
@@ -59,7 +59,12 @@ class RunFileChanges {
   private pending: Promise<void> = Promise.resolve()
 
   constructor(readonly options: RunOptions) {
-    this.tracker = new AgentRunFileTracker(options)
+    this.tracker = new AgentRunFileTracker({
+      cwd: options.cwd,
+      roots: options.roots,
+      files: options.files,
+      startedAt: options.startedAt,
+    })
     activeRuns.add(this)
   }
 
@@ -127,6 +132,14 @@ class RunFileChanges {
     activeRuns.delete(this)
     await this.pending
     try {
+      // 新轮已经接管时，旧轮不能再读取共享目录的当前内容；所有已见路径统一降级为未知。
+      if (this.options.isValid() && this.options.isCurrent?.() === false) {
+        this.unattributed = true
+        for (const file of this.tracker.snapshot()) this.invalidated.add(file.path)
+        await this.save(Date.now())
+        return
+      }
+      await this.tracker.finalizeBaseline()
       if (this.options.isValid() && this.options.isCurrent?.() !== false) await this.tracker.verify()
       else if (this.options.isValid()) {
         // 新轮已开始，无法再验证旧轮最终内容；保存旧轮未知状态，不读新轮文件。

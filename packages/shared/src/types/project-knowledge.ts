@@ -1,4 +1,6 @@
-import type { KnowledgeDocumentLocation, KnowledgePlanConfirmInput, KnowledgeWorkflow, KnowledgeWorkflowPauseInput } from './project-knowledge-workflow'
+import type { KnowledgeAdmissionRecord } from './project-knowledge-admission'
+import type { KnowledgeExecutionStartInput } from './project-knowledge-execution'
+import type { KnowledgeDocumentLocation, KnowledgeIndexPreview, KnowledgeIndexRebuildInput, KnowledgeIndexRebuildResult, KnowledgePlanConfirmInput, KnowledgeWorkflow, KnowledgeWorkflowPauseInput } from './project-knowledge-workflow'
 
 /** 项目自由分组；旧分类字符串继续可读，不限制新场景。 */
 export type KnowledgeCategory = string
@@ -36,6 +38,8 @@ export interface KnowledgeSource {
 
 /** 可供目录展示与检索排序的知识条目头。 */
 export interface KnowledgeEntry {
+  /** 内容准入评估；缺失表示旧内容尚未评估。 */
+  admission?: KnowledgeAdmissionRecord
   /** 新版文档的权威文件定位；未提供时兼容旧不可变正文。 */
   document?: KnowledgeDocumentLocation
   /** 重命名和目录整理后仍保持稳定的条目 ID。 */
@@ -59,7 +63,7 @@ export interface KnowledgeEntry {
   /** 提炼依据指向来源条目的固定版本；逐字引文由宿主校验。 */
   evidence?: Array<{ entryId: string; revision: string; quote: string }>
   /** 当前用户原话的可信会话来源；仅由宿主在校验后写入。 */
-  userEvidence?: { sessionId: string; messageId: string; quote: string }
+  userEvidence?: { sessionId: string; messageId: string; quote: string; /** 原始用户消息完整文本指纹；旧资料缺失时不能自动准入。 */ sha256?: string }
   /** 来源总字节数；未知的外部来源使用零。 */
   byteSize: number
   /** 实际已提取的 UTF-8 字节数。 */
@@ -230,6 +234,8 @@ export interface KnowledgeSearchInput {
   category?: KnowledgeCategory
   /** 历史内容仅在显式请求时参与检索。 */
   includeHistory?: boolean
+  /** 显式查看未评估、待补或已失效知识，不作为默认事实使用。 */
+  includeUnassessed?: boolean
   /** 从第几个结果继续读取。 */
   offset?: number
   /** 默认 6，目录浏览可申请最多 100。 */
@@ -292,6 +298,7 @@ export interface KnowledgeReadResult {
 
 /** 四层共享的知识库固定 IPC 通道。 */
 export const PROJECT_KNOWLEDGE_IPC_CHANNELS = {
+  START_EXECUTION: 'project-knowledge:start-execution',
   CONFIRM_PLAN: 'project-knowledge:confirm-plan',
   PAUSE_WORKFLOW: 'project-knowledge:pause-workflow',
   SNAPSHOT: 'project-knowledge:snapshot',
@@ -306,10 +313,29 @@ export const PROJECT_KNOWLEDGE_IPC_CHANNELS = {
   UNDO: 'project-knowledge:undo',
   EXCLUDE_SESSION: 'project-knowledge:exclude-session',
   PREVIEW_MEMORY: 'project-knowledge:preview-memory',
+  IMPORT: 'project-knowledge:import',
+  PREVIEW_INDEX: 'project-knowledge:preview-index',
+  REBUILD_INDEX: 'project-knowledge:rebuild-index',
 } as const
+
+/** 旧知识库导入方式；路径由主进程原生选择器提供。 */
+export type KnowledgeImportMode = 'files' | 'folder'
+
+/** 一次导入的可见结果；不包含宿主绝对路径或正文副本。 */
+export interface KnowledgeImportResult {
+  rootRelativePath: string
+  imported: number
+  unchanged: number
+  files: Array<{ relativePath: string; kind: 'document' | 'attachment' }>
+  skipped: Array<{ path: string; reason: string }>
+}
 
 /** Renderer 仅能通过项目身份访问知识库，不接触文件系统和模型凭据。 */
 export interface ProjectKnowledgeApi {
+  /** 用户发起或恢复宿主管理的知识任务。 */
+  startProjectKnowledgeExecution(input: KnowledgeExecutionStartInput): Promise<KnowledgeSnapshot>
+  /** 状态事件只携带项目与任务代次，不包含正文。 */
+  onProjectKnowledgeChanged(listener: (event: { workspaceId: string; generation?: number }) => void): () => void
   /** 用户确认当前分组清单；Agent 没有对应确认工具。 */
   confirmProjectKnowledgePlan(input: KnowledgePlanConfirmInput): Promise<KnowledgeSnapshot>
   /** 暂停或继续已确认的知识生成。 */
@@ -338,4 +364,10 @@ export interface ProjectKnowledgeApi {
   excludeProjectKnowledgeSession(workspaceId: string, sessionId: string): Promise<KnowledgeSnapshot>
   /** 预览旧记忆的主题拆分建议，不改写或移动原文件。 */
   previewProjectKnowledgeMemory(workspaceId: string): Promise<KnowledgeMemoryOrganizationPreview>
+  /** 由主进程弹出原生选择器并保留旧库原文。 */
+  importProjectKnowledge(input: { workspaceId: string; mode: KnowledgeImportMode }): Promise<KnowledgeImportResult>
+  /** 只读查看磁盘索引与当前目录生成结果。 */
+  previewProjectKnowledgeIndex(workspaceId: string): Promise<KnowledgeIndexPreview>
+  /** 用户明确确认后备份旧索引并重建。 */
+  rebuildProjectKnowledgeIndex(input: KnowledgeIndexRebuildInput): Promise<KnowledgeIndexRebuildResult>
 }

@@ -523,3 +523,12 @@ test('Given 真实实验创建并运行 When 面板反复被动刷新列表 Then
   expect(advanced.stages[0]?.pairs).toHaveLength(1)
   expect(modelCalls).toBe(4)
 })
+
+test('Given 整链限额 When IPC 分派 Then 原样传给运行选项', async () => {
+  /** 捕获接线结果，不触发真实模型。 */
+  let received: CapabilityFactoryRunOptions | undefined
+  const limits = { maxCalls: 3, maxTransportAttempts: 3, deadlineAt: 123 }
+  const { call } = fixture({ runScene: async ({ options }) => { received = options; return {} } })
+  await call({ method: 'runScene', input: { sessionId: 's1', sceneId: 'scene', input: {}, limits } })
+  expect(received).toEqual({ limits })
+})

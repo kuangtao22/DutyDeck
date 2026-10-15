@@ -1,3 +1,4 @@
+import { parseServerOpsTaskStartInput, parseServerOpsTaskIdentity, parseServerOpsTaskInput, parseServerOpsTaskResizeInput, parseServerOpsTaskAck, parseServerOpsTaskOutputEvent, parseServerOpsTaskExitEvent } from '@proma/shared'
 import { Buffer } from 'node:buffer'
 import { parseServerOpsSftpRequest, parseServerOpsSftpResult } from './server-ops-sftp-runtime'
 import type { ServerOpsSftpRequest, ServerOpsSftpResult } from './server-ops-sftp-runtime'
@@ -248,6 +249,11 @@ export type ServerOpsRuntimeRequest =
   | { type: 'server-ops.terminal-input'; hostId: string; connectionId: string; data: string }
   | { type: 'server-ops.terminal-resize'; hostId: string; connectionId: string; cols: number; rows: number }
   | { type: 'server-ops.terminal-ack'; input: ServerOpsTerminalOutputAck }
+  | { type: 'server-ops.task-start'; input: import('@proma/shared').ServerOpsTaskStartInput }
+  | { type: 'server-ops.task-stop'; input: import('@proma/shared').ServerOpsTaskIdentity }
+  | { type: 'server-ops.task-input'; input: import('@proma/shared').ServerOpsTaskInput }
+  | { type: 'server-ops.task-resize'; input: import('@proma/shared').ServerOpsTaskResizeInput }
+  | { type: 'server-ops.task-ack'; input: import('@proma/shared').ServerOpsTaskAck }
   | { type: 'server-ops.console-start'; input: ServerOpsConsoleRuntimeStart }
   | { type: 'server-ops.console-stop'; input: ServerOpsConsoleIdentity }
   | { type: 'server-ops.console-input'; input: import('@proma/shared').ServerOpsConsoleInput }
@@ -273,6 +279,9 @@ export type ServerOpsRuntimeMessage =
   | { type: 'server-ops.error'; requestId?: string; hostId: string; connectionId: string; code: string; message: string }
   | { type: 'server-ops.terminal-output'; event: ServerOpsTerminalOutputEvent }
   | { type: 'server-ops.terminal-exit'; event: ServerOpsTerminalExitEvent }
+  | { type: 'server-ops.task-started'; session: import('@proma/shared').ServerOpsTaskIdentity }
+  | { type: 'server-ops.task-output'; event: import('@proma/shared').ServerOpsTaskOutputEvent }
+  | { type: 'server-ops.task-exit'; event: import('@proma/shared').ServerOpsTaskExitEvent }
   | { type: 'server-ops.console-started'; session: ServerOpsConsoleIdentity }
   | { type: 'server-ops.console-output'; event: import('@proma/shared').ServerOpsConsoleOutputEvent }
   | { type: 'server-ops.console-exit'; event: import('@proma/shared').ServerOpsConsoleExitEvent }
@@ -760,6 +769,11 @@ export function parseServerOpsRuntimeRequest(value: unknown): ServerOpsRuntimeRe
       && typeof value.input.sequence === 'number' && Number.isSafeInteger(value.input.sequence) && value.input.sequence >= 1) {
       return { type: value.type, input: { hostId: value.input.hostId, connectionId: value.input.connectionId, sequence: value.input.sequence } }
     }
+    if (value.type === 'server-ops.task-start' && hasExactKeys(value, ['type', 'input'])) { return { type: value.type, input: parseServerOpsTaskStartInput(value.input) } }
+    if (value.type === 'server-ops.task-stop' && hasExactKeys(value, ['type', 'input'])) { return { type: value.type, input: parseServerOpsTaskIdentity(value.input) } }
+    if (value.type === 'server-ops.task-input' && hasExactKeys(value, ['type', 'input'])) { return { type: value.type, input: parseServerOpsTaskInput(value.input) } }
+    if (value.type === 'server-ops.task-resize' && hasExactKeys(value, ['type', 'input'])) { return { type: value.type, input: parseServerOpsTaskResizeInput(value.input) } }
+    if (value.type === 'server-ops.task-ack' && hasExactKeys(value, ['type', 'input'])) { return { type: value.type, input: parseServerOpsTaskAck(value.input) } }
     if (value.type === 'server-ops.console-start' && hasExactKeys(value, ['type', 'input'])
       && hasExactKeys(value.input, ['consoleId', 'hostId', 'connectionId', 'containerId', 'cols', 'rows'])
       && isTerminalDimension(value.input.cols) && isTerminalDimension(value.input.rows)) {
@@ -1070,6 +1084,9 @@ export function parseServerOpsRuntimeMessage(value: unknown): ServerOpsRuntimeMe
     if (value.type === 'server-ops.terminal-exit' && hasExactKeys(value, ['type', 'event'])) {
       return { type: value.type, event: parseTerminalExitEvent(value.event) }
     }
+    if (value.type === 'server-ops.task-started' && hasExactKeys(value, ['type', 'session'])) { return { type: value.type, session: parseServerOpsTaskIdentity(value.session) } }
+    if (value.type === 'server-ops.task-output' && hasExactKeys(value, ['type', 'event'])) { return { type: value.type, event: parseServerOpsTaskOutputEvent(value.event) } }
+    if (value.type === 'server-ops.task-exit' && hasExactKeys(value, ['type', 'event'])) { return { type: value.type, event: parseServerOpsTaskExitEvent(value.event) } }
     if (value.type === 'server-ops.console-started' && hasExactKeys(value, ['type', 'session'])) {
       return { type: value.type, session: parseServerOpsConsoleIdentity(value.session) }
     }

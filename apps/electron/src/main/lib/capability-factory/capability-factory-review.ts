@@ -10,6 +10,8 @@ export interface CapabilityRunReviewInput {
   callModel: CapabilityFactoryModelCall
   now?: () => number
   timeoutMs?: number
+  /** 外部会话或补评预算停止信号；即使模型端口不响应也结束等待。 */
+  signal?: AbortSignal
 }
 
 /** 解析后的报告只包含可信结构，内容仍标明是模型评审。 */
@@ -169,12 +171,26 @@ export async function reviewCapabilityRun(input: CapabilityRunReviewInput): Prom
       })),
     })}`,
   ].join('\n\n')
-  /** 明确超时并取消请求；即使端口未正确响应 signal，也必须结束评审等待。 */
+  /** 超时和用户取消分别竞速；保持调用异常与解析异常的分类边界。 */
   const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
+  let failureKind: NonNullable<CapabilityRunReview['failureKind']> = 'model-error'
+  let onAbort: (() => void) | undefined
   try {
-    const timeout = new Promise<never>((_, reject) => {
+    if (input.signal?.aborted) {
+      failureKind = 'cancelled'
+      throw new Error('内容评审已取消，运行输出已保留。')
+    }
+    const stopped = new Promise<never>((_, reject) => {
+      onAbort = () => {
+        failureKind = 'cancelled'
+        const error = new Error('内容评审已取消，运行输出已保留。')
+        controller.abort(error)
+        reject(error)
+      }
+      input.signal?.addEventListener('abort', onAbort, { once: true })
       timer = setTimeout(() => {
+        failureKind = 'timeout'
         const error = new Error('内容评审超时，运行输出已保留，请稍后重新评测。')
         controller.abort(error)
         reject(error)
@@ -184,11 +200,13 @@ export async function reviewCapabilityRun(input: CapabilityRunReviewInput): Prom
       stepId: '__factory_review__', model: input.binding.declaredModel,
       channelId: input.binding.channelId, modelId: input.binding.modelId,
       prompt, signal: controller.signal,
-    }), timeout])
+    }), stopped])
+    failureKind = 'invalid-response'
     return { ...base, ...parseReport(response.text, acceptance), status: 'succeeded', finishedAt: now() }
   } catch (error) {
-    return { ...base, error: error instanceof Error ? error.message : String(error), finishedAt: now() }
+    return { ...base, failureKind, error: error instanceof Error ? error.message : String(error), finishedAt: now() }
   } finally {
     if (timer !== undefined) clearTimeout(timer)
+    if (onAbort) input.signal?.removeEventListener('abort', onAbort)
   }
 }

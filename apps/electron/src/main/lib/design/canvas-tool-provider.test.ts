@@ -25,6 +25,8 @@ import type { MediaAssetRef } from '@proma/shared'
 import type { CanvasOrchestrationRecord } from '@proma/shared'
 import type { CanvasOrchestrationService } from './canvas-orchestration-service'
 import { canvasOrchestrationRequirements } from './canvas-orchestration-contract'
+import { createCanvasTaskEvidence } from './canvas-task-evidence'
+import { describeCanvasTaskEvidence } from './canvas-task-contract'
 
 const target = { projectId: 'project-1', canvasId: 'canvas-1' }
 const reference: CanvasNodeReference = { ...target, nodeId: 'doc-1', nodeType: 'document', nodeRevision: 3, title: '需求' }
@@ -977,6 +979,204 @@ test('Given 正文超出返回预算 When 读取 Then 不为未送达正文签�
   expect(result.details).toMatchObject({ truncated: true, nodes: [{ evidence: [] }] })
 })
 
+/** 用真实 Provider 和隔离正文服务复现长 HTML 分页交付，不访问用户画布。 */
+function createPagedTextFixture() {
+  /** 复现截图中的正文长度，同时保留可更新的当前版本。 */
+  let content = `<main>${'原型'.repeat(27_223)} </main>`
+  /** 原型当前正式采用版本；旧版本仍可被历史工具读取。 */
+  let revision = 1
+  /** 基础依赖仍沿用 Provider 的授权、任务和图验证。 */
+  const fixture = createFixture()
+  /** 用不可变内容集合模拟真实历史 Store。 */
+  const versions = new Map([[revision, content]])
+  /** 读取图时同步反映当前内容版本。 */
+  const originalLoad = fixture.dependencies.documents.load
+  fixture.dependencies.documents.load = input => {
+    /** 保留其它节点，避免为分页验证改变项目结构。 */
+    const snapshot = originalLoad(input)
+    snapshot.document.revision += revision - 1
+    snapshot.document.nodes = snapshot.document.nodes.map(node => node.id === 'web-1' && node.kind === 'webview'
+      ? { ...node, contentRevision: revision } : node)
+    return snapshot
+  }
+  fixture.dependencies.textArtifacts.read = async input => {
+    /** 指定版本的真实正文及与它匹配的内容摘要。 */
+    const text = versions.get(input.contentRevision) ?? ''
+    return { target: input, content: text, revision: { kind: input.kind, contentId: input.contentId,
+      revision: input.contentRevision, parentRevision: input.contentRevision - 1,
+      contentHash: createHash('sha256').update(text).digest('hex'), createdBy: { type: 'user' }, createdAt: 1 } }
+  }
+  fixture.dependencies.operations = {
+    readVersion: async input => {
+      /** 与生产 handler 相同的有界分页返回。 */
+      const text = versions.get(input.version.kind === 'image' ? -1 : input.version.revision) ?? ''
+      /** 本页起止位置使用 UTF-16 单元。 */
+      const offset = input.offset ?? 0
+      const end = Math.min(text.length, offset + 8192)
+      return { canvasId: input.canvasId, nodeId: input.nodeId, version: input.version,
+        content: text.slice(offset, end), contentHash: createHash('sha256').update(text).digest('hex'),
+        offset, nextOffset: end < text.length ? end : null, totalLength: text.length }
+    },
+  }
+  return { ...fixture, get length() { return content.length },
+    /** 模拟用户在分页期间更新原型，返回新的内容版本。 */
+    update: () => { content += '<footer>新版</footer>'; revision += 1; versions.set(revision, content); return revision },
+  }
+}
+
+/** 分页响应中的公开验收字段，不把内容覆盖等同于质量通过。 */
+interface PagedTextReadDetails {
+  content: string
+  nextOffset: number | null
+  readCoverage?: { complete: boolean; nextOffset: number | null }
+  evidence?: { evidenceId: string; validation: string }
+}
+
+/** 在同一个运行中读取精确版本和偏移，返回公开工具结果。 */
+async function readTextPage(run: ReturnType<typeof createCanvasToolRun>, offset: number, revision = 1) {
+  /** 复用实际工具参数校验、预算与授权边界。 */
+  const result = await executeTool(run.piCustomTools, 'canvas_read_version', {
+    canvasId: 'canvas-1', nodeId: 'web-1', version: { kind: 'webview', revision }, offset,
+  })
+  return result.details as PagedTextReadDetails
+}
+
+test('Given 54460字符HTML交付 When 同版本分页全部送达 Then 签发可完成任务的内容证据', async () => {
+  /** 同一任务内分别验证截断、部分读取、完整读取与完成。 */
+  const fixture = createPagedTextFixture()
+  const run = createCanvasToolRun(fixture.dependencies, fixture.context)
+  await executeTool(run.piCustomTools, 'canvas_task', { action: 'start', canvasId: 'canvas-1', requirements: [
+    { id: 'prototype', description: 'HTML原型', nodeId: 'web-1', nodeKind: 'webview', validation: 'content' },
+  ] })
+  /** 普通读取仍受原预算约束，不以大响应绕过缺陷。 */
+  const truncated = await executeTool(run.piCustomTools, 'canvas_read', { canvasId: 'canvas-1', nodeIds: ['web-1'] })
+  expect(truncated.details).toMatchObject({ truncated: true, nodes: [{ evidence: [] }] })
+  /** 分页全部送达之前不得持有可提交证据。 */
+  let page = await readTextPage(run, 0)
+  expect(page.readCoverage).toEqual({ complete: false, nextOffset: 8192 })
+  expect(page.evidence).toBeUndefined()
+  while (page.nextOffset !== null) page = await readTextPage(run, page.nextOffset)
+  expect(page.readCoverage).toEqual({ complete: true, nextOffset: null })
+  expect(page.evidence?.validation).toBe('content')
+  expect(page.evidence?.evidenceId).toHaveLength(64)
+  expect((await executeTool(run.piCustomTools, 'canvas_task', { action: 'complete',
+    submissions: [{ id: 'prototype', evidenceId: page.evidence!.evidenceId }] })).details).toMatchObject({ phase: 'completed' })
+})
+
+test('Given 分页有重复和缺页 When 先读最后一页再补齐 Then 仅完整覆盖时签发证据', async () => {
+  /** 覆盖不能按读取次数或最后一页标志推断。 */
+  const fixture = createPagedTextFixture()
+  const run = createCanvasToolRun(fixture.dependencies, fixture.context)
+  const lastOffset = Math.floor(fixture.length / 8192) * 8192
+  expect((await readTextPage(run, lastOffset)).evidence).toBeUndefined()
+  await readTextPage(run, 0)
+  await readTextPage(run, 0)
+  /** 留出中间第二页，其他页乱序到达。 */
+  for (let offset = 16384; offset < lastOffset; offset += 8192) await readTextPage(run, offset)
+  expect((await readTextPage(run, lastOffset)).readCoverage).toEqual({ complete: false, nextOffset: 8192 })
+  expect((await readTextPage(run, 8192)).evidence?.evidenceId).toHaveLength(64)
+})
+
+test('Given 正文在分页期间换版 When 混合版本或读完历史版本 Then 不签发当前交付证据', async () => {
+  /** 换版不能借用旧页累计完成新产物。 */
+  const fixture = createPagedTextFixture()
+  const run = createCanvasToolRun(fixture.dependencies, fixture.context)
+  await readTextPage(run, 0)
+  const revision = fixture.update()
+  for (let offset = 8192; offset < fixture.length; offset += 8192) {
+    expect((await readTextPage(run, offset, revision)).evidence).toBeUndefined()
+  }
+  expect((await readTextPage(run, 0, revision)).evidence?.evidenceId).toHaveLength(64)
+  /** 历史正文仍可浏览，但不能当成当前采用内容验收。 */
+  for (let offset = 0; offset < fixture.length; offset += 8192) {
+    expect((await readTextPage(run, offset, 1)).evidence).toBeUndefined()
+  }
+})
+
+test('Given 分页声称相同hash却正文不符 When 覆盖全部范围 Then 不签发内容证据', async () => {
+  /** 元数据摘要本身不能替代模型真实收到的正文。 */
+  const fixture = createPagedTextFixture()
+  const original = fixture.dependencies.operations!.readVersion!
+  fixture.dependencies.operations!.readVersion = async (input, execution) => {
+    /** 保留伪装一致的版本与摘要，只篡改首段正文。 */
+    const page = await original(input, execution)
+    return input.offset === 0 ? { ...page, content: 'x'.repeat((page.content as string).length) } : page
+  }
+  const run = createCanvasToolRun(fixture.dependencies, fixture.context)
+  for (let offset = 0; offset < fixture.length; offset += 8192) {
+    expect((await readTextPage(run, offset)).evidence).toBeUndefined()
+  }
+})
+
+test('Given 导演已读长正文节点元数据 When 同基线分页补齐正文 Then 审核覆盖同步完整', async () => {
+  /** 交付凭据与导演数据覆盖必须承认同一批真实送达页面。 */
+  const fixture = createPagedTextFixture()
+  const reviewContext = resolveCanvasAgentReviewContext(fixture.dependencies.documents.load(target).document,
+    'agent-1', { mode: 'nodes', nodeIds: ['web-1'] })
+  const run = createCanvasToolRun(fixture.dependencies, { ...fixture.context, reviewContext })
+  await executeTool(run.piCustomTools, 'canvas_read', { canvasId: 'canvas-1', nodeIds: ['web-1'], expectedRevision: 3 })
+  expect(run.getReviewCoverage?.()).toMatchObject({ complete: false, incompleteNodes: 1 })
+  for (let offset = 0; offset < fixture.length; offset += 8192) await readTextPage(run, offset)
+  expect(run.getReviewCoverage?.()).toMatchObject({ complete: true, readNodes: 1, incompleteNodes: 0, qualityVerdict: 'not-assessed' })
+})
+
+test('Given 导演尚未读取节点元数据 When 只分页读完正文 Then 不冒充完整节点审核', async () => {
+  /** 正文完整不能掩盖节点元数据尚未送达。 */
+  const fixture = createPagedTextFixture()
+  const reviewContext = resolveCanvasAgentReviewContext(fixture.dependencies.documents.load(target).document,
+    'agent-1', { mode: 'nodes', nodeIds: ['web-1'] })
+  const run = createCanvasToolRun(fixture.dependencies, { ...fixture.context, reviewContext })
+  for (let offset = 0; offset < fixture.length; offset += 8192) await readTextPage(run, offset)
+  expect(run.getReviewCoverage?.()).toMatchObject({ complete: false, readNodes: 0, unreadNodes: 1 })
+})
+
+test('Given 导演已固定审核基线 When 分页期间更新正文 Then 不将新版读数混入旧审核', async () => {
+  /** 独立内容版本变更同时推进图 revision，旧审核范围必须失效。 */
+  const fixture = createPagedTextFixture()
+  const reviewContext = resolveCanvasAgentReviewContext(fixture.dependencies.documents.load(target).document,
+    'agent-1', { mode: 'nodes', nodeIds: ['web-1'] })
+  const run = createCanvasToolRun(fixture.dependencies, { ...fixture.context, reviewContext })
+  await executeTool(run.piCustomTools, 'canvas_read', { canvasId: 'canvas-1', nodeIds: ['web-1'] })
+  const revision = fixture.update()
+  for (let offset = 0; offset < fixture.length; offset += 8192) await readTextPage(run, offset, revision)
+  expect(run.getReviewCoverage?.()).toMatchObject({ complete: false, readNodes: 0, incompleteNodes: 1 })
+})
+
+for (const interruption of ['cancelled', 'unlinked'] as const) test(`Given 分页末页复验期间${interruption} When 工具返回失败 Then 不登记未送达的内容证据`, async () => {
+  /** 同时覆盖停止与撤销关联，失败不能留下可猜测使用的凭据。 */
+  const fixture = createPagedTextFixture()
+  const run = createCanvasToolRun(fixture.dependencies, fixture.context)
+  await executeTool(run.piCustomTools, 'canvas_task', { action: 'start', canvasId: 'canvas-1', requirements: [
+    { id: 'prototype', description: 'HTML原型', nodeId: 'web-1', nodeKind: 'webview', validation: 'content' },
+  ] })
+  /** 保存原授权入口，复验返回时让当前调用失去执行资格。 */
+  const originalAccess = fixture.dependencies.access.requireLinkedCanvas
+  const originalRead = fixture.dependencies.textArtifacts.read
+  const controller = new AbortController()
+  const lastOffset = Math.floor(fixture.length / 8192) * 8192
+  for (let offset = 0; offset < lastOffset; offset += 8192) await readTextPage(run, offset)
+  /** 基于权威内容计算本应返回的凭据ID，验证失败后它确实不在合同内。 */
+  const node = fixture.dependencies.documents.load(target).document.nodes.find(candidate => candidate.id === 'web-1')!
+  const artifact = await originalRead({ ...target, nodeId: node.id, kind: 'webview', contentId: 'prototype-1', contentRevision: 1 })
+  const proof = describeCanvasTaskEvidence(createCanvasTaskEvidence('canvas-1', node, 'content', ['prototype-1', 1, artifact.content]))
+  fixture.dependencies.textArtifacts.read = async input => {
+    /** 中断发生在最后一次异步权威读取之后，覆盖最容易漏掉的返回边界。 */
+    const result = await originalRead(input)
+    if (interruption === 'cancelled') controller.abort()
+    else fixture.dependencies.access.requireLinkedCanvas = () => { throw new Error('CANVAS_ACCESS_DENIED') }
+    return result
+  }
+  await expect(executeTool(run.piCustomTools, 'canvas_read_version', { canvasId: 'canvas-1', nodeId: 'web-1',
+    version: { kind: 'webview', revision: 1 }, offset: lastOffset }, 'last-page', controller.signal)).rejects.toThrow()
+  fixture.dependencies.access.requireLinkedCanvas = originalAccess
+  fixture.dependencies.textArtifacts.read = originalRead
+  await expect(executeTool(run.piCustomTools, 'canvas_task', { action: 'complete', submissions: [
+    { id: 'prototype', evidenceId: proof.evidenceId },
+  ] })).rejects.toThrow('CANVAS_TASK_EVIDENCE_REQUIRED')
+  /** 正常重读原页可恢复，不需要重做或缩短 HTML。 */
+  expect((await readTextPage(run, lastOffset)).evidence?.evidenceId).toBe(proof.evidenceId)
+})
+
 test('Given 配置 revision 独立于画布 When 验收其它节点期间配置改变 Then 拒绝过期配置证据', async () => {
   /** 用独立配置版本模拟 UI 在两项读取之间保存配置。 */
   const fixture = createFixture()
@@ -1056,6 +1256,16 @@ function createAllOperationHandlers(): CanvasOperationToolHandlers {
     cancelWorkflow: async () => ({ ok: true }),
   }
 }
+
+test('Given 普通 HTML 原型实现请求 When 装配画布工具 Then 不用工具可用性替代本轮画布意图', () => {
+  /** 工具指引必须和普通 Agent 系统提示保持相同触发边界。 */
+  const fixture = createFixture()
+  const run = createCanvasToolRun(fixture.dependencies, fixture.context)
+  expect(run.systemPromptAppend).toContain('普通 HTML/React/代码实现或一次性原型')
+  expect(run.systemPromptAppend).toContain('不自动创建、同步或打开画布')
+  expect(run.systemPromptAppend).toContain('历史关联、默认画布、旧任务')
+  expect(run.systemPromptAppend).not.toContain('当任务需要网页原型、图片设计稿、文档或多个可关联产物时')
+})
 
 /** 构造可观察写入、执行与全项目扫描的窄依赖。 */
 function createFixture(options: {

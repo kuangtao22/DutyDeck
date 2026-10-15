@@ -131,3 +131,30 @@ describe('单次自动内容评审', () => {
     expect(signal?.aborted).toBe(true)
   })
 })
+
+describe('评审故障分类与外部停止', () => {
+  test('Given 端口报错与错误 JSON When 评审 Then 区分调用故障和解析故障', async () => {
+    expect((await reviewCapabilityRun({ run, acceptance, binding, callModel: async () => { throw new Error('network') } })).failureKind).toBe('model-error')
+    expect((await reviewCapabilityRun({ run, acceptance, binding, callModel: async () => ({ text: '{}', model: 'test' }) })).failureKind).toBe('invalid-response')
+  })
+  test('Given 不响应端口 When 到达时限 Then 标记 timeout', async () => {
+    expect((await reviewCapabilityRun({ run, acceptance, binding, timeoutMs: 2, callModel: () => new Promise(() => undefined) })).failureKind).toBe('timeout')
+  })
+  test('Given 已取消信号 When 启动评审 Then 不发送模型请求', async () => {
+    /** 计数用于证明取消先于付费端口。 */
+    let calls = 0
+    const result = await reviewCapabilityRun({ run, acceptance, binding, signal: AbortSignal.abort(), callModel: async () => { calls++; return { text: '{}', model: 'test' } } })
+    expect(result.failureKind).toBe('cancelled')
+    expect(calls).toBe(0)
+  })
+  test('Given 端口忽略取消 When 外部取消 Then 无需等默认超时且透传停止信号', async () => {
+    /** 模拟不遵守取消协议的第三方端口。 */
+    const controller = new AbortController()
+    let received: AbortSignal | undefined
+    const pending = reviewCapabilityRun({ run, acceptance, binding, signal: controller.signal, timeoutMs: 100,
+      callModel: (request) => { received = request.signal; return new Promise(() => undefined) } })
+    controller.abort()
+    expect((await pending).failureKind).toBe('cancelled')
+    expect(received?.aborted).toBe(true)
+  })
+})

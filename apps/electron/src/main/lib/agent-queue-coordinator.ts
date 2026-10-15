@@ -26,6 +26,8 @@ export interface AgentQueueCoordinatorOptions {
   startRun: (prepared: PreparedAgentQueueRun, webContents: WebContents) => Promise<void>
   sendStatus: (webContents: WebContents, status: AgentQueuedMessageStatus) => void
   onPrepareError: (input: AgentDeferredQueueMessageInput, error: unknown) => AgentMessagePublicError
+  /** 通知宿主未领取的消息被取消，或已接受的调度启动失败。 */
+  onDiscard?: (input: AgentDeferredQueueMessageInput, reason: 'queue_cancelled' | 'dispatch_failed') => Promise<void> | void
 }
 
 /** 主进程持有 deferred queue；renderer 只保留展示投影。 */
@@ -53,7 +55,8 @@ export class AgentQueueCoordinator {
     if (!queue) return false
     const index = queue.findIndex((entry) => entry.input.queueMessageId === input.messageId)
     if (index < 0) return false
-    queue.splice(index, 1)
+    const [discarded] = queue.splice(index, 1)
+    if (discarded) this.notifyDiscard(discarded.input, 'queue_cancelled')
     if (queue.length === 0) this.queues.delete(input.sessionId)
     return true
   }
@@ -107,8 +110,21 @@ export class AgentQueueCoordinator {
   }
 
   clear(sessionId: string): void {
+    const queued = this.queues.get(sessionId) ?? []
     this.queues.delete(sessionId)
+    for (const entry of queued) this.notifyDiscard(entry.input, 'queue_cancelled')
     this.dispatching.delete(sessionId)
+  }
+
+  /** 回传失败不能破坏普通队列，也不能产生未处理的 Promise 拒绝。 */
+  private notifyDiscard(input: AgentDeferredQueueMessageInput, reason: 'queue_cancelled' | 'dispatch_failed'): void {
+    try {
+      void Promise.resolve(this.options.onDiscard?.(input, reason)).catch((error: unknown) => {
+        console.error('[Agent 队列] 调度终态回传失败', error)
+      })
+    } catch (error) {
+      console.error('[Agent 队列] 调度终态回传失败', error)
+    }
   }
 
   private tryDispatch(sessionId: string, synchronousMessageId?: string): void {
@@ -125,6 +141,7 @@ export class AgentQueueCoordinator {
       try {
         prepared = this.options.prepareRun({ ...entry.input, startedAt, userMessageUuid: messageId })
       } catch (error) {
+        this.notifyDiscard(entry.input, 'dispatch_failed')
         const publicError = this.options.onPrepareError(entry.input, error)
         queue.shift()
         if (queue.length === 0) this.queues.delete(sessionId)
@@ -148,10 +165,34 @@ export class AgentQueueCoordinator {
         rawUserMessage: entry.input.rawUserMessage,
         startedAt,
       })
-      void this.options.startRun(prepared, webContents)
-        .finally(() => {
-          if (this.dispatching.get(sessionId) === messageId) this.dispatching.delete(sessionId)
+      /** 启动端口既可能同步抛错，也可能异步拒绝；二者都必须释放精确槽位。 */
+      const failed = (): void => {
+        this.notifyDiscard(entry.input, 'dispatch_failed')
+        this.options.sendStatus(webContents, {
+          sessionId, messageId, status: 'failed',
+          error: { code: 'AGENT_RUN_FAILED', message: '排队消息未能启动，请稍后重试。' },
         })
+      }
+      let run: Promise<void>
+      try {
+        run = this.options.startRun(prepared, webContents)
+      } catch {
+        failed()
+        if (this.dispatching.get(sessionId) === messageId) this.dispatching.delete(sessionId)
+        continue
+      }
+      void run.then(() => {
+        // 正常返回也可能发生在 claim 前（预检失败或停止）；宿主仅清理仍匹配的未领取调度。
+        this.notifyDiscard(entry.input, 'dispatch_failed')
+        if (this.dispatching.get(sessionId) === messageId) this.dispatching.delete(sessionId)
+      }, () => {
+        try { failed() } finally {
+          if (this.dispatching.get(sessionId) === messageId) this.dispatching.delete(sessionId)
+          this.tryDispatch(sessionId)
+        }
+      }).catch((error: unknown) => {
+        console.error('[Agent 队列] 启动失败回执发送失败', error)
+      })
       return
     }
   }

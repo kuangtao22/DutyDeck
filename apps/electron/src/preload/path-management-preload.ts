@@ -35,7 +35,7 @@ export interface NormalPathManagementPreloadApi {
   /** 独立刷新当前数据根占用空间，不阻塞首屏卷信息。 */
   getDataRootOccupiedStorage: () => Promise<DataRootOccupiedStorage>
   /** 使用系统选择器选择迁移目标目录。 */
-  pickDataRoot: () => Promise<DataRootSelection | null>
+  pickDataRoot: (destination?: 'custom' | 'default') => Promise<DataRootSelection | null>
   /** 只读预检系统选择器刚返回的目标目录。 */
   previewDataRootMigration: (input: DataRootMigrationSelectionInput) => Promise<DataRootMigrationPreview>
   /** 创建迁移计划并请求重启。 */
@@ -111,7 +111,9 @@ export function createNormalPathManagementPreloadApi(
     getDataRootOccupiedStorage: () => ipc.invoke(
       PATH_MANAGEMENT_IPC_CHANNELS.GET_DATA_ROOT_OCCUPIED_STORAGE,
     ) as Promise<DataRootOccupiedStorage>,
-    pickDataRoot: () => invokePickDataRoot<DataRootSelection>(ipc),
+    pickDataRoot: (destination) => destination === undefined
+      ? invokePickDataRoot<DataRootSelection>(ipc)
+      : ipc.invoke(PATH_MANAGEMENT_IPC_CHANNELS.PICK_DATA_ROOT, destination) as Promise<DataRootSelection | null>,
     previewDataRootMigration: (input) => ipc.invoke(
       PATH_MANAGEMENT_IPC_CHANNELS.PREVIEW_DATA_ROOT_MIGRATION,
       input,

@@ -104,6 +104,38 @@ test('Given 未显式覆盖 When 解析 CLI 配置根 Then 读取固定 locator 
   expect(resolveConfigDir({}, { homeDir, env: {} })).toBe(activeRoot)
 })
 
+test('Given DutyDeck 与旧 Proma locator 同时存在 When 解析 CLI 配置根 Then DutyDeck locator 优先且不读取旧根', () => {
+  const homeDir = mkdtempSync(join(tmpdir(), 'proma-cli-separated-locators-'))
+  const dutyDeckRoot = join(homeDir, '.DutyDeck')
+  const legacyRoot = join(homeDir, '.proma')
+  temporaryHomes.push(homeDir)
+  mkdirSync(dutyDeckRoot, { recursive: true })
+  mkdirSync(legacyRoot, { recursive: true })
+  writeFileSync(join(homeDir, '.DutyDeck-location.json'), JSON.stringify({ version: 1, activeRoot: dutyDeckRoot }), 'utf-8')
+  writeFileSync(join(homeDir, '.proma-location.json'), JSON.stringify({ version: 1, activeRoot: legacyRoot }), 'utf-8')
+
+  expect(resolveConfigDir({}, { homeDir, env: {} })).toBe(dutyDeckRoot)
+})
+
+test('Given DutyDeck locator 损坏且旧 Proma locator 有效 When 解析 CLI 配置根 Then fail closed 而不回退旧根', () => {
+  const homeDir = mkdtempSync(join(tmpdir(), 'proma-cli-primary-invalid-'))
+  const legacyRoot = join(homeDir, '.proma')
+  temporaryHomes.push(homeDir)
+  mkdirSync(legacyRoot, { recursive: true })
+  writeFileSync(join(homeDir, '.DutyDeck-location.json'), '{broken', 'utf-8')
+  writeFileSync(join(homeDir, '.proma-location.json'), JSON.stringify({ version: 1, activeRoot: legacyRoot }), 'utf-8')
+
+  expect(() => resolveConfigDir({}, { homeDir, env: {} })).toThrow('数据根定位文件无效')
+})
+
+test('Given 没有 locator When 解析 CLI 配置根 Then 使用新的 ~/.DutyDeck 默认根', () => {
+  /** 没有定位文件时只能返回当前版本默认目录，且不提前创建它。 */
+  const homeDir = mkdtempSync(join(tmpdir(), 'proma-cli-default-root-'))
+  temporaryHomes.push(homeDir)
+
+  expect(resolveConfigDir({}, { homeDir, env: {} })).toBe(join(homeDir, '.DutyDeck'))
+})
+
 test('Given locator 指向离线数据根 When 解析 CLI 配置根 Then 报错且不回退默认根', () => {
   /** 当前用例独立的 home 目录。 */
   const homeDir = mkdtempSync(join(tmpdir(), 'proma-cli-offline-'))
@@ -195,4 +227,19 @@ test('Given 主 locator cleanup 与 activeRoot 不匹配 When bak 有效 Then CL
   writeFileSync(join(homeDir, '.proma-location.json.bak'), JSON.stringify({ version: 1, activeRoot }))
 
   expect(resolveConfigDir({}, { homeDir, env: {} })).toBe(activeRoot)
+})
+
+test('Given 默认移动请求待处理 When CLI 解析定位根 Then 重命名前后均拒绝启动且不回退旧备份', () => {
+  /** 仅创建隔离 fixture，验证 pending 优先于目录可用性。 */
+  const { homeDir, activeRoot } = createCliPathFixture()
+  /** 主 locator 的请求优先于 fixture 中仍有效的旧 Proma locator。 */
+  const locatorPath = join(homeDir, '.DutyDeck-location.json')
+  writeFileSync(locatorPath, JSON.stringify({
+    version: 1,
+    activeRoot,
+    defaultRootMoveRequest: { sourceRoot: activeRoot, targetRoot: join(homeDir, '.DutyDeck'), dev: '1', ino: '42' },
+  }))
+  expect(() => resolveConfigDir({}, { homeDir, env: {} })).toThrow('默认数据根移动尚未完成')
+  rmSync(activeRoot, { recursive: true })
+  expect(() => resolveConfigDir({}, { homeDir, env: {} })).toThrow('默认数据根移动尚未完成')
 })

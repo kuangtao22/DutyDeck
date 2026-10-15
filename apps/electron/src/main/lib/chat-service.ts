@@ -1,3 +1,6 @@
+import { createTokenUsageObserver } from './token-usage-observer'
+import { chatTokenUsageContext } from './token-usage-context'
+import { recordTokenUsage } from './token-usage-recorder'
 /**
  * AI 聊天流式服务（Electron 编排层）
  *
@@ -238,7 +241,7 @@ export async function sendMessage(
   // not currently implement. Keep this guard for historical conversations that
   // still reference a formerly selectable subscription model.
   if (isAgentOnlyProvider(channel.provider)) {
-    const providerName = channel.provider === 'xai'
+    const providerName = channel.provider === 'dutydeck-local' ? 'DutyDeck 本地运行时' : channel.provider === 'xai'
       ? 'xAI（Grok OAuth）'
       : channel.provider === 'github-copilot'
         ? 'GitHub Copilot 订阅'
@@ -369,6 +372,7 @@ export async function sendMessage(
         adapter,
         signal: controller.signal,
         fetchFn,
+        onUsageAttempt: createTokenUsageObserver({ ...chatTokenUsageContext(conversationId), channelId, channelName: channel.name, modelId }, recordTokenUsage),
         onEvent: handleStreamEvent,
       })
 
@@ -446,6 +450,7 @@ export async function sendMessage(
         adapter,
         signal: controller.signal,
         fetchFn,
+        onUsageAttempt: createTokenUsageObserver({ ...chatTokenUsageContext(conversationId), channelId, channelName: channel.name, modelId }, recordTokenUsage),
         onEvent: handleStreamEvent,
       })
     }
@@ -652,7 +657,7 @@ export async function generateTitle(input: GenerateTitleInput): Promise<string |
 
     const proxyUrl = await getEffectiveProxyUrl()
     const fetchFn = getFetchFn(proxyUrl)
-    const title = await fetchTitle(request, adapter, fetchFn)
+    const title = await fetchTitle(request, adapter, fetchFn, createTokenUsageObserver({ ...chatTokenUsageContext(input.conversationId, 'title'), channelId, channelName: channel.name, modelId }, recordTokenUsage))
     const result = title ? sanitizeGeneratedTitle(title) : null
     if (!result) {
       console.warn('[标题生成] API 未返回可用标题')

@@ -638,3 +638,30 @@ test('Given 实验账本 When 执行和自动评审 Then 复用同一账本并�
   await runner.run('scene-1', { chapterText: '正文' }, { saveTask: false })
   expect(purposes).toEqual(['execution', 'review'])
 })
+
+test('Given 自动评审端口忽略取消 When 用户停止 Then 立即保存取消评审与成功输出', async () => {
+  /** 真实 runner 配合离线悬挂端口，证明取消能结束等待而非仅向端口传 signal。 */
+  const { service } = fixture()
+  const controller = new AbortController()
+  service.setStub('corpus.build', { corpus: '原文' })
+  const runner = createCapabilityFactoryRunner({
+    service, signal: controller.signal, reviewTimeoutMs: 500,
+    resolveModels: (sceneDefinition) => resolveCapabilityFactoryModels(sceneDefinition, channels, { channelId: 'ch-1', modelId: 'deepseek-v4-flash' }),
+    callModel: async (invocation) => {
+      if (invocation.stepId === '__factory_review__') {
+        controller.abort()
+        return new Promise<never>(() => {})
+      }
+      return { text: '{"characters":[{"name":"阿明"}]}', model: 'deepseek-v4-flash' }
+    },
+  })
+  /** 短等待只负责发现挂起回归，不用精确耗时判断机器性能。 */
+  const result = await Promise.race([
+    runner.run('scene-1', { chapterText: '原文' }, { saveTask: false }),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 100)),
+  ])
+  expect(result).not.toBeNull()
+  expect(result?.stepReviews?.scan?.failureKind).toBe('cancelled')
+  expect(result?.outputs?.characters).toBeDefined()
+  expect(service.getRun('scene-1', result!.id)?.steps).toEqual(result?.steps)
+})

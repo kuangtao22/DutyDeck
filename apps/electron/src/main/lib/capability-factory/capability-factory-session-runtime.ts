@@ -1,9 +1,10 @@
 import { stableCapabilityValueKey } from '@proma/shared'
-import type { CapabilityFactoryBatch, CapabilityFactoryBatchRequest, CapabilityExperimentAdvanceRequest } from '@proma/shared'
+import type { CapabilityFactoryBatch, CapabilityFactoryBatchRequest, CapabilityExperimentAdvanceRequest, CapabilityFactoryReviewRetryRequest } from '@proma/shared'
 import { createCapabilityFactoryRunner } from './capability-factory-run'
 import type { CapabilityFactoryRunDeps } from './capability-factory-run'
 import { createCapabilityFactoryBatchRunner } from './capability-factory-batch'
 import { withCapabilityFactoryBatchControl } from './capability-factory-batch-control'
+import { createCapabilityFactoryReviewRetryService } from './capability-factory-review-retry'
 import { publishCapabilityFactoryChanged } from './capability-factory-events'
 import { createCapabilityFactoryExperimentService, capabilityExperimentFingerprint } from './capability-factory-experiment'
 
@@ -96,10 +97,27 @@ export function createCapabilityFactorySessionRuntime(options: CapabilityFactory
       }).run(context.request)
     },
   })
+  /** 诊断惰性读取证据，只有补评执行才解析模型端口。 */
+  const reviewRetries = (signal = options.signal) => createCapabilityFactoryReviewRetryService({
+    rootDir: options.rootDir, service: options.service, signal,
+    assertCurrent: options.assertCurrent, assertCanExecute: assertExecution, onChanged: changed,
+    resolveModels: (definition) => { assertExecution(); return options.getRunPorts().resolveModels(definition) },
+    callModel: async (invocation) => { assertExecution(); return options.getRunPorts().callModel(invocation) },
+    /** 已被实验引用的历史运行不能借补评入口获得额外调用。 */
+    isExperimentRun: (sceneId, runId) => experiments().list(sceneId).some((experiment) =>
+      experiment.stages.some((stage) => stage.pairs.some((pair) => pair.baselineRunId === runId || pair.candidateRunId === runId))),
+  })
   return {
     runner,
     batches,
     experiments,
+    /** 计划模式只查询既有证据，不初始化模型调用端口。 */
+    diagnoseRun: (sceneId: string, runId: string) => reviewRetries().diagnose(sceneId, runId),
+    /** 场景级锁与组合取消信号沿用批测边界，避免并发重复消费。 */
+    retryReview: (request: CapabilityFactoryReviewRetryRequest) => withCapabilityFactoryBatchControl({
+      rootDir: options.rootDir, sessionId: options.sessionId, sceneId: request.sceneId, signal: options.signal,
+      execute: (signal) => { assertExecution(); return reviewRetries(signal).retry(request) },
+    }),
     /** 与普通批次共享场景锁，避免 UI 与 Agent 同时运行两份实验。 */
     runExperiment: (request: CapabilityExperimentAdvanceRequest) => withCapabilityFactoryBatchControl({
       rootDir: options.rootDir, sessionId: options.sessionId, sceneId: request.sceneId, signal: options.signal,

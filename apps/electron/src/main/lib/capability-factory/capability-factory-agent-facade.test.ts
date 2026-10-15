@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Value } from 'typebox/value'
 import { isPromptOnlyOptimization } from '@proma/shared'
-import type { CapabilityFactoryExperimentView, CapabilityFactoryExperiment, CapabilityFactoryBatch, CapabilitySceneDefinition } from '@proma/shared'
+import type { CapabilityFactoryRunDiagnosis, CapabilityFactoryReviewRetryRecord, CapabilityFactoryExperimentView, CapabilityFactoryExperiment, CapabilityFactoryBatch, CapabilitySceneDefinition } from '@proma/shared'
 import { CapabilityFactoryStore } from './capability-factory-store'
 import { CapabilityFactoryService } from './capability-factory-service'
 import { createCapabilityFactoryAgentFacade, type CapabilityFactoryAgentApproval } from './capability-factory-agent-facade'
@@ -161,7 +161,7 @@ describe('Agent 操控面（权限边界）', () => {
     expect(CAPABILITY_FACTORY_AGENT_READ_TOOL_NAMES).toContain('factory_list_batches')
     expect(CAPABILITY_FACTORY_AGENT_RUN_TOOL_NAMES).toEqual([
       'factory_run_scene', 'factory_run_step', 'factory_run_batch',
-      'factory_create_experiment', 'factory_advance_experiment', 'factory_cancel_experiment',
+      'factory_create_experiment', 'factory_advance_experiment', 'factory_cancel_experiment', 'factory_retry_review',
     ])
     expect(CAPABILITY_FACTORY_AGENT_APPLY_TOOL_NAMES).toContain('factory_apply_operation')
     expect(new Set(CAPABILITY_FACTORY_AGENT_TOOL_NAMES).size).toBe(CAPABILITY_FACTORY_AGENT_TOOL_NAMES.length)
@@ -983,6 +983,18 @@ test('Given 直接工具调用 When 伪造推进阶段和批准字段 Then schem
   expect(tools.some((tool) => tool.name === 'factory_adopt_experiment')).toBe(false)
 })
 
+test('Given Agent 读取工厂工具说明 When 用户要求修改已有流程 Then 工具明确要求复用场景而不是新建项目', () => {
+  const sdk = { defineTool: (definition: unknown) => definition } as Parameters<typeof buildCapabilityFactoryAgentTools>[0]
+  const tools = buildCapabilityFactoryAgentTools(sdk, fixture().facade)
+  const listScenes = tools.find((tool) => tool.name === 'factory_list_scenes')!
+  const prepareOperation = tools.find((tool) => tool.name === 'factory_prepare_operation')!
+
+  expect(listScenes.description).toContain('当前工作区')
+  expect(listScenes.description).toContain('场景是工作区内的流程')
+  expect(prepareOperation.description).toContain('只有用户明确要求新建独立场景时才使用 createScene')
+  expect(prepareOperation.description).toContain('修改或增加步骤时沿用已有 sceneId')
+})
+
 
 test('Given Agent 读取最近运行 When 登记暴露 Then 只传实际返回的 ID 并保留数据集显式暴露', () => {
   const { service } = fixture()
@@ -996,4 +1008,110 @@ test('Given Agent 读取最近运行 When 登记暴露 Then 只传实际返回�
   expect(requests).toEqual([{ kind: 'runs', sceneId: scene.id, runIds: runs.map((run) => run.id) }])
   facade.listDatasets()
   expect(requests.at(-1)).toEqual({ kind: 'datasets' })
+})
+
+/** 补评请求只携带源记录身份和显式预算，不携带宿主模型配置。 */
+const reviewRetryRequest = { sceneId: 'scene', runId: 'run', expectedSourceFingerprint: 'source', limits: { maxCalls: 2, maxTransportAttempts: 2, durationMs: 1000 } }
+
+test('Given 补评工具 When 检查工具合同 Then 诊断只读且请求拒绝宿主身份和越界预算', () => {
+  const sdk = { defineTool: (definition: unknown) => definition } as Parameters<typeof buildCapabilityFactoryAgentTools>[0]
+  const tools = buildCapabilityFactoryAgentTools(sdk, fixture().facade)
+  expect(CAPABILITY_FACTORY_AGENT_READ_TOOL_NAMES).toContain('factory_diagnose_run')
+  expect(CAPABILITY_FACTORY_AGENT_RUN_TOOL_NAMES).toContain('factory_retry_review')
+  const retry = tools.find((tool) => tool.name === 'factory_retry_review')!
+  expect(retry).toBeDefined()
+  expect(Value.Check(retry.parameters, reviewRetryRequest)).toBe(true)
+  for (const extra of [{ sessionId: 'other' }, { modelId: 'other' }, { prompt: '改判' }, { approved: true }]) {
+    expect(Value.Check(retry.parameters, { ...reviewRetryRequest, ...extra })).toBe(false)
+  }
+  for (const limits of [{ maxCalls: 11 }, { maxTransportAttempts: 21 }, { durationMs: 600001 }, { maxCalls: 0 }, { extra: true }]) {
+    expect(Value.Check(retry.parameters, { ...reviewRetryRequest, limits: { ...reviewRetryRequest.limits, ...limits } })).toBe(false)
+  }
+})
+
+/** 可恢复的两个评审步骤，用于验证额度和访问边界。 */
+function retryDiagnosis(): CapabilityFactoryRunDiagnosis {
+  return { sceneId: 'scene', runId: 'run', sourceFingerprint: 'source', retry: null, category: 'review-retryable', summary: '超时', nextAction: '补评', retryableStepIds: ['a', 'b'], issues: [] }
+}
+/** 宿主返回的独立补充报告，原始运行无需修改。 */
+function retryRecord(): CapabilityFactoryReviewRetryRecord {
+  return { id: 'retry', sceneId: 'scene', sourceRunId: 'run', sourceFingerprint: 'source', modelFingerprint: 'model', processId: 'host', status: 'completed', stepIds: ['a', 'b'], limits: reviewRetryRequest.limits, calls: [], reviews: {}, startedAt: 1, deadlineAt: 1001, finishedAt: 2, summary: '完成', nextAction: '查看' }
+}
+
+test('Given 只读或停止回合 When 诊断或补评 Then 诊断登记证据暴露而补评禁止发送', async () => {
+  const { service } = fixture()
+  const exposures: unknown[] = []
+  const controller = new AbortController()
+  const facade = createCapabilityFactoryAgentFacade({ service, canMutate: () => false, signal: controller.signal,
+    diagnoseRun: retryDiagnosis, retryReview: async () => { throw new Error('不应发送') },
+    markExposureForRead: (request) => exposures.push(request),
+  })
+  expect(facade.diagnoseRun('scene', 'run')).toEqual(retryDiagnosis())
+  expect(exposures).toEqual([{ kind: 'run', sceneId: 'scene', runId: 'run' }])
+  expect(await facade.retryReview(reviewRetryRequest)).toHaveProperty('reason')
+  controller.abort()
+  expect(() => facade.diagnoseRun('scene', 'run')).toThrow('已停止')
+  const revoked = createCapabilityFactoryAgentFacade({ service, assertCurrent: () => { throw new Error('撤销') }, diagnoseRun: retryDiagnosis })
+  expect(() => revoked.diagnoseRun('scene', 'run')).toThrow('撤销')
+})
+
+test('Given 预检失败 When 修正请求后补评 Then 不消耗额度且每回合最多三次', async () => {
+  const { service } = fixture()
+  let starts = 0
+  let diagnosis = retryDiagnosis()
+  const facade = createCapabilityFactoryAgentFacade({ service, diagnoseRun: () => diagnosis,
+    retryReview: async () => { starts += 1; return retryRecord() },
+  })
+  expect(await facade.retryReview({ ...reviewRetryRequest, expectedSourceFingerprint: 'stale' })).toHaveProperty('reason')
+  expect(await facade.retryReview({ ...reviewRetryRequest, limits: { ...reviewRetryRequest.limits, maxCalls: 1 } })).toHaveProperty('reason')
+  expect(await facade.retryReview({ ...reviewRetryRequest, limits: { ...reviewRetryRequest.limits, maxTransportAttempts: 1 } })).toHaveProperty('reason')
+  diagnosis = { ...retryDiagnosis(), retry: retryRecord() }
+  expect(await facade.retryReview(reviewRetryRequest)).toHaveProperty('reason')
+  diagnosis = { ...retryDiagnosis(), retryableStepIds: [] }
+  expect(await facade.retryReview(reviewRetryRequest)).toHaveProperty('reason')
+  diagnosis = retryDiagnosis()
+  for (let index = 0; index < 3; index += 1) expect(await facade.retryReview(reviewRetryRequest)).toEqual(retryRecord())
+  expect(await facade.retryReview(reviewRetryRequest)).toMatchObject({ reason: expect.stringContaining('3 次') })
+  expect(starts).toBe(3)
+})
+
+test('Given 普通运行耗尽六十次额度 When 补评 Then 不能通过独立入口重置额度', async () => {
+  const { service } = fixture()
+  const scene = service.createScene('共同额度')
+  const facade = createCapabilityFactoryAgentFacade({ service, diagnoseRun: retryDiagnosis,
+    retryReview: async () => { throw new Error('不应发送') },
+    runStep: async () => ({ id: 'run', sceneId: scene.id, sceneVersion: 1, kind: 'step', stepId: 'answer', status: 'succeeded', valid: true, input: {}, outputs: {}, steps: [], startedAt: 1, finishedAt: 2 }),
+  })
+  for (let index = 0; index < 60; index += 1) await facade.runStep(scene.id, 'answer', {})
+  expect(await facade.retryReview(reviewRetryRequest)).toMatchObject({ reason: expect.stringContaining('60 次') })
+})
+
+test('Given 直接提交已知源指纹 When 补评返回证据 Then 登记读取且拒绝路径不登记', async () => {
+  const { service } = fixture()
+  /** 只在确实返回报告时记录曝光，不把内部预检当作模型已读材料。 */
+  const exposures: unknown[] = []
+  let reject = false
+  const facade = createCapabilityFactoryAgentFacade({ service, diagnoseRun: retryDiagnosis,
+    retryReview: async () => { if (reject) throw new Error('宿主拒绝'); return retryRecord() },
+    markExposureForRead: (request) => exposures.push(request),
+  })
+  expect(await facade.retryReview({ ...reviewRetryRequest, expectedSourceFingerprint: 'stale' })).toHaveProperty('reason')
+  expect(exposures).toEqual([])
+  reject = true
+  await expect(facade.retryReview(reviewRetryRequest)).rejects.toThrow('宿主拒绝')
+  expect(exposures).toEqual([])
+  reject = false
+  expect(await facade.retryReview(reviewRetryRequest)).toEqual(retryRecord())
+  expect(exposures).toEqual([{ kind: 'run', sceneId: 'scene', runId: 'run' }])
+})
+
+test('Given 绕过SDK的直接调用 When 塞入宿主身份或缺少预算 Then 工具执行层同样拒绝', async () => {
+  const sdk = { defineTool: (definition: unknown) => definition } as Parameters<typeof buildCapabilityFactoryAgentTools>[0]
+  const tools = buildCapabilityFactoryAgentTools(sdk, fixture().facade)
+  const retry = tools.find((tool) => tool.name === 'factory_retry_review')!
+  const diagnose = tools.find((tool) => tool.name === 'factory_diagnose_run')!
+  await expect(diagnose.execute('call', { sceneId: 'scene', runId: 'run', sessionId: '伪造' }, undefined, undefined, {} as never)).rejects.toThrow('诊断请求无效')
+  for (const input of [{ ...reviewRetryRequest, sessionId: '伪造' }, { ...reviewRetryRequest, limits: {} }]) {
+    await expect(retry.execute('call', input, undefined, undefined, {} as never)).rejects.toThrow('补评请求无效')
+  }
 })

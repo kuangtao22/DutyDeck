@@ -250,6 +250,7 @@ export function registerCapabilityFactoryIpc(
             rootDir, sessionId: session.id, sceneId: command.input.sceneId, input: command.input.input,
             assertCurrent,
             options: {
+              ...(command.input.limits === undefined ? {} : { limits: command.input.limits }),
               ...(command.input.target === undefined ? {} : { target: command.input.target }),
               ...(command.input.expectedVersion === undefined ? {} : { expectedVersion: command.input.expectedVersion }),
               ...(command.input.expectedDraftCreatedAt === undefined

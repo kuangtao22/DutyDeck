@@ -21,6 +21,7 @@ import {
   initializeAgentCanvasViewStateAtom,
 } from '@/atoms/agent-canvas-atoms'
 import {
+  payloadToLegacyEvents,
   startGlobalAgentCanvasActivityConsumer,
   startGlobalAgentCanvasChangeConsumer,
 } from './useGlobalAgentListeners'
@@ -217,5 +218,19 @@ describe('全局普通 Agent Canvas activity consumer', () => {
     expect(store.get(agentDiffPanelTabAtom).has('agent-1')).toBe(false)
     expect(store.get(agentCanvasViewStatesAtom).size).toBe(0)
     consumer.dispose()
+  })
+})
+
+
+describe('全局画布读取导航的历史边界', () => {
+  test('Given 历史工具请求与结果回放 When 通过生产事件转换器 Then 不产生可触发导航的实时工具事件', () => {
+    expect(payloadToLegacyEvents({ kind: 'sdk_message', message: {
+      type: 'assistant', parent_tool_use_id: null, isReplay: true,
+      message: { content: [{ type: 'tool_use', id: 'historical', name: 'canvas_read', input: { canvasId: 'canvas', nodeIds: ['node'] } }] },
+    } })).toEqual([])
+    expect(payloadToLegacyEvents({ kind: 'sdk_message', message: {
+      type: 'user', parent_tool_use_id: null, isReplay: true,
+      message: { content: [{ type: 'tool_result', tool_use_id: 'historical', content: JSON.stringify({ canvasId: 'canvas', revision: 1, nodes: [{ node: { id: 'node' } }] }) }] },
+    } })).toEqual([])
   })
 })

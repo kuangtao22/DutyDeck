@@ -7,6 +7,8 @@ import './styles/globals.css'
 /** 当前窗口类型，用于在加载普通业务模块前完成轻量窗口分流。 */
 const rendererWindowType = new URLSearchParams(window.location.search).get('window')
 
+/** 默认数据根迁移确认窗口只加载项目通用 Dialog，不加载路径管理业务。 */
+const isDefaultRootMigrationWindow = rendererWindowType === 'default-root-migration'
 /** 路径管理窗口必须保持最小依赖，避免加载普通业务模块。 */
 const isDataRootManagementWindow = rendererWindowType === 'data-root-migration'
 /** 加号菜单浮层只加载主题、菜单样式与图标，不初始化主应用业务模块。 */
@@ -71,7 +73,21 @@ async function loadNormalRenderer(): Promise<void> {
   await import('./normal-renderer-main')
 }
 
-if (isDataRootManagementWindow) {
+if (isDefaultRootMigrationWindow) {
+  import('./components/path-management/DefaultRootMigrationPrompt').then(({ DefaultRootMigrationPrompt }) => {
+    /** 主进程通过 query 传入待展示的两个目录路径。 */
+    const params = new URLSearchParams(window.location.search)
+    ReactDOM.createRoot(document.getElementById('root')!).render(
+      <React.StrictMode>
+        <DefaultRootMigrationPrompt
+          legacyRoot={params.get('legacyRoot') ?? ''}
+          targetRoot={params.get('targetRoot') ?? ''}
+          api={window.defaultRootMigrationAPI}
+        />
+      </React.StrictMode>,
+    )
+  })
+} else if (isDataRootManagementWindow) {
   import('./components/path-management/DataRootMigrationApp').then(({ DataRootMigrationApp }) => {
     ReactDOM.createRoot(document.getElementById('root')!).render(
       <React.StrictMode>

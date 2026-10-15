@@ -288,14 +288,16 @@ const SESSION_QUICK_SWITCH_KEYUP_EVENT = 'proma:session-quick-switch-keyup'
 const ACTIVE_SESSION_STATUSES: ReadonlySet<SessionIndicatorStatus> = new Set([
   'blocked',
   'running',
+  'failed',
   'completed',
 ])
 
 const ACTIVE_SESSION_STATUS_PRIORITY: Record<SessionIndicatorStatus, number> = {
   blocked: 0,
   running: 1,
-  completed: 2,
-  idle: 3,
+  failed: 2,
+  completed: 3,
+  idle: 4,
 }
 
 function formatRelativeUpdatedAt(updatedAt: number, now: number): string {
@@ -4093,22 +4095,25 @@ const ConversationItem = React.memo(function ConversationItem({
 // ===== Agent 会话列表项 =====
 
 /** 会话行左侧状态条的颜色 — 与 SessionIndicatorStatus 呼应 */
-type SessionLeftAccent = 'orange' | 'blue' | 'green'
+type SessionLeftAccent = 'orange' | 'blue' | 'red' | 'green'
 const SESSION_ACCENT_ROW_CLASS: Record<SessionLeftAccent, string> = {
   orange: 'bg-orange-500/[0.08] text-foreground font-medium',
   blue: 'text-foreground font-medium hover:bg-foreground/[0.03]',
   green: 'text-foreground font-medium hover:bg-foreground/[0.03]',
+  red: 'text-foreground font-medium hover:bg-foreground/[0.03]',
 }
 
 const SESSION_ACCENT_INDICATOR_CLASS: Record<SessionLeftAccent, string> = {
   orange: 'bg-orange-500',
   blue: 'bg-blue-500',
   green: 'bg-green-500',
+  red: 'bg-destructive',
 }
 
 function getSessionLeftAccent(status: SessionIndicatorStatus): SessionLeftAccent | undefined {
   if (status === 'blocked') return 'orange'
   if (status === 'running') return 'blue'
+  if (status === 'failed') return 'red'
   if (status === 'completed') return 'green'
   return undefined
 }
@@ -4223,7 +4228,7 @@ const AgentSessionItem = React.memo(function AgentSessionItem({
     toast.success('已插入会话引用')
   }
 
-  const canMove = indicatorStatus === 'idle' || indicatorStatus === 'completed'
+  const canMove = indicatorStatus === 'idle' || indicatorStatus === 'completed' || indicatorStatus === 'failed'
 
   const childCount = delegationSummary?.total ?? 0
   const hasChildren = childCount > 0

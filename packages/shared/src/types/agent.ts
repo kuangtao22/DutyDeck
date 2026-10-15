@@ -573,6 +573,7 @@ export interface RetryAttempt {
  *
 /** MCP 工具结果中的图片附件 */
 export interface AgentToolResultImage {
+  /** 持久化采用受管根引用；会话读取返回当前路径，也兼容旧 Chat 相对路径。 */
   localPath: string
   filename: string
   mediaType: string
@@ -1322,7 +1323,7 @@ export interface AgentMediaAttachment {
   mediaType: string
   /** Host 固化时确认的字节数。 */
   size: number
-  /** Host 固化到当前会话附件目录后的绝对路径。 */
+  /** 运行时为 Host 固化后的绝对路径；持久化边界编码为受管数据根引用。 */
   targetPath: string
 }
 
@@ -1456,7 +1457,7 @@ export interface AgentSubmitOrEnqueueResult {
 }
 
 /** Agent 消息接管阶段允许跨 IPC 暴露的稳定错误码。 */
-export type AgentMessagePublicErrorCode = 'CANVAS_REFERENCE_INVALID'
+export type AgentMessagePublicErrorCode = 'CANVAS_REFERENCE_INVALID' | 'AGENT_RUN_FAILED'
 
 /** Agent 消息接管失败的安全公开错误。 */
 export interface AgentMessagePublicError {

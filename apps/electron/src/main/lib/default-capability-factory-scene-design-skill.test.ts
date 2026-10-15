@@ -13,7 +13,7 @@ test('Given capability-factory-scene-design 默认 Skill When 校验发布合同
 
   expect(skill).toMatch(/^name: capability-factory-scene-design$/m)
   expect(skill).toMatch(/^group: proma$/m)
-  expect(skill).toMatch(/^version: "1\.0\.9"$/m)
+  expect(skill).toMatch(/^version: "1\.0\.13"$/m)
   /** 触发词必须写进 description，否则 Agent 不会在有需要时加载它。 */
   for (const trigger of ['编排工厂', '提示词工厂', '能力包', '场景']) {
     expect(skill).toContain(trigger)
@@ -50,6 +50,15 @@ test('Given 场景设计 Skill When 读取流程 Then 判据要可检查、且�
   expect(skill).toContain('factory_prepare_operation')
   expect(skill).toContain('factory_apply_operation')
   expect(skill).toContain('宿主审批')
+})
+
+test('Given 用户要求对齐 app 或增加流程 When 读取场景设计 Skill Then 默认修改已有场景且只在明确要求时新建', () => {
+  const skill = readSkill()
+
+  expect(skill).toContain('先调用 `factory_list_scenes`')
+  expect(skill).toContain('场景是当前项目内的流程，不是另一个项目')
+  expect(skill).toContain('修改、对齐或增加步骤时沿用匹配场景的 `sceneId`')
+  expect(skill).toContain('只有用户明确要求新建独立场景时才使用 `createScene`')
 })
 
 test('Given 场景设计 Skill When 读取迭代方式 Then 写明 Agent 自己就能跑（工具名与三个轴）', () => {

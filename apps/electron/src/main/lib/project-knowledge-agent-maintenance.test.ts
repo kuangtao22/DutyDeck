@@ -45,6 +45,7 @@ async function fixture(initialize = true, workflowEnabled = false) {
     reads: number
     sourcePages: Map<string, KnowledgeReadResult>
     userEvidence?: PersistedAgentEvidenceRecord
+    taskEvidence?: { sessionId: string; message: PersistedAgentEvidenceRecord }
     beforeWrite(): void
     beforeTransact(): void | Promise<void>
     workflowCalls: string[]
@@ -92,6 +93,7 @@ async function fixture(initialize = true, workflowEnabled = false) {
       return value
     },
     readUserEvidence: () => state.userEvidence,
+    resolveTaskUserEvidence: (id) => id === 'task-evidence' ? state.taskEvidence : undefined,
     assertCurrent: () => { if (!state.current) throw new Error('运行已取消') },
     canMutate: () => state.mutable,
     runWorkspaceWrite: async (effect) => { state.beforeWrite(); return effect() },
@@ -166,6 +168,46 @@ describe('当前 Agent 受控维护项目知识', () => {
     expect(f.state.workflowCalls).toEqual(['document:w1:overview'])
   })
 
+  test('Given 两步流程读取 JSON 或源码来源 When 写大纲文档 Then readable 来源登记为本轮证据', async () => {
+    const cases: Array<[string, string]> = [['config.json', 'a'.repeat(32)], ['src/main.ts', 'b'.repeat(32)]]
+    for (const [relativePath, entryId] of cases) {
+      const f = await fixture(true, true)
+      const entry = { ...sourceEntry(entryId, 'c'.repeat(64), relativePath), source: {
+        ...sourceEntry(entryId, 'c'.repeat(64), relativePath).source, relativePath,
+      } }
+      await f.seed(entry, 'const enabled = true;')
+      const page = f.state.sourcePages.get(`${entry.id}:${entry.revision}:0`)!
+      f.maintenance.observeRead(page)
+      await f.maintenance.writeDocument!({
+        planRevision: 1, outlineRevision: 1, itemId: 'source', expectedRevision: null,
+        content: '# 来源说明\n\nconst enabled = true;', summary: '来源说明', complete: true,
+        evidence: [{ entryId: entry.id, revision: entry.revision, quote: 'const enabled = true;' }],
+      })
+      expect(f.state.workflowCalls).toEqual(['document:w1:source'])
+    }
+  })
+
+  test('Given 来源不可读或仅元数据 When 观察读取结果 Then 不登记为可发布证据', async () => {
+    const f = await fixture(true, true)
+    const entry = sourceEntry('d'.repeat(32), 'd'.repeat(64), 'config.json')
+    await f.seed(entry, 'const enabled = true;')
+    f.maintenance.observeRead({ ...f.state.sourcePages.get(`${entry.id}:${entry.revision}:0`)!, status: 'unavailable' })
+    await expect(f.maintenance.writeDocument!({
+      planRevision: 1, outlineRevision: 1, itemId: 'source', expectedRevision: null,
+      content: '# 来源说明', summary: '来源说明', complete: true,
+      evidence: [{ entryId: entry.id, revision: entry.revision, quote: 'const enabled = true;' }],
+    })).rejects.toThrow('尚未通过知识读取工具读取')
+
+    const metadataEntry = { ...entry, id: 'e'.repeat(32), metadataOnly: true }
+    const metadataPage = { ...f.state.sourcePages.get(`${entry.id}:${entry.revision}:0`)!, entry: metadataEntry }
+    f.maintenance.observeRead(metadataPage)
+    await expect(f.maintenance.writeDocument!({
+      planRevision: 1, outlineRevision: 1, itemId: 'metadata', expectedRevision: null,
+      content: '# 元数据', summary: '元数据', complete: true,
+      evidence: [{ entryId: metadataEntry.id, revision: metadataEntry.revision, quote: 'const enabled = true;' }],
+    })).rejects.toThrow('尚未通过知识读取工具读取')
+  })
+
   test('Given 引用伪造、来源未读或版本在租约前变化 When 写文档 Then 拒绝发布', async () => {
     const f = await fixture(true, true)
     const entry = sourceEntry('8'.repeat(32), '8'.repeat(64))
@@ -195,7 +237,7 @@ describe('当前 Agent 受控维护项目知识', () => {
     await f.maintenance.writeDocument!(input)
     expect(f.state.workflowCalls).toEqual(['document:w1:decision'])
     expect(f.state.lastDocumentInput?.userEvidence).toEqual({
-      sessionId: 's1', messageId: 'u1', quote: '资料库只保存项目事实',
+      sessionId: 's1', messageId: 'u1', quote: '资料库只保存项目事实', sha256: createHash('sha256').update(f.state.userEvidence!.text, 'utf8').digest('hex'),
     })
     f.state.beforeWrite = () => { f.state.userEvidence = { ...f.state.userEvidence!, text: '用户已修改原消息', sha256: 'changed' } }
     await expect(f.maintenance.writeDocument!(input)).rejects.toThrow('证据已变化')
@@ -459,5 +501,21 @@ describe('当前 Agent 受控维护项目知识', () => {
     f.maintenance.observeRead(f.state.sourcePages.get(`${second.id}:${second.revision}:0`)!)
     const result = await f.maintenance.submit({ processedSourceRefs: [{ entryId: second.id, revision: second.revision }], candidates: [{ ...candidate(second), title: '换标题', content: '改写措辞' }] })
     expect(result.published).toBe(0)
+  })
+})
+
+
+describe('任务绑定用户证据续接', () => {
+  test('Given 宿主登记原始用户消息 When 后续回合引用 Then 复验原消息并保持原始身份', async () => {
+    const f = await fixture(true, true)
+    f.state.taskEvidence = { sessionId: 'original-session', message: { uuid: 'original-message', role: 'user', text: '决定：资料库只保存项目事实', sha256: 'original-hash', byteOffset: 0, byteLength: 18 } }
+    const input = { planRevision: 1, outlineRevision: 1, itemId: 'decision', expectedRevision: null, content: '资料库只保存项目事实', summary: '边界', complete: true, evidence: [], userEvidenceId: 'task-evidence', userQuote: '资料库只保存项目事实' }
+    await expect(f.maintenance.writeDocument!(input)).rejects.toThrow('本轮读取')
+    f.maintenance.observeUserEvidence!(['task-evidence'])
+    await f.maintenance.writeDocument!(input)
+    expect(f.state.lastDocumentInput?.userEvidence).toEqual({ sessionId: 'original-session', messageId: 'original-message', quote: input.userQuote, sha256: createHash('sha256').update(f.state.taskEvidence!.message.text, 'utf8').digest('hex') })
+    await expect(f.maintenance.writeDocument!({ ...input, userEvidenceId: 'invented' })).rejects.toThrow('本轮读取')
+    f.state.beforeWrite = () => { f.state.taskEvidence = undefined }
+    await expect(f.maintenance.writeDocument!(input)).rejects.toThrow('证据已变化')
   })
 })

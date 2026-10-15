@@ -2,22 +2,26 @@
  * 配置路径工具
  *
  * 管理 Proma 应用的本地配置文件路径。
- * 所有用户配置默认存储在 ~/.proma/，也可由固定 locator 指向自定义数据根。
+ * 所有用户配置默认存储在 ~/.DutyDeck/，也可由固定 locator 指向自定义数据根。
  *
  */
 
 import { createHash } from 'node:crypto'
-import { join, basename, relative, resolve } from 'node:path'
+import { join, basename, relative, resolve, isAbsolute } from 'node:path'
 import { mkdirSync, existsSync, cpSync, rmSync, readdirSync, readFileSync, copyFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { rmSyncWithRetry } from './fs-retry'
 import { DataRootLocator, type RequireActiveRootOptions } from './data-root-locator'
 import { readJsonFileSafe, writeJsonFileAtomic } from './safe-file'
+import { createDataRootReferenceCodec, isDataRootReference } from './data-root-reference'
+import type { DataRootReferenceCodec, DataRootPathSnapshot } from './data-root-reference'
 
 /** 配置路径只依赖活动数据根解析能力，便于测试按实例隔离。 */
 export interface ConfigRootResolver {
   /** 返回当前进程固定使用的活动数据根。 */
   requireActiveRoot(options?: RequireActiveRootOptions): string
+  /** 历史数据根只作为路径别名，不作为可读取的授权根。 */
+  getHistoricalRoots?(): string[]
 }
 
 /** 默认定位器延迟到首次路径调用创建，之后进程内唯一且不会热切换。 */
@@ -34,17 +38,17 @@ function getDefaultConfigRootResolver(): ConfigRootResolver {
 /**
  * 获取配置目录名称
  *
- * 开发版与打包版统一返回 '.proma'，共享 Skills、模型、渠道和会话等业务配置。
+ * 开发版与打包版统一返回 '.DutyDeck'，共享 Skills、模型、渠道和会话等业务配置。
  * Electron 的 userData 目录仍由主进程独立管理，不受这里影响。
  */
 export function getConfigDirName(): string {
-  return '.proma'
+  return '.DutyDeck'
 }
 
 /**
  * 获取配置目录路径
  *
- * 开发版与打包版默认返回 ~/.proma/，配置自定义数据根后返回其绝对路径。
+ * 开发版与打包版默认返回 ~/.DutyDeck/，配置自定义数据根后返回其绝对路径。
  * 缺失的默认根会按需创建；已配置但不可用的自定义根不会静默回退。
  *
  * @param resolver 活动数据根解析器；测试可注入独立实例，生产使用进程级默认实例。
@@ -56,18 +60,68 @@ export function getConfigDir(resolver?: ConfigRootResolver): string {
 }
 
 /**
+ * 为一次历史读取捕获固定数据根，返回无 I/O 的路径投影函数。
+ * @param resolver 当前进程定位器；测试可传独立实例。
+ * @returns 解析带根类型的相对引用与已知旧根绝对路径；调用方仍须验证文件授权。
+ */
+export function createDataRootPathResolver(resolver?: ConfigRootResolver): (path: string) => string {
+  return getDataRootReferenceCodec(resolver).resolve
+}
+
+/**
+ * 为一次持久化创建编码器，外部项目路径和普通文本不属于受管转换范围。
+ * @param resolver 当前进程定位器或隔离测试定位器。
+ * @returns 将受管绝对路径转换为可迁移引用的纯函数。
+ */
+export function createDataRootPathSerializer(resolver?: ConfigRootResolver): (path: string) => string {
+  return getDataRootReferenceCodec(resolver).serialize
+}
+
+/** 同次转换共享定位器快照，不在遍历每条附件时重新读取磁盘。 */
+function getDataRootReferenceCodec(resolver?: ConfigRootResolver): DataRootReferenceCodec {
+  const snapshot = getDataRootPathSnapshot(resolver)
+  return createDataRootReferenceCodec(snapshot.activeRoot, snapshot.historicalRoots)
+}
+
+/** 将宿主已固定的数据根传给子运行时；返回值不提供额外文件授权。 */
+export function getDataRootPathSnapshot(resolver?: ConfigRootResolver): DataRootPathSnapshot {
+  const activeResolver = resolver ?? getDefaultConfigRootResolver()
+  return { activeRoot: getConfigDir(activeResolver), historicalRoots: activeResolver.getHistoricalRoots?.() ?? [] }
+}
+
+/**
  * 获取渠道配置文件路径
  *
- * @returns 默认路径为 ~/.proma/channels.json
+ * @returns 默认路径为 ~/.DutyDeck/channels.json
  */
 export function getChannelsPath(): string {
   return join(getConfigDir(), 'channels.json')
 }
 
 /**
+ * 获取 DutyDeck 内置模型目录。
+ *
+ * @param configDir 可选的业务数据根，测试可注入临时目录。
+ * @returns 默认路径为 ~/.DutyDeck/models/
+ */
+export function getLocalModelsDir(configDir = getConfigDir()): string {
+  return join(configDir, 'models')
+}
+
+/**
+ * 获取 DutyDeck 内置模型清单路径。
+ *
+ * @param configDir 可选的业务数据根，测试可注入临时目录。
+ * @returns 默认路径为 ~/.DutyDeck/models/manifest.json
+ */
+export function getLocalModelsManifestPath(configDir = getConfigDir()): string {
+  return join(getLocalModelsDir(configDir), 'manifest.json')
+}
+
+/**
  * 获取对话索引文件路径
  *
- * @returns 默认路径为 ~/.proma/conversations.json
+ * @returns 默认路径为 ~/.DutyDeck/conversations.json
  */
 export function getConversationsIndexPath(): string {
   return join(getConfigDir(), 'conversations.json')
@@ -78,7 +132,7 @@ export function getConversationsIndexPath(): string {
  *
  * 如果目录不存在则自动创建。
  *
- * @returns 默认路径为 ~/.proma/conversations/
+ * @returns 默认路径为 ~/.DutyDeck/conversations/
  */
 export function getConversationsDir(): string {
   const dir = join(getConfigDir(), 'conversations')
@@ -95,7 +149,7 @@ export function getConversationsDir(): string {
  * 获取指定对话的消息文件路径
  *
  * @param id 对话 ID
- * @returns 默认路径为 ~/.proma/conversations/{id}.jsonl
+ * @returns 默认路径为 ~/.DutyDeck/conversations/{id}.jsonl
  */
 export function getConversationMessagesPath(id: string): string {
   assertSafeSessionPathSegment(id)
@@ -107,10 +161,10 @@ export function getConversationMessagesPath(id: string): string {
  *
  * 如果目录不存在则自动创建。
  *
- * @returns 默认路径为 ~/.proma/attachments/
+ * @returns 默认路径为 ~/.DutyDeck/attachments/
  */
-export function getAttachmentsDir(): string {
-  const dir = join(getConfigDir(), 'attachments')
+export function getAttachmentsDir(resolver?: ConfigRootResolver): string {
+  const dir = join(getConfigDir(resolver), 'attachments')
 
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true })
@@ -126,10 +180,10 @@ export function getAttachmentsDir(): string {
  * 如果目录不存在则自动创建。
  *
  * @param conversationId 对话 ID
- * @returns 默认路径为 ~/.proma/attachments/{conversationId}/
+ * @returns 默认路径为 ~/.DutyDeck/attachments/{conversationId}/
  */
-export function getConversationAttachmentsDir(conversationId: string): string {
-  const dir = join(getAttachmentsDir(), conversationId)
+export function getConversationAttachmentsDir(conversationId: string, resolver?: ConfigRootResolver): string {
+  const dir = join(getAttachmentsDir(resolver), conversationId)
 
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true })
@@ -139,19 +193,21 @@ export function getConversationAttachmentsDir(conversationId: string): string {
 }
 
 /**
- * 解析附件相对路径为完整路径
+ * 统一解析新数据根引用、历史绝对路径与旧 Chat 附件相对路径。
  *
- * @param localPath 相对路径 {conversationId}/{uuid}.ext
- * @returns 默认完整路径为 ~/.proma/attachments/{conversationId}/{uuid}.ext
+ * @param localPath 带命名空间的引用、绝对路径或旧 {conversationId}/{uuid}.ext。
+ * @param resolver 可选的独立数据根定位器。
+ * @returns 当前实际路径，业务调用方仍须检查授权范围。
  */
-export function resolveAttachmentPath(localPath: string): string {
-  return join(getAttachmentsDir(), localPath)
+export function resolveAttachmentPath(localPath: string, resolver?: ConfigRootResolver): string {
+  if (isDataRootReference(localPath) || isAbsolute(localPath)) return createDataRootPathResolver(resolver)(localPath)
+  return join(getConfigDir(resolver), 'attachments', localPath)
 }
 
 /**
  * 获取应用设置文件路径
  *
- * @returns 默认路径为 ~/.proma/settings.json
+ * @returns 默认路径为 ~/.DutyDeck/settings.json
  */
 export function getSettingsPath(): string {
   return join(getConfigDir(), 'settings.json')
@@ -200,7 +256,7 @@ export function resolveDefaultVaultDir(configDir: string): string {
 /**
  * 获取 Proma 管理的默认 Markdown Vault 目录，并在首次使用时创建。
  *
- * @returns 正式版本 ~/.proma/vault/，开发模式 ~/.proma-dev/vault/
+ * @returns 默认路径为 ~/.DutyDeck/vault/
  */
 export function getDefaultVaultDir(configDir = getConfigDir()): string {
   const dir = resolveDefaultVaultDir(configDir)
@@ -214,7 +270,7 @@ export function getDefaultVaultDir(configDir = getConfigDir()): string {
 /**
  * 获取系统默认 App 探测缓存路径
  *
- * @returns 默认路径为 ~/.proma/default-apps.json
+ * @returns 默认路径为 ~/.DutyDeck/default-apps.json
  */
 export function getDefaultAppsCachePath(): string {
   return join(getConfigDir(), 'default-apps.json')
@@ -223,7 +279,7 @@ export function getDefaultAppsCachePath(): string {
 /**
  * 获取用户档案文件路径
  *
- * @returns 默认路径为 ~/.proma/user-profile.json
+ * @returns 默认路径为 ~/.DutyDeck/user-profile.json
  */
 export function getUserProfilePath(): string {
   return join(getConfigDir(), 'user-profile.json')
@@ -232,7 +288,7 @@ export function getUserProfilePath(): string {
 /**
  * 获取代理配置文件路径
  *
- * @returns 默认路径为 ~/.proma/proxy-settings.json
+ * @returns 默认路径为 ~/.DutyDeck/proxy-settings.json
  */
 export function getProxySettingsPath(): string {
   return join(getConfigDir(), 'proxy-settings.json')
@@ -241,7 +297,7 @@ export function getProxySettingsPath(): string {
 /**
  * 获取系统提示词配置文件路径
  *
- * @returns 默认路径为 ~/.proma/system-prompts.json
+ * @returns 默认路径为 ~/.DutyDeck/system-prompts.json
  */
 export function getSystemPromptsPath(): string {
   return join(getConfigDir(), 'system-prompts.json')
@@ -250,7 +306,7 @@ export function getSystemPromptsPath(): string {
 /**
  * 获取 Chat 工具配置文件路径
  *
- * @returns 默认路径为 ~/.proma/chat-tools.json
+ * @returns 默认路径为 ~/.DutyDeck/chat-tools.json
  */
 export function getChatToolsConfigPath(): string {
   return join(getConfigDir(), 'chat-tools.json')
@@ -268,7 +324,7 @@ export function getMcpOAuthCredentialsPath(): string {
 /**
  * 获取 Agent 会话索引文件路径
  *
- * @returns 默认路径为 ~/.proma/agent-sessions.json
+ * @returns 默认路径为 ~/.DutyDeck/agent-sessions.json
  */
 export function getAgentSessionsIndexPath(): string {
   return join(getConfigDir(), 'agent-sessions.json')
@@ -289,7 +345,7 @@ export function getAgentCanvasBindingsPath(configDir = getConfigDir()): string {
  *
  * 如果目录不存在则自动创建。
  *
- * @returns 默认路径为 ~/.proma/agent-sessions/
+ * @returns 默认路径为 ~/.DutyDeck/agent-sessions/
  */
 export function getAgentSessionsDir(): string {
   const dir = join(getConfigDir(), 'agent-sessions')
@@ -306,7 +362,7 @@ export function getAgentSessionsDir(): string {
  * 获取指定 Agent 会话的消息文件路径
  *
  * @param id 会话 ID
- * @returns 默认路径为 ~/.proma/agent-sessions/{id}.jsonl
+ * @returns 默认路径为 ~/.DutyDeck/agent-sessions/{id}.jsonl
  */
 export function getAgentSessionMessagesPath(id: string): string {
   assertSafeSessionPathSegment(id)
@@ -316,7 +372,7 @@ export function getAgentSessionMessagesPath(id: string): string {
 /**
  * 获取 Agent 工作区索引文件路径
  *
- * @returns 默认路径为 ~/.proma/agent-workspaces.json
+ * @returns 默认路径为 ~/.DutyDeck/agent-workspaces.json
  */
 export function getAgentWorkspacesIndexPath(): string {
   return join(getConfigDir(), 'agent-workspaces.json')
@@ -327,7 +383,7 @@ export function getAgentWorkspacesIndexPath(): string {
  *
  * 如果目录不存在则自动创建。
  *
- * @returns 默认路径为 ~/.proma/agent-workspaces/
+ * @returns 默认路径为 ~/.DutyDeck/agent-workspaces/
  */
 export function getAgentWorkspacesDir(resolver?: ConfigRootResolver): string {
   /** Agent 工作区根必须与调用方解析出的业务数据根保持一致。 */
@@ -348,7 +404,7 @@ export function getAgentWorkspacesDir(resolver?: ConfigRootResolver): string {
  *
  * @param slug 工作区 slug
  * @param resolver 活动数据根解析器；测试可注入独立实例。
- * @returns 默认路径为 ~/.proma/agent-workspaces/{slug}/
+ * @returns 默认路径为 ~/.DutyDeck/agent-workspaces/{slug}/
  */
 export function getAgentWorkspacePath(
   slug: string,
@@ -369,7 +425,7 @@ export function getAgentWorkspacePath(
  * 获取指定工作区的 MCP 配置文件路径
  *
  * @param slug 工作区 slug
- * @returns 默认路径为 ~/.proma/agent-workspaces/{slug}/mcp.json
+ * @returns 默认路径为 ~/.DutyDeck/agent-workspaces/{slug}/mcp.json
  */
 export function getWorkspaceMcpPath(slug: string): string {
   return join(getAgentWorkspacePath(slug), 'mcp.json')
@@ -381,7 +437,7 @@ export function getWorkspaceMcpPath(slug: string): string {
  * 如果目录不存在则自动创建。
  *
  * @param slug 工作区 slug
- * @returns 默认路径为 ~/.proma/agent-workspaces/{slug}/skills/
+ * @returns 默认路径为 ~/.DutyDeck/agent-workspaces/{slug}/skills/
  */
 export function getWorkspaceSkillsDir(slug: string): string {
   const dir = join(getAgentWorkspacePath(slug), 'skills')
@@ -400,7 +456,7 @@ export function getWorkspaceSkillsDir(slug: string): string {
  * 如果目录不存在则自动创建。
  *
  * @param slug 工作区 slug
- * @returns 默认路径为 ~/.proma/agent-workspaces/{slug}/workspace-files/
+ * @returns 默认路径为 ~/.DutyDeck/agent-workspaces/{slug}/workspace-files/
  */
 export function getWorkspaceFilesDir(slug: string): string {
   const dir = join(getAgentWorkspacePath(slug), 'workspace-files')
@@ -419,7 +475,7 @@ export function getWorkspaceFilesDir(slug: string): string {
  * 适用于 /now 等只读查询场景。
  *
  * @param slug 工作区 slug
- * @returns 默认路径为 ~/.proma/agent-workspaces/{slug}/workspace-files/
+ * @returns 默认路径为 ~/.DutyDeck/agent-workspaces/{slug}/workspace-files/
  */
 export function resolveWorkspaceFilesDir(slug: string): string {
   return join(getConfigDir(), 'agent-workspaces', slug, 'workspace-files')
@@ -433,7 +489,7 @@ export function resolveWorkspaceFilesDir(slug: string): string {
  *
  * @param slug 工作区 slug
  * @param sessionId 会话 ID
- * @returns 默认路径为 ~/.proma/agent-workspaces/{slug}/{sessionId}/
+ * @returns 默认路径为 ~/.DutyDeck/agent-workspaces/{slug}/{sessionId}/
  */
 export function resolveAgentSessionWorkspacePath(slug: string, sessionId: string): string {
   assertSafeSessionPathSegment(sessionId)
@@ -447,7 +503,7 @@ export function resolveAgentSessionWorkspacePath(slug: string, sessionId: string
  * 如果目录不存在则自动创建。
  *
  * @param slug 工作区 slug
- * @returns 默认路径为 ~/.proma/agent-workspaces/{slug}/skills-inactive/
+ * @returns 默认路径为 ~/.DutyDeck/agent-workspaces/{slug}/skills-inactive/
  */
 export function getInactiveSkillsDir(slug: string): string {
   const dir = join(getAgentWorkspacePath(slug), 'skills-inactive')
@@ -464,7 +520,7 @@ export function getInactiveSkillsDir(slug: string): string {
  *
  * 新建工作区时自动复制此目录的内容到工作区 skills/ 下。
  *
- * @returns 默认路径为 ~/.proma/default-skills/
+ * @returns 默认路径为 ~/.DutyDeck/default-skills/
  */
 export function getDefaultSkillsDir(): string {
   const dir = join(getConfigDir(), 'default-skills')
@@ -545,6 +601,7 @@ function compareSemver(a: string, b: string): number {
 export const RETIRED_DEFAULT_SKILL_SLUGS: readonly string[] = [
   'brainstorming',
   'vault',
+  'proma-generate-image',
 ]
 
 const RETIRED_DEFAULT_SKILL_SLUG_SET = new Set(RETIRED_DEFAULT_SKILL_SLUGS)
@@ -650,7 +707,7 @@ export function seedDefaultSkills(): void {
 /**
  * 获取微信配置文件路径
  *
- * @returns 默认路径为 ~/.proma/wechat.json
+ * @returns 默认路径为 ~/.DutyDeck/wechat.json
  */
 export function getWeChatConfigPath(): string {
   return join(getConfigDir(), 'wechat.json')
@@ -659,7 +716,7 @@ export function getWeChatConfigPath(): string {
 /**
  * 获取微信长轮询同步游标路径
  *
- * @returns 默认路径为 ~/.proma/wechat-sync.json
+ * @returns 默认路径为 ~/.DutyDeck/wechat-sync.json
  */
 export function getWeChatSyncPath(): string {
   return join(getConfigDir(), 'wechat-sync.json')
@@ -668,7 +725,7 @@ export function getWeChatSyncPath(): string {
 /**
  * 获取微信聊天绑定持久化路径
  *
- * @returns 默认路径为 ~/.proma/wechat-bindings.json
+ * @returns 默认路径为 ~/.DutyDeck/wechat-bindings.json
  */
 export function getWeChatBindingsPath(): string {
   return join(getConfigDir(), 'wechat-bindings.json')
@@ -677,7 +734,7 @@ export function getWeChatBindingsPath(): string {
 /**
  * 获取钉钉配置文件路径
  *
- * @returns 默认路径为 ~/.proma/dingtalk.json
+ * @returns 默认路径为 ~/.DutyDeck/dingtalk.json
  */
 export function getDingTalkConfigPath(): string {
   return join(getConfigDir(), 'dingtalk.json')
@@ -686,13 +743,13 @@ export function getDingTalkConfigPath(): string {
 /**
  * 获取某个钉钉 Bot 的聊天绑定持久化路径
  *
- * @returns 默认路径为 ~/.proma/dingtalk-bindings-{botId}.json
+ * @returns 默认路径为 ~/.DutyDeck/dingtalk-bindings-{botId}.json
  */
 export function getDingTalkBotBindingsPath(botId: string): string {
   return join(getConfigDir(), `dingtalk-bindings-${botId}.json`)
 }
 
-/** 获取 Slack 配置文件路径（~/.proma/slack.json）。 */
+/** 获取 Slack 配置文件路径（~/.DutyDeck/slack.json）。 */
 export function getSlackConfigPath(): string {
   return join(getConfigDir(), 'slack.json')
 }
@@ -713,7 +770,7 @@ export function getSlackBotDeliveryPath(botId: string): string {
 /**
  * 获取飞书配置文件路径
  *
- * @returns 默认路径为 ~/.proma/feishu.json
+ * @returns 默认路径为 ~/.DutyDeck/feishu.json
  */
 export function getFeishuConfigPath(): string {
   return join(getConfigDir(), 'feishu.json')
@@ -722,7 +779,7 @@ export function getFeishuConfigPath(): string {
 /**
  * 获取飞书聊天绑定持久化路径
  *
- * @returns 默认路径为 ~/.proma/feishu-bindings.json
+ * @returns 默认路径为 ~/.DutyDeck/feishu-bindings.json
  */
 export function getFeishuBindingsPath(): string {
   return join(getConfigDir(), 'feishu-bindings.json')
@@ -731,7 +788,7 @@ export function getFeishuBindingsPath(): string {
 /**
  * 获取某个飞书 Bot 的聊天绑定持久化路径
  *
- * @returns 默认路径为 ~/.proma/feishu-bindings-{botId}.json
+ * @returns 默认路径为 ~/.DutyDeck/feishu-bindings-{botId}.json
  */
 export function getFeishuBotBindingsPath(botId: string): string {
   return join(getConfigDir(), `feishu-bindings-${botId}.json`)
@@ -742,7 +799,7 @@ export function getFeishuBotBindingsPath(botId: string): string {
  *
  * 用于保存最近交互用户 open_id 等需要跨进程重启恢复的状态。
  *
- * @returns 默认路径为 ~/.proma/feishu-metadata-{botId}.json
+ * @returns 默认路径为 ~/.DutyDeck/feishu-metadata-{botId}.json
  */
 export function getFeishuBotMetadataPath(botId: string): string {
   return join(getConfigDir(), `feishu-metadata-${botId}.json`)
@@ -756,7 +813,7 @@ export function getFeishuBotMetadataPath(botId: string): string {
  *
  * @param workspaceSlug 工作区 slug
  * @param sessionId 会话 ID
- * @returns 默认路径为 ~/.proma/agent-workspaces/{slug}/{sessionId}/
+ * @returns 默认路径为 ~/.DutyDeck/agent-workspaces/{slug}/{sessionId}/
  */
 export function getAgentSessionWorkspacePath(workspaceSlug: string, sessionId: string): string {
   assertSafeSessionPathSegment(sessionId)
@@ -811,7 +868,7 @@ function resolveContainedDataFile(dataDirectory: string, entityId: string): stri
  *
  * 如果目录不存在则自动创建。
  *
- * @returns 默认路径为 ~/.proma/sdk-config/
+ * @returns 默认路径为 ~/.DutyDeck/sdk-config/
  */
 export function getSdkConfigDir(): string {
   const dir = join(getConfigDir(), 'sdk-config')
@@ -930,7 +987,7 @@ export function getScratchPadPath(configDir = getConfigDir()): string {
 /**
  * 获取定时任务（Automation）配置文件路径
  *
- * @returns 默认路径为 ~/.proma/automations.json
+ * @returns 默认路径为 ~/.DutyDeck/automations.json
  */
 export function getAutomationsPath(): string {
   return join(getConfigDir(), 'automations.json')

@@ -213,6 +213,19 @@ const tongdaxinVipPrompt = `请帮我配置和使用「通达信」。
 4. 不要把敏感信息写入 mcp.json、AGENTS.md、日志或普通项目文件。
 5. 完成后说明已验证的接入状态、可使用能力与后续操作。${MCP_CREDENTIAL_SETUP_INSTRUCTION}${GUIDED_CONNECTION_ACCEPTANCE_INSTRUCTION}`
 
+/** 小红书 MCP 的受控配置提示词：上游交付形态和登录方式需以当前仓库文档为准。 */
+const xiaohongshuMcpPrompt = `请帮我配置和使用「xpzouying/xiaohongshu-mcp」。
+
+官方仓库：https://github.com/xpzouying/xiaohongshu-mcp
+
+执行要求：
+1. 先读取官方仓库当前 README、Release 和许可证，核验本机可用的交付形态（Docker、本地二进制、stdio、HTTP 或 SSE）、启动命令、默认端口、系统要求和当前 MCP 配置示例；不要把 GitHub 仓库地址直接当作 MCP endpoint，也不要猜测命令、端口或 transport。
+2. 如果需要安装 Docker、二进制、浏览器插件或其他运行环境，先说明安装内容、磁盘/网络开销和平台限制；能在当前 DutyDeck 环境安全完成的非敏感步骤再执行，需要用户登录、扫码、授权或确认时停下来让我操作。
+3. 小红书登录、扫码和浏览器会话由我本人完成。不要代替我输入密码、验证码或读取/导出 Cookie、浏览器登录态、token；不要把这些内容写入 mcp.json、AGENTS.md、日志或普通项目文件。
+4. 只把官方文档确认过的非敏感 transport 配置写入当前 DutyDeck workspace；若官方服务要求独立浏览器插件或外部桥接，明确说明它不等于 DutyDeck MCP 已连接。
+5. 配置后必须在当前工作区执行真实 MCP handshake 和 listTools 验证；只有验证成功并由我明确启用后，才报告为「已连接」。发布、评论、点赞、收藏等外部写操作必须逐次获得我的明确确认，不得因为连接成功而自动执行。
+6. 完成后报告实际启动方式、已验证的工具、登录/权限边界、失败原因和后续手动步骤；没有完成真实验证时，明确标记为未连接。${GUIDED_CONNECTION_ACCEPTANCE_INSTRUCTION}`
+
 // These providers have directory definitions but are intentionally withheld from
 // the public MCP picker until their end-to-end connection flows are verified.
 // Keep the definitions intact so re-enabling is an explicit, low-risk catalog change.
@@ -293,6 +306,13 @@ export const MCP_INTEGRATION_CATALOG: CatalogIntegration[] = [
     capabilities: ['行情与金融数据', '账户授权核验', '官方契约调研'],
     setupUrl: 'https://vip.tdx.com.cn/site/app/pc-mall/main.html#/page_product_mcp',
     agentPrompt: tongdaxinVipPrompt,
+  },
+  {
+    id: 'xiaohongshu-mcp', name: '小红书 MCP', iconSlug: 'lucide-orbit', kind: 'guided', authType: 'provider-login', priority: 12,
+    description: '通过官方仓库自托管的小红书 MCP 读取和管理内容；登录、运行环境与发布权限由用户控制。',
+    capabilities: ['笔记搜索与详情', '内容发布与互动', '本地服务与账号授权'],
+    setupUrl: 'https://github.com/xpzouying/xiaohongshu-mcp',
+    agentPrompt: xiaohongshuMcpPrompt,
   },
   {
     id: 'wecom-cli', name: '企业微信 CLI', iconSlug: 'asset:wecom', kind: 'cli', featured: true, priority: 3,

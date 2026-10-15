@@ -138,6 +138,8 @@ export interface DataRootStartupIssue {
 
 /** 路径管理界面与主进程共享的当前状态。 */
 export interface PathManagementState {
+  /** 主进程固定的默认数据根，供设置页展示。 */
+  defaultRoot?: string
   activeRoot: string | null
   startupIssue?: DataRootStartupIssue
   previousRoot?: string
@@ -173,6 +175,8 @@ export interface DataRootMigrationPreviewBlocker {
 
 /** 用户确认迁移前展示的目标卷与容量信息。 */
 export interface DataRootMigrationPreview {
+  /** 省略时按复制处理；移动不需要额外的数据副本空间。 */
+  strategy?: 'copy' | 'move'
   targetRoot: string
   deviceType: DataRootDeviceType
   availableBytes?: number
@@ -233,6 +237,8 @@ export interface DataRootMigrationRecord {
   id: string
   sourceRoot: string
   targetRoot: string
+  /** 仅自动升级旧默认根时写入；普通设置页迁移不填。 */
+  origin?: 'default-root-upgrade'
   stage: DataRootMigrationStage
   completedBytes: number
   totalBytes: number
@@ -253,6 +259,12 @@ export interface DataRootLocatorFile {
   version: 1
   activeRoot: string
   previousRoot?: string
+  /** 早于 previousRoot 的历史绝对根，仅用于引用映射，不授予旧目录访问权限。 */
+  historicalRoots?: string[]
+  /** 用户取消自动默认根升级后，避免每次启动重复阻断；手动迁移仍可继续。 */
+  defaultMigrationDismissed?: boolean
+  /** 用户已确认、将在下次启动执行的默认根移动意图。 */
+  defaultRootMoveRequest?: { sourceRoot: string; targetRoot: string; dev: string; ino: string }
   migration?: DataRootMigrationRecord
   postCommitCleanup?: DataRootPostCommitCleanupRecord
 }
@@ -266,6 +278,18 @@ const DATA_ROOT_MIGRATION_STAGES: ReadonlySet<DataRootMigrationStage> = new Set(
 export function isDataRootLocatorFile(value: unknown): value is DataRootLocatorFile {
   if (!isRecord(value) || value.version !== 1 || !isPortableAbsolutePath(value.activeRoot)) return false
   if (value.previousRoot !== undefined && !isPortableAbsolutePath(value.previousRoot)) return false
+  if (value.historicalRoots !== undefined && (!Array.isArray(value.historicalRoots)
+    || !value.historicalRoots.every(isPortableAbsolutePath)
+    || new Set(value.historicalRoots).size !== value.historicalRoots.length)) return false
+  if (value.defaultMigrationDismissed !== undefined && typeof value.defaultMigrationDismissed !== 'boolean') return false
+  if (value.defaultRootMoveRequest !== undefined) {
+    const request = value.defaultRootMoveRequest
+    if (!isRecord(request) || !isPortableAbsolutePath(request.sourceRoot)
+      || !isPortableAbsolutePath(request.targetRoot) || request.sourceRoot !== value.activeRoot
+      || typeof request.dev !== 'string' || !/^\d+$/.test(request.dev)
+      || typeof request.ino !== 'string' || !/^\d+$/.test(request.ino)
+      || value.migration !== undefined || value.postCommitCleanup !== undefined) return false
+  }
   if (value.migration !== undefined) {
     if (!isDataRootMigrationRecord(value.migration) || value.migration.sourceRoot !== value.activeRoot) return false
   }
@@ -282,6 +306,7 @@ function isDataRootMigrationRecord(value: unknown): value is DataRootMigrationRe
   return isNonEmptyString(value.id)
     && isPortableAbsolutePath(value.sourceRoot)
     && isPortableAbsolutePath(value.targetRoot)
+    && (value.origin === undefined || value.origin === 'default-root-upgrade')
     && typeof value.stage === 'string'
     && DATA_ROOT_MIGRATION_STAGES.has(value.stage as DataRootMigrationStage)
     && isNonNegativeFiniteNumber(value.completedBytes)
@@ -352,4 +377,9 @@ export const PATH_MANAGEMENT_IPC_CHANNELS = {
   OPEN_DATA_ROOT: 'path-management:open-data-root',
   EXIT_APP: 'path-management:exit-app',
   PROGRESS: 'path-management:progress',
+} as const
+
+/** 启动迁移确认窗口的最小 IPC 合同，不暴露普通业务或路径管理写权限。 */
+export const DEFAULT_ROOT_MIGRATION_IPC_CHANNELS = {
+  CHOOSE: 'default-root-migration:choose',
 } as const

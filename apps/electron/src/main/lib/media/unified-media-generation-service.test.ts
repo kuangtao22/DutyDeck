@@ -42,6 +42,13 @@ describe('UnifiedMediaGenerationService', () => {
     const prepared = service.prepare('session-1', request)
     expect(() => service.get('session-2', prepared.id)).toThrow('MEDIA_GENERATION_NOT_OWNED')
     expect(() => service.cancel('session-2', prepared.id)).toThrow('MEDIA_GENERATION_NOT_OWNED')
+    expect(() => service.getAttachmentSource('session-2', prepared.id)).toThrow('MEDIA_GENERATION_NOT_OWNED')
+    /** 回填只读取冻结输入，不泄漏供应商密钥，也不能改写原运行。 */
+    const source = service.getAttachmentSource('session-1', prepared.id)
+    expect(source.request.prompt).toBe('你好')
+    expect(JSON.stringify(source)).not.toContain('secret')
+    source.request.prompt = '已修改'
+    expect(service.getAttachmentSource('session-1', prepared.id).request.prompt).toBe('你好')
   })
 
   test('Given 模型能力与素材类型不匹配 When Agent 准备生成 Then 在供应商请求前拒绝', () => {

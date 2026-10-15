@@ -21,7 +21,7 @@ export interface FileAttachment {
   filename: string
   /** MIME 类型 */
   mediaType: string
-  /** 相对路径: {conversationId}/{uuid}.ext */
+  /** 受管根引用 dutydeck-data:/attachments/...；兼容旧 {conversationId}/{uuid}.ext。 */
   localPath: string
   /** 文件大小（字节） */
   size: number
@@ -247,6 +247,8 @@ export interface ChatSendInput {
  * 生成对话标题的输入参数
  */
 export interface GenerateTitleInput {
+  /** 标题模型调用归属的主对话，旧调用兼容缺省。 */
+  conversationId?: string
   /** 用户消息内容（用于生成标题） */
   userMessage: string
   /** 渠道 ID */

@@ -279,4 +279,17 @@ describe('本轮统计快照合并', () => {
     const stale = mergeAgentRunFileChangesSnapshot(next, { runId: '10', startedAt: 10, revision: 1, files: [] })
     expect(stale).toBe(next)
   })
+
+  test('Given 终态快照 When 监听候选已过期 Then 文件集合以快照为准', async () => {
+    const { mergeAgentRunFileChangesSnapshot } = await import('./agent-run-file-changes')
+    const records = upsertAgentRunFileChanges([], {
+      runId: '11', startedAt: 11, path: '/p/stale-from-watcher.ts', observed: true,
+    })
+    const next = mergeAgentRunFileChangesSnapshot(records, {
+      runId: '11', startedAt: 11, endedAt: 12, revision: 2,
+      files: [{ path: '/p/actual.ts', status: 'modified', statsState: 'complete', additions: 3, deletions: 1 }],
+    })
+    expect(next[0]?.paths).toEqual(['/p/actual.ts'])
+    expect(next[0]?.files).toEqual([{ path: '/p/actual.ts', status: 'modified', statsState: 'complete', additions: 3, deletions: 1 }])
+  })
 })

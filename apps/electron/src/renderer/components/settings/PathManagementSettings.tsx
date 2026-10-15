@@ -2,6 +2,7 @@ import * as React from 'react'
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   Copy,
   FolderOpen,
   HardDrive,
@@ -27,21 +28,27 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { SettingsCard, SettingsRow, SettingsSection } from './primitives'
 import { WorkspacePathList } from './WorkspacePathList'
 
 const ARCHIVE_MIGRATION_PROMPT = `请帮我创建一个可迁移的 DutyDeck 数据压缩包。
 
-DutyDeck 的本地数据通常存放在 ~/.proma。请按以下步骤处理：
+DutyDeck 的本地数据通常存放在 ~/.DutyDeck。请按以下步骤处理：
 
 1. 先确认当前 DutyDeck 数据文件夹的位置、计划生成的 ZIP 路径，以及压缩包是否可能包含会话记录、工作区配置和本地文件。
 2. 在开始压缩前向我展示范围并征得确认；不要删除、移动或修改原始数据文件夹。
-3. 将完整的 .proma 数据文件夹压缩为一个 ZIP 文件，并告诉我生成路径和文件大小。
+3. 将完整的 .DutyDeck 数据文件夹压缩为一个 ZIP 文件，并告诉我生成路径和文件大小。
 4. 提醒我将 ZIP 通过可信方式传输到新设备，并在新设备的 DutyDeck 对话中附上该 ZIP，执行恢复、项目路径分配和索引重建。
 5. 不要尝试导出系统钥匙串、OAuth 登录或其他系统级凭据；这些内容需要在新设备上重新登录或配置。`
 
-const RESTORE_MIGRATION_PROMPT = `我正在恢复来自另一台设备的 DutyDeck 数据，并已附上旧设备 .proma 文件夹的 ZIP 压缩包。
+const RESTORE_MIGRATION_PROMPT = `我正在恢复来自另一台设备的 DutyDeck 数据，并已附上旧设备的 .proma（旧版本）或 .DutyDeck 文件夹 ZIP 压缩包。
 
 请按以下步骤处理：
 
@@ -92,8 +99,8 @@ export function createPathManagementSettingsView(
 
 /** 迁移按钮依赖，便于以真实调用顺序覆盖选择、确认与启动行为。 */
 export interface DataRootMigrationRequestDependencies {
-  /** 打开系统目录选择器。 */
-  pickDataRoot: () => Promise<DataRootSelection | null>
+  /** 由主进程选择默认位置，或打开系统选择器选择自定义位置。 */
+  pickDataRoot: (destination?: 'custom' | 'default') => Promise<DataRootSelection | null>
   /** 只读预检刚选择的目标目录。 */
   previewDataRootMigration: (input: DataRootMigrationSelectionInput) => Promise<DataRootMigrationPreview>
   /** 显示迁移确认对话框。 */
@@ -106,12 +113,13 @@ export interface DataRootMigrationRequestDependencies {
 export async function requestDataRootMigration(
   state: PathManagementState,
   dependencies: DataRootMigrationRequestDependencies,
+  destination: 'custom' | 'default' = 'custom',
 ): Promise<'cancelled' | 'started'> {
   if (createPathManagementSettingsView(state).migrationBlocked) {
     throw new Error('当前路径状态不允许创建新的迁移计划')
   }
-  /** 用户通过系统选择器授权的目标目录。 */
-  const selection = await dependencies.pickDataRoot()
+  /** 默认和自定义目标都必须由主进程签发本次授权。 */
+  const selection = await dependencies.pickDataRoot(destination)
   if (selection === null) return 'cancelled'
   /** 预览不会创建计划；启动时主进程仍会完整复检。 */
   const preview = await dependencies.previewDataRootMigration(selection)
@@ -120,6 +128,32 @@ export async function requestDataRootMigration(
   if (!confirmed || preview.blockers.length > 0) return 'cancelled'
   await dependencies.startDataRootMigration(selection)
   return 'started'
+}
+
+/** 按主进程实际预检的迁移方式展示确认，不把直接移动描述为保留副本。 */
+export function getDataRootMigrationConfirmation(preview: DataRootMigrationPreview | null): {
+  /** 对用户说明确认后发生的动作。 */
+  description: string
+  /** 区分移动和复制迁移的最终操作。 */
+  confirmLabel: string
+  /** 只有复制迁移才需要展示完整副本的容量预算。 */
+  showCapacity: boolean
+} {
+  if (preview === null) return {
+    description: '正在检查目标位置和迁移方式，完成后即可确认。',
+    confirmLabel: '确认并重启迁移',
+    showCapacity: false,
+  }
+  if (preview.strategy === 'move') return {
+    description: '确认后将重启 DutyDeck，并把旧数据目录直接移动到默认位置，不会复制第二份数据。移动后将继续使用原有会话、配置和文件。',
+    confirmLabel: '确认并重启移动',
+    showCapacity: false,
+  }
+  return {
+    description: 'DutyDeck 将创建迁移计划并重启。复制和校验成功后才会切换数据位置，源目录始终保留。',
+    confirmLabel: '确认并重启迁移',
+    showCapacity: true,
+  }
 }
 
 /** 设置页局部交互状态；加载错误与普通操作错误必须独立。 */
@@ -376,7 +410,7 @@ export interface DataRootLocationSectionProps {
   /** 打开可信 locator 中的数据根。 */
   onOpenRoot?: (target: OpenDataRootTarget) => void
   /** 启动迁移选择流程。 */
-  onMigrate?: () => void
+  onMigrate?: (destination: 'custom' | 'default') => void
 }
 
 /** 展示当前与上次数据根；旧根始终只读，不提供删除入口。 */
@@ -399,15 +433,44 @@ export function DataRootLocationSection({
   const availableLabel = state.capacityIssue?.message
     ? state.capacityIssue.message
     : formatBytes(state.availableBytes)
+  /** 默认路径由主进程提供；已使用默认位置时不重复发起迁移。 */
+  const isDefaultRoot = state.defaultRoot !== undefined && state.activeRoot === state.defaultRoot
   return (
     <SettingsSection
       title="DutyDeck 数据位置"
       description="会话、附件、Skills、配置和运行数据统一存放在此位置。"
       action={onMigrate ? (
-        <Button disabled={isBusy || view.migrationBlocked} onClick={onMigrate} className="gap-2">
-          {isBusy ? <Loader2 className="animate-spin" aria-hidden="true" /> : <HardDrive aria-hidden="true" />}
-          迁移位置
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button disabled={isBusy || view.migrationBlocked} className="gap-2">
+              {isBusy ? <Loader2 className="animate-spin" aria-hidden="true" /> : <HardDrive aria-hidden="true" />}
+              迁移位置
+              <ChevronDown className="size-3.5" aria-hidden="true" />
+            </Button>
+          </DropdownMenuTrigger>
+          {/* 菜单通过 Portal 挂到 body，须高于设置页的 60 层，同时低于确认弹窗的 100 层。 */}
+          <DropdownMenuContent align="end" className="z-[70] w-72 max-w-[calc(100vw-2rem)]">
+            <DropdownMenuItem onSelect={() => onMigrate('custom')}>
+              <FolderOpen className="size-4 shrink-0" aria-hidden="true" />
+              <span className="flex flex-col gap-1">
+                <span>选择自定义位置…</span>
+                <span className="text-xs text-muted-foreground">选择其他文件夹或磁盘</span>
+              </span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={isDefaultRoot || state.defaultRoot === undefined}
+              onSelect={() => onMigrate('default')}
+            >
+              <HardDrive className="size-4 shrink-0" aria-hidden="true" />
+              <span className="flex min-w-0 flex-col gap-1">
+                <span>{isDefaultRoot ? '已使用默认位置' : '迁移到默认位置'}</span>
+                <span className="break-all text-xs text-muted-foreground">
+                  {state.defaultRoot ?? '正在读取默认位置'}
+                </span>
+              </span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       ) : undefined}
     >
       <SettingsCard className="rounded-lg">
@@ -485,7 +548,7 @@ export function CrossDeviceMigrationSection(): React.ReactElement {
         description="通过 ZIP 在设备之间搬移数据；原始数据文件夹不会被删除。"
       >
         <ol className="space-y-2 text-sm leading-6 text-muted-foreground">
-          <li>1. 在当前设备将完整的 .proma 数据文件夹压缩为 ZIP。</li>
+          <li>1. 在当前设备将完整的 .DutyDeck 数据文件夹压缩为 ZIP。</li>
           <li>2. 通过可信方式将 ZIP 传输到新设备，并附到 DutyDeck 对话。</li>
           <li>3. 在新设备恢复数据、重新分配项目目录并重建索引。</li>
         </ol>
@@ -667,7 +730,7 @@ export function PathManagementSettings(): React.ReactElement {
   }
 
   /** 打开选择器并等待可取消的确认对话框，再由主进程创建迁移计划。 */
-  const handleMigration = async (): Promise<void> => {
+  const handleMigration = async (destination: 'custom' | 'default' = 'custom'): Promise<void> => {
     if (state === null || actionRequestGate.current === null) return
     const request = actionRequestGate.current.begin()
     /** 本次选择流程的稳定代次。 */
@@ -680,8 +743,8 @@ export function PathManagementSettings(): React.ReactElement {
       && migrationFlowId.current === flowId
     try {
       await requestDataRootMigration(state, {
-        pickDataRoot: async () => {
-          const selection = await window.electronAPI.pickDataRoot()
+        pickDataRoot: async (choice) => {
+          const selection = await window.electronAPI.pickDataRoot(choice)
           return isCurrentFlow() ? selection : null
         },
         previewDataRootMigration: async (selection) => {
@@ -703,7 +766,7 @@ export function PathManagementSettings(): React.ReactElement {
           if (!isCurrentFlow()) throw new Error('路径选择流程已取消')
           await window.electronAPI.startDataRootMigration(selection)
         },
-      })
+      }, destination)
     } catch (migrationError) {
       if (!isCurrentFlow()) return
       dispatchUi({ type: 'migration-failed', message: toErrorMessage(migrationError, '无法创建迁移计划') })
@@ -738,6 +801,8 @@ export function PathManagementSettings(): React.ReactElement {
     previewLoading: uiState.previewLoading,
     isBusy,
   })
+  /** 确认文案只取决于已完成的主进程预检结果。 */
+  const confirmation = getDataRootMigrationConfirmation(uiState.preview)
 
   return (
     <div className="space-y-6">
@@ -755,7 +820,7 @@ export function PathManagementSettings(): React.ReactElement {
           view={view}
           isBusy={isBusy}
           onOpenRoot={(target) => void handleOpenRoot(target)}
-          onMigrate={() => void handleMigration()}
+          onMigrate={(destination) => void handleMigration(destination)}
         />
       )}
 
@@ -779,16 +844,18 @@ export function PathManagementSettings(): React.ReactElement {
           <DialogHeader>
             <DialogTitle>确认迁移 DutyDeck 数据位置</DialogTitle>
             <DialogDescription id="data-root-migration-description">
-              DutyDeck 将创建迁移计划并重启。复制和校验成功后才会切换数据位置，源目录始终保留。
+              {confirmation.description}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <PathSummary label="源位置" path={state?.activeRoot ?? '未知'} />
             <PathSummary label="目标位置" path={uiState.selectedTarget ?? '未选择'} />
-            <div className="grid grid-cols-2 gap-3 rounded-md border border-border/50 bg-muted/20 p-3 text-xs text-muted-foreground">
-              <span>待迁移数据：{formatBytes(uiState.preview?.requiredBytes)}</span>
-              <span>目标可用空间：{formatBytes(uiState.preview?.availableBytes)}</span>
-            </div>
+            {confirmation.showCapacity ? (
+              <div className="grid grid-cols-2 gap-3 rounded-md border border-border/50 bg-muted/20 p-3 text-xs text-muted-foreground">
+                <span>待迁移数据：{formatBytes(uiState.preview?.requiredBytes)}</span>
+                <span>目标可用空间：{formatBytes(uiState.preview?.availableBytes)}</span>
+              </div>
+            ) : null}
             {uiState.previewLoading ? (
               <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Loader2 className="size-4 animate-spin" aria-hidden="true" />正在检查目标位置...
@@ -812,7 +879,7 @@ export function PathManagementSettings(): React.ReactElement {
                 queueMicrotask(() => { void handleMigration() })
               }}>换一个位置</Button>
             ) : <Button variant="outline" onClick={() => resolveConfirmation(false)}>取消</Button>}
-            <Button disabled={confirmDisabled} onClick={() => resolveConfirmation(true)}>确认并重启迁移</Button>
+            <Button disabled={confirmDisabled} onClick={() => resolveConfirmation(true)}>{confirmation.confirmLabel}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

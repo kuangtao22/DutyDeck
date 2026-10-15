@@ -77,6 +77,16 @@ export interface AtomicFileCopyInput {
   onStart: () => void
 }
 
+/** Windows 目标已存在时替换临时条目的可注入依赖。 */
+export interface ReplaceExistingPathOptions {
+  /** 测试可覆盖平台判定，生产默认使用当前 Node 平台。 */
+  platform?: NodeJS.Platform
+  /** 测试可注入 rename，生产使用 fs/promises.rename。 */
+  renamePath?: typeof rename
+  /** 测试可注入 unlink，生产使用 fs/promises.unlink。 */
+  unlinkPath?: typeof unlink
+}
+
 /** 以固定大小缓冲和 pipeline 计算普通文件 SHA-256。 */
 export async function hashFile(filePath: string): Promise<string> {
   /** 使用 no-follow 打开的普通文件句柄。 */
@@ -85,6 +95,40 @@ export async function hashFile(filePath: string): Promise<string> {
     return await hashOpenFile(handle)
   } finally {
     await handle.close()
+  }
+}
+
+/**
+ * 在 Windows rename 不支持直接覆盖目标时，校验目标身份后删除并重命名。
+ *
+ * @param temporaryPath 已完整写入并由当前复制器独占的临时条目。
+ * @param targetPath 需要替换的目标条目。
+ * @param options 平台和文件系统依赖覆盖项，生产调用通常使用默认值。
+ * @returns 目标替换完成后的 Promise。
+ */
+export async function renameReplacingExistingPath(
+  temporaryPath: string,
+  targetPath: string,
+  options: ReplaceExistingPathOptions = {},
+): Promise<void> {
+  /** 首次 rename 前记录目标身份，避免失败后删除迟到出现的外部条目。 */
+  const targetBeforeRename = await lstatOrNull(targetPath)
+  /** 使用的底层重命名函数。 */
+  const renamePath = options.renamePath ?? rename
+  /** 使用的底层删除函数。 */
+  const unlinkPath = options.unlinkPath ?? unlink
+  try {
+    await renamePath(temporaryPath, targetPath)
+    return
+  } catch (error) {
+    /** 只有 Windows 对已有目标的冲突才允许走删除后重命名分支。 */
+    if ((options.platform ?? process.platform) !== 'win32') throw error
+    if (!isWindowsRenameCollision(error) || targetBeforeRename === null) throw error
+    /** 失败后再次读取目标身份，目标被替换时宁可保留原错误。 */
+    const targetAfterFailure = await lstatOrNull(targetPath)
+    if (!sameFileSystemEntry(targetBeforeRename, targetAfterFailure)) throw error
+    await unlinkPath(targetPath)
+    await renamePath(temporaryPath, targetPath)
   }
 }
 
@@ -230,7 +274,7 @@ export async function copyFileAtomic(input: AtomicFileCopyInput): Promise<void> 
     }
     await assertDirectoryIdentity(parentIdentity)
     // Node 无跨平台 openat/renameat：随机临时名与前后 dev/ino/canonical 复验只能收敛竞态窗，无法形式化消除两次系统调用之间的目录替换。
-    await rename(temporaryPath, targetPath)
+    await renameReplacingExistingPath(temporaryPath, targetPath)
     await assertDirectoryIdentity(parentIdentity)
     /** rename 后目标必须仍是刚才创建的同一普通文件。 */
     const targetStats = await lstat(targetPath, { bigint: true })
@@ -282,7 +326,7 @@ export async function replaceSymbolicLinkAtomic(
     if (!temporaryStats.isSymbolicLink() || await readlink(temporaryPath) !== entry.linkTarget) {
       throw new Error(`符号链接临时叶子身份不一致: ${entry.relativePath}`)
     }
-    await rename(temporaryPath, targetPath)
+    await renameReplacingExistingPath(temporaryPath, targetPath)
     await assertDirectoryIdentity(parentIdentity)
   } catch (error) {
     try {
@@ -556,6 +600,23 @@ function isPathInside(root: string, candidate: string): boolean {
 /** 判断未知错误是否带 Node.js 文件系统错误码。 */
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && 'code' in error
+}
+
+/** 判断 Windows rename 是否因目标已存在或暂时被占用而失败。 */
+function isWindowsRenameCollision(error: unknown): boolean {
+  if (!isNodeError(error)) return false
+  return error.code === 'EEXIST'
+    || error.code === 'EPERM'
+    || error.code === 'EACCES'
+    || error.code === 'ENOTEMPTY'
+}
+
+/** 比较两个 no-follow 条目的设备与 inode，确认删除操作仍指向原目标。 */
+function sameFileSystemEntry(
+  left: Awaited<ReturnType<typeof lstat>> | null,
+  right: Awaited<ReturnType<typeof lstat>> | null,
+): boolean {
+  return left !== null && right !== null && left.dev === right.dev && left.ino === right.ino
 }
 
 /** 把未知异常转换为 stream callback 接受的 Error。 */

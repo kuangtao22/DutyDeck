@@ -27,6 +27,8 @@ import { getServerOpsServiceContext } from './server-ops-service-context'
 import type { ServerOpsRuntimeExecResult } from '../../../utility/server-ops/server-ops-runtime-protocol'
 import { getServerOpsAuditErrorCode } from './server-ops-audit-store'
 import { captureServerOpsReadBindings } from './server-ops-agent-read-identity'
+import { normalizeTerminalText } from '../terminal-output-buffer'
+import type { ServerOpsTaskReadResult, ServerOpsTaskSummary } from '@proma/shared'
 import type { ServerOpsAgentReadBinding } from './server-ops-agent-access-store'
 
 /** Agent 可见的审计降级警告。 */
@@ -77,6 +79,8 @@ export interface ServerOpsAgentFacadeServices {
     & { prepareForWrites?: () => Promise<void> }
   docker?: Pick<import('./server-ops-docker-service').ServerOpsDockerService, 'listResources' | 'getContainerDetail' | 'runAgentAction'>
   files?: Pick<import('./server-ops-file-service').ServerOpsFileService, 'list' | 'preview' | 'mutateForAgent' | 'releaseReader'>
+  /** 交互任务归会话所有，Facade 不持有键盘写入能力。 */
+  tasks?: Pick<import('./server-ops-task-service').ServerOpsTaskService, 'start' | 'list' | 'read' | 'interrupt'>
 }
 
 /** Facade 可替换依赖，仅用于隔离会话事实与主进程服务实例。 */
@@ -102,6 +106,8 @@ export interface CreateServerOpsAgentFacadeInput {
   dependencies?: ServerOpsAgentFacadeDependencies
   /** 由编排器提供的本轮取消，不改变已保存服务器和连接。 */
   runSignal?: AbortSignal
+  /** 显式停止任务的信号；正常结束一轮对话不会中断等待用户输入的远程命令。 */
+  taskSignal?: AbortSignal
   /** 主进程复核运行代次；旧工具闭包不能跨运行继续使用。 */
   assertRunActive?: () => void
 }
@@ -126,6 +132,9 @@ export interface ServerOpsAgentFacade {
   filesList?: (input: ServerOpsFilePreviewInput) => Promise<ServerOpsFileListResult>
   filesRead?: (input: ServerOpsFilePreviewInput) => Promise<ServerOpsFilePreviewResult>
   filesMutate?: (input: ServerOpsFileMutationInput) => Promise<ServerOpsFileMutationResult>
+  taskStart?: (input: { hostId: string; command: string }) => Promise<ServerOpsTaskSummary>
+  taskRead?: (input: { taskId: string; offset?: number; waitMs?: number }) => Promise<ServerOpsTaskReadResult>
+  taskInterrupt?: (input: { taskId: string }) => Promise<ServerOpsTaskSummary>
 }
 
 /** 仅普通用户交互运行可以注册并执行服务器工具。 */
@@ -177,7 +186,7 @@ export function createServerOpsAgentFacade(input: CreateServerOpsAgentFacadeInpu
   if (!isInteractiveRunSource(input.triggeredBy)) return null
   /** 未显式注入时只读取已初始化的全局上下文，不创建 fallback。 */
   const context = input.dependencies ? null : getServerOpsServiceContext()
-  const dependencies = input.dependencies ?? (context && input.getSession ? {
+  const dependencies: ServerOpsAgentFacadeDependencies | null = input.dependencies ?? (context && input.getSession ? {
     getSession: input.getSession,
     services: {
       hosts: context.hosts,
@@ -186,6 +195,7 @@ export function createServerOpsAgentFacade(input: CreateServerOpsAgentFacadeInpu
       audit: context.audit,
       docker: context.docker,
       files: context.files,
+      tasks: context.tasks,
     },
   } : null)
   if (!dependencies) return null
@@ -307,6 +317,29 @@ export function createServerOpsAgentFacade(input: CreateServerOpsAgentFacadeInpu
   }
 
   return {
+    ...(dependencies.services.tasks ? {
+      async taskStart({ hostId, command }: { hostId: string; command: string }) {
+        requireAvailableHost(hostId)
+        /** 连接身份只来自本轮捕获的快照，不接受模型指定。 */
+        const connectionId = connectedHosts.get(hostId)!.connectionId
+        return dependencies.services.tasks!.start(input.sessionId, { hostId, connectionId, command },
+          () => { requireAvailableHost(hostId) }, input.taskSignal ?? input.runSignal)
+      },
+      async taskRead({ taskId, offset, waitMs }: { taskId: string; offset?: number; waitMs?: number }) {
+        requireRunActive()
+        /** 断线后仍允许所属会话读取终态，但等待期间停止的运行不能接收迟到内容。 */
+        const result = await dependencies.services.tasks!.read({ sessionId: input.sessionId, taskId, offset, waitMs }, input.runSignal)
+        requireRunActive()
+        return boundedResult({ ...result, task: { ...result.task, command: result.task.command.slice(0, 1024) }, output: normalizeTerminalText(result.output) })
+      },
+      async taskInterrupt({ taskId }: { taskId: string }) {
+        requireRunActive()
+        /** 服务再次验证所属会话与原 SSH 代次；不会按主机 ID 中断其他任务。 */
+        const result = await dependencies.services.tasks!.interrupt({ sessionId: input.sessionId, taskId })
+        requireRunActive()
+        return result
+      },
+    } : {}),
     ...(dependencies.services.files ? {
       async filesList(raw: ServerOpsFilePreviewInput) {
         const parsed = parseServerOpsFilePreviewInput(raw)

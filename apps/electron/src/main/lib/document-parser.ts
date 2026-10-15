@@ -13,6 +13,7 @@
 import { readFileSync } from 'node:fs'
 import { extname } from 'node:path'
 import { resolveAttachmentPath } from './config-paths'
+import type { ConfigRootResolver } from './config-paths'
 
 // ===== 文件类型分类 =====
 
@@ -91,49 +92,55 @@ export function isDocumentAttachment(mediaType: string): boolean {
  * @throws 不支持的格式或解析失败时抛出错误
  */
 export async function extractTextFromFile(filePath: string): Promise<string> {
+  // 外部旧 Word 文档保留解析器原有按路径读取能力，避免新增整文件同步缓存。
+  if (LEGACY_WORD_EXTENSIONS.has(extname(filePath).toLowerCase())) return extractLegacyWord(filePath)
+  return extractTextFromBytes(filePath, readFileSync(filePath))
+}
+
+/** 按文件扩展名解析已读取的稳定字节，附件入口无需重新打开文件或转换 base64。 */
+async function extractTextFromBytes(filePath: string, buffer: Buffer): Promise<string> {
+  /** 扩展名只决定解析器，不决定读取权限。 */
   const ext = extname(filePath).toLowerCase()
 
   // PDF 文件
   if (ext === '.pdf') {
-    return extractPdf(filePath)
+    return extractPdf(filePath, buffer)
   }
 
   // 旧版 Word/WPS Writer 文件
   if (LEGACY_WORD_EXTENSIONS.has(ext)) {
-    return extractLegacyWord(filePath)
+    return extractLegacyWord(buffer)
   }
 
   // Office 和 OpenDocument 格式
   if (OFFICE_EXTENSIONS.has(ext)) {
-    return extractOffice(filePath)
+    return extractOffice(filePath, buffer)
   }
 
   // WPS 原生表格/演示格式
   if (WPS_OFFICE_EXTENSIONS.has(ext)) {
-    return extractWpsOffice(filePath)
+    return extractWpsOffice(filePath, buffer)
   }
 
   // 富文本格式（RTF 不是 OOXML，单独解析）
   if (RICH_TEXT_EXTENSIONS.has(ext)) {
-    return extractRichText(filePath)
+    return extractRichText(buffer)
   }
 
   // 纯文本格式
   if (TEXT_EXTENSIONS.has(ext)) {
-    return readFileSync(filePath, 'utf-8')
+    return buffer.toString('utf-8')
   }
 
   // 未知格式：尝试当作文本读取
   console.warn(`[文档解析] 未知格式 ${ext}，尝试作为文本读取: ${filePath}`)
-  return readFileSync(filePath, 'utf-8')
+  return buffer.toString('utf-8')
 }
 
 /**
  * 提取 PDF 文本
  */
-async function extractPdf(filePath: string): Promise<string> {
-  const buffer = readFileSync(filePath)
-
+async function extractPdf(filePath: string, buffer: Buffer): Promise<string> {
   try {
     const pdfParse = (await import('pdf-parse')).default
     const result = await pdfParse(buffer)
@@ -153,12 +160,12 @@ async function extractPdf(filePath: string): Promise<string> {
 }
 
 /**
- * 提取旧版 Word/WPS Writer 文本
+ * 提取旧版 Word/WPS Writer 文本；source 为外部文件路径或已授权附件字节。
  */
-async function extractLegacyWord(filePath: string): Promise<string> {
+async function extractLegacyWord(source: string | Buffer): Promise<string> {
   const WordExtractor = (await import('word-extractor')).default
   const extractor = new WordExtractor()
-  const extracted = await extractor.extract(filePath)
+  const extracted = await extractor.extract(source)
   const text = extracted.getBody()
   console.log(`[文档解析] 旧版 Word/WPS 提取完成: ${text.length} 字符`)
   return text
@@ -173,11 +180,11 @@ async function extractLegacyWord(filePath: string): Promise<string> {
  * file-type 按文件内容嗅探类型，从而绕过扩展名白名单、正确路由这些变体。
  * 因此这里统一以 Buffer 传入，让所有 OOXML 变体都能被解析。
  */
-async function extractOffice(filePath: string): Promise<string> {
+async function extractOffice(filePath: string, buffer: Buffer): Promise<string> {
   const ext = extname(filePath).toLowerCase()
   if (ext === '.docx' || ext === '.docm' || ext === '.dotx' || ext === '.dotm') {
     try {
-      const text = await extractDocxWithMammoth(filePath)
+      const text = await extractDocxWithMammoth(buffer)
       if (text.trim()) {
         console.log(`[文档解析] DOCX 提取完成: ${text.length} 字符`)
         return text
@@ -188,7 +195,6 @@ async function extractOffice(filePath: string): Promise<string> {
   }
 
   // 以 Buffer 传入，officeparser 会按内容（而非扩展名）嗅探并路由。
-  const buffer = readFileSync(filePath)
   const officeParser = await import('officeparser') as unknown as OfficeParserModule
   const text = await officeParser.parseOfficeAsync(buffer)
   console.log(`[文档解析] Office 提取完成: ${text.length} 字符`)
@@ -198,9 +204,9 @@ async function extractOffice(filePath: string): Promise<string> {
 /**
  * 提取 WPS 原生表格/演示文本
  */
-async function extractWpsOffice(filePath: string): Promise<string> {
+async function extractWpsOffice(filePath: string, buffer: Buffer): Promise<string> {
   try {
-    return await extractOffice(filePath)
+    return await extractOffice(filePath, buffer)
   } catch (error) {
     const ext = extname(filePath).toLowerCase()
     console.warn(`[文档解析] WPS 原生格式提取失败: ${filePath}`, error)
@@ -215,8 +221,8 @@ async function extractWpsOffice(filePath: string): Promise<string> {
  * brace 感知解析器：跳过字体表/颜色表/样式表等控制性分组，仅保留正文，
  * 并把 \par \line \tab 等转成对应的空白字符。无需引入额外依赖。
  */
-async function extractRichText(filePath: string): Promise<string> {
-  const raw = readFileSync(filePath, 'latin1')
+async function extractRichText(buffer: Buffer): Promise<string> {
+  const raw = buffer.toString('latin1')
   const text = parseRtf(raw)
   if (!text.trim()) {
     throw new Error('RTF 文档解析后内容为空，请在编辑器中另存为 DOCX 或 PDF 后重试')
@@ -376,9 +382,9 @@ interface OfficeParserModule {
   parseOfficeAsync(file: string | Buffer): Promise<string>
 }
 
-async function extractDocxWithMammoth(filePath: string): Promise<string> {
+async function extractDocxWithMammoth(buffer: Buffer): Promise<string> {
   const mammoth = await import('mammoth') as unknown as MammothModule
-  const result = await mammoth.extractRawText({ path: filePath })
+  const result = await mammoth.extractRawText({ buffer })
   return result.value
 }
 
@@ -449,15 +455,19 @@ async function extractPdfWithPdfJs(buffer: Buffer): Promise<string> {
 }
 
 /**
- * 从附件相对路径提取文本（IPC 层使用）
+ * 从受管附件引用提取文本（IPC 层使用）
  *
  * 将附件的 localPath（如 {conversationId}/{uuid}.ext）
  * 解析为完整路径后提取文本。
  *
- * @param localPath 附件相对路径
+ * @param localPath 数据根引用、旧绝对路径或 Chat 附件相对路径
+ * @param resolver 可选独立数据根定位器，默认使用生产定位器
  * @returns 提取的纯文本内容
  */
-export async function extractTextFromAttachment(localPath: string): Promise<string> {
-  const fullPath = resolveAttachmentPath(localPath)
-  return extractTextFromFile(fullPath)
+export async function extractTextFromAttachment(localPath: string, resolver?: ConfigRootResolver): Promise<string> {
+  /** 延迟加载附件服务，普通文件解析器无需初始化 Electron 选择器。 */
+  const { readAttachmentBytes } = await import('./attachment-service')
+  /** 先完成当前数据根和稳定句柄授权，再仅使用这份字节解析。 */
+  const fullPath = resolveAttachmentPath(localPath, resolver)
+  return extractTextFromBytes(fullPath, readAttachmentBytes(localPath, resolver))
 }

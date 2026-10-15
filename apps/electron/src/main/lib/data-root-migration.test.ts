@@ -46,7 +46,7 @@ describe('DataRootMigrationCoordinator', () => {
 
   beforeEach(() => {
     homeDir = mkdtempSync(join(tmpdir(), 'proma-data-root-migration-'))
-    sourceRoot = join(homeDir, '.proma')
+    sourceRoot = join(homeDir, '.DutyDeck')
     targetRoot = join(homeDir, 'target')
     mkdirSync(sourceRoot)
     writeFileSync(join(sourceRoot, 'settings.json'), '{"theme":"dark"}')
@@ -348,7 +348,7 @@ describe('DataRootMigrationCoordinator', () => {
     expect(harness.locator.requireActiveRoot()).toBe(sourceRoot)
     expect(harness.locator.inspect().locatorFile?.migration).toMatchObject({
       stage: 'failed',
-      error: '复制数据失败',
+      error: '复制数据失败：磁盘读取失败 /secret/path',
     })
     expect(harness.finalizeCalls).toEqual([])
   })

@@ -14,12 +14,15 @@ export * from './runtime'
 
 // 渠道（AI 供应商）相关类型
 export * from './channel'
+// DutyDeck 内置本地模型与运行时生命周期
+export * from './local-model'
 
 // 代理配置相关类型
 export * from './proxy'
 
 // Chat 相关类型
 export * from './chat'
+export * from './token-usage'
 
 // Agent 相关类型
 export * from './agent'
@@ -130,3 +133,8 @@ export * from './capability-factory'
 export * from './capability-factory-ipc'
 export * from './capability-factory-batch'
 export * from './agent-run-file-changes'
+
+export * from './server-ops-task'
+export * from './server-ops-task-session'
+export * from './interaction-design'
+export * from './interaction-design-validation'

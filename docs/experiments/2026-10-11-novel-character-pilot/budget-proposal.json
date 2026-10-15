@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "status": "proposed-not-authorized-not-executed",
+  "modelCallsExecuted": 0,
+  "diagnostic": {
+    "sceneId": "a0a4ff51-7d4b-4ebb-9b10-af6344ed670f",
+    "sceneVersion": 24,
+    "inputFile": "diagnostic-input.json",
+    "baseline": {
+      "modelSlot": "scan",
+      "model": "glm-5.3",
+      "temperature": 0.2,
+      "maxTokens": 4096
+    },
+    "comparison": {
+      "modelSlot": "scan",
+      "model": "glm-5.3",
+      "temperature": 0.2,
+      "maxTokens": 8192,
+      "existingDraftCreatedAt": 1791716159343
+    },
+    "draftOnlyMaxTokensChanged": true,
+    "promptChanges": 0,
+    "automaticAdoption": false,
+    "limits": {
+      "maxRuns": 2,
+      "maxCalls": 6,
+      "maxTransportAttempts": 6,
+      "durationMs": 900000
+    },
+    "expectedCallsWithoutRetry": 4,
+    "worstCaseCalls": 6,
+    "countsInclude": [
+      "每条执行最多2次尝试",
+      "成功执行后的1次语义评审",
+      "失败与重试仍计入预算"
+    ],
+    "stopOn": [
+      "15分钟到期",
+      "逻辑调用或可观察传输额度耗尽",
+      "凭据或实际模型漂移",
+      "取消或版本变化"
+    ],
+    "report": [
+      "是否返回正文",
+      "停止原因与解析状态",
+      "可得token用量",
+      "执行和评审分别耗时",
+      "未知费用不记为0"
+    ]
+  },
+  "laterPromptExperiment": {
+    "status": "separate-budget-required-after-diagnostic",
+    "comparisonBatches": 3,
+    "casesPerSplit": 10,
+    "maxCandidates": 2,
+    "maxRuns": 60,
+    "expectedCallsWithoutRetry": 120,
+    "worstCaseCalls": 180,
+    "proposedLimits": {
+      "maxCalls": 180,
+      "maxTransportAttempts": 180,
+      "durationMs": 5400000
+    },
+    "note": "如需改变模型或输出上限，先形成新的统一基线；随后三阶段冻结同一配置。不能把长度变化混作prompt收益。"
+  },
+  "cost": {
+    "currency": "CNY",
+    "estimate": null,
+    "hardCurrencyCapAvailable": false,
+    "reason": "当前订阅渠道没有可靠单价；订阅消耗不等于免费。提案Agent费用、供应商内部不可观察重试另列未知。"
+  },
+  "implementationBoundary": "必须通过现有宿主运行与调用账本执行；此文件不授权直接SDK脚本绕过预算、身份或采纳审批。"
+}

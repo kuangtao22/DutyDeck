@@ -207,6 +207,39 @@ export function overlapsNativeCanvasNodes(
   })
 }
 
+/** 生图卡片仅接收配置准备说明和最近任务失败事实，不接收完整模块。 */
+export interface NativeCanvasImageStatus {
+  /** 主进程已校验的待配置原因。 */
+  preparationMessage?: string
+  /** 最近创建的任务是否失败，历史失败不得覆盖更新任务。 */
+  failed?: boolean
+}
+
+/**
+ * 合并图片素材、任务与配置状态；正式素材和候选不会因旧错误消失。
+ * @param node 当前权威图片节点。
+ * @param options 轻量配置与任务状态索引。
+ * @param activityState 已聚合的当前活动状态。
+ * @returns 卡片可读状态与原因，不改变图片或连线。
+ */
+function projectCanvasImageCardStatus(
+  node: Extract<CanvasNode, { kind: 'image' }>,
+  options: Pick<NativeCanvasProjectionOptions, 'imageStatusByNodeId' | 'imageCandidateNodeIds'>,
+  activityState: CanvasNodeActivityState,
+): { statusLabel: string; summary: string } {
+  /** 运行状态优先显示当前操作；素材仍由原采用字段保留。 */
+  if (activityState === 'running') return { statusLabel: '运行中', summary: '正在生成图片' }
+  if (activityState === 'queued') return { statusLabel: '排队中', summary: '等待生成图片' }
+  if (activityState === 'waiting-approval') return { statusLabel: '待审批', summary: '等待确认生成图片' }
+  if (node.adoptedAssetId) return { statusLabel: '已有素材', summary: '已采用画布素材' }
+  if (options.imageCandidateNodeIds?.has(node.id)) return { statusLabel: '待采用', summary: '已生成，尚未设为默认' }
+  /** 配置错误比历史失败更能说明当前下一步。 */
+  const status = options.imageStatusByNodeId?.get(node.id)
+  if (status?.preparationMessage) return { statusLabel: '待配置', summary: status.preparationMessage }
+  if (status?.failed) return { statusLabel: '生成失败', summary: '上次生成失败，请打开详情查看原因' }
+  return { statusLabel: '待创作', summary: '尚未生成图片' }
+}
+
 /** 四类节点投影使用的运行时状态和轻量命令能力。 */
 export interface NativeCanvasProjectionOptions {
   nodeIssues: CanvasNodeIssue[]
@@ -219,6 +252,8 @@ export interface NativeCanvasProjectionOptions {
   imagePreviews?: ReadonlyMap<string, CanvasImagePreview>
   /** 已有成功生成结果但尚未正式采用的生图节点，仅用于准确展示候选状态。 */
   imageCandidateNodeIds?: ReadonlySet<string>
+  /** 工作区统一派生的轻量图片准备与失败状态。 */
+  imageStatusByNodeId?: ReadonlyMap<string, NativeCanvasImageStatus>
   canCreateChild: boolean
   onCreateChild: (nodeId: string, kind: CanvasNodeKind) => void
   onReferenceNode?: (nodeId: string) => void
@@ -361,7 +396,7 @@ function projectCanvasMediaCardStatus(
 export function patchNativeCanvasFlowNodeRuntimeState(
   flowNode: NativeCanvasFlowNode,
   canvasNode: CanvasNode,
-  options: Pick<NativeCanvasProjectionOptions, 'nodeIssues' | 'runningSessionIds' | 'nodeActivityStates' | 'mediaProgressByNodeId' | 'imageCandidateNodeIds'>,
+  options: Pick<NativeCanvasProjectionOptions, 'nodeIssues' | 'runningSessionIds' | 'nodeActivityStates' | 'mediaProgressByNodeId' | 'imageCandidateNodeIds' | 'imageStatusByNodeId'>,
 ): NativeCanvasFlowNode {
   /** 媒体阶段和 Workspace 活动态共享同一优先级合并规则。 */
   const mediaProgress = options.mediaProgressByNodeId?.get(canvasNode.id)
@@ -388,12 +423,8 @@ export function patchNativeCanvasFlowNodeRuntimeState(
     changed = changed || data.mediaProgress !== mediaProgress
     if (mediaProgress) data.mediaProgress = mediaProgress
     else delete data.mediaProgress
-    const hasPendingCandidate = !canvasNode.adoptedAssetId
-      && options.imageCandidateNodeIds?.has(canvasNode.id) === true
-    const statusLabel = canvasNode.adoptedAssetId ? '已有素材' : hasPendingCandidate ? '待采用' : '待创作'
-    const summary = canvasNode.adoptedAssetId
-      ? '已采用画布素材'
-      : hasPendingCandidate ? '已生成，尚未设为默认' : '尚未生成图片'
+    /** 完整和增量投影共用同一优先级，避免进度事件恢复错误文案。 */
+    const { statusLabel, summary } = projectCanvasImageCardStatus(canvasNode, options, activityState)
     changed = changed || data.statusLabel !== statusLabel || data.summary !== summary
     data.statusLabel = statusLabel
     data.summary = summary
@@ -674,9 +705,8 @@ export function toNativeCanvasFlowNodes(
       const preview = node.adoptedAssetId
         ? options.imagePreviews?.get(node.adoptedAssetId)
         : undefined
-      /** 候选只改变状态文案，正式采用前不得注入缩略图或素材身份。 */
-      const hasPendingCandidate = !node.adoptedAssetId
-        && options.imageCandidateNodeIds?.has(node.id) === true
+      /** 候选仅改变状态文案，不注入未采用的素材。 */
+      const imageStatus = projectCanvasImageCardStatus(node, options, activityState)
       return {
         ...base,
         type: 'canvasImage',
@@ -689,10 +719,7 @@ export function toNativeCanvasFlowNodes(
           ...(mediaProgress ? { mediaProgress } : {}),
           ...(node.adoptedAssetId ? { adoptedAssetId: node.adoptedAssetId } : {}),
           ...(preview ? { previewUrl: preview.previewUrl, nodeHeight: nodeSize.height } : {}),
-          statusLabel: node.adoptedAssetId ? '已有素材' : hasPendingCandidate ? '待采用' : '待创作',
-          summary: node.adoptedAssetId
-            ? '已采用画布素材'
-            : hasPendingCandidate ? '已生成，尚未设为默认' : '尚未生成图片',
+          ...imageStatus,
           canOpenWorkbench: true,
           onOpenWorkbench: options.onWorkbenchNodeChange,
           canCreateChild: options.canCreateChild,
@@ -803,6 +830,9 @@ export function toNativeCanvasFlowEdges(document: CanvasDocument): Edge[] {
     const target = nodesById.get(edge.targetNodeId)
     if (!source || !target) throw new Error('CANVAS_EDGE_ENDPOINT_MISSING')
     const binding = resolveCanvasEdgeBinding(edge, source.kind, target.kind)
+    /** 合法规划边继续保留，只提示正式素材尚未就绪。 */
+    const waitingForAsset = binding.state === 'bound' && edge.relation !== 'association'
+      && source.kind === 'image' && !source.adoptedAssetId && edge.sourcePort === 'image.asset'
     return {
       id: edge.id,
       source: edge.sourceNodeId,
@@ -816,7 +846,7 @@ export function toNativeCanvasFlowEdges(document: CanvasDocument): Edge[] {
       data: { relation: edge.relation, bindingState: binding.state },
       label: `${binding.state === 'unresolved'
         ? `${CANVAS_EDGE_RELATION_LABELS[edge.relation]} · 待确认`
-        : CANVAS_EDGE_RELATION_LABELS[edge.relation]}${edge.sourceOutputKey ? ` · ${edge.sourceOutputKey}` : ''}`,
+        : `${CANVAS_EDGE_RELATION_LABELS[edge.relation]}${waitingForAsset ? ' · 等待上游素材' : ''}`}${edge.sourceOutputKey ? ` · ${edge.sourceOutputKey}` : ''}`,
     }
   })
 }

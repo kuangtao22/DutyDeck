@@ -1,8 +1,8 @@
 ---
 name: canvas-production
-description: DutyDeck 画布生产与 Agent 编排 Skill。用户希望创建、迭代或评审网页原型、图片设计稿、文档、产品套图、整套交互视觉稿、漫剧分镜、多镜头视频、音视频剪辑、程序规划或其他需要多个可关联产物的任务时使用。根据用途选择制作模式、安排专业 Agent、评审方案与实际产物，并通过 DutyDeck 内置 canvas_* 工具执行；普通代码修改、一次性文本回答或不需要长期产物图的任务不要强行转入画布。
+description: DutyDeck 画布生产与 Agent 编排 Skill。仅在用户本轮明确要求使用画布、引用或继续已有画布产物，或业务确需多个可关联且持续复用的画布产物时使用，例如产品套图、整套交互视觉稿、漫剧分镜或多镜头视频。通过 DutyDeck 内置 canvas_* 工具制作与评审；普通代码修改、一次性 HTML 原型、文本回答或不需要长期产物图的任务不要强行转入画布。
 group: proma
-version: "1.0.40"
+version: "1.0.42"
 ---
 
 # 画布生产
@@ -13,9 +13,11 @@ version: "1.0.40"
 
 ## 什么时候使用
 
-以下任务通常适合画布：
+先确认本轮业务意图：普通 HTML/React/代码实现或一次性原型默认使用项目文件与浏览器交付，不自动创建、同步或打开画布。历史关联、默认画布、旧任务和工具可用性只用于已确定的画布业务定位，不能代替本轮意图或触发恢复旧任务。
 
-- 创建或迭代网页原型、交互页面、桌面端与手机端视觉稿。
+用户本轮明确要求使用画布、明确引用或继续已有画布产物，或业务确实需要多个可关联且持续复用的画布产物时，才使用本 Skill。以下是满足该边界后的适用任务：
+
+- 在画布中创建或迭代网页原型、交互页面、桌面端与手机端视觉稿。
 - 创建产品套图、系列海报、角色设定、漫剧分镜等多个关联图片产物。
 - 制作或评审多镜头视频、音视频内容及已有素材剪辑的工作流。
 - 把需求、程序规划、信息架构、设计规范等拆成可持续维护的文档节点。
@@ -28,7 +30,7 @@ version: "1.0.40"
 - 一次性问答、短文本润色、简单分析或不需要长期维护产物关系的任务。
 - 仅仅因为用户说了“首页”“设计”“视觉”“图片”等词，但实际交付仍然是项目代码。
 
-如果用户想要可视化产物，但无法判断他需要可交互 WebView、静态图片设计稿还是直接修改代码，只询问一次，提供“创建 WebView 原型”“创建图片设计稿”“继续普通 Agent”三个选项。用户已经明确产物类型时直接执行，不重复询问。
+只有交付形态仍不明确且会实质影响结果时才澄清，不能把普通原型请求默认变成画布选择题。用户已经明确普通文件、代码或画布交付时直接执行，不重复询问。本轮确需画布时，系统会根据真实画布业务自动展示对应面板，无需要求用户先手动打开。
 
 ## 工作原则
 
@@ -86,7 +88,7 @@ Canvas Agent 开始任务时，先通过 `canvas_get_context` 获取直接输入
 - 节点交付还需填写 `nodeKind` 与 `change`。检查现有目标用 `existing`，修改用 `updated`，均指定 `nodeId`；新增用 `created`，不能将原输入作为新产物。
 - `content` 证明正式正文存在；`configuration` 证明配置保存；`adopted` 证明正式素材采用；`inspection` 证明真实图片已送达模型。配置不代表生成完成，默认采用不代表质量合格。
 - 生成并检查新候选使用 `updated + inspection`，先 start 再运行，完成时引用本合同创建的精确 jobId 证据；候选不合格也可完成“生成并检查”，但须明确拒绝采用原因，不能宣称质量通过。检查既有候选使用 `existing + inspection`。缺少本轮创建身份时先核对原任务，不为补证据重复生成。
-- `canvas_read` 为完整读取的正文、配置和音视频采用事实返回 `evidence`；图片须用 `canvas_inspect_images` 获取 `evidenceId`，正式采用图片还返回独立的 `adoptedEvidenceId`。一份证据只能满足一项要求，截断或读取失败时缩小范围重读。
+- `canvas_read` 为完整读取的正文、配置和音视频采用事实返回 `evidence`；图片须用 `canvas_inspect_images` 获取 `evidenceId`，正式采用图片还返回独立的 `adoptedEvidenceId`。一份证据只能满足一项要求；配置截断时缩小范围重读，长正文按下述 `canvas_read_version` 流程分页取得完整内容凭据。
 - 音视频交付在 `adopted` 要求中明确填写 `mediaReview`：`stage` 区分 preview/final，`contentCoverage` 区分 technical/sampled/full；按用户用途填写 `requireAudio`、`width`、`height`、`minDurationSeconds`、`maxDurationSeconds`。新素材可在已有节点上用 updated，不必新建卡片。仅交付可解码技术素材才用 technical；抽样预演用 sampled；要求完整成片视听验收时保留 full，当前能力不足就明确 block，不能降为抽样或省略 mediaReview 绕过验收。
 - 音视频内容验收先用 `canvas_inspect_media_content` 读取真实已采用媒体的技术解码与有界抽帧，再把工具返回的 `inspectionEvidenceId` 交给 `canvas_review_media`，记录 Agent 对实际收到样本的 `verdict`、`coverage` 和备注。技术解码成功不等于看过完整内容；有界抽帧只能支持当前的 `sampled` 覆盖，不能声称看过全片或听过完整音轨。当前只支持 `sampled`，请求 `full` 时由 Host 明确拒绝，不得把抽样结果改写为完整验收。音频当前只提供技术检查，听取内容的要求仍待验收。完成提交使用评审返回的 `evidence.evidenceId`，不能拿评审前的检查 ID 代替。
 - 按声明目标检查质量，引用证据后调用 `canvas_task(action=complete)`。Host 会重新核验精确节点、产物与版本；旧证据失效时沿原任务修复，不降低要求或重复创建运行。
@@ -118,7 +120,7 @@ Canvas Agent 开始任务时，先通过 `canvas_get_context` 获取直接输入
 
 存在明确引用、需要继续已有产物或依赖上游内容时，使用 `canvas_read` 读取目标节点。只有关系会影响本次判断时才读取邻接节点，不扫描无关画布或全部节点。
 
-读取后以返回的当前 revision、内容 revision 和权威关系为准。内容被截断时不要假设未返回部分；缩小范围后再次读取。
+读取后以返回的当前 revision、内容 revision 和权威关系为准。内容被截断时不要假设未返回部分；先缩小到目标节点读取元数据，长文档或 WebView 正文仍超出预算时，使用 `canvas_read_version` 读取该节点的当前采用正文版本。从 offset=0 开始，逐页跟随返回的 `nextOffset`，不要自行按固定页长加偏移；保持同一画布、节点、正文类型和版本，直到 `readCoverage.complete` 为 true 且返回 `evidence.evidenceId`，再提交该凭据。历史版本可以阅读，但不能作为当前交付的内容凭据；缺页、失败或版本变化不能宣称已完整读取。分页覆盖只在本轮累计，恢复后需要重新完整读取；完整内容凭据仅证明该版本正文已送达，不代表视觉、交互或质量验收通过。
 
 ### 2.1 全量图片视觉核对
 
@@ -247,7 +249,7 @@ WebView 创建后即可预览，文档和 WebView 不需要单独运行；保存
    完整目录仍无匹配时说明缺口：`ask` 模式先询问是否根据当前服务器已有模型和节点生成工作流并保存本地，等待明确同意后传 `creationIntent=user-confirmed`；`automatic` 模式可直接新建，传 `creationIntent=automatic-policy`，Host 会复核最新设置，无需再次询问。分页未完成、名称筛选无结果、读取失败、同步失败、转换失败均不能当作服务器没有匹配；继续分页、清除筛选或报告具体问题。两种模式都用 `media_list_resources` 查询实际 `models`/`nodes`，用 `media_get_node_schema`、`media_inspect_workflow` 校验真实接口、模型枚举、连线及输出，最后调用 `media_save_local_workflow` 保存可跨项目复用的本地模板。不得虚构模型或节点，保存不等于生成成功。
 3. 用 `media_inspect_workflow` 检查缺失参数，用 `media_match_assets` 匹配项目素材。用户附件通过 `media_list_sources` / `media_import_assets` 导入，本地 Shell/Skill 的明确产物通过 `media_import_local_file` 导入。上传和远端素材标识填充由 prepare 链路完成，不猜测远端文件名。
 4. 图片通过 `canvas_update_image_config` 固定服务器执行快照或本地模板版本、连接和输入；音视频通过 `canvas_update_media_config` 固定 typed 输入与输出。根据真实 `nodeId + input` 绑定填入已知参数、默认值和稳定素材引用；缺少的字段先省略，立即保存待配置草稿，让用户在原卡片查看和补齐。不要猜测素材或把未知映射当成可执行字段。已有任务保留准备时的连接，不能因为画布默认连接改变而改派。只有字段完整并符合用户生成意图时调用 `canvas_run_nodes`；普通画布任务不得直接调用独立 `media_prepare_run`。无 Canvas 目标的媒体任务与父编排 handoff 仍可使用准备入口。
-5. 独立远端任务可用 `canvas_attach_media_run` 回到画布。普通 Agent 或手动画布 Agent 需要把素材交给 Shell/ffmpeg 时，用 `media_get_asset_file` 传入精确资产引用，取得当前授权根内经过校验的本地文件。本地剪辑成品使用 `media_import_local_file` 导入，再用 `canvas_attach_media_assets` 按已配置的完整输出 key 回填候选，最后调用 `canvas_adopt_media_candidate` 采用。候选、正式采用与远端任务成功是不同事实。
+5. 图片统一媒体结果必须先用 `canvas_prepare_image_attachment` 冻结原卡、配置 revision、真实请求和输入版本，再执行或等待统一媒体运行；完成后用 `canvas_attach_image_result` 回填原卡候选。重复回执复用同一 Job，配置已变化或已有采用时只保留 stale 候选，不自动覆盖或采用。独立远端任务可用 `canvas_attach_media_run` 回到画布。普通 Agent 或手动画布 Agent 需要把素材交给 Shell/ffmpeg 时，用 `media_get_asset_file` 传入精确资产引用，取得当前授权根内经过校验的本地文件。本地剪辑成品使用 `media_import_local_file` 导入，再用 `canvas_attach_media_assets` 按已配置的完整输出 key 回填候选，最后调用 `canvas_adopt_media_candidate` 采用。候选、正式采用与远端任务成功是不同事实。
 6. `metadataOnly` 只证明时长、尺寸、编码等技术信息，不能表示 Agent 已观看视频或听取音频。内容检查须使用当前真实可用的分析工具或保留用户验收。
 
 工作流无法转换或参数准备失败时，用对应节点更新工具的 `preparation: {code, message}` 保存有界错误码和节点、字段、中文原因，保留原参数；不得写入原始服务响应、路径或凭据。只有更新诊断时省略其它字段。解决后传 `preparation: null` 清除，并继续编辑和运行同一节点。进度、失败及输出留在原卡片，不把“已保存草稿”描述为“已经可以生成”。

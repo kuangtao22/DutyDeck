@@ -1,3 +1,4 @@
+import { normalizeProviderUsage, usageObject } from './usage.ts'
 /**
  * OpenAI Responses API 适配器。
  *
@@ -6,7 +7,7 @@
  * - Pi-Agent 模式通过 pi-model-registry 注册为 `openai-responses` 协议
  */
 
-import type { ProviderType } from '@proma/shared'
+import type { ProviderType, TokenUsageAmounts } from '@proma/shared'
 import type {
   ContinuationMessage,
   ImageAttachmentData,
@@ -92,9 +93,15 @@ interface ResponsesStreamData {
     output?: ResponsesStreamItem[]
     error?: { code?: string; message?: string }
     incomplete_details?: { reason?: string }
+    usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } }
   }
   code?: string
   message?: string
+}
+
+/** 将供应商报告归一为统一 Token 口径，未报告字段保持 null。 */
+function normalizeUsage(raw: unknown): TokenUsageAmounts {
+  return normalizeProviderUsage(raw, 'responses')
 }
 
 interface ResponsesTitleResponse {
@@ -371,12 +378,14 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
 
         case 'response.completed':
         case 'response.incomplete': {
+          if (event.response?.usage) events.push({ type: 'usage', usage: normalizeUsage(event.response.usage) })
           const stopReason = mapResponsesStatusToStopReason(event.response?.status)
           if (stopReason) events.push({ type: 'done', stopReason })
           break
         }
 
         case 'response.failed': {
+          if (event.response?.usage) events.push({ type: 'usage', usage: normalizeUsage(event.response.usage) })
           const error = event.response?.error
           const details = event.response?.incomplete_details
           const message = error?.message ?? details?.reason ?? 'OpenAI Responses 请求失败'
@@ -412,6 +421,12 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
         max_output_tokens: 50,
       }),
     }
+  }
+
+  /** 提取非流式响应用量，使用与流式相同的协议口径。 */
+  parseUsageResponse(responseBody: unknown): TokenUsageAmounts | null {
+    const raw = usageObject(responseBody)?.usage
+    return usageObject(raw) ? normalizeUsage(raw) : null
   }
 
   parseTitleResponse(responseBody: unknown): string | null {

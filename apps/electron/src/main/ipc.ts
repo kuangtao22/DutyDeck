@@ -1,12 +1,18 @@
+import { registerTokenUsageIpc } from './lib/token-usage-ipc'
+import { initializeTokenUsageRecording } from './lib/token-usage-recorder'
+import { agentTokenUsageContext } from './lib/token-usage-context'
 import { readAgentRunFileChanges } from './lib/agent-run-file-change-store'
 import { API_WORKBENCH_CHANNELS, apiWorkbenchManualDenialReason, isOrdinaryTopLevelAgentSession } from '@proma/shared'
 import { registerApiWorkbenchIpc } from './lib/api-workbench/api-ipc'
 import { registerCapabilityFactoryIpc } from './lib/capability-factory/capability-factory-ipc'
+import { registerInteractionDesignIpc } from './lib/interaction-design/ipc'
+import { createProductionInteractionDesignAccess, setInteractionDesignHost } from './lib/interaction-design/integration'
+import { INTERACTION_DESIGN_CHANNELS } from '@proma/shared'
 import { CAPABILITY_FACTORY_CHANNELS } from '@proma/shared'
 import { createCapabilityFactorySessionRuntime } from './lib/capability-factory/capability-factory-session-runtime'
 import { setCapabilityFactoryChangeSink } from './lib/capability-factory/capability-factory-events'
 import { registerProjectKnowledgeIpc } from './lib/project-knowledge-ipc'
-import { getProjectKnowledgeBinding, getProjectKnowledgeService, registerProjectKnowledgeSources } from './lib/project-knowledge-runtime'
+import { getProjectKnowledgeBinding, getProjectKnowledgeService, registerProjectKnowledgeSources, registerKnowledgeExecutionHost, registerKnowledgeImportSelector } from './lib/project-knowledge-runtime'
 import { createProjectKnowledgeSources } from './lib/project-knowledge-sources'
 import { getCapabilityFactoryService, shutdownCapabilityFactory } from './lib/capability-factory/capability-factory-singleton'
 import { createCapabilityFactoryRunner } from './lib/capability-factory/capability-factory-run'
@@ -248,6 +254,11 @@ import {
 import { createCanvasAgentBatchOperationService } from './lib/design/canvas-agent-batch-operation'
 import { createCanvasArtifactCreationService } from './lib/design/canvas-artifact-creation'
 import { createCanvasImportedImageService } from './lib/design/canvas-imported-image-service'
+import {
+  createCanvasImageResultAttachmentService,
+  isCanvasImageAttachmentReceipt,
+} from './lib/design/canvas-image-result-attachment-service'
+import type { CanvasImageAttachmentReceipt } from './lib/design/canvas-image-result-attachment-service'
 import { createCanvasArtifactRevisionStore } from './lib/design/canvas-artifact-revision-store'
 import {
   createCanvasArtifactRegistry,
@@ -337,6 +348,7 @@ import {
 } from './lib/vault-service'
 import { registerUpdaterIpc } from './lib/updater/updater-ipc'
 import { createLanBridgeIpcDependencies, registerLanBridgeIpcHandlers } from './lib/lan-bridge/lan-bridge-ipc'
+import { registerLocalModelIpcHandlers } from './lib/local-model-ipc'
 import {
   listChannels,
   createChannel,
@@ -523,6 +535,8 @@ import { ServerOpsSystemdService } from './lib/server-ops/server-ops-systemd-ser
 import { ServerOpsDockerService } from './lib/server-ops/server-ops-docker-service'
 import { ServerOpsFileService } from './lib/server-ops/server-ops-file-service'
 import { ServerOpsDockerConsoleService } from './lib/server-ops/server-ops-docker-console-service'
+import { ServerOpsTaskService } from './lib/server-ops/server-ops-task-service'
+import { captureServerOpsReadBindings } from './lib/server-ops/server-ops-agent-read-identity'
 import { ServerOpsFileTransferService, ServerOpsSafeFileTransferRecoveryStore } from './lib/server-ops/server-ops-file-transfer-service'
 import { ServerOpsLocalFileLeaseRegistry } from './lib/server-ops/server-ops-local-file-leases'
 import { ServerOpsDataSourceStore } from './lib/server-ops/server-ops-data-source-store'
@@ -534,7 +548,7 @@ import { SERVER_OPS_TRANSFER_CHANNELS, parseServerOpsTransferSnapshot } from '@p
 import { SERVER_OPS_CONSOLE_IPC_CHANNELS, parseServerOpsConsoleOutputEvent, parseServerOpsConsoleExitEvent } from '@proma/shared'
 import { ServerOpsLogService } from './lib/server-ops/server-ops-log-service'
 import { serverOpsRuntimeClient } from './lib/server-ops/server-ops-runtime-client'
-import { writeTextFileAtomic } from './lib/safe-file'
+import { ensureDirectoryDurable, readJsonFileSafe, writeJsonFileAtomicSecure, writeTextFileAtomic } from './lib/safe-file'
 import {
   getDefaultWorkspaceProjectRelocator,
   listWorkspacePathStates,
@@ -2248,6 +2262,36 @@ function getAgentCanvasBindingStore(): AgentCanvasBindingStore {
 }
 
 export function registerIpcHandlers(): void {
+  initializeTokenUsageRecording()
+  /** Token 用量只向主窗口开放，CSV 目标由系统保存对话框授权。 */
+  registerTokenUsageIpc(ipcMain, {
+    assertSender: (event) => {
+      const window = getMainWindow()
+      if (!window || window.isDestroyed() || window.webContents.id !== event.sender.id || event.senderFrame !== event.sender.mainFrame) throw new Error('仅主窗口可以读取 Token 统计')
+    },
+    sessionExists: (type, id) => type === 'agent' ? !!getAgentSessionMeta(id) : listConversations().some(conversation => conversation.id === id),
+    saveCsv: async (csv, query) => {
+      const window = getMainWindow()
+      if (!window || window.isDestroyed()) return false
+      const result = await dialog.showSaveDialog(window, { title: '导出 Token 用量', defaultPath: `token-usage-${query.from}-${query.to}.csv`, filters: [{ name: 'CSV 表格', extensions: ['csv'] }] })
+      if (result.canceled || !result.filePath) return false
+      writeTextFileAtomic(result.filePath, csv)
+      return true
+    },
+  })
+  /** 本地模型状态只通过结构化快照广播，绝不把引擎路径或短期令牌发给 renderer。 */
+  registerLocalModelIpcHandlers(ipcMain, {
+    assertSender: (event) => {
+      const window = getMainWindow()
+      if (!window || window.isDestroyed() || window.webContents.id !== event.sender.id || event.senderFrame !== event.sender.mainFrame) {
+        throw new Error('仅主窗口可以管理本地模型')
+      }
+    },
+    listTargets: () => {
+      const window = getMainWindow()
+      return window && !window.isDestroyed() ? [window.webContents] : []
+    },
+  })
   /** 当前进程共享预览预算；服务随窗口导航/关闭回收各自 lease。 */
   const htmlPreviewService = createHtmlPreviewService({ run: runStableDirectoryNative })
   /** normal 数据根已准备完成后再取得业务 Store，并在注册任何 handler 前完成初始化。 */
@@ -2382,11 +2426,40 @@ export function registerIpcHandlers(): void {
     return contents && !contents.isDestroyed() ? [contents] : []
   }
   /** 全屏项目页与 Agent 右侧知识视图共用窄 IPC，扫描租约由运行时持续持有。 */
+  registerKnowledgeExecutionHost({
+    enqueue: async (sessionId, prompt, dispatchId, model) => {
+      const session = getAgentSessionMeta(sessionId)
+      const contents = listAuthorizedDesignWebContents()[0]
+      if (!contents || !session || !model?.channelId) throw new Error('整理会话的窗口或模型渠道不可用')
+      enqueueAgentQueuedMessage({ sessionId, userMessage: prompt, rawUserMessage: prompt,
+        channelId: model.channelId, modelId: model.modelId, workspaceId: session.workspaceId,
+        mentionedSkills: ['knowledge-maintenance'], queueMessageId: dispatchId,
+      }, contents)
+    },
+    cancel: async (sessionId, dispatchId) => { cancelAgentQueuedMessage({ sessionId, messageId: dispatchId }) },
+    changed: (workspaceId, generation) => {
+      for (const contents of listAuthorizedDesignWebContents()) contents.send('project-knowledge:changed', { workspaceId, generation })
+    },
+  })
+  /** Agent 与面板共用原生选择器，任何模型输入都不包含宿主路径。 */
+  const selectKnowledgeImportPaths = async (mode: 'files' | 'folder'): Promise<string[]> => {
+    /** 导入路径只由主进程原生选择器产生，渲染层不能伪造任意文件路径。 */
+    const options: OpenDialogOptions = mode === 'folder'
+      ? { title: '选择要导入的知识库目录', properties: ['openDirectory'] }
+      : { title: '选择要导入的知识库文件', properties: ['openFile', 'multiSelections'] }
+    const owner = getStoredMainWindow()
+    const result = owner && !owner.isDestroyed()
+      ? await dialog.showOpenDialog(owner, options)
+      : await dialog.showOpenDialog(options)
+    return result.canceled ? [] : result.filePaths
+  }
+  registerKnowledgeImportSelector(selectKnowledgeImportPaths)
   registerProjectKnowledgeIpc({
     ipc: ipcMain,
     isAuthorizedSender: (event) => listAuthorizedDesignWebContents().some((contents) => contents.id === event.sender.id),
     assertProject: getProjectKnowledgeBinding,
     assertWritable: (workspaceId) => workspaceOperationGuard.assertWorkspaceWritable(workspaceId),
+    selectImportPaths: (_event, mode) => selectKnowledgeImportPaths(mode),
     get service() { return getProjectKnowledgeService() },
   })
   /** 接口工作台只信任主窗口，workspace 从当前普通会话元数据解析。 */
@@ -2439,6 +2512,7 @@ export function registerIpcHandlers(): void {
       resolveModels: (definition: CapabilitySceneDefinition) =>
         resolveCapabilityFactoryModels(definition, listChannels(), sessionModel),
       callModel: createCapabilityFactoryModelCall({
+        usageContext: () => agentTokenUsageContext(sessionId, 'factory'),
         listChannels,
         resolveApiKey: resolveChannelRuntimeApiKey,
         resolveSubscriptionCredentials: resolveCapabilityFactorySubscriptionCredentials,
@@ -2634,6 +2708,22 @@ export function registerIpcHandlers(): void {
     publishOutput: (ownerId, event) => sendServerOpsConsoleEvent(ownerId, SERVER_OPS_CONSOLE_IPC_CHANNELS.OUTPUT, parseServerOpsConsoleOutputEvent(event)),
     publishExit: (ownerId, event) => sendServerOpsConsoleEvent(ownerId, SERVER_OPS_CONSOLE_IPC_CHANNELS.EXIT, parseServerOpsConsoleExitEvent(event)),
   })
+  /** Agent 任务复用同一 SSH；历史与输入按普通会话身份隔离。 */
+  const serverOpsTaskService = new ServerOpsTaskService({
+    connection: serverOpsConnectionService,
+    audit: serverOpsAudit,
+    /** 固定用户名、认证方式和凭据版本；用户更新连接配置后不能继续操作旧身份。 */
+    getHostBinding: (hostId) => {
+      const binding = captureServerOpsReadBindings([{ kind: 'ssh', hostId }], {
+        hosts: serverOpsHostStore, credentials: serverOpsCredentialStore,
+      })[0]
+      if (!binding) throw new Error('SERVER_OPS_AGENT_RESOURCE_CHANGED')
+      return JSON.stringify([binding.key, binding.fingerprint])
+    },
+    getSession: (sessionId) => {
+      try { return requireVisibleSession(sessionId) } catch { return undefined }
+    },
+  })
   /** 文件选择与传输只能由当前仍授权的主窗口发起。 */
   const isServerOpsFileOwnerAlive = (ownerId: number): boolean => {
     const owner = BrowserWindow.fromId(ownerId)
@@ -2728,6 +2818,7 @@ export function registerIpcHandlers(): void {
         docker: serverOpsDockerService,
         files: serverOpsFileService,
         console: serverOpsConsoleService,
+        tasks: serverOpsTaskService,
         transfers: serverOpsTransfers,
         fileLeases: serverOpsFileLeases,
         data: serverOpsDataService,
@@ -2762,6 +2853,7 @@ export function registerIpcHandlers(): void {
         docker: serverOpsDockerService,
         files: serverOpsFileService,
         console: serverOpsConsoleService,
+        tasks: serverOpsTaskService,
         transfers: serverOpsTransfers,
         fileLeases: serverOpsFileLeases,
         data: serverOpsDataService,
@@ -2799,6 +2891,9 @@ export function registerIpcHandlers(): void {
       }
       try { serverOpsConsoleService.dispose() } catch (cleanupError) {
         console.error('[Server Ops] 容器终端初始化回滚失败:', cleanupError)
+      }
+      try { serverOpsTaskService.dispose() } catch (cleanupError) {
+        console.error('[Server Ops] 任务终端初始化回滚失败:', cleanupError)
       }
       void serverOpsTransfers.dispose().catch((cleanupError) => console.error('[Server Ops] 传输初始化回滚失败:', cleanupError))
       void serverOpsFileLeases.dispose().catch((cleanupError) => console.error('[Server Ops] 文件句柄初始化回滚失败:', cleanupError))
@@ -3009,6 +3104,20 @@ export function registerIpcHandlers(): void {
   const mediaAssets = new MediaAssetService({ pathResolver: designPathResolver, store: designStore, images: mediaImages,
     resolveImagePath: (projectId, assetId) => designAssetService.resolveAssetPath(projectId, assetId),
     runWorkspaceWrite: (projectId, effect) => workspaceOperationGuard.runWorkspaceWrite(projectId, effect) })
+  /** 原型持有独立素材副本；图片引用先由现有媒体服务验证身份与版本。 */
+  setInteractionDesignHost({
+    readMediaAsset: (workspaceId, reference) => mediaAssets.read(workspaceId, reference),
+    onChanged: (event) => {
+      for (const contents of listAuthorizedDesignWebContents()) {
+        if (!contents.isDestroyed()) contents.send(INTERACTION_DESIGN_CHANNELS.CHANGED, event)
+      }
+    },
+  })
+  registerInteractionDesignIpc({
+    ipc: ipcMain,
+    isAuthorizedSender: (event) => listAuthorizedDesignWebContents().some((contents) => !contents.isDestroyed() && contents.id === event.sender.id),
+    createAccess: (sessionId, assertCaller) => createProductionInteractionDesignAccess(sessionId, { assertCaller }),
+  })
   /** 统一模型目录只组合独立图片/音频配置，凭据仍按运行时单条解密。 */
   const unifiedMediaCatalog = new UnifiedMediaModelCatalog({
     readImageCatalog: () => getImageGenerationStore().readPublic(),
@@ -3349,6 +3458,76 @@ export function registerIpcHandlers(): void {
     listProjectIds: () => listAgentWorkspaces().map((workspace) => workspace.id),
     runWorkspaceWrite: (projectId, effect) => workspaceOperationGuard.runWorkspaceWrite(projectId, effect),
   })
+  /** 原图片卡外部结果回填复用同一 Job、候选和素材事务；回执按 Canvas 目录原子保存。 */
+  const canvasImageResultAttachments = createCanvasImageResultAttachmentService({
+    runExclusive: (target, effect) => canvasOperationSerializer.run(target, () => (
+      workspaceOperationGuard.runWorkspaceWrite(target.projectId, effect)
+    )),
+    loadCanvas: (target) => canvasDocumentStore.load(target).document,
+    loadConfig: (target) => canvasImageModuleStore.load(target),
+    resolveGeneration: (sessionId, runId) => unifiedMediaGeneration.getAttachmentSource(sessionId, runId),
+    resolveAsset: async (projectId, asset) => mediaAssets.getRecord(projectId, asset),
+    loadReceipt: async (target, attachmentId) => {
+      if (!/^[a-f0-9]{64}$/.test(attachmentId)) return null
+      const directory = join(designPathResolver.resolveCanvas(target.projectId, target.canvasId).transactionsDir, 'image-result-attachments')
+      const path = join(directory, `${attachmentId}.json`)
+      try {
+        return readJsonFileSafe<CanvasImageAttachmentReceipt>(path, {
+          maxBytes: 512 * 1024,
+          secureRecovery: true,
+          validate: isCanvasImageAttachmentReceipt,
+        })
+      } catch {
+        /** 损坏回执不会把不可信 JSON 带入候选链；调用方可重新准备同一来源。 */
+        return null
+      }
+    },
+    saveReceipt: async (receipt) => {
+      const directory = join(designPathResolver.resolveCanvas(receipt.projectId, receipt.canvasId).transactionsDir, 'image-result-attachments')
+      ensureDirectoryDurable(directory)
+      writeJsonFileAtomicSecure(join(directory, `${receipt.attachmentId}.json`), receipt)
+    },
+    importAsset: async (receipt, asset, jobId) => {
+      const bytes = Buffer.from(await mediaAssets.read(receipt.projectId, asset))
+      const sourcePath = `/canvas-attachment-${asset.assetId}.png`
+      const source = {
+        sourcePath,
+        byteSize: bytes.byteLength,
+        readBytes: () => Buffer.from(bytes),
+        close: () => undefined,
+      }
+      const batch = await designAssetService.importAuthorizedImageSources(receipt.projectId, [source], {
+        kind: 'job',
+        sourceSessionId: receipt.sessionId,
+        sourceJobId: jobId,
+        ...(receipt.source.kind === 'generation'
+          ? { sourceMediaRunId: receipt.source.runId, sourceMediaOutputKey: receipt.source.outputKey }
+          : { sourceMediaRunId: `canvas-attachment-${receipt.attachmentId}`, sourceMediaOutputKey: 'asset' }),
+        prompt: receipt.request?.prompt ?? receipt.configSnapshot.prompt,
+      })
+      const imported = batch[0]
+      if (!imported || batch.length !== 1) {
+        batch.rollback()
+        throw new Error('CANVAS_IMAGE_ATTACHMENT_IMPORT_INVALID')
+      }
+      let committed = false
+      try {
+        const current = designStore.requireStableAuthoritativeDocument(receipt.projectId)
+        designStore.mutate(receipt.projectId, current.revision, [{ type: 'upsert-assets', assets: [imported] }])
+        committed = true
+      } catch (error) {
+        const persisted = designStore.requireStableAuthoritativeDocument(receipt.projectId).assets
+          .find((candidate) => candidate.id === imported.id)
+        if (!persisted || persisted.sha256 !== imported.sha256 || persisted.sourceJobId !== jobId) throw error
+        committed = true
+      }
+      if (!committed) throw new Error('CANVAS_IMAGE_ATTACHMENT_IMPORT_INVALID')
+      batch.commit()
+      return imported
+    },
+    registerJob: (job, importAsset) => designJobManager.registerExternalCanvasImageResult(job, importAsset),
+    candidates: canvasImageCandidateBatchService,
+  })
   /** 内容节点可恢复生命周期只在唯一 Job Manager 就绪后创建，删除图片可先取消活动任务。 */
   const canvasContentNodeLifecycle = createCanvasContentNodeLifecycle({
     store: canvasDocumentStore,
@@ -3465,7 +3644,7 @@ export function registerIpcHandlers(): void {
   const designSessionBridge = new DesignSessionBridge({
     getSession: getAgentSessionMeta,
     getMessages: getAgentSessionMessages,
-    resolveAgentImagePath: (localPath) => isAbsolute(localPath) ? localPath : resolveAttachmentPath(localPath),
+    resolveAgentImagePath: (localPath) => resolveAttachmentPath(localPath),
     getAllowedRoots: (session) => {
       /** 只允许当前会话附件和该会话实际 Agent cwd 的生成目录。 */
       const workspace = session.workspaceId ? getAgentWorkspace(session.workspaceId) : undefined
@@ -3535,7 +3714,7 @@ export function registerIpcHandlers(): void {
         }
       }
     },
-    resolveAttachmentPath: (path) => isAbsolute(path) ? path : resolveAttachmentPath(path),
+    resolveAttachmentPath: (path) => resolveAttachmentPath(path),
     getAllowedRoots: (session) => [
       ...getAuthorizedRoots({ sessionId: session.id }),
       getConversationAttachmentsDir(session.id),
@@ -4117,6 +4296,7 @@ export function registerIpcHandlers(): void {
     imageJobTarget: canvasImageJobTarget,
     imageCandidateBatches: canvasImageCandidateBatchService,
     imageRunService: canvasImageRunService,
+    canvasImageAttachments: canvasImageResultAttachments,
     workflowExecution: canvasWorkflowExecutionService,
     canvasMedia: canvasMediaService,
     imageAssets: {

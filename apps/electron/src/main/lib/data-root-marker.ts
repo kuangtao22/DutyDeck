@@ -7,7 +7,7 @@ import {
   opendirSync,
   readSync,
 } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { DataRootLocator } from './data-root-locator'
 import type { DataRootLocatorResult } from './data-root-locator'
 import { writeJsonFileAtomicSecure } from './safe-file'
@@ -145,17 +145,18 @@ export function prepareNormalDataRoot(
   locatorResult: DataRootLocatorResult,
 ): string {
   if (locatorResult.status !== 'ready') throw new Error('数据根不可用')
-  /** locator 文件缺失时解析出的唯一受控默认根。 */
-  const expectedDefaultRoot = join(dirname(locator.getLocatorPath()), '.proma')
-  /** 无 locator 文件时才允许创建固定默认根。 */
-  const hasNoLocator = locatorResult.locatorFile === undefined
+  /** 无 locator 或取消自动迁移后解析出的唯一受控默认根。 */
+  const expectedDefaultRoot = locator.getDefaultRoot()
+  /** 无 locator 或已明确取消自动迁移时才允许创建固定默认根。 */
+  const mayCreateControlledDefault = locatorResult.locatorFile === undefined
+    || locatorResult.locatorFile.defaultMigrationDismissed === true
   /** custom 根离线时不创建目录，默认根缺失时按启动合同创建。 */
-  const activeRoot = locator.requireActiveRoot({ createDefault: hasNoLocator })
+  const activeRoot = locator.requireActiveRoot({ createDefault: mayCreateControlledDefault })
   /** 已有合法 marker 时保持启动只读，避免生成备份或替换文件身份。 */
   const identity = inspectPromaDataRootIdentity(activeRoot)
   if (identity === 'marker') return activeRoot
   /** 默认根例外必须同时满足 locator 缺失与精确固定路径，不能扩散到 custom 根。 */
-  const isControlledDefaultRoot = hasNoLocator && resolve(activeRoot) === resolve(expectedDefaultRoot)
+  const isControlledDefaultRoot = mayCreateControlledDefault && resolve(activeRoot) === resolve(expectedDefaultRoot)
   if (identity === 'legacy' || isControlledDefaultRoot) {
     writeAndVerifyPromaDataRootMarker(activeRoot)
     return activeRoot

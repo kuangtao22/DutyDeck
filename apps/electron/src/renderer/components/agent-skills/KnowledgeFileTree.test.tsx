@@ -56,13 +56,13 @@ describe('知识库文件树', () => {
     expect(html).not.toContain('不会出现在文件树的摘要')
     expect(html).not.toContain('opaque-source-hash')
   })
-  test('Given 已有正文仍部分完成或缺少依据 When 展示 Then 保留状态点且不占用文件名宽度', () => {
+  test('Given 已有正文仍部分完成或文件已删除 When 展示 Then 保留状态点且不占用文件名宽度', () => {
     /** 真实路径覆盖旧大纲路径，但状态仍按稳定条目身份关联。 */
     const html = render([entry('a', '新路径.md'), entry('b', '缺依据.md')], [item('partial', '旧路径.md', 'partial', 'a'), item('missing', '旧缺口.md', 'missing', 'b')])
     expect(html).toContain('title="部分完成" aria-label="部分完成"')
-    expect(html).toContain('title="缺少依据" aria-label="缺少依据"')
+    expect(html).toContain('title="文件已删除" aria-label="文件已删除"')
     expect(html).not.toContain('>部分完成</span>')
-    expect(html).not.toContain('>缺少依据</span>')
+    expect(html).not.toContain('>文件已删除</span>')
     expect(html).not.toContain('旧路径.md')
     expect(html).toContain('aria-label="知识库文件目录"')
   })
@@ -73,13 +73,13 @@ describe('知识库文件树', () => {
     expect(html).not.toContain('旧目录')
     expect(html).toContain('新名.md')
   })
-  test('Given 等待生成或缺少依据 When 展示 Then 不提供打开按钮', () => {
+  test('Given 等待生成或文件已删除 When 展示 Then 不提供打开按钮', () => {
     /** 两种不可读状态均保留可见文件占位。 */
     const html = render([], [item('p', '等待.md', 'pending'), item('m', '缺口.md', 'missing')])
     expect(html).not.toContain('<button')
     expect(html).toContain('title="等待生成" aria-label="等待生成"')
     expect(html).not.toContain('>等待生成</span>')
-    expect(html).toContain('缺少依据')
+    expect(html).toContain('文件已删除')
   })
   test('Given 分页外已生成文件 When 展示 Then 不绕过加载更多补回文件', () => {
     /** 大纲仅是计划，不能替代宿主分页目录。 */

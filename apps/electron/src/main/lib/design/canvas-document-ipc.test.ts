@@ -4656,6 +4656,51 @@ describe('原生 Canvas 文档 IPC', () => {
     } finally { context.registration.dispose() }
   })
 
+  test('Given 54460字符HTML含跨页emoji When 通过生产装配分页验收 Then 正文完整送达且合同可完成', async () => {
+    /** 让 emoji 高代理项位于 8191，验证真实 handler 不在分页边界拆开字符。 */
+    const content = `<main>${'a'.repeat(8185)}😀${'中'.repeat(46260)}</main>`
+    const document = createDocument(5)
+    document.nodes = [{ id: 'web-1', kind: 'webview', title: '长原型', position: { x: 0, y: 0 },
+      prototypeId: 'prototype-1', contentRevision: 4, devicePreset: 'desktop' }]
+    /** 隔离内容 Store，其余使用生产 IPC handler、工具包装和合同完成路径。 */
+    const context = createContext({ enableToolProviderRuntime: true, loadResult: { document, writable: true, nodeIssues: [] },
+      textArtifactRead: async target => ({ target, content, revision: { kind: target.kind, contentId: target.contentId,
+        revision: target.contentRevision, parentRevision: 3, contentHash: createHash('sha256').update(content).digest('hex'),
+        createdAt: 1, createdBy: { type: 'user' } } }),
+    })
+    try {
+      /** 正常会话真实装配结果，避免测试复制分页实现。 */
+      const run = getCanvasToolProviderRuntime()!.createRun({ projectId: 'project-1', sessionId: 'agent-session-1',
+        runStartedAt: 99, explicitReferences: [], permissionCeiling: 'execute' })
+      const task = run.piCustomTools.find(tool => tool.name === 'canvas_task')!
+      const read = run.piCustomTools.find(tool => tool.name === 'canvas_read_version')!
+      await task.execute('start', { action: 'start', canvasId: 'canvas-1', requirements: [
+        { id: 'html', description: '交互原型', nodeId: 'web-1', nodeKind: 'webview', validation: 'content' },
+      ] } as never, undefined as never, undefined as never, undefined as never)
+      /** 实际返回给模型的正文和最后取得的凭据。 */
+      let received = ''
+      let offset: number | null = 0
+      let evidenceId: string | undefined
+      while (offset !== null) {
+        /** 直接调用生产分页工具，跟随真实 nextOffset。 */
+        const result = await read.execute(`page-${offset}`, { canvasId: 'canvas-1', nodeId: 'web-1',
+          version: { kind: 'webview', revision: 4 }, offset } as never, undefined as never, undefined as never, undefined as never)
+        const page = result.details as { content: string; nextOffset: number | null; evidence?: { evidenceId: string } }
+        expect(Buffer.byteLength(JSON.stringify(result.details), 'utf8')).toBeLessThanOrEqual(64 * 1024)
+        if (offset === 0) expect(page.nextOffset).toBe(8191)
+        if (page.nextOffset !== null) expect(page.evidence).toBeUndefined()
+        received += page.content
+        offset = page.nextOffset
+        evidenceId = page.evidence?.evidenceId
+      }
+      expect(received).toBe(content)
+      expect(received.length).toBe(54_460)
+      expect(evidenceId).toHaveLength(64)
+      expect((await task.execute('complete', { action: 'complete', submissions: [{ id: 'html', evidenceId }] } as never,
+        undefined as never, undefined as never, undefined as never)).details).toMatchObject({ phase: 'completed' })
+    } finally { context.registration.dispose() }
+  })
+
   /** 初始版本必须按真实正文区分已有成果与空占位，不能看历史目录长度。 */
   for (const initialCase of [
     { kind: 'document' as const, content: '# 制作方案\n先核验素材再设计镜头。', contentState: 'present' },

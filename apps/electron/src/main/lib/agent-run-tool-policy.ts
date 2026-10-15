@@ -15,6 +15,7 @@ const SERVER_OPS_WRITE_TOOL_NAMES = [
   ...SERVER_OPS_READ_TOOL_NAMES,
   'ops_database_write', 'ops_redis_write',
   'server_list', 'server_status', 'server_connect', 'server_exec', 'server_disconnect',
+  'server_task_start', 'server_task_read', 'server_task_interrupt',
   'server_docker_resources', 'server_docker_detail', 'server_docker_action',
   'server_files_list', 'server_files_read', 'server_files_mutate',
 ] as const

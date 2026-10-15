@@ -1076,6 +1076,7 @@ function buildVisionRelayTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDefi
       async execute(_id: string, params: unknown, signal?: AbortSignal) {
         const input = params as { imagePath?: string; instruction?: string }
         const result = await inspectImageWithVisionRelay({
+          sessionId: ctx.sessionId,
           imagePath: input.imagePath ?? '',
           instruction: input.instruction,
           allowedRoots: ctx.allowedRoots ?? [],
@@ -1760,6 +1761,26 @@ export function buildServerOpsTools(sdk: PiSdk, facade: ServerOpsAgentFacade): T
       },
     }),
   ] as ToolDefinition[]
+  if (facade.taskStart && facade.taskRead && facade.taskInterrupt) tools.push(
+    sdk.defineTool({
+      name: 'server_task_start', label: '启动服务器任务终端',
+      description: '复用运维模块已连接的 SSH，在独立可见终端中执行发布或需要 sudo 交互的命令。每次启动都要单独确认；不受短命令 120 秒上限限制。密码只能由用户在运维任务终端输入，禁止写入命令或聊天。返回任务身份不代表执行成功。',
+      parameters: Type.Object({ hostId: Type.String(), command: Type.String({ minLength: 1, maxLength: 8192 }) }),
+      async execute(_id, params) { return jsonToolResult(await facade.taskStart!(params as { hostId: string; command: string })) },
+    }) as ToolDefinition,
+    sdk.defineTool({
+      name: 'server_task_read', label: '读取服务器任务进展',
+      description: '读取当前会话任务的有界输出和真实退出状态。首次 offset=0，后续使用 nextOffset；waitMs 最多 30000，等待新输出或终态而无需 Bash sleep。exited 且 exitCode=0 才表示命令成功；unknown/interrupted 先核对远端实际状态，不能直接重试。',
+      parameters: Type.Object({ taskId: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 0 })), waitMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 30000 })) }),
+      async execute(_id, params) { return jsonToolResult(await facade.taskRead!(params as { taskId: string; offset?: number; waitMs?: number })) },
+    }) as ToolDefinition,
+    sdk.defineTool({
+      name: 'server_task_interrupt', label: '中断服务器任务终端',
+      description: '逐次确认后关闭当前会话指定任务的独立 SSH channel。若关闭无法确认，会断开对应 SSH 连接以清理失管通道。远程子进程可能继续运行，此操作不承诺回滚，必须核对最终状态。',
+      parameters: Type.Object({ taskId: Type.String() }),
+      async execute(_id, params) { return jsonToolResult(await facade.taskInterrupt!(params as { taskId: string })) },
+    }) as ToolDefinition,
+  )
   if (facade.dockerResources) tools.push(sdk.defineTool({
     name: 'server_docker_resources', label: '查看 Docker 资源',
     description: '查看已连接服务器本机 Docker 守护进程中的容器、镜像、网络和卷；结果有数量和大小限制。',

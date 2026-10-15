@@ -14,17 +14,63 @@ afterEach(async () => {
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true })
 })
 /** 创建不依赖真实会话或用户配置的运行夹具。 */
-async function fixture(startedAt = 1, root?: string) {
+async function fixture(startedAt = Date.now(), root?: string, roots?: string[]) {
   const cwd = root ?? await mkdtemp(join(tmpdir(), 'run-stat-service-'))
   if (!root) directories.push(cwd)
   const saved: AgentRunFileChangesSnapshot[] = []
-  const run = createAgentRunFileChanges({ cwd, roots: [cwd], startedAt,
+  const run = createAgentRunFileChanges({ cwd, roots: roots ?? [cwd], startedAt,
     persist: snapshot => { saved.push(structuredClone(snapshot)) }, publish: () => {}, isValid: () => true })
   runs.push(run)
   return { cwd, run, saved }
 }
 
 describe('本轮统计生命周期', () => {
+  test('Given 基线已有文件 When Bash 修改并由 watcher 报告 Then 计算本轮净行数', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'run-stat-service-'))
+    directories.push(root)
+    const path = join(root, 'existing.ts')
+    await writeFile(path, 'before\n')
+    const { run, saved } = await fixture(Date.now(), root)
+    await run.tracker.waitForBaseline()
+
+    await writeFile(path, 'before\nafter\n')
+    publishAgentFileObservation(path)
+    await run.finish()
+
+    expect(saved.at(-1)?.files).toEqual([{ path, status: 'modified', statsState: 'complete', additions: 1, deletions: 0 }])
+  })
+
+  test('Given 基线已有文件 When Bash 删除并由 watcher 报告 Then 计算删除行数', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'run-stat-service-'))
+    directories.push(root)
+    const path = join(root, 'deleted.ts')
+    await writeFile(path, 'one\ntwo\n')
+    const { run, saved } = await fixture(Date.now(), root)
+    await run.tracker.waitForBaseline()
+
+    await rm(path)
+    publishAgentFileObservation(path)
+    await run.finish()
+
+    expect(saved.at(-1)?.files).toEqual([{ path, status: 'deleted', statsState: 'complete', additions: 0, deletions: 2 }])
+  })
+
+  test('Given 基线扫描不完整 When watcher 发现新文件 Then 保留未知而不伪造新增行数', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'run-stat-service-'))
+    const missingRoot = join(root, 'not-created-yet')
+    directories.push(root)
+    const { run, saved } = await fixture(Date.now(), root, [root, missingRoot])
+    await run.tracker.waitForBaseline()
+    const path = join(root, 'script-created.ts')
+
+    await writeFile(path, 'created\n')
+    publishAgentFileObservation(path)
+    await run.finish()
+
+    expect(saved.at(-1)?.files).toEqual([{ path, status: 'unknown', statsState: 'unavailable' }])
+    expect(saved.at(-1)?.hasUnattributedChanges).toBe(true)
+  })
+
   test('Given 写入和原始监听 When 完成 Then 自写不会被监听降级且终态持久化', async () => {
     const { cwd, run, saved } = await fixture()
     const path = join(cwd, 'a.ts')
@@ -37,15 +83,15 @@ describe('本轮统计生命周期', () => {
     expect(saved.at(-1)?.endedAt).toBeNumber()
     expect(saved.at(-1)?.revision).toBeGreaterThan(0)
   })
-  test('Given 终端仅监听证据 When 完成且之后外部修改 Then 保存未知并保持历史不变', async () => {
+  test('Given 终端监听发现本轮新建文件 When 完成且之后外部修改 Then 保存精确新增并保持历史不变', async () => {
     const { cwd, run, saved } = await fixture()
     const path = join(cwd, 'script.txt')
+    await run.tracker.waitForBaseline()
     await writeFile(path, 'one\n')
     publishAgentFileObservation(path)
     await run.finish()
     await writeFile(path, 'other\n')
-    expect(saved.at(-1)?.files[0]).toMatchObject({ path, statsState: 'unavailable' })
-    expect(saved.at(-1)?.files[0]?.additions).toBeUndefined()
+    expect(saved.at(-1)?.files[0]).toEqual({ path, status: 'added', statsState: 'complete', additions: 1, deletions: 0 })
   })
   test('Given 两个运行共享目录且无写工具证据 When 监听 Then 双方标记无法归属', async () => {
     const first = await fixture()
@@ -59,7 +105,7 @@ describe('本轮统计生命周期', () => {
     expect(first.saved.at(-1)?.files).toEqual([])
   })
 
-  test('Given 宿主知识写入与普通 .proma 源码变化 When watcher 上报 Then 只记录普通源码', async () => {
+  test('Given 宿主知识写入与普通 .proma 源码变化 When watcher 上报 Then 只记录普通源码并计算行数', async () => {
     const { cwd, run, saved } = await fixture()
     const internal = join(cwd, '.proma', 'knowledge', '.knowledge.lock.owner-123')
     const source = join(cwd, '.proma', 'project-config', 'source.ts')
@@ -72,7 +118,7 @@ describe('本轮统计生命周期', () => {
     publishAgentFileObservation(source)
     await run.finish()
 
-    expect(saved.at(-1)?.files).toEqual([{ path: source, status: 'unknown', statsState: 'unavailable' }])
+    expect(saved.at(-1)?.files).toEqual([{ path: source, status: 'added', statsState: 'complete', additions: 1, deletions: 0 }])
     expect(saved.at(-1)?.hasUnattributedChanges).toBeUndefined()
   })
 
@@ -124,6 +170,26 @@ test('Given 新轮已接管 When 旧轮收尾 Then 保存旧轮未知状态且�
   expect(saved.at(-1)?.endedAt).toBeNumber()
   expect(saved.at(-1)?.files[0]?.statsState).toBe('unavailable')
   expect(saved.at(-1)?.files[0]?.additions).toBeUndefined()
+})
+
+test('Given 旧轮收尾前已有基线 When 新轮接管后改写文件 Then 旧轮不读取新轮内容', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'run-stat-service-'))
+  directories.push(root)
+  const path = join(root, 'shared.txt')
+  await writeFile(path, 'before\n')
+  let current = true
+  const saved: AgentRunFileChangesSnapshot[] = []
+  const run = createAgentRunFileChanges({ cwd: root, roots: [root], startedAt: Date.now(),
+    persist: snapshot => { saved.push(snapshot) }, publish: () => {}, isValid: () => true, isCurrent: () => current })
+  runs.push(run)
+  await run.tracker.waitForBaseline()
+
+  current = false
+  await writeFile(path, 'new run\nnew content\n')
+  await run.finish()
+
+  expect(saved.at(-1)?.files).toEqual([])
+  expect(saved.at(-1)?.hasUnattributedChanges).toBe(true)
 })
 
 

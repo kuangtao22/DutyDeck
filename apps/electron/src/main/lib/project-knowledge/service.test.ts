@@ -20,6 +20,7 @@ import type {
   ProjectKnowledgeSources,
 } from '../project-knowledge-sources'
 import { createProjectKnowledgeService } from './service'
+import { assessKnowledgeAdmission } from './admission'
 
 describe('项目知识库 1A 核心服务', () => {
   /** 每个测试隔离使用的临时根目录。 */
@@ -61,6 +62,26 @@ describe('项目知识库 1A 核心服务', () => {
     })
   }
 
+  test('Given 两次并发首次扫描 When 初始化等待完成 Then 只注册一个任务且只有启动者持有后台租约', async () => {
+    /** 服务端计数证明实际只进行一次来源枚举，而不仅是返回同一状态。 */
+    let discoveries = 0
+    let starts = 0
+    const service = createService('project-1', {
+      list: async () => { discoveries += 1; return { sources: [], total: 0, truncated: false, skipped: 0 } },
+      read: async () => ({ status: 'unavailable', content: '', truncated: false }),
+    })
+    writeFileSync(join(projectRoot, 'README.md'), '# 并发扫描')
+    const results = await Promise.all([
+      service.startScan('workspace-1', undefined, () => { starts += 1 }),
+      service.startScan('workspace-1', undefined, () => { starts += 1 }),
+    ])
+    expect(results.every((result) => result.scan.status === 'running')).toBe(true)
+    expect(starts).toBe(1)
+    await service.waitForScan('workspace-1')
+    expect(discoveries).toBe(1)
+    expect((await service.getSnapshot('workspace-1')).scan.status).toBe('completed')
+  })
+
   /** 用真实版本存储建立带文件证据的提炼知识，返回发布后的条目。 */
   async function publishDistilled(service: ReturnType<typeof createService>, source: KnowledgeEntry, title = '退款规则') {
     /** 固定知识正文用于检验检索不会返回过期结论。 */
@@ -87,7 +108,7 @@ describe('项目知识库 1A 核心服务', () => {
     await service.startScan('workspace-1')
     await service.waitForScan('workspace-1')
     expect(await service.getSnapshot('workspace-1')).toMatchObject({ knowledgeCount: 0, sourceCount: 2 })
-    expect((await service.search({ workspaceId: 'workspace-1', query: '', scope: 'knowledge' })).total).toBe(0)
+    expect((await service.search({ workspaceId: 'workspace-1', query: '', scope: 'knowledge', includeUnassessed: true })).total).toBe(0)
     /** 来源页仍可访问完整索引。 */
     const sources = await service.search({ workspaceId: 'workspace-1', query: '', scope: 'sources' })
     expect(sources.total).toBe(2)
@@ -106,7 +127,7 @@ describe('项目知识库 1A 核心服务', () => {
     await publishDistilled(service, source)
     await publishDistilled(service, source, '订单核验')
     /** 空关键词同样进行服务端范围过滤。 */
-    const first = await service.search({ workspaceId: 'workspace-1', query: '', scope: 'knowledge', limit: 1 })
+    const first = await service.search({ workspaceId: 'workspace-1', query: '', scope: 'knowledge', includeUnassessed: true, limit: 1 })
     expect(first.total).toBe(2)
     expect(first.nextOffset).toBe(1)
     expect(first.items[0]?.entry.source.kind).toBe('managed')
@@ -151,7 +172,7 @@ describe('项目知识库 1A 核心服务', () => {
     expect((await service.read({ workspaceId: 'workspace-1', entryId: knowledge.id })).status).toBe('readable')
     writeFileSync(join(projectRoot, 'README.md'), '# 项目\n退款流程已变更，需要人工审核。')
     expect(await service.read({ workspaceId: 'workspace-1', entryId: knowledge.id })).toMatchObject({ status: 'changed', content: '' })
-    expect((await service.search({ workspaceId: 'workspace-1', query: '退款规则', scope: 'knowledge' })).items[0])
+    expect((await service.search({ workspaceId: 'workspace-1', query: '退款规则', scope: 'knowledge', includeUnassessed: true })).items[0])
       .toMatchObject({ snippet: '', entry: { freshness: 'changed' } })
     await service.startScan('workspace-1')
     await service.waitForScan('workspace-1')
@@ -698,6 +719,44 @@ describe('项目知识库 1A 核心服务', () => {
     expect((await service.read({ workspaceId: 'workspace-1', entryId: apiEntry.id })).status).toBe('unavailable')
   })
 
+  test('Given 多条合格用户知识 When 搜索两项并读取首页 Then 仅复核搜索页且首页并发不超过四', async () => {
+    /** 记录实际原消息读取次数与并发数。 */
+    let reads = 0
+    let active = 0
+    let maximum = 0
+    const project = { projectId: 'project-1', projectRoot, memoryRoot, cacheRoot }
+    const service = createProjectKnowledgeService({ resolveProject: () => project,
+      revalidateUserEvidence: async () => {
+        reads += 1; active += 1; maximum = Math.max(maximum, active)
+        await Promise.resolve()
+        active -= 1
+        return 'current'
+      },
+    })
+    await service.store.initialize(project, 'workspace-1')
+    const commits = Array.from({ length: 12 }, (_, index) => {
+      const content = `业务规则 ${index}`
+      const id = createHash('sha256').update(content).digest('hex').slice(0, 32)
+      const revision = createHash('sha256').update(content).digest('hex')
+      const userEvidence = { sessionId: 'session', messageId: `message-${index}`, quote: content, sha256: revision }
+      const entry: KnowledgeEntry = { id, revision, title: `needle ${index}`, category: 'business', kind: 'rule',
+        state: 'draft', freshness: 'current', summary: content, source: { kind: 'managed', id, revision },
+        userEvidence, byteSize: content.length, indexedBytes: content.length, metadataOnly: false, truncated: false, updatedAt: index,
+        admission: assessKnowledgeAdmission({ contentType: 'rule', importance: 'normal', purpose: '规则复用', scope: '项目',
+          claims: [{ statement: content, evidenceIndexes: [], usesUserEvidence: true }],
+          coverage: [{ topic: '规则', status: 'covered', reason: '用户原话' }], issues: [], outcome: 'eligible' }, content, [], userEvidence),
+      }
+      return { entry, content }
+    })
+    await service.store.transact(project, 'workspace-1', () => ({ commits }))
+    expect((await service.search({ workspaceId: 'workspace-1', query: 'needle', limit: 2 })).items).toHaveLength(2)
+    expect(reads).toBe(2)
+    reads = 0; maximum = 0
+    expect((await service.getSnapshot('workspace-1')).entries).toHaveLength(12)
+    expect(reads).toBe(12)
+    expect(maximum).toBeLessThanOrEqual(4)
+  })
+
   test('Given 一千条受管原文 When 按元数据查询 Then 只读取当前页相关正文', async () => {
     /** 大目录性能测试服务。 */
     const service = createService()
@@ -740,7 +799,7 @@ describe('项目知识库 1A 核心服务', () => {
       return originalReadContent(...args)
     }
 
-    const result = await service.search({ workspaceId: 'workspace-1', query: 'needle' })
+    const result = await service.search({ workspaceId: 'workspace-1', query: 'needle', includeUnassessed: true })
     expect(result.total).toBe(1)
     expect(result.items[0]?.entry.title).toBe('唯一目标 needle')
     expect(contentReadCount).toBe(1)

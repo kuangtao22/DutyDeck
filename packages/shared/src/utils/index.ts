@@ -125,3 +125,5 @@ export {
   CANVAS_IMAGE_NODE_MAX_HEIGHT,
   resolveCanvasImageNodeHeight,
 } from './canvas-node-size'
+export { buildPrototypePreview, buildPrototypeExport, parsePrototypePreviewMessage, validatePrototypeStructure } from './interaction-design-preview'
+export type { PrototypePreviewMessage, PrototypePreviewOptions } from './interaction-design-preview'

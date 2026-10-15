@@ -230,3 +230,18 @@ test('Given 发送前持久化失败 When 调用者捕获后再次调用 Then �
   expect(ledger.snapshot()).toHaveLength(1)
   expect(ledger.snapshot()[0]).toMatchObject({ status: 'failed', amount: null, transportAttempts: 1, billing: 'unknown' })
 })
+
+test('Given 实际 SSE 用量 When 工厂执行 Then 快照归属与缓存输入进入全局统计一次', async () => {
+  /** 注入内存账本，不写真实用户目录。 */
+  const records: import('@proma/shared').TokenUsageRecord[] = []
+  const call = createCapabilityFactoryModelCall({ listChannels: () => [channel], resolveApiKey: async () => 'test-key', resolveProxyUrl: async () => undefined, sessionModel: () => null,
+    usageContext: () => ({ taskId: 'agent:root', taskTitle: '任务', sessionId: 'child', sessionType: 'agent', projectId: 'p', projectName: '项目', source: 'factory' }), recordUsage: (record) => { records.push(record) } })
+  fetchSpy.mockResolvedValue(new Response([
+    `data: ${JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 3, output_tokens: 0 } } })}\n\n`,
+    `data: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: '结果' } })}\n\n`,
+    `data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } })}\n\n`,
+  ].join('')))
+  await call({ stepId: 'scan', model: 'test', channelId: channel.id, modelId: 'test', prompt: '问题', signal: new AbortController().signal })
+  expect(records).toHaveLength(1)
+  expect(records[0]).toMatchObject({ taskId: 'agent:root', sessionId: 'child', source: 'factory', inputTokens: 33, outputTokens: 2, cacheReadTokens: 20, cacheWriteTokens: 3, status: 'completed' })
+})

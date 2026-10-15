@@ -293,6 +293,35 @@ describe('原生 Canvas 缩放挂载回归', () => {
     }
   })
 
+  test('Given 同一图版本图片准备状态改变 When Graph 接收新摘要 Then 折叠卡立即更新且运行结束恢复准备状态', () => {
+    /** 配置事件不要求修改画布文档版本。 */
+    const document = createEmptyCanvasDocument('project-1', 'canvas-1', 1)
+    document.nodes = [{ id: 'image-1', kind: 'image', title: '图片', imageModuleId: 'module-1', position: { x: 0, y: 0 } }]
+    /** 使用真实 Graph effect 链捕获最终传给 XYFlow 的节点。 */
+    let captured: NativeCanvasFlowProps | undefined
+    /** 几何与回调保持稳定，使测试覆盖配置输入的依赖接线。 */
+    const graphProps = createGraphProps(createNativeCanvasTransientGeometryStore(document), () => undefined, (props) => { captured = props; return null })
+    /** 运行态更新时沿用同一准备 Map，覆盖增量投影路径。 */
+    const preparation = new Map([['image-1', { preparationMessage: '请选择生图模型' }]])
+    /** 最小 DOM 宿主不读取任何业务配置或真实画布。 */
+    const host = createGraphRoot()
+    try {
+      act(() => { host.render(<NativeCanvasGraph document={document} {...graphProps} />) })
+      expect(captured?.nodes[0]?.data.statusLabel).toBe('待创作')
+      act(() => { host.render(<NativeCanvasGraph document={document} {...graphProps} imageStatusByNodeId={preparation} />) })
+      expect(captured?.nodes[0]?.data.statusLabel).toBe('待配置')
+      act(() => { host.render(<NativeCanvasGraph document={document} {...graphProps} imageStatusByNodeId={preparation} nodeActivityStates={new Map([['image-1', 'running']])} />) })
+      expect(captured?.nodes[0]?.data.statusLabel).toBe('运行中')
+      act(() => { host.render(<NativeCanvasGraph document={document} {...graphProps} imageStatusByNodeId={preparation} />) })
+      expect(captured?.nodes[0]?.data.statusLabel).toBe('待配置')
+      act(() => { host.render(<NativeCanvasGraph document={document} {...graphProps} imageStatusByNodeId={new Map()} />) })
+      expect(captured?.nodes[0]?.data.statusLabel).toBe('待创作')
+    } finally {
+      act(() => { host.unmount() })
+      host.restore()
+    }
+  })
+
   test('Given 图片卡片比例变化 When 预览尺寸更新 Then 详情使用同一投影高度而非默认卡片高度', () => {
     /** 模拟图片成功后按素材比例显示的卡片。 */
     const document = createEmptyCanvasDocument('project-1', 'canvas-1', 1)

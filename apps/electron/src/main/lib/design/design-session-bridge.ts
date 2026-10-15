@@ -62,7 +62,7 @@ export interface OpenAuthorizedAgentMediaSourceInput extends OpenAuthorizedAgent
 export interface DesignSessionBridgeDependencies {
   getSession: (sessionId: string) => AgentSessionMeta | undefined
   getMessages: (sessionId: string) => Array<AgentMessage | SDKMessage>
-  /** 把持久化附件相对路径解析为绝对路径；绝对路径保持原语义。 */
+  /** 以可信附件语义解析路径，包含受管迁移映射；不得扩大授权目录。 */
   resolveAgentImagePath: (localPath: string) => string
   /** 返回当前会话运行时可读取的可信根目录。 */
   getAllowedRoots: (session: AgentSessionMeta, projectId: string) => string[]
@@ -174,16 +174,20 @@ export function openAuthorizedAgentImageSource(
   return openAuthorizedAgentMediaSource({ ...input, maxBytes: MAX_AGENT_IMAGE_BYTES, label: '图片' })
 }
 
-/** 从指定会话持久化消息中寻找精确 localPath 的图片归属证据。 */
-function findOwnedImage(messages: Array<AgentMessage | SDKMessage>, localPath: string): { mediaType: string } | undefined {
+/** 从指定会话消息中寻找经同一可信路径解析后精确匹配的图片归属证据。 */
+function findOwnedImage(
+  messages: Array<AgentMessage | SDKMessage>,
+  resolvedPath: string,
+  resolveImagePath: DesignSessionBridgeDependencies['resolveAgentImagePath'],
+): { mediaType: string } | undefined {
   /** 新 SDK JSONL 仍需以同一序列中的 Nano tool_use 复核附件字段。 */
   const sdkToolNames = new Map<string, string>()
   for (const message of messages) {
     if (!('type' in message)) {
       for (const event of message.events ?? []) {
         if (event.type !== 'tool_result' || event.toolName !== 'mcp__nano_banana__generate_image') continue
-        /** 同字符串只在当前 session 的持久化事件中出现才构成所有权。 */
-        const image = event.imageAttachments?.find((candidate) => candidate.localPath === localPath)
+        /** 仅当前会话持久化的 Nano 附件经可信迁移映射后可构成所有权。 */
+        const image = event.imageAttachments?.find((candidate) => resolveImagePath(candidate.localPath) === resolvedPath)
         if (image) return { mediaType: image.mediaType }
       }
       continue
@@ -208,7 +212,7 @@ function findOwnedImage(messages: Array<AgentMessage | SDKMessage>, localPath: s
       if (block.type !== 'tool_result') continue
       const result = block as SDKToolResultBlock
       if (sdkToolNames.get(result.tool_use_id) !== 'mcp__nano_banana__generate_image') continue
-      const image = result.imageAttachments?.find((candidate) => candidate.localPath === localPath)
+      const image = result.imageAttachments?.find((candidate) => resolveImagePath(candidate.localPath) === resolvedPath)
       if (image) return { mediaType: image.mediaType }
     }
   }
@@ -263,13 +267,17 @@ export class DesignSessionBridge {
       input.projectId,
       input.sessionId,
     )
-    /** 先用持久化消息建立精确归属，再触碰文件系统。 */
-    const ownedImage = findOwnedImage(this.dependencies.getMessages(input.sessionId), input.localPath)
+    /** 请求与历史附件使用同一可信解析器；路径映射本身不授予会话所有权。 */
+    const requestedPath = this.dependencies.resolveAgentImagePath(input.localPath)
+    /** 必须先匹配当前会话的持久化 Nano 证据，再打开文件和执行授权校验。 */
+    const ownedImage = findOwnedImage(
+      this.dependencies.getMessages(input.sessionId),
+      requestedPath,
+      this.dependencies.resolveAgentImagePath,
+    )
     if (!ownedImage) throw new Error('图片不属于指定 Agent 会话')
     /** 项目必须在任何素材 staging 前处于稳定权威状态。 */
     const currentDocument = this.dependencies.store.requireStableAuthoritativeDocument(input.projectId)
-    /** 会话附件解析器仍决定路径语义，公共 helper 只负责文件系统授权。 */
-    const requestedPath = this.dependencies.resolveAgentImagePath(input.localPath)
     let authorizedSource: DesignAuthorizedImageSource | undefined
     let sourceHandedOff = false
     /** 只有本次调用创建的 promotion 批次允许在失败路径回滚。 */

@@ -1,0 +1,39 @@
+{
+  "project": "llama.cpp",
+  "version": "v0.6.0",
+  "releaseTag": "b11429",
+  "sourceCommit": "d81235049384534c167caea52b85a694f6103d14",
+  "license": "MIT",
+  "releaseUrl": "https://github.com/ggml-org/llama.cpp/releases/tag/b11429",
+  "assets": [
+    {
+      "name": "llama-b11429-bin-macos-arm64.tar.gz",
+      "size": 11971406,
+      "digest": "sha256:740288ec6887be94280a5dfa25b5e23a78285cab104519e6c7e218904ee82459",
+      "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b11429/llama-b11429-bin-macos-arm64.tar.gz",
+      "target": "darwin-arm64"
+    },
+    {
+      "name": "llama-b11429-bin-macos-x64.tar.gz",
+      "size": 11487431,
+      "digest": "sha256:29ac3ea02be6bd143e824973f2cc5fa74bc4094393a9eaab0ff6814f19dd8522",
+      "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b11429/llama-b11429-bin-macos-x64.tar.gz",
+      "target": "darwin-x64"
+    },
+    {
+      "name": "llama-b11429-bin-ubuntu-x64.tar.gz",
+      "size": 17693462,
+      "digest": "sha256:f6d25dde8f51133143d1453da4fd5f73b145127177612a283bf7995957af3392",
+      "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b11429/llama-b11429-bin-ubuntu-x64.tar.gz",
+      "target": "linux-x64"
+    },
+    {
+      "name": "llama-b11429-bin-win-cpu-x64.zip",
+      "size": 19398918,
+      "digest": "sha256:1283323272b04cd07905816a597a0da810918102de958f4ff6f7bbaa70ed2efe",
+      "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b11429/llama-b11429-bin-win-cpu-x64.zip",
+      "target": "win32-x64"
+    }
+  ],
+  "schemaVersion": 1
+}

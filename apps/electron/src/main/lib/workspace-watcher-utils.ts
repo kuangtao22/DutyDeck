@@ -1,5 +1,5 @@
 import { dirname } from 'node:path'
-import { shouldTrackAgentRunFilePath } from './agent-run-file-change-path-policy'
+import { shouldTrackAgentFileObservationPath } from './agent-run-file-change-path-policy'
 
 // 高频变动目录：跳过依赖、缓存和构建中间物，防止产生 IPC 事件风暴。
 const HIGH_NOISE_SEGMENTS = new Set([
@@ -15,8 +15,11 @@ const GIT_DIFF_STATE_FILES = new Set([
 ])
 
 export function isHighNoisePath(normalizedPath: string): boolean {
-  return !shouldTrackAgentRunFilePath(normalizedPath)
-    || normalizedPath.split('/').some((seg) => HIGH_NOISE_SEGMENTS.has(seg))
+  /** 使用小写分段匹配，避免 Xcode 在不同平台返回不同大小写的目录名。 */
+  const segments = normalizedPath.split('/').filter(Boolean).map((segment) => segment.toLowerCase())
+  // Agent 轮次统计与工作区刷新共用同一份构建/依赖噪声策略，避免两套名单漂移。
+  return !shouldTrackAgentFileObservationPath(normalizedPath)
+    || segments.some((seg) => HIGH_NOISE_SEGMENTS.has(seg))
 }
 
 /** fs.watch 在部分平台/事件上可能返回 Buffer 或 null。未知路径不触发刷新，避免绕过噪声过滤。 */

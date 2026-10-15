@@ -161,6 +161,9 @@ import type {
 } from '@proma/shared'
 import type { IpcMainInvokeEvent, WebContents } from 'electron'
 import { requireOrdinaryTopLevelAgentSession } from '../agent-session-visibility'
+import { SERVER_OPS_TASK_IPC_CHANNELS, parseServerOpsTaskTarget, parseServerOpsTaskReadInput,
+  parseServerOpsTaskUserInput, parseServerOpsTaskUserResize, parseServerOpsTaskSummary, parseServerOpsTaskReadResult } from '@proma/shared'
+import type { ServerOpsTaskService } from './server-ops-task-service'
 import type { ServerOpsAgentAccessStore } from './server-ops-agent-access-store'
 import { SERVER_OPS_AGENT_READ_CHANNELS, parseServerOpsAgentReadGrant, parseServerOpsAgentReadSession } from '@proma/shared'
 import { SERVER_OPS_DATABASE_AGENT_POLICY_CHANNELS, parseServerOpsDatabaseAgentPolicyUpdate } from '@proma/shared'
@@ -310,6 +313,8 @@ export interface ServerOpsIpcOptions {
   docker?: Pick<ServerOpsDockerService, 'listResources' | 'getContainerDetail' | 'prepareAction' | 'commitAction' | 'cancelAction' | 'disposeOwner'>
   files?: Pick<ServerOpsFileService, 'list' | 'preview' | 'prepare' | 'commit' | 'cancel' | 'closeOwner'>
   console?: Pick<ServerOpsDockerConsoleService, 'start' | 'close' | 'write' | 'resize' | 'acknowledge' | 'getSnapshot' | 'disposeOwner'>
+  /** 任务启动只经 Agent 审批，界面仅访问所属会话已有任务。 */
+  tasks?: Pick<ServerOpsTaskService, 'list' | 'read' | 'write' | 'resize' | 'interrupt' | 'onChanged' | 'disposeSession'>
   transfers?: Pick<ServerOpsFileTransferService, 'start' | 'list' | 'cancel' | 'closeOwner'>
   fileLeases?: Pick<ServerOpsLocalFileLeaseRegistry, 'selectUpload' | 'selectDownload' | 'release' | 'closeOwner'>
   data?: Pick<ServerOpsDataService, 'listSources' | 'upsertSource' | 'deleteSource' | 'probeSource' | 'diagnoseSource' | 'revealSourcePassword' | 'listSchemaTables' | 'describeSchemaTable' | 'readSchemaRows' | 'removeHost'>
@@ -480,6 +485,7 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
     ...Object.values(SERVER_OPS_DOCKER_CHANNELS),
     ...Object.values(SERVER_OPS_FILE_CHANNELS),
     ...Object.values(SERVER_OPS_CONSOLE_IPC_CHANNELS).filter((channel) => channel !== SERVER_OPS_CONSOLE_IPC_CHANNELS.OUTPUT && channel !== SERVER_OPS_CONSOLE_IPC_CHANNELS.EXIT),
+    ...Object.values(SERVER_OPS_TASK_IPC_CHANNELS).filter((channel) => channel !== SERVER_OPS_TASK_IPC_CHANNELS.CHANGED),
     ...Object.values(SERVER_OPS_TRANSFER_CHANNELS).filter((channel) => channel !== SERVER_OPS_TRANSFER_CHANNELS.PROGRESS),
     ...Object.values(SERVER_OPS_DATA_CHANNELS),
     ...Object.values(SERVER_OPS_DATA_SCHEMA_CHANNELS),
@@ -1035,6 +1041,38 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
     const { ownerKey, window } = requireOwner(event)
     return closeFileOwner(window.id, `${ownerKey}:files:${parsed.hostId}`)
   })
+  /** 每次读取或输入均复核真实窗口与普通会话，不接受后台/委派会话身份。 */
+  const requireTaskSession = (event: IpcMainInvokeEvent, sessionId: string): NonNullable<ServerOpsIpcOptions['tasks']> => {
+    assertAuthorizedSender(event, options)
+    const session = requireOrdinaryTopLevelAgentSession(options.requireUserVisibleSession(sessionId))
+    if (session.id !== sessionId || session.archived) throw new Error('SERVER_OPS_AGENT_SESSION_NOT_ALLOWED')
+    if (!options.tasks) throw new Error('SERVER_OPS_TASK_UNAVAILABLE')
+    return options.tasks
+  }
+  installHandler(SERVER_OPS_TASK_IPC_CHANNELS.LIST, (event, input) => {
+    const sessionId = parseServerOpsConnectionDraftSession(input)
+    return requireTaskSession(event, sessionId).list(sessionId).map(parseServerOpsTaskSummary)
+  })
+  installHandler(SERVER_OPS_TASK_IPC_CHANNELS.READ, async (event, input) => {
+    const parsed = parseServerOpsTaskReadInput(input)
+    const result = await requireTaskSession(event, parsed.sessionId).read(parsed)
+    requireTaskSession(event, parsed.sessionId)
+    return parseServerOpsTaskReadResult(result)
+  })
+  installHandler(SERVER_OPS_TASK_IPC_CHANNELS.WRITE, (event, input) => {
+    const parsed = parseServerOpsTaskUserInput(input)
+    requireTaskSession(event, parsed.sessionId).write(parsed)
+  })
+  installHandler(SERVER_OPS_TASK_IPC_CHANNELS.RESIZE, (event, input) => {
+    const parsed = parseServerOpsTaskUserResize(input)
+    requireTaskSession(event, parsed.sessionId).resize(parsed)
+  })
+  installHandler(SERVER_OPS_TASK_IPC_CHANNELS.INTERRUPT, async (event, input) => {
+    const parsed = parseServerOpsTaskTarget(input)
+    const result = await requireTaskSession(event, parsed.sessionId).interrupt(parsed)
+    requireTaskSession(event, parsed.sessionId)
+    return parseServerOpsTaskSummary(result)
+  })
   installHandler(SERVER_OPS_CONSOLE_IPC_CHANNELS.START, async (event, input) => {
     assertAuthorizedSender(event, options)
     const parsed = parseServerOpsConsoleStartInput(input)
@@ -1479,6 +1517,7 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
   }
   /** 撤销指定普通 Agent 会话授权，并广播严格公开的旧新状态。 */
   const revokeSession = (sessionId: string): void => {
+    options.tasks?.disposeSession(sessionId)
     /** 撤销前快照用于 Renderer 精确同步。 */
     const previous = options.access.getCurrent() ?? null
     if (!options.access.revokeSession(sessionId) || !previous || previous.sessionId !== sessionId) return
@@ -1489,6 +1528,13 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
   }
   /** 逐项安装 runtime 与日志订阅，使中途失败可精确逆序回滚。 */
   installSubscription(() => options.access.onReadChanged((event) => broadcast(SERVER_OPS_AGENT_READ_CHANNELS.CHANGED, event)))
+  if (options.tasks) installSubscription(() => options.tasks!.onChanged((task) => {
+    try {
+      /** 已删除或已转为内部来源的会话不再广播任务元数据。 */
+      const session = requireOrdinaryTopLevelAgentSession(options.requireUserVisibleSession(task.sessionId))
+      if (!session.archived && session.id === task.sessionId) broadcast(SERVER_OPS_TASK_IPC_CHANNELS.CHANGED, parseServerOpsTaskSummary(task))
+    } catch { /* 生命周期撤销竞态不击穿 SSH 输出回调。 */ }
+  }))
   if (options.databasePolicy) installSubscription(() => options.databasePolicy!.onChanged((policy) => broadcast(SERVER_OPS_DATABASE_AGENT_POLICY_CHANNELS.CHANGED, policy)))
   /** 广播只包含会话和草稿 ID，具体字段仍经有权限检查的定向读取入口获取。 */
   installSubscription(() => serverOpsConnectionDraftStore.subscribe((event) => broadcast(SERVER_OPS_CONNECTION_DRAFT_CHANNELS.CHANGED, event)))

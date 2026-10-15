@@ -189,6 +189,28 @@ export class CapabilityFactoryStore {
     writeJsonLinesFileAtomic(this.runsPath(run.sceneId), [...current, run])
   }
 
+  /** 有界运行发送前保存账本；仅更新仍在执行或评审的同一条记录。 */
+  saveBudgetedRun(run: CapabilityRun): void {
+    if (!run.callBudget) throw new CapabilityFactoryStoreError('RUN_BUDGET_REQUIRED', '缺少运行调用账本')
+    const current = this.listRuns(run.sceneId)
+    const index = current.findIndex((entry) => entry.id === run.id)
+    if (index < 0) {
+      if (run.status !== 'running' && !(run.status === 'cancelled' && run.callBudget.calls.length === 0) && run.review?.status !== 'running') {
+        throw new CapabilityFactoryStoreError('RUN_BUDGET_STATE_INVALID', '新建有界运行必须处于进行中状态')
+      }
+      this.appendRun(run)
+      return
+    }
+    /** 终态证据不可被后续账本更新或其他运行覆盖。 */
+    const previous = current[index]!
+    if (!previous.callBudget || (previous.status !== 'running' && previous.review?.status !== 'running')
+      || previous.sceneVersion !== run.sceneVersion || previous.startedAt !== run.startedAt) {
+      throw new CapabilityFactoryStoreError('RUN_BUDGET_STATE_INVALID', '运行已结束或账本归属不一致')
+    }
+    current[index] = run
+    writeJsonLinesFileAtomic(this.runsPath(run.sceneId), current)
+  }
+
   /** 读取某个场景显式保存的任务；兼容旧运行记录由服务层只读合并。 */
   listTasks(sceneId: string): CapabilitySavedTask[] {
     const index = readJsonFileStrict<TasksIndex>(this.tasksPath(sceneId), {
@@ -208,14 +230,15 @@ export class CapabilityFactoryStore {
   }
 
   /** 仅补齐正在评测的记录，不改执行事实，也不覆盖同场景其他并发运行。 */
-  finishRunReview(sceneId: string, runId: string, review: CapabilityRunReview, stepReviews?: CapabilityRun['stepReviews']): CapabilityRun {
+  finishRunReview(sceneId: string, runId: string, review: CapabilityRunReview, stepReviews?: CapabilityRun['stepReviews'], runStatus?: CapabilityRun['status']): CapabilityRun {
     const current = this.listRuns(sceneId)
     const index = current.findIndex((run) => run.id === runId)
     const run = current[index]
     if (!run || run.review?.status !== 'running' || review.status === 'running') {
       throw new CapabilityFactoryStoreError('RUN_REVIEW_STATE_INVALID', '运行记录不存在或评审状态已结束')
     }
-    const updated = { ...run, review, ...(stepReviews === undefined ? {} : { stepReviews }) }
+    const updated = { ...run, review, ...(stepReviews === undefined ? {} : { stepReviews }),
+      ...(runStatus === undefined ? {} : { status: runStatus, valid: false, error: run.error ?? '运行达到截止时间，已取消后续评审。' }) }
     current[index] = updated
     writeJsonLinesFileAtomic(this.runsPath(sceneId), current)
     return updated

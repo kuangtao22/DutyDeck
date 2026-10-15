@@ -1,7 +1,7 @@
 import type { ImageGenerationModelOption } from './design'
 import type { MediaApiModelCapability, MediaApiModelCatalogResult, MediaApiModelExecutionSupport, MediaApiModelKind } from './media-api-model'
 import type { ImageGenerationModelEntry, ImageGenerationPublicCatalog, ImageGenerationPublicProfile } from './image-generation'
-import { imageGenerationModelKind } from './image-generation'
+import { IMAGE_PROVIDER_IDENTIFIER_MAX_LENGTH, imageGenerationModelKind } from './image-generation'
 
 /**
  * 画布媒体模型范围。
@@ -71,22 +71,31 @@ export function buildCanvasGenerationModelId(provider: string, profileId: string
   return `${CANVAS_GENERATION_MODEL_ID_PREFIX}:${provider}:${profileId}:${modelId}`
 }
 
-/** 解析画布选择 ID；不是独立生成配置时返回 null。 */
+/** 所有 Canvas 图片模型选择入口共用的字符预算，覆盖完整配置与模型身份。 */
+export const CANVAS_IMAGE_MODEL_SELECTION_ID_MAX_LENGTH = 640
+
+/** 解析独立模型选择；返回已验证的供应商、配置和模型身份，非法值返回 null。 */
 export function parseCanvasGenerationModelId(value: string): { provider: string; profileId: string; modelId: string } | null {
-  const prefix = `${CANVAS_GENERATION_MODEL_ID_PREFIX}:`
-  if (!value.startsWith(prefix)) return null
-  const rest = value.slice(prefix.length)
-  /** 依次切出供应商与配置 ID；模型 ID 允许包含冒号，剩余部分整体归它。 */
-  const providerEnd = rest.indexOf(':')
-  if (providerEnd <= 0) return null
-  const remainder = rest.slice(providerEnd + 1)
-  const profileEnd = remainder.indexOf(':')
-  if (profileEnd <= 0) return null
-  return {
-    provider: rest.slice(0, providerEnd),
-    profileId: remainder.slice(0, profileEnd),
-    modelId: remainder.slice(profileEnd + 1),
-  }
+  if (value.length > CANVAS_IMAGE_MODEL_SELECTION_ID_MAX_LENGTH) return null
+  /** 前两项不能包含分隔符；其余正文完整保留为供应商模型 ID。 */
+  const match = /^imagegen:([^:]+):([^:]+):([\s\S]+)$/.exec(value)
+  if (!match) return null
+  /** 分解后逐字段验证，避免空模型或伪造供应商进入运行快照。 */
+  const [, provider, profileId, modelId] = match
+  if (!provider || !MEDIA_PROVIDER_IDS.has(provider) || !profileId
+    || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$/.test(profileId)
+    || ['__proto__', 'constructor', 'prototype'].includes(profileId)
+    || !modelId || modelId.length > IMAGE_PROVIDER_IDENTIFIER_MAX_LENGTH
+    || modelId.trim() !== modelId || /[\u0000-\u001f\u007f]/u.test(modelId)) return null
+  return { provider, profileId, modelId }
+}
+
+/** 验证图片节点模型选择，兼容旧目录与固定版本预设，不接受统一媒体 modelRef。 */
+export function isCanvasImageModelSelectionId(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > CANVAS_IMAGE_MODEL_SELECTION_ID_MAX_LENGTH) return false
+  return /^[A-Za-z0-9_-]{1,128}$/.test(value)
+    || (value.length <= 160 && /^media:[A-Za-z0-9_-]{1,128}:[1-9][0-9]*$/.test(value))
+    || parseCanvasGenerationModelId(value) !== null
 }
 
 /** 独立能力到画布能力的映射；没有对应项的（如放大）不下放给画布。 */
@@ -177,7 +186,7 @@ export function parseCanvasMediaModelScope(value: unknown): CanvasMediaModelScop
     return { mode: 'providers', providers: [...input.providers] as string[] }
   }
   if (input.mode !== 'selected' || Object.keys(input).length !== 2 || !Array.isArray(input.modelIds)
-    || input.modelIds.length > 256 || input.modelIds.some((id) => typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(id)
+    || input.modelIds.length > 256 || input.modelIds.some((id) => typeof id !== 'string' || (id.startsWith('imagegen:') ? parseCanvasGenerationModelId(id) === null : !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(id))
       || ['__proto__', 'constructor', 'prototype'].includes(id)) || new Set(input.modelIds).size !== input.modelIds.length) {
     throw new Error('CANVAS_MEDIA_MODEL_SCOPE_INVALID')
   }

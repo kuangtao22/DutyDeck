@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import { applyCanvasMutations, createEmptyCanvasDocument, parseCanvasWorkspaceSnapshot } from './canvas'
 import type { ImageGenerationPublicCatalog } from './image-generation'
 import {
+  CANVAS_IMAGE_MODEL_SELECTION_ID_MAX_LENGTH,
+  isCanvasImageModelSelectionId,
   buildCanvasGenerationModelId,
   buildCanvasGenerationModelOptions,
   buildCanvasMediaModelOptions,
@@ -131,4 +133,27 @@ describe('画布媒体模型候选范围', () => {
     expect(original.mediaModelScope).toBeUndefined()
     expect(parseCanvasWorkspaceSnapshot({ document: updated, nodeIssues: [], writable: true }).document.mediaModelScope).toEqual(updated.mediaModelScope)
   })
+})
+
+test('Given 畸形独立模型选择 When 解析 Then 拒绝空模型非法供应商及控制字符', () => {
+  /** 每项只破坏一个模型身份字段。 */
+  const invalidIds = ['imagegen:openai-images:p:', 'imagegen:unknown:p:m',
+    'imagegen:openai-images:../p:m', 'imagegen:openai-images:p:m\n',
+    `imagegen:openai-images:p:${'m'.repeat(257)}`]
+  for (const id of invalidIds) expect(parseCanvasGenerationModelId(id)).toBeNull()
+})
+
+test('Given 三种图片选择身份 When 校验 Then 兼容合法旧数据并隔离统一媒体引用', () => {
+  /** 真实目录允许配置和模型各 256 字符；完整选择可超过旧 scope 的 256 上限。 */
+  const selectionId = buildCanvasGenerationModelId('openai-images', 'p'.repeat(256), 'm'.repeat(256))
+  expect(selectionId.length).toBeLessThanOrEqual(CANVAS_IMAGE_MODEL_SELECTION_ID_MAX_LENGTH)
+  expect(isCanvasImageModelSelectionId(selectionId)).toBe(true)
+  expect(parseCanvasMediaModelScope({ mode: 'selected', modelIds: [selectionId] })).toEqual({ mode: 'selected', modelIds: [selectionId] })
+  for (const id of ['legacy-profile', 'media:preset-1:3', selectionId]) {
+    expect(isCanvasImageModelSelectionId(id)).toBe(true)
+  }
+  for (const id of ['media:image:openai-images:p:m', 'media:preset:0', 'imagegen:openai-images:p:',
+    'imagegen:openai-images:p:m\u0000', 'x'.repeat(CANVAS_IMAGE_MODEL_SELECTION_ID_MAX_LENGTH + 1)]) {
+    expect(isCanvasImageModelSelectionId(id)).toBe(false)
+  }
 })

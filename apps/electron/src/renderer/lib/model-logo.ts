@@ -265,6 +265,7 @@ const PROVIDER_LOGO_MAP: Record<ProviderType, string> = {
   'openai-codex': OpenAILogo,
   'github-copilot': GithubLogo,
   xai: GrokLogo,
+  'dutydeck-local': DefaultLogo,
   custom: DefaultLogo,
 }
 

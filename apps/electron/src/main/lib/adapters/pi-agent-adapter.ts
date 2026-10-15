@@ -1,3 +1,4 @@
+import { normalizePiTokenUsage, type TokenUsageObserver } from '../token-usage-observer'
 /**
  * Pi Agent SDK 适配器
  *
@@ -7,6 +8,8 @@
 
 import { randomUUID } from 'node:crypto'
 import { installCanvasMediaSampleLifecycle } from './pi-canvas-media-samples'
+import { installPiAttachmentPathProjection } from './pi-attachment-path-projection'
+import type { DataRootPathSnapshot } from '../data-root-reference'
 import { spawn } from 'node:child_process'
 import type { Dispatcher } from 'undici'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
@@ -231,6 +234,16 @@ export interface PiAgentQueryOptions extends AgentQueryInput {
   apiKey: string
   baseUrl?: string
   provider: ProviderType
+  /** 主进程取得的本地模型端点快照；只在当前查询内存中传递。 */
+  localModelBinding?: {
+    assetId: string
+    modelId: string
+    baseUrl: string
+    token: string
+    contextWindow: number
+    maxTokens: number
+    engineVersion: string
+  }
   /** OAuth credential coordination key; equals the selected Proma channel id. */
   channelId?: string
   channelName?: string
@@ -252,6 +265,8 @@ export interface PiAgentQueryOptions extends AgentQueryInput {
   resumeSessionId?: string
   piAgentDir: string
   piSessionDir: string
+  /** 宿主解析的业务数据根，仅用于历史附件请求投影。 */
+  dataRootPaths?: DataRootPathSnapshot
   customTools?: ToolDefinition[]
   /** 本轮真正暴露给模型的 Pi 工具名；缺失时保持普通 Agent 的完整工具集合。 */
   activeToolNames?: string[]
@@ -260,6 +275,8 @@ export interface PiAgentQueryOptions extends AgentQueryInput {
   onPiEntryBindings?: (bindings: Record<string, string>) => void
   onModelResolved?: (model: string) => void
   onContextWindow?: (contextWindow: number) => void
+  /** 每个真实 assistant/provider 调用结束时回调；观察器异常不得影响业务。 */
+  onUsageAttempt?: TokenUsageObserver
   /** 权限已通过后的前后采集；失败不得改变工具结果。 */
   onFileChangeCapture?: (capture: import('@proma/shared').AgentFileChangeCapture) => Promise<void>
   onRetry?: (update: import('./pi-retry-control').PiRetryUpdate) => void
@@ -443,7 +460,8 @@ function normalizeProxyUrl(proxyUrl: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined
 }
 
-function resolvePiHttpProxy(input: Pick<PiAgentQueryOptions, 'proxyUrl' | 'runtimeEnv'>): string | undefined {
+function resolvePiHttpProxy(input: Pick<PiAgentQueryOptions, 'provider' | 'proxyUrl' | 'runtimeEnv'>): string | undefined {
+  if (input.provider === 'dutydeck-local') return undefined
   return normalizeProxyUrl(input.proxyUrl)
     ?? normalizeProxyUrl(getCaseInsensitiveRuntimeEnvValue(input.runtimeEnv?.env, 'HTTPS_PROXY'))
     ?? normalizeProxyUrl(getCaseInsensitiveRuntimeEnvValue(input.runtimeEnv?.env, 'HTTP_PROXY'))
@@ -1642,6 +1660,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     try {
       installPiRequestProxyFetch()
       requestProxyDispatcher = createPiRequestProxyDispatcher({
+        direct: input.provider === 'dutydeck-local',
         proxyUrl: resolvePiHttpProxy(input),
         noProxy: getCaseInsensitiveRuntimeEnvValue(input.runtimeEnv?.env, 'NO_PROXY'),
         httpIdleTimeoutMs: input.httpIdleTimeoutMs,
@@ -1784,6 +1803,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       session.agent.transformContext = async (messages, signal) => sanitizePiMessageImageContent(
         await previousTransformContext?.(messages, signal) ?? messages,
       )
+      installPiAttachmentPathProjection(session.agent, input.dataRootPaths)
       if (projectInstructionScope) {
         installPendingSystemPromptTranscript(
           session.agent,
@@ -1861,6 +1881,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       // message_end 发生在 Pi 落盘前；保留对象身份，待 prompt 完成后从
       // SessionManager entries 精确取得 Pi entry ID，绝不按文本猜测。
       const finalAssistantUuids = new Map<AssistantMessage, string>()
+      /** 只按实际响应对象去重；重试复用展示 UUID 仍必须独立计量。 */
+      const observedUsageMessages = new WeakSet<AssistantMessage>()
 
       const persistPiEntryBindings = (): void => {
         const bindings: Record<string, string> = {}
@@ -1916,6 +1938,16 @@ export class PiAgentAdapter implements AgentProviderAdapter {
               break
             }
             case 'message_end': {
+              /** 在展示中断/原生重试门之前计量，每个实际 assistant 终态独立上报。 */
+              if (isAssistantPiMessage(event.message) && !observedUsageMessages.has(event.message as AssistantMessage)) {
+                observedUsageMessages.add(event.message as AssistantMessage)
+                /** SDK 失败对象的默认零不能冒充供应商报告。 */
+                const message = event.message as AssistantMessage
+                const status = message.stopReason === 'aborted' ? 'cancelled' : message.stopReason === 'error' ? 'failed' : 'completed'
+                try { input.onUsageAttempt?.(normalizePiTokenUsage(message.usage, status), status, { startedAt: message.timestamp, finishedAt: Date.now() }) } catch {
+                  console.warn('[Pi 统计] 观察器失败，不影响模型结果')
+                }
+              }
               if (active.interrupting && isAbortedAssistantMessage(event.message)) {
                 const converted = convertPiMessage(event.message, session.sessionId, input.model, {
                   uuid: assistantUuidFor(),

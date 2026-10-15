@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { KnowledgeToolFailure } from './project-knowledge-references'
 import type {
   KnowledgeAssetCopyInput,
   KnowledgeAssetCopyResult,
@@ -6,7 +7,9 @@ import type {
   KnowledgeDocumentWriteInput,
   KnowledgeEntry,
   KnowledgeKind,
+  KnowledgeImportMode,
   KnowledgeOutlineInput,
+  KnowledgePlanSource,
   KnowledgePlanProposalInput,
   KnowledgeReadInput,
   KnowledgeReadResult,
@@ -61,6 +64,8 @@ export interface ProjectKnowledgeAgentMaintenanceOptions {
   resolveProject(workspaceId: string): ResolvedKnowledgeProject
   readSource(input: KnowledgeReadInput): Promise<KnowledgeReadResult>
   readUserEvidence(): PersistedAgentEvidenceRecord | undefined
+  /** 仅由宿主按任务登记身份重新核验原始用户消息，不查询任意历史。 */
+  resolveTaskUserEvidence?(id: string): { sessionId: string; message: PersistedAgentEvidenceRecord } | undefined
   assertCurrent(): void
   canMutate(): boolean
   runWorkspaceWrite<T>(effect: () => Promise<T>): Promise<T>
@@ -69,13 +74,36 @@ export interface ProjectKnowledgeAgentMaintenanceOptions {
   now?: () => number
 }
 
+/** 来源发现回执仅返回计数和扫描状态，正文仍须正式读取。 */
+export interface KnowledgeAgentScanResult {
+  initialized: boolean
+  scan: KnowledgeSnapshot['scan']
+}
+/** 导入回执保留有界跳过明细，不返回宿主绝对路径或整份文件列表。 */
+export interface KnowledgeAgentImportResult {
+  cancelled: boolean
+  imported: number
+  unchanged: number
+  skippedCount: number
+  skipped: Array<{ path: string; reason: string }>
+  truncated: boolean
+  rootRelativePath?: string
+  scan?: KnowledgeSnapshot['scan']
+}
+
 /** 核心服务拥有的流程事务，Agent 侧只补当前工作区和本轮证据。 */
 export interface ProjectKnowledgeAgentWorkflowPorts {
+  /** 扫描当前项目并等待完成，信号只来自工具执行宿主。 */
+  scanSources?(workspaceId: string, signal?: AbortSignal): Promise<KnowledgeAgentScanResult>
+  /** 原生选择器决定路径，模型只能指定选择模式。 */
+  importSources?(workspaceId: string, mode: KnowledgeImportMode, signal?: AbortSignal): Promise<KnowledgeAgentImportResult>
   getSnapshot(workspaceId: string): Promise<KnowledgeSnapshot>
   proposePlan(input: KnowledgePlanProposalInput): Promise<KnowledgeSnapshot>
   saveOutline(input: KnowledgeOutlineInput): Promise<KnowledgeSnapshot>
   writeDocument(input: KnowledgeDocumentWriteInput): Promise<KnowledgeSnapshot>
   copyAsset(input: KnowledgeAssetCopyInput): Promise<KnowledgeAssetCopyResult>
+  /** 只刷新已登记来源，禁止扫描扩大授权范围。 */
+  refreshSources?(workspaceId: string, sources: KnowledgePlanSource[]): Promise<KnowledgeEntry[]>
 }
 
 /** 模型输入不包含由当前回合闭包固定的工作区身份。 */
@@ -83,7 +111,7 @@ export type KnowledgeAgentPlanInput = Omit<KnowledgePlanProposalInput, 'workspac
 /** 模型输入不包含由当前回合闭包固定的工作区身份。 */
 export type KnowledgeAgentOutlineInput = Omit<KnowledgeOutlineInput, 'workspaceId'>
 /** 模型输入不包含由当前回合闭包固定的工作区身份。 */
-export type KnowledgeAgentDocumentInput = Omit<KnowledgeDocumentWriteInput, 'workspaceId' | 'userEvidence'>
+export type KnowledgeAgentDocumentInput = Omit<KnowledgeDocumentWriteInput, 'workspaceId' | 'userEvidence'> & { userEvidenceId?: string }
 /** 模型输入不包含由当前回合闭包固定的工作区身份。 */
 export type KnowledgeAgentAssetInput = Omit<KnowledgeAssetCopyInput, 'workspaceId'>
 
@@ -92,6 +120,19 @@ export interface KnowledgeAgentWorkflowStatus {
   initialized: boolean
   revision: number
   paused: boolean
+  /** 有界宿主执行摘要，不暴露全部历史读页。 */
+  execution?: {
+    status: string
+    generation: number
+    currentItemId?: string
+    reason?: string
+    turns: number
+    calls: number
+    bytes: number
+    activeMs: number
+    failures: Record<string, { code: string; message: string }>
+    userEvidence: Array<{ id: string }>
+  }
   proposal?: {
     id: string
     revision: number
@@ -120,21 +161,73 @@ export interface KnowledgeAgentWorkflowStatus {
       summary: string
       sections: string[]
       entryId?: string
+      /** 正文当前版本和宿主发放的精确目标引用。 */
+      documentRevision?: string
+      /** 状态只展示依赖摘要，完整大纲仍保留所有依赖。 */
+      sourceCount?: number
+      sourcesTruncated?: boolean
+      targetRef?: string
       status: 'pending' | 'partial' | 'ready' | 'missing'
     }>
   }
+  /** 已批准（或尚无批准时的提案）分组详情，供首轮建立大纲。 */
+  groupDetails?: {
+    groupId: string
+    planState: 'approved' | 'proposal'
+    planRevision: number
+    summary: string
+    sources: Array<KnowledgePlanSource & { sourceRef?: string }>
+    gaps: string[]
+    outputs: string[]
+    sourceCount: number
+    gapCount: number
+    outputCount: number
+    sourceOffset: number
+    nextSourceOffset?: number
+  }
+  /** 指定单项的完整文本详情按四项分页，不将摘要截断伪装为完整依赖。 */
+  itemDetails?: {
+    itemId: string
+    summary: string
+    scope?: string
+    dependencyState?: 'known' | 'unknown'
+    sources: Array<KnowledgePlanSource & { sourceRef?: string }>
+    sections: string[]
+    gaps: string[]
+    sourceCount: number
+    sectionCount: number
+    gapCount: number
+    sourceOffset: number
+    nextSourceOffset?: number
+  }
+  /** 当前所见批准计划和大纲的运行内引用。 */
+  flowRef?: string
   offset: number
   nextOffset?: number
 }
 
 /** 单页同时切分分组和大纲项，调用方沿 nextOffset 继续读取。 */
 export function compactKnowledgeWorkflowStatus(
-  snapshot: Pick<KnowledgeSnapshot, 'initialized' | 'revision' | 'workflow'>,
+  snapshot: Pick<KnowledgeSnapshot, 'initialized' | 'revision' | 'workflow'> & Partial<Pick<KnowledgeSnapshot, 'entries'>>,
   offset = 0,
+  itemId?: string,
+  sourceOffset = 0,
+  groupId?: string,
 ): KnowledgeAgentWorkflowStatus {
   if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('知识流程状态偏移非法')
+  if (!Number.isSafeInteger(sourceOffset) || sourceOffset < 0) throw new Error('知识项详情偏移非法')
+  if (itemId !== undefined && groupId !== undefined) throw new Error('单项与分组详情不能混用')
   const pageSize = 4
   const workflow: KnowledgeWorkflow | undefined = snapshot.workflow
+  /** 详情仅允许当前批准大纲的明确项，不能按路径寻找未登记内容。 */
+  const detailItem = itemId === undefined ? undefined : workflow?.outline?.items.find((item) => item.id === itemId)
+  if (itemId !== undefined && !detailItem) throw new Error('知识大纲项不存在')
+  const detailCount = detailItem ? Math.max(detailItem.sources?.length ?? 0, detailItem.sections.length, detailItem.gaps?.length ?? 0) : 0
+  /** 先选已批准计划，避免同时存在新提案时混淆两套来源。 */
+  const detailPlan = workflow?.approved ?? workflow?.proposal
+  const detailGroup = groupId === undefined ? undefined : detailPlan?.groups.find((group) => group.id === groupId)
+  if (groupId !== undefined && !detailGroup) throw new Error('知识计划分组不存在')
+  const groupDetailCount = detailGroup ? Math.max(detailGroup.sources.length, detailGroup.gaps.length, detailGroup.outputs.length) : 0
   /** 文本压缩只用于 Agent 状态，不改变权威清单。 */
   const brief = (value: string, maximum: number): string => value.length <= maximum ? value : `${value.slice(0, maximum)}…`
   const plan = (value: KnowledgeWorkflow['proposal']) => value ? {
@@ -152,9 +245,34 @@ export function compactKnowledgeWorkflowStatus(
     workflow?.outline?.items.length ?? 0,
   )
   return {
+    groupDetails: detailGroup ? {
+      groupId: detailGroup.id, planState: workflow?.approved ? 'approved' : 'proposal', planRevision: detailPlan!.revision,
+      summary: detailGroup.summary,
+      sources: detailGroup.sources.slice(sourceOffset, sourceOffset + pageSize),
+      gaps: detailGroup.gaps.slice(sourceOffset, sourceOffset + pageSize),
+      outputs: detailGroup.outputs.slice(sourceOffset, sourceOffset + pageSize),
+      sourceCount: detailGroup.sources.length, gapCount: detailGroup.gaps.length, outputCount: detailGroup.outputs.length,
+      sourceOffset, nextSourceOffset: sourceOffset + pageSize < groupDetailCount ? sourceOffset + pageSize : undefined,
+    } : undefined,
+    itemDetails: detailItem ? {
+      itemId: detailItem.id, summary: detailItem.summary, scope: detailItem.scope, dependencyState: detailItem.dependencyState,
+      sources: (detailItem.sources ?? []).slice(sourceOffset, sourceOffset + pageSize),
+      sections: detailItem.sections.slice(sourceOffset, sourceOffset + pageSize),
+      gaps: (detailItem.gaps ?? []).slice(sourceOffset, sourceOffset + pageSize),
+      sourceCount: detailItem.sources?.length ?? 0, sectionCount: detailItem.sections.length, gapCount: detailItem.gaps?.length ?? 0,
+      sourceOffset, nextSourceOffset: sourceOffset + pageSize < detailCount ? sourceOffset + pageSize : undefined,
+    } : undefined,
     initialized: snapshot.initialized,
     revision: snapshot.revision,
     paused: workflow?.paused ?? false,
+    execution: workflow?.execution ? {
+      status: workflow.execution.status, generation: workflow.execution.generation,
+      currentItemId: workflow.execution.currentItemId, reason: workflow.execution.reason,
+      turns: workflow.execution.turns, calls: workflow.execution.calls, bytes: workflow.execution.bytes,
+      activeMs: workflow.execution.activeMs,
+      failures: Object.fromEntries(Object.entries(workflow.execution.failures).slice(offset, offset + pageSize)),
+      userEvidence: workflow.execution.userEvidence.slice(0, 8).map(({ id }) => ({ id })),
+    } : undefined,
     proposal: plan(workflow?.proposal),
     approved: plan(workflow?.approved),
     outline: workflow?.outline ? {
@@ -165,6 +283,12 @@ export function compactKnowledgeWorkflowStatus(
       statusCounts,
       items: workflow.outline.items.slice(offset, offset + pageSize).map((item) => ({
         ...item,
+        sources: item.sources?.slice(0, 4).map(({ entryId, revision }) => ({ entryId, revision })),
+        sourceCount: item.sources?.length ?? 0,
+        sourcesTruncated: (item.sources?.length ?? 0) > 4,
+        scope: item.scope ? brief(item.scope, 320) : undefined,
+        gaps: item.gaps?.slice(0, 4).map((gap) => brief(gap, 160)),
+        documentRevision: snapshot.entries?.find((entry) => entry.id === item.entryId)?.revision,
         title: brief(item.title, 160),
         summary: brief(item.summary, 320),
         sections: item.sections.slice(0, 8).map((section) => brief(section, 160)),
@@ -177,11 +301,19 @@ export function compactKnowledgeWorkflowStatus(
 
 /** 当前 Agent 可见的最小维护能力。 */
 export interface ProjectKnowledgeAgentMaintenance {
+  /** 在当前普通会话授权下发现新来源。 */
+  scanSources?: (signal?: AbortSignal) => Promise<KnowledgeAgentScanResult>
+  /** 仅通过宿主选择器导入，随后扫描已保留的来源。 */
+  importSources?: (mode: KnowledgeImportMode, signal?: AbortSignal) => Promise<KnowledgeAgentImportResult>
+  /** 受写租约保护的定向刷新；不登记已读。 */
+  refreshSources?: (sources: KnowledgePlanSource[]) => Promise<KnowledgeEntry[]>
   next(): Promise<{ refs: KnowledgeSourceRef[]; remaining: number }>
   observeRead(result: KnowledgeReadResult): void
+  /** 只登记本轮实际交付给模型的任务用户原文身份。 */
+  observeUserEvidence?(ids: string[]): void
   submit(input: KnowledgeAgentMaintenanceSubmitInput): Promise<KnowledgeAgentMaintenanceSubmitResult>
   /** 读取最新 proposal、approved 版本和大纲进度。 */
-  status?: (offset?: number) => Promise<KnowledgeAgentWorkflowStatus>
+  status?: (offset?: number, itemId?: string, sourceOffset?: number, groupId?: string) => Promise<KnowledgeAgentWorkflowStatus>
   /** 提交等待用户确认的自由分组清单。 */
   proposePlan?: (input: KnowledgeAgentPlanInput) => Promise<KnowledgeAgentWorkflowStatus>
   /** 只在核心服务确认存在 approved 版本后保存大纲。 */
@@ -255,6 +387,9 @@ export function createProjectKnowledgeAgentMaintenance(
   const now = options.now ?? Date.now
   /** 本轮实际读取的来源页，键为固定条目版本。 */
   const observed = new Map<string, Map<number, ObservedSourcePage>>()
+  /** 跨轮证据必须先在本轮交付，不能猜测任务内旧 ID。 */
+  const observedUserEvidence = new Set<string>()
+  const observeUserEvidence = (ids: string[]): void => { for (const id of ids) observedUserEvidence.add(id) }
   /** 本轮累计处理的来源身份，重复工具调用仍受四个来源上限约束。 */
   const processedThisRun = new Set<string>()
 
@@ -296,7 +431,15 @@ export function createProjectKnowledgeAgentMaintenance(
   /** 记录 Agent 通过正式读取工具看到的来源页。 */
   const observeRead = (result: KnowledgeReadResult): void => {
     options.assertCurrent()
-    if (result.status !== 'readable' || (!isSourceDistillationCandidate(result.entry)
+    /**
+     * 两步知识文档流程的读取范围由受控读取结果决定：JSON、源码等合法来源
+     * 可能不适合旧的“自动提炼候选”批次，但只要正文确实可读，就必须登记，
+     * 否则发布阶段会把真实读取误判为 evidence_unread。元数据或不可读结果仍拒绝。
+     */
+    const readableWorkflowSource = options.workflow
+      && result.status === 'readable'
+      && !result.entry.metadataOnly
+    if (result.status !== 'readable' || (!readableWorkflowSource && !isSourceDistillationCandidate(result.entry)
       && result.entry.source.kind !== 'managed' && result.entry.source.kind !== 'conversation')) return
     const ref: KnowledgeSourceRef = {
       entryId: result.entry.id,
@@ -529,11 +672,11 @@ export function createProjectKnowledgeAgentMaintenance(
   if (!options.workflow) return { next, observeRead, submit }
 
   /** 读取最新流程状态时仍复核运行代次和工作区归属。 */
-  const status = async (offset = 0): Promise<KnowledgeAgentWorkflowStatus> => {
+  const status = async (offset = 0, itemId?: string, sourceOffset = 0, groupId?: string): Promise<KnowledgeAgentWorkflowStatus> => {
     options.assertCurrent()
     const snapshot = await options.workflow!.getSnapshot(options.workspaceId)
     options.assertCurrent()
-    return compactKnowledgeWorkflowStatus(snapshot, offset)
+    return compactKnowledgeWorkflowStatus(snapshot, offset, itemId, sourceOffset, groupId)
   }
   /** 提案只引用扫描元数据；发现来源不要求先读取正文。 */
   const proposePlan = async (input: KnowledgeAgentPlanInput): Promise<KnowledgeAgentWorkflowStatus> => compactKnowledgeWorkflowStatus(
@@ -563,8 +706,15 @@ export function createProjectKnowledgeAgentMaintenance(
       if (!page) throw new Error('文档来源逐字引用不属于本轮已读页面')
       return { evidence, page }
     })
-    const initialUserEvidence = input.userQuote ? options.readUserEvidence() : undefined
-    if (input.userQuote && (!initialUserEvidence || initialUserEvidence.uuid !== options.userMessageId
+    if (input.userEvidenceId && !observedUserEvidence.has(input.userEvidenceId)) throw new Error('任务用户证据尚未在本轮读取')
+    if (input.userEvidenceId && !input.userQuote) throw new Error('用户证据引用必须附带逐字原话')
+    /** 原始任务证据和当前用户消息分别解析，控制消息不能替代事实来源。 */
+    const resolveUserEvidence = () => input.userEvidenceId
+      ? options.resolveTaskUserEvidence?.(input.userEvidenceId)
+      : { sessionId: options.sessionId, message: options.readUserEvidence() }
+    const initialUserSource = input.userQuote ? resolveUserEvidence() : undefined
+    const initialUserEvidence = initialUserSource?.message
+    if (input.userQuote && (!initialUserEvidence || (!input.userEvidenceId && initialUserEvidence.uuid !== options.userMessageId)
       || initialUserEvidence.role !== 'user' || !initialUserEvidence.text.includes(input.userQuote))) {
       throw new Error('文档用户引用不属于当前用户原文')
     }
@@ -581,12 +731,14 @@ export function createProjectKnowledgeAgentMaintenance(
         if (fresh.status !== 'readable' || fresh.entry.id !== evidence.entryId
           || fresh.entry.revision !== evidence.revision || fresh.offset !== page.offset
           || fresh.content !== page.content || !fresh.content.includes(evidence.quote)) {
-          throw new Error('文档来源版本或正文已变化')
+          throw new KnowledgeToolFailure(fresh.entry.revision !== evidence.revision ? 'stale_revision' : 'source_changed', '文档来源版本或正文已变化')
         }
       }
       if (input.userQuote) {
-        const currentUserEvidence = options.readUserEvidence()
+        const currentUserSource = resolveUserEvidence()
+        const currentUserEvidence = currentUserSource?.message
         if (!initialUserEvidence || !currentUserEvidence
+          || currentUserSource?.sessionId !== initialUserSource?.sessionId
           || currentUserEvidence.uuid !== initialUserEvidence.uuid
           || currentUserEvidence.role !== initialUserEvidence.role
           || currentUserEvidence.sha256 !== initialUserEvidence.sha256
@@ -600,7 +752,7 @@ export function createProjectKnowledgeAgentMaintenance(
         ...input,
         workspaceId: options.workspaceId,
         ...(input.userQuote ? {
-          userEvidence: { sessionId: options.sessionId, messageId: options.userMessageId, quote: input.userQuote },
+          userEvidence: { sessionId: initialUserSource!.sessionId, messageId: initialUserEvidence!.uuid, quote: input.userQuote, sha256: createHash('sha256').update(initialUserEvidence!.text, 'utf8').digest('hex') },
         } : {}),
       })
     })
@@ -610,5 +762,16 @@ export function createProjectKnowledgeAgentMaintenance(
   const copyAsset = (input: KnowledgeAgentAssetInput): Promise<KnowledgeAssetCopyResult> => runWorkflowWrite(
     (workflow) => workflow.copyAsset({ ...input, workspaceId: options.workspaceId }),
   )
-  return { next, observeRead, submit, status, proposePlan, saveOutline, writeDocument, copyAsset }
+  const refreshSources = options.workflow.refreshSources
+    ? (sources: KnowledgePlanSource[]) => runWorkflowWrite((workflow) => workflow.refreshSources!(options.workspaceId, sources))
+    : undefined
+  /** 来源发现沿用现有写权限和工作区租约，完成后再次检查撤权。 */
+  const scanSources = options.workflow.scanSources
+    ? (signal?: AbortSignal) => runWorkflowWrite((workflow) => workflow.scanSources!(options.workspaceId, signal))
+    : undefined
+  /** 导入模式在服务入口继续复核，不能通过类型断言注入路径。 */
+  const importSources = options.workflow.importSources
+    ? (mode: KnowledgeImportMode, signal?: AbortSignal) => runWorkflowWrite((workflow) => workflow.importSources!(options.workspaceId, mode, signal))
+    : undefined
+  return { next, observeRead, submit, status, proposePlan, saveOutline, writeDocument, copyAsset, refreshSources, observeUserEvidence, scanSources, importSources }
 }

@@ -9,6 +9,7 @@ import {
   ChevronRight,
   FileSearch,
   Loader2,
+  MessageSquarePlus,
   RefreshCw,
   Search,
   Square,
@@ -18,6 +19,7 @@ import type {
   AgentSessionMeta,
   KnowledgeCategory,
   KnowledgeEntry,
+  KnowledgeIndexPreview,
   KnowledgeReadResult,
   KnowledgeSearchResult,
   KnowledgeSnapshot,
@@ -44,6 +46,32 @@ import { KnowledgeWorkflowDialog } from './KnowledgeWorkflowPanel'
 import { KnowledgeFileTree } from './KnowledgeFileTree'
 import type { KnowledgePlanSelection } from './KnowledgeWorkflowPanel'
 import { startKnowledgePolling, waitForKnowledgeScan } from './project-knowledge-poll'
+
+/** 扫描完成后沿用统一会话选择入口；正文生成必须携带宿主执行参数。 */
+interface KnowledgeWorkflowDispatch {
+  (createPrompt: (sessionId: string) => AgentPendingPrompt, isCurrent: () => boolean, sessionMode: 'new' | 'continue', execution?: { planRevision: number; itemIds?: string[] }): Promise<void>
+}
+
+/**
+ * 根据扫描后的权威工作流选择规划或正文执行。
+ * @param snapshot 已结束扫描的快照；新提案存在时仍须先规划确认。
+ * @param dispatch 统一会话选择与宿主派发入口。
+ * @param isCurrent 当前项目和操作代次检查。
+ */
+export async function dispatchScannedKnowledge(snapshot: KnowledgeSnapshot, dispatch: KnowledgeWorkflowDispatch, isCurrent: () => boolean): Promise<void> {
+  if (!isCurrent()) return
+  /** 扫描部分失败只影响可用来源，保留明确说明供规划使用。 */
+  const scanMessage = snapshot.scan.status === 'failed'
+    ? snapshot.scan.message || '部分来源扫描失败，以下提炼仅基于当前可用来源。'
+    : snapshot.scan.skipped > 0 ? snapshot.scan.message : undefined
+  /** 已批准且无待审提案时直接进入宿主管理的有界执行。 */
+  const approvedPlan = snapshot.workflow?.approved
+  if (approvedPlan && !snapshot.workflow?.proposal) {
+    await dispatch((sessionId) => buildKnowledgeGenerationPendingPrompt(sessionId, approvedPlan.revision), isCurrent, 'continue', { planRevision: approvedPlan.revision })
+  } else {
+    await dispatch((sessionId) => buildKnowledgeMaintenancePendingPrompt(sessionId, scanMessage), isCurrent, 'new')
+  }
+}
 
 type ProjectKnowledgeView = 'knowledge' | 'sources' | 'memory'
 type ProjectKnowledgeScope = 'knowledge' | 'sources'
@@ -262,15 +290,21 @@ export interface ProjectKnowledgeResourcesViewProps {
   snapshot: KnowledgeSnapshot | null
   result: KnowledgeSearchResult | null
   selectedRead: KnowledgeReadResult | null
+  /** 当前选中的条目身份独立于正文，保证读取中目录仍保持选中态。 */
+  selectedEntryId?: string | null
   loading: boolean
   searching: boolean
   reading: boolean
+  /** 正文读取错误只显示在右侧预览，不应替换整个双栏页面。 */
+  readError?: string | null
   actionPending: boolean
   error: string | null
   query: string
   category: KnowledgeCategoryFilter
   /** 仅承载待确认或继续的知识库计划，不包含低频资料整理工具。 */
   workflow?: React.ReactNode
+  /** 索引恢复入口，保持主目录和正文布局不变。 */
+  indexRecovery?: React.ReactNode
   pendingKnowledgeAction?: string | null
   knowledgeActionError?: string | null
   onQueryChange: (query: string) => void
@@ -284,6 +318,7 @@ export interface ProjectKnowledgeResourcesViewProps {
   onClosePreview: () => void
   onSelectEvidence?: (entryId: string, revision: string) => void
   onReviewEntry?: (entry: KnowledgeEntry, action: 'confirm' | 'reject') => void
+  onSupplementEntry?: (entry: KnowledgeEntry) => void
 }
 
 /** 单条目录卡按当前作用域区分提炼知识状态与来源索引状态。 */
@@ -337,22 +372,26 @@ function KnowledgeContentPreview({
   readResult,
   scope,
   reading,
+  readError,
   pendingAction,
   actionError,
   onLoadMoreContent,
   onClose,
   onSelectEvidence,
   onReview,
+  onSupplementEntry,
 }: {
   readResult: KnowledgeReadResult
   scope: ProjectKnowledgeScope
   reading: boolean
+  readError?: string | null
   pendingAction?: string | null
   actionError?: string | null
   onLoadMoreContent: () => void
   onClose: () => void
   onSelectEvidence?: (entryId: string, revision: string) => void
   onReview?: (entry: KnowledgeEntry, action: 'confirm' | 'reject') => void
+  onSupplementEntry?: (entry: KnowledgeEntry) => void
 }): React.ReactElement {
   const { entry } = readResult
   const sourceLocation = entry.document ? `${entry.document.rootRelativePath}/${entry.document.relativePath}` : entry.source.relativePath ?? entry.title
@@ -384,6 +423,11 @@ function KnowledgeContentPreview({
               : '提炼知识'}
           </p>
         </div>
+        {onSupplementEntry && scope === 'knowledge' && (
+          <Button type="button" variant="outline" size="sm" onClick={() => onSupplementEntry(entry)}>
+            <MessageSquarePlus aria-hidden="true" />补充此篇
+          </Button>
+        )}
         <Button type="button" variant="ghost" size="icon" aria-label="关闭正文预览" onClick={onClose}>
           <X aria-hidden="true" />
         </Button>
@@ -435,6 +479,11 @@ function KnowledgeContentPreview({
           {statusMessage}
         </div>
       )}
+      {readError && (
+        <div className="m-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs leading-5 text-destructive" role="alert">
+          {readError}
+        </div>
+      )}
       {readResult.content ? (
         <div className="min-h-0 flex-1 overflow-hidden">
           <LiveMarkdownEditor
@@ -468,13 +517,16 @@ export function ProjectKnowledgeResourcesView({
   snapshot,
   result,
   selectedRead,
+  selectedEntryId: selectedEntryIdProp,
   loading,
   searching,
   reading,
+  readError,
   actionPending,
   error,
   query,
   workflow,
+  indexRecovery,
   pendingKnowledgeAction,
   knowledgeActionError,
   onQueryChange,
@@ -487,10 +539,11 @@ export function ProjectKnowledgeResourcesView({
   onClosePreview,
   onSelectEvidence,
   onReviewEntry,
+  onSupplementEntry,
 }: ProjectKnowledgeResourcesViewProps): React.ReactElement {
   const scanRunning = snapshot?.scan.status === 'running'
   const entries = result?.items ?? []
-  const selectedEntryId = selectedRead?.entry.id ?? null
+  const selectedEntryId = selectedEntryIdProp ?? selectedRead?.entry.id ?? null
   const showInitialEmpty = snapshot?.initialized === false
   /** 快照先于防抖搜索更新时继续展示旧目录，并明确其正在刷新。 */
   const directoryRefreshing = snapshot?.initialized === true && result?.revision !== snapshot.revision
@@ -556,6 +609,11 @@ export function ProjectKnowledgeResourcesView({
             </Button>
           )}
         </div>
+        {isKnowledgeView && indexRecovery && (
+          <div className="flex flex-wrap items-center gap-1.5" aria-label="知识库索引维护">
+            {indexRecovery}
+          </div>
+        )}
         {snapshot && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground" aria-live="polite">
             {isKnowledgeView ? (
@@ -594,16 +652,10 @@ export function ProjectKnowledgeResourcesView({
             </p>
           </div>
         ) : (
-          <div className="project-knowledge-body grid min-h-0 flex-1 grid-cols-1 overflow-hidden" data-scope={scope} data-preview-open={Boolean(selectedRead)}>
+          <div className="project-knowledge-body grid min-h-0 flex-1 grid-cols-1 overflow-hidden" data-scope={scope} data-preview-open={Boolean(selectedEntryId)}>
             <div className="project-knowledge-directory flex min-h-0 min-w-0 flex-col overflow-hidden" aria-label={isKnowledgeView ? '知识目录' : '来源目录'}>
               {isKnowledgeView && <div className="shrink-0 border-b border-border p-2">{directorySearch}</div>}
               <div className="min-h-0 flex-1 overflow-auto scrollbar-thin p-2" data-testid="project-knowledge-scroll">
-                {reading && !selectedRead ? (
-                  <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground" role="status">
-                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                    正在读取正文
-                  </div>
-                ) : null}
                 {directoryRefreshing && entries.length > 0 && (
                   <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground" role="status">
                     <Loader2 className="size-4 animate-spin" aria-hidden="true" />
@@ -662,13 +714,27 @@ export function ProjectKnowledgeResourcesView({
                 readResult={selectedRead}
                 scope={scope}
                 reading={reading}
+                readError={readError}
                 pendingAction={pendingKnowledgeAction}
                 actionError={knowledgeActionError}
                 onLoadMoreContent={onLoadMoreContent}
                 onClose={onClosePreview}
                 onSelectEvidence={onSelectEvidence}
                 onReview={isKnowledgeView ? onReviewEntry : undefined}
+                onSupplementEntry={onSupplementEntry}
               />
+            ) : selectedEntryId ? (
+              <article className="project-knowledge-preview flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-border bg-background" aria-label="资料正文预览">
+                <header className="flex shrink-0 justify-end border-b border-border px-3 py-2.5">
+                  <Button type="button" variant="ghost" size="icon" aria-label="关闭正文预览" onClick={onClosePreview}>
+                    <X aria-hidden="true" />
+                  </Button>
+                </header>
+                <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-xs text-muted-foreground">
+                  {readError ? <AlertTriangle className="size-5 text-destructive" aria-hidden="true" /> : <Loader2 className="size-5 animate-spin" aria-hidden="true" />}
+                  <p role={readError ? 'alert' : 'status'}>{readError ?? '正在读取正文'}</p>
+                </div>
+              </article>
             ) : (
               <div className="project-knowledge-empty-preview hidden min-h-0 items-center justify-center border-l border-border px-6 text-center text-xs text-muted-foreground">
                 从左侧选择{isKnowledgeView ? '知识' : '来源'}，查看正文与追溯信息。
@@ -713,18 +779,26 @@ export function ProjectKnowledgeTab({
   const [snapshot, setSnapshot] = React.useState<KnowledgeSnapshot | null>(null)
   const [result, setResult] = React.useState<KnowledgeSearchResult | null>(null)
   const [selectedRead, setSelectedRead] = React.useState<KnowledgeReadResult | null>(null)
+  /** 当前目录选择独立保存，读取中也能保持左栏选中态和滚动位置。 */
+  const [selectedEntryId, setSelectedEntryId] = React.useState<string | null>(null)
   const [query, setQuery] = React.useState(search ?? '')
   const [category, setCategory] = React.useState<KnowledgeCategoryFilter>('all')
   const [loading, setLoading] = React.useState(true)
   const [searching, setSearching] = React.useState(false)
   const [reading, setReading] = React.useState(false)
+  /** 正文读取失败不污染目录查询和快照错误状态。 */
+  const [readError, setReadError] = React.useState<string | null>(null)
   const [actionPending, setActionPending] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [knowledgeActionPending, setKnowledgeActionPending] = React.useState<string | null>(null)
   const [knowledgeActionError, setKnowledgeActionError] = React.useState<string | null>(null)
+  /** 索引预览绑定项目，避免迟到结果用于另一个项目。 */
+  const [indexPreview, setIndexPreview] = React.useState<(KnowledgeIndexPreview & { workspaceId: string }) | null>(null)
   const snapshotGenerationRef = React.useRef(0)
   const searchGenerationRef = React.useRef(0)
   const readGenerationRef = React.useRef(0)
+  /** 读取去重绑定发起时的版本，目录更新后的新版本不能被旧请求拦住。 */
+  const readRevisionRef = React.useRef<string | undefined>(undefined)
   const knowledgeActionGenerationRef = React.useRef(0)
   /** 每次更新新建整理会话；清单调整与确认后生成继续沿用本轮会话。 */
   const knowledgeWorkflowSessionIdRef = React.useRef<string | null>(null)
@@ -735,6 +809,8 @@ export function ProjectKnowledgeTab({
       setSnapshot(null)
       setResult(null)
       setSelectedRead(null)
+      setSelectedEntryId(null)
+      setReadError(null)
       setError('当前项目不存在或尚未加载，无法读取知识库。')
       setLoading(false)
       return
@@ -759,6 +835,9 @@ export function ProjectKnowledgeTab({
     readGenerationRef.current += 1
     setResult(null)
     setSelectedRead(null)
+    setSelectedEntryId(null)
+    setReadError(null)
+    setReading(false)
     setQuery(search ?? '')
   }, [search])
 
@@ -771,6 +850,8 @@ export function ProjectKnowledgeTab({
     setSnapshot(null)
     setResult(null)
     setSelectedRead(null)
+    setSelectedEntryId(null)
+    setReadError(null)
     setActiveView('knowledge')
     setResourceView('knowledge')
     setQuery(search ?? '')
@@ -782,6 +863,7 @@ export function ProjectKnowledgeTab({
     setError(null)
     setKnowledgeActionPending(null)
     setKnowledgeActionError(null)
+    setIndexPreview(null)
     void loadSnapshot()
     return () => {
       snapshotGenerationRef.current += 1
@@ -806,6 +888,7 @@ export function ProjectKnowledgeTab({
         query,
         category: category === 'all' ? undefined : category,
         scope,
+        includeUnassessed: true,
         offset: 0,
         limit: KNOWLEDGE_PAGE_SIZE,
       }).then((nextResult) => {
@@ -845,19 +928,42 @@ export function ProjectKnowledgeTab({
     }
   }, [snapshot?.initialized, snapshot?.scan.status, workspaceId, actionPending, knowledgeActionPending])
 
+  /** 宿主通知仅触发当前项目刷新，迟到响应不能倒退任务代次或快照版本。 */
+  React.useEffect(() => {
+    if (!workspaceId) return
+    let disposed = false
+    const unsubscribe = window.electronAPI.onProjectKnowledgeChanged((event) => {
+      if (event.workspaceId !== workspaceId || disposed) return
+      const generation = snapshotGenerationRef.current
+      void window.electronAPI.getProjectKnowledgeSnapshot(workspaceId).then((nextSnapshot) => {
+        if (disposed || generation !== snapshotGenerationRef.current) return
+        setSnapshot((current) => {
+          if (current && (current.revision > nextSnapshot.revision || (current.workflow?.execution?.generation ?? 0) > (nextSnapshot.workflow?.execution?.generation ?? 0))) return current
+          return nextSnapshot
+        })
+      }).catch(() => { /* 低频轮询补偿通知读取失败，避免事件覆盖操作错误。 */ })
+    })
+    return () => { disposed = true; unsubscribe() }
+  }, [workspaceId])
+
   /** 按入口新建或续接项目整理会话，并防止覆盖尚未消费的输入。 */
   const dispatchKnowledgeWorkflow = React.useCallback(async (
     createPrompt: (sessionId: string) => AgentPendingPrompt,
     isCurrent: () => boolean,
     /** 更新入口使用 new；清单调整、确认和恢复使用 continue。 */
-    sessionMode: 'new' | 'continue' = 'continue',
+    sessionMode: 'new' | 'continue' | 'current' = 'continue',
+    /** 正文生成由宿主入队，renderer 不重复发送 prompt。 */
+    execution?: { planRevision: number; itemIds?: string[] },
   ): Promise<void> => {
     if (!workspaceId || !isCurrent()) return
     if (store.get(agentPendingPromptAtom)) throw new Error('已有 Agent 输入任务尚未处理，请稍后重试')
     const currentSessions = store.get(agentSessionsAtom)
-    const preferredSessionId = (sessionMode === 'continue' ? knowledgeWorkflowSessionIdRef.current : null) ?? sessionId ?? currentAgentSessionId
+    /** 续接同版计划才复用持久任务会话；新计划确认沿本次规划会话。 */
+    const persistedSessionId = execution?.planRevision === snapshot?.workflow?.execution?.planRevision ? snapshot?.workflow?.execution?.sessionId : undefined
+    const preferredSessionId = (sessionMode === 'continue' ? persistedSessionId ?? knowledgeWorkflowSessionIdRef.current : null) ?? sessionId ?? currentAgentSessionId
     const preferredSession = currentSessions.find((candidate) => candidate.id === preferredSessionId)
     let targetSessionId = sessionMode === 'new' ? null : selectKnowledgeMaintenanceSession(currentSessions, preferredSessionId, workspaceId)
+    if (sessionMode === 'current' && !targetSessionId) throw new Error('请先打开当前项目的普通 Agent 会话，再补充知识。')
     if (!targetSessionId) {
       targetSessionId = await createAgent({
         title: '项目知识整理',
@@ -870,11 +976,17 @@ export function ProjectKnowledgeTab({
     if (!isCurrent()) return
     if (!targetSessionId) throw new Error('无法创建项目知识整理会话')
     if (store.get(agentPendingPromptAtom)) throw new Error('已有 Agent 输入任务尚未处理，请稍后重试')
-    knowledgeWorkflowSessionIdRef.current = targetSessionId
-    setPendingPrompt(createPrompt(targetSessionId))
+    if (sessionMode !== 'current') knowledgeWorkflowSessionIdRef.current = targetSessionId
+    if (execution) {
+      const nextSnapshot = await window.electronAPI.startProjectKnowledgeExecution({ workspaceId, sessionId: targetSessionId, ...execution })
+      if (!isCurrent()) return
+      setSnapshot((current) => current && current.revision > nextSnapshot.revision ? current : nextSnapshot)
+    } else {
+      setPendingPrompt(createPrompt(targetSessionId))
+    }
     const targetSession = store.get(agentSessionsAtom).find((candidate) => candidate.id === targetSessionId)
     openSession('agent', targetSessionId, targetSession?.title ?? '项目知识整理')
-  }, [createAgent, currentAgentSessionId, openSession, sessionId, setPendingPrompt, store, workspaceId])
+  }, [createAgent, currentAgentSessionId, openSession, sessionId, setPendingPrompt, store, workspaceId, snapshot?.workflow?.execution?.sessionId, snapshot?.workflow?.execution?.planRevision])
 
   /** 发起扫描；知识页随后调度 Agent 提炼，来源页只更新来源索引。 */
   const handleScan = React.useCallback(async (): Promise<void> => {
@@ -897,16 +1009,7 @@ export function ProjectKnowledgeTab({
           onSnapshot: (currentSnapshot) => { setSnapshot(currentSnapshot) },
         })
         if (generation !== snapshotGenerationRef.current) return
-        const scanMessage = completedSnapshot.scan.status === 'failed'
-          ? completedSnapshot.scan.message || '部分来源扫描失败，以下提炼仅基于当前可用来源。'
-          : completedSnapshot.scan.skipped > 0
-            ? completedSnapshot.scan.message
-            : undefined
-        const approvedPlan = completedSnapshot.workflow?.approved
-        const createPrompt = approvedPlan && !completedSnapshot.workflow?.proposal
-          ? (targetSessionId: string) => buildKnowledgeGenerationPendingPrompt(targetSessionId, approvedPlan.revision)
-          : (targetSessionId: string) => buildKnowledgeMaintenancePendingPrompt(targetSessionId, scanMessage)
-        await dispatchKnowledgeWorkflow(createPrompt, () => generation === snapshotGenerationRef.current, 'new')
+        await dispatchScannedKnowledge(completedSnapshot, dispatchKnowledgeWorkflow, () => generation === snapshotGenerationRef.current)
       }
     } catch (nextError) {
       if (generation !== snapshotGenerationRef.current) return
@@ -915,6 +1018,69 @@ export function ProjectKnowledgeTab({
       if (generation === snapshotGenerationRef.current) setActionPending(false)
     }
   }, [activeView, dispatchKnowledgeWorkflow, workspaceId])
+
+  /** 读取当前索引差异，只有用户再次点击重建才会写入。 */
+  const handlePreviewIndex = React.useCallback(async (): Promise<void> => {
+    if (!workspaceId) return
+    const generation = ++knowledgeActionGenerationRef.current
+    setKnowledgeActionPending('index-preview')
+    setKnowledgeActionError(null)
+    try {
+      const preview = await window.electronAPI.previewProjectKnowledgeIndex(workspaceId)
+      if (generation !== knowledgeActionGenerationRef.current) return
+      setIndexPreview({ ...preview, workspaceId })
+    } catch (nextError) {
+      if (generation === knowledgeActionGenerationRef.current) setKnowledgeActionError(knowledgeErrorMessage(nextError, '读取索引差异失败'))
+    } finally {
+      if (generation === knowledgeActionGenerationRef.current) setKnowledgeActionPending(null)
+    }
+  }, [workspaceId])
+
+  /** 使用预览版本重建索引，旧正文由主进程先备份。 */
+  const handleRebuildIndex = React.useCallback(async (): Promise<void> => {
+    if (!workspaceId || !indexPreview || indexPreview.workspaceId !== workspaceId) return
+    const generation = ++knowledgeActionGenerationRef.current
+    setKnowledgeActionPending('index-rebuild')
+    setKnowledgeActionError(null)
+    try {
+      await window.electronAPI.rebuildProjectKnowledgeIndex({
+        workspaceId,
+        planRevision: indexPreview.planRevision,
+        outlineRevision: indexPreview.outlineRevision,
+        expectedContentRevision: indexPreview.currentRevision,
+      })
+      if (generation !== knowledgeActionGenerationRef.current) return
+      setIndexPreview(null)
+      await loadSnapshot()
+    } catch (nextError) {
+      if (generation === knowledgeActionGenerationRef.current) setKnowledgeActionError(knowledgeErrorMessage(nextError, '重建索引失败，请重新查看差异'))
+    } finally {
+      if (generation === knowledgeActionGenerationRef.current) setKnowledgeActionPending(null)
+    }
+  }, [indexPreview, loadSnapshot, workspaceId])
+
+  /** 将单篇正文补充请求绑定到当前选中的条目身份。 */
+  const handleSupplementEntry = React.useCallback(async (entry: KnowledgeEntry): Promise<void> => {
+    const generation = ++knowledgeActionGenerationRef.current
+    setKnowledgeActionPending(`supplement:${entry.id}`)
+    setKnowledgeActionError(null)
+    try {
+      await dispatchKnowledgeWorkflow(
+        (targetSessionId) => ({
+          sessionId: targetSessionId,
+          autoSend: true,
+          mentionedSkills: ['knowledge-maintenance'],
+          message: `[knowledge-supplement:entry]\n请使用 knowledge-maintenance Skill 补充知识条目“${entry.title}”（条目 ID ${entry.id}，当前版本 ${entry.revision}）。先读取该条目正文和来源，只有存在当前会话的新稳定证据时才更新同一主题；保留原有来源与版本，不能覆盖人工修改。`,
+        }),
+        () => generation === knowledgeActionGenerationRef.current,
+        'current',
+      )
+    } catch (nextError) {
+      if (generation === knowledgeActionGenerationRef.current) setKnowledgeActionError(knowledgeErrorMessage(nextError, '提交单篇补充失败'))
+    } finally {
+      if (generation === knowledgeActionGenerationRef.current) setKnowledgeActionPending(null)
+    }
+  }, [dispatchKnowledgeWorkflow])
 
   /** 请求取消当前扫描，以主进程回传的最终状态为准。 */
   const handleCancelScan = React.useCallback(async (): Promise<void> => {
@@ -939,9 +1105,17 @@ export function ProjectKnowledgeTab({
   /** 按稳定 ID 读取首段正文；修订未知时由主进程读取当前版本。 */
   const handleSelectEntryById = React.useCallback(async (entryId: string, expectedRevision?: string): Promise<void> => {
     if (!workspaceId) return
+    /** 当前正文已经是同一版本时，重复点击只保持阅读位置，不重新触发读取。 */
+    const sameLoadedEntry = selectedRead?.status === 'readable' && selectedRead.entry.id === entryId
+      && (!expectedRevision || selectedRead.entry.revision === expectedRevision)
+    if (selectedEntryId === entryId && !readError
+      && (reading ? readRevisionRef.current === expectedRevision : sameLoadedEntry)) return
     const generation = ++readGenerationRef.current
+    readRevisionRef.current = expectedRevision
     setReading(true)
+    setSelectedEntryId(entryId)
     setSelectedRead(null)
+    setReadError(null)
     setKnowledgeActionError(null)
     try {
       const nextRead = await window.electronAPI.readProjectKnowledge({
@@ -951,13 +1125,14 @@ export function ProjectKnowledgeTab({
       })
       if (generation !== readGenerationRef.current) return
       setSelectedRead(nextRead)
+      setSelectedEntryId(nextRead.entry.id)
     } catch (nextError) {
       if (generation !== readGenerationRef.current) return
-      setError(knowledgeErrorMessage(nextError, '读取资料正文失败'))
+      setReadError(knowledgeErrorMessage(nextError, '读取资料正文失败'))
     } finally {
       if (generation === readGenerationRef.current) setReading(false)
     }
-  }, [workspaceId])
+  }, [readError, reading, selectedEntryId, selectedRead, workspaceId])
 
   /** 目录条目携带已展示版本，读取时继续执行乐观一致性复核。 */
   const handleSelectEntry = React.useCallback(async (entry: KnowledgeEntry): Promise<void> => {
@@ -976,6 +1151,7 @@ export function ProjectKnowledgeTab({
         query,
         category: category === 'all' ? undefined : category,
         scope,
+        includeUnassessed: true,
         offset: result.nextOffset,
         limit: KNOWLEDGE_PAGE_SIZE,
       })
@@ -994,7 +1170,9 @@ export function ProjectKnowledgeTab({
     if (!workspaceId || !selectedRead || selectedRead.nextOffset === undefined) return
     const baseRead = selectedRead
     const generation = ++readGenerationRef.current
+    readRevisionRef.current = baseRead.entry.revision
     setReading(true)
+    setReadError(null)
     try {
       const nextRead = await window.electronAPI.readProjectKnowledge({
         workspaceId,
@@ -1006,7 +1184,7 @@ export function ProjectKnowledgeTab({
       setSelectedRead({ ...nextRead, content: `${baseRead.content}${nextRead.content}` })
     } catch (nextError) {
       if (generation !== readGenerationRef.current) return
-      setError(knowledgeErrorMessage(nextError, '加载下一页正文失败'))
+      setReadError(knowledgeErrorMessage(nextError, '加载下一页正文失败'))
     } finally {
       if (generation === readGenerationRef.current) setReading(false)
     }
@@ -1016,6 +1194,8 @@ export function ProjectKnowledgeTab({
   const handleClosePreview = React.useCallback((): void => {
     readGenerationRef.current += 1
     setSelectedRead(null)
+    setSelectedEntryId(null)
+    setReadError(null)
     setReading(false)
   }, [])
 
@@ -1026,6 +1206,8 @@ export function ProjectKnowledgeTab({
       readGenerationRef.current += 1
       setResult(null)
       setSelectedRead(null)
+      setSelectedEntryId(null)
+      setReadError(null)
       setSearching(false)
       setReading(false)
       setQuery('')
@@ -1043,15 +1225,20 @@ export function ProjectKnowledgeTab({
   const handleSelectEvidence = React.useCallback(async (entryId: string, expectedRevision: string): Promise<void> => {
     if (!workspaceId) return
     const generation = ++readGenerationRef.current
+    readRevisionRef.current = expectedRevision
     setReading(true)
+    setSelectedEntryId(entryId)
+    setSelectedRead(null)
+    setReadError(null)
     setKnowledgeActionError(null)
     try {
       const nextRead = await window.electronAPI.readProjectKnowledge({ workspaceId, entryId, expectedRevision })
       if (generation !== readGenerationRef.current) return
       setSelectedRead(nextRead)
+      setSelectedEntryId(nextRead.entry.id)
     } catch (nextError) {
       if (generation !== readGenerationRef.current) return
-      setError(knowledgeErrorMessage(nextError, '读取提炼依据失败'))
+      setReadError(knowledgeErrorMessage(nextError, '读取提炼依据失败'))
     } finally {
       if (generation === readGenerationRef.current) setReading(false)
     }
@@ -1063,6 +1250,8 @@ export function ProjectKnowledgeTab({
     readGenerationRef.current += 1
     setResult(null)
     setSelectedRead(null)
+    setSelectedEntryId(null)
+    setReadError(null)
     setSearching(false)
     setReading(false)
     setQuery(nextQuery)
@@ -1074,6 +1263,8 @@ export function ProjectKnowledgeTab({
     readGenerationRef.current += 1
     setResult(null)
     setSelectedRead(null)
+    setSelectedEntryId(null)
+    setReadError(null)
     setSearching(false)
     setReading(false)
     setCategory(nextCategory)
@@ -1120,16 +1311,21 @@ export function ProjectKnowledgeTab({
       }),
     )
     if (!nextSnapshot?.workflow?.approved || generation !== knowledgeActionGenerationRef.current) return
+    setKnowledgeActionPending('start-execution')
     try {
       const approvedRevision = nextSnapshot.workflow.approved.revision
       await dispatchKnowledgeWorkflow(
         (targetSessionId) => buildKnowledgeGenerationPendingPrompt(targetSessionId, approvedRevision),
         () => generation === knowledgeActionGenerationRef.current,
+        'continue',
+        { planRevision: approvedRevision },
       )
     } catch (nextError) {
       if (generation === knowledgeActionGenerationRef.current) {
         setKnowledgeActionError(knowledgeErrorMessage(nextError, '知识范围已确认，但提交生成任务失败'))
       }
+    } finally {
+      if (generation === knowledgeActionGenerationRef.current) setKnowledgeActionPending(null)
     }
   }, [dispatchKnowledgeWorkflow, executeKnowledgeAction, snapshot?.workflow?.proposal, workspaceId])
 
@@ -1163,19 +1359,45 @@ export function ProjectKnowledgeTab({
       () => window.electronAPI.pauseProjectKnowledgeWorkflow({ workspaceId, paused }),
     )
     if (paused || !nextSnapshot?.workflow?.approved || generation !== knowledgeActionGenerationRef.current) return
+    setKnowledgeActionPending('start-execution')
     try {
       /** 恢复权限后主动续接已有大纲，后台没有隐式模型队列。 */
       const approvedRevision = nextSnapshot.workflow.approved.revision
       await dispatchKnowledgeWorkflow(
         (targetSessionId) => buildKnowledgeGenerationPendingPrompt(targetSessionId, approvedRevision),
         () => generation === knowledgeActionGenerationRef.current,
+        'continue',
+        { planRevision: approvedRevision },
       )
     } catch (nextError) {
       if (generation === knowledgeActionGenerationRef.current) {
         setKnowledgeActionError(knowledgeErrorMessage(nextError, '已解除暂停，但提交继续任务失败'))
       }
+    } finally {
+      if (generation === knowledgeActionGenerationRef.current) setKnowledgeActionPending(null)
     }
   }, [dispatchKnowledgeWorkflow, executeKnowledgeAction, workspaceId])
+
+  /** 只对用户指定条目授予新一段执行额度，复用持久化整理会话。 */
+  const handleRetryKnowledgeItem = React.useCallback(async (itemId: string): Promise<void> => {
+    const approvedRevision = snapshot?.workflow?.approved?.revision
+    if (approvedRevision === undefined) return
+    const generation = ++knowledgeActionGenerationRef.current
+    setKnowledgeActionPending(`retry:${itemId}`)
+    setKnowledgeActionError(null)
+    try {
+      await dispatchKnowledgeWorkflow(
+        (targetSessionId) => buildKnowledgeGenerationPendingPrompt(targetSessionId, approvedRevision),
+        () => generation === knowledgeActionGenerationRef.current,
+        'continue',
+        { planRevision: approvedRevision, itemIds: [itemId] },
+      )
+    } catch (nextError) {
+      if (generation === knowledgeActionGenerationRef.current) setKnowledgeActionError(knowledgeErrorMessage(nextError, '重试知识条目失败'))
+    } finally {
+      if (generation === knowledgeActionGenerationRef.current) setKnowledgeActionPending(null)
+    }
+  }, [dispatchKnowledgeWorkflow, snapshot?.workflow?.approved?.revision])
 
   /** 按用户所见 revision 审核旧候选；正式文档只能通过大纲维护，不能派发旧审核 IPC。 */
   const handleReviewEntry = React.useCallback(async (
@@ -1213,11 +1435,39 @@ export function ProjectKnowledgeTab({
       pendingAction={combinedKnowledgeAction}
       error={knowledgeActionError}
       onConfirm={(groups) => { void handleConfirmKnowledgePlan(groups) }}
+      onRetryItem={(itemId) => { void handleRetryKnowledgeItem(itemId) }}
       onPause={(paused) => { void handlePauseKnowledgeWorkflow(paused) }}
       onSelectEntryId={(entryId, expectedRevision) => { void handleSelectEntryById(entryId, expectedRevision) }}
       onRequestAdjustment={(instruction) => { void handleRequestKnowledgePlanAdjustment(instruction) }}
     />
   ) : undefined
+
+  /** 知识维护操作共享忙碌状态，避免同时启动任务。 */
+  const knowledgeBusy = actionPending || Boolean(knowledgeActionPending) || snapshot?.scan.status === 'running'
+  /** 索引维护仅保留诊断和显式恢复；补充方式由当前 Agent 根据请求选择。 */
+  const indexRecovery = (
+    <>
+      <Button type="button" variant="ghost" size="sm" disabled={knowledgeBusy} onClick={() => { void handlePreviewIndex() }}>
+        检查索引
+      </Button>
+      {indexPreview?.workspaceId === workspaceId && indexPreview && (
+        <div className="basis-full flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/30 px-2.5 py-2 text-xs" role="status">
+          <span>{indexPreview.currentContent === indexPreview.generatedContent ? '索引与当前目录一致。' : '索引内容与当前目录存在差异。'}</span>
+          {indexPreview.currentContent !== indexPreview.generatedContent && (
+            <Button type="button" variant="outline" size="sm" disabled={knowledgeBusy} onClick={() => { void handleRebuildIndex() }}>
+              备份并重建索引
+            </Button>
+          )}
+          <details className="basis-full min-w-0"><summary>查看重建前后内容</summary>
+            <p>当前索引</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{indexPreview.currentContent ?? '（索引不存在）'}</pre>
+            <p>重建后索引</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{indexPreview.generatedContent}</pre>
+          </details>
+          <Button type="button" variant="ghost" size="sm" onClick={() => setIndexPreview(null)}>关闭</Button>
+        </div>
+      )}
+      {knowledgeActionError && <p className="basis-full text-xs text-destructive" role="alert">{knowledgeActionError}</p>}
+    </>
+  )
 
   const activeScope = resourceView
   const directoryView = (
@@ -1226,14 +1476,17 @@ export function ProjectKnowledgeTab({
       snapshot={snapshot}
       result={result}
       selectedRead={selectedRead}
+      selectedEntryId={selectedEntryId}
       loading={loading}
       searching={searching}
       reading={reading}
+      readError={readError}
       actionPending={actionPending || Boolean(knowledgeActionPending)}
       error={error}
       query={query}
       category={category}
       workflow={activeScope === 'knowledge' ? workflow : undefined}
+      indexRecovery={activeScope === 'knowledge' ? indexRecovery : undefined}
       pendingKnowledgeAction={combinedKnowledgeAction}
       knowledgeActionError={knowledgeActionError}
       onQueryChange={handleQueryChange}
@@ -1247,6 +1500,7 @@ export function ProjectKnowledgeTab({
       onClosePreview={handleClosePreview}
       onSelectEvidence={(entryId, revision) => { void handleSelectEvidence(entryId, revision) }}
       onReviewEntry={activeScope === 'knowledge' ? (entry, action) => { void handleReviewEntry(entry, action) } : undefined}
+      onSupplementEntry={activeScope === 'knowledge' && !knowledgeBusy ? (entry) => { void handleSupplementEntry(entry) } : undefined}
     />
   )
 

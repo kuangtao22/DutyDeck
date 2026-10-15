@@ -57,6 +57,10 @@ test('Given 运维工具可用 When 构建提示词 Then 数据库写入使用�
   const operationsPrompt = buildSystemPrompt({ ...context, serverOpsAvailable: true, serverOpsWriteAvailable: true })
   expect(operationsPrompt).toContain('ops_redis_read / ops_redis_write')
   expect(operationsPrompt).toContain('完全自动模式不能跳过或永久授权')
+  expect(operationsPrompt).toContain('server_task_start')
+  expect(operationsPrompt).toContain('server_task_read')
+  expect(operationsPrompt).toContain('sudo 密码')
+  expect(operationsPrompt).toContain('不要通过本地终端重新 SSH')
   expect(buildSystemPrompt(context)).not.toContain('ops_database_change_context')
 })
 
@@ -85,11 +89,33 @@ test('Given 编排工厂可用 When 构建系统提示词 Then 注入不变量�
   expect(prompt).toContain('不能放宽标准制造改善')
   /** 不要把桩当成为跑通而绑的东西。 */
   expect(prompt).toContain('不要为了"让整条链跑通"去绑虚拟接入')
+  /** 修改已有流程时必须复用当前工作区的场景，不能把场景误当成新项目。 */
+  expect(prompt).toContain('场景是当前项目内的流程，不是另一个项目')
+  expect(prompt).toContain('先调用 `factory_list_scenes`')
+  expect(prompt).toContain('只有用户明确要求新建独立场景时才使用 `createScene`')
   /** 常驻成本要低：详细流程（含反例）不在系统提示里重复一遍。 */
   expect(prompt).not.toContain('正确形状：输入 `corpusText`')
 
   /** 不具备工厂能力时一个字都不注入。 */
   expect(buildSystemPrompt(context)).not.toContain('只编排模型必须做的那部分')
+})
+
+test('Given 当前工作区已有编排场景 When 构建系统提示词 Then 把场景身份注入并要求修改时沿用 sceneId', () => {
+  const context = {
+    sessionId: 'factory-scene-context', permissionMode: 'bypassPermissions' as const,
+    capabilityFactoryAvailable: true,
+    capabilityFactoryScenes: [{
+      id: 'scene-existing', name: '小说角色提取', description: '从正文提取人物',
+      currentVersion: 3, hasDraft: false, stepCount: 2, updatedAt: 123,
+    }],
+    dependencies: { resolveWorkspaceContext: () => ({ workspaceRoot: '/tmp/workspace', projectRoot: '/tmp/project', isLocalProject: true }),
+      getUserName: () => '测试用户' },
+  }
+  const prompt = buildSystemPrompt(context)
+
+  expect(prompt).toContain('scene-existing')
+  expect(prompt).toContain('小说角色提取')
+  expect(prompt).toContain('修改、对齐或增加步骤时沿用匹配场景的 sceneId')
 })
 
 afterEach(() => {
@@ -166,6 +192,17 @@ test('Given 用户提出画布视觉需求 When 构建系统提示词 Then Agent
   expect(prompt).toContain('不得要求用户切换到另一个 Design/Canvas')
   expect(prompt).not.toContain('先询问用户是否打开 Design')
   expect(prompt).not.toContain('用户选择 Design')
+})
+
+test('Given 普通 HTML 原型实现请求 When 构建系统提示词 Then 不把文件交付自动升级为画布任务', () => {
+  /** 默认文件交付与画布的使用授权分开，历史关联不能触发新制作。 */
+  const prompt = buildSystemPrompt({ sessionId: 'session-html', permissionMode: 'bypassPermissions',
+    dependencies: { resolveWorkspaceContext: () => ({ workspaceRoot: '/tmp/workspace', projectRoot: '/tmp/project', isLocalProject: true }),
+      getUserName: () => '测试用户' } })
+  expect(prompt).toContain('普通 HTML/React/代码实现或一次性原型')
+  expect(prompt).toContain('不自动创建、同步或打开画布')
+  expect(prompt).toContain('历史关联、默认画布、旧任务')
+  expect(prompt).toContain('明确要求使用画布')
 })
 
 test('Given 用户已给出具体目标后追问能否执行 When 构建系统提示词 Then Agent 立即进入工具读取阶段', () => {

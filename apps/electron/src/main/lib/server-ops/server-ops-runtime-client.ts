@@ -1,3 +1,4 @@
+import type { ServerOpsTaskIdentity, ServerOpsTaskStartInput, ServerOpsTaskInput, ServerOpsTaskResizeInput, ServerOpsTaskAck, ServerOpsTaskOutputEvent, ServerOpsTaskExitEvent } from '@proma/shared'
 import { randomUUID } from 'node:crypto'
 import { parseServerOpsSftpRequest, ServerOpsSftpRuntimeError } from '../../../utility/server-ops/server-ops-sftp-runtime'
 import type { ServerOpsSftpRequest, ServerOpsSftpResult } from '../../../utility/server-ops/server-ops-sftp-runtime'
@@ -128,6 +129,21 @@ interface PendingLogStart {
   timeout: ReturnType<typeof setTimeout>
 }
 
+interface PendingTaskStart {
+  session: ServerOpsTaskIdentity
+  resolve: () => void
+  reject: (error: ServerOpsRuntimeError) => void
+  timeout: ReturnType<typeof setTimeout>
+}
+
+interface PendingTaskClose {
+  session: ServerOpsTaskIdentity
+  promise: Promise<void>
+  resolve: () => void
+  reject: (error: ServerOpsRuntimeError) => void
+  timeout: ReturnType<typeof setTimeout>
+}
+
 interface PendingConsoleStart {
   session: ServerOpsConsoleIdentity
   resolve: () => void
@@ -177,6 +193,7 @@ const CONNECT_TIMEOUT_MS = 25_000
 /** utility 确认日志流启动的默认等待上限。 */
 const LOG_START_TIMEOUT_MS = 10_000
 /** Console channel 启停确认的固定上限。 */
+const TASK_LIFECYCLE_TIMEOUT_MS = 10_000
 const CONSOLE_LIFECYCLE_TIMEOUT_MS = 10_000
 /** 单个 runtime 代次保留的日志流墓碑上限。 */
 const MAX_USED_LOG_STREAM_IDS = 65_536
@@ -256,6 +273,11 @@ export class ServerOpsRuntimeClient {
   /** 本 client 生命周期内已使用的 ID，阻止迟到 started 接管同 ID 新请求。 */
   private readonly usedLogStreamIds = new Set<string>()
   /** Console 启动与关闭都等待 utility 明确确认并设置 deadline。 */
+  /** 已使用任务 ID 的有界墓碑，避免迟到回调接管同 ID 新任务。 */
+  private readonly usedTaskIds = new Set<string>()
+  private readonly pendingTaskStarts = new Map<string, PendingTaskStart>()
+  private readonly pendingTaskCloses = new Map<string, PendingTaskClose>()
+  private readonly activeTasks = new Map<string, ServerOpsTaskIdentity>()
   private readonly pendingConsoleStarts = new Map<string, PendingConsoleStart>()
   private readonly pendingConsoleCloses = new Map<string, PendingConsoleClose>()
   private readonly activeConsoles = new Map<string, ServerOpsConsoleIdentity>()
@@ -269,6 +291,8 @@ export class ServerOpsRuntimeClient {
   private readonly logOutputListeners = new Set<(event: ServerOpsRuntimeLogOutputEvent) => void>()
   /** 日志退出订阅者。 */
   private readonly logExitListeners = new Set<(event: ServerOpsRuntimeLogExitEvent) => void>()
+  private readonly taskOutputListeners = new Set<(event: ServerOpsTaskOutputEvent) => void>()
+  private readonly taskExitListeners = new Set<(event: ServerOpsTaskExitEvent) => void>()
   private readonly consoleOutputListeners = new Set<(event: ServerOpsConsoleOutputEvent) => void>()
   private readonly consoleExitListeners = new Set<(event: ServerOpsConsoleExitEvent) => void>()
 
@@ -335,6 +359,7 @@ export class ServerOpsRuntimeClient {
     this.forgetSftpConnection(connectionId)
     this.rejectPendingLogStartsForConnection(hostId, connectionId, new ServerOpsRuntimeError('SERVER_OPS_CONNECTION_CLOSED', 'SSH 连接已断开'))
     this.finishLogStreamsForConnection(hostId, connectionId, 'connection-closed')
+    this.finishTasksForConnection(hostId, connectionId, new ServerOpsRuntimeError('SERVER_OPS_CONNECTION_CLOSED', 'SSH 连接已断开'))
     this.finishConsolesForConnection(hostId, connectionId, new ServerOpsRuntimeError('SERVER_OPS_CONNECTION_CLOSED', 'SSH 连接已断开'))
     if (this.activeConnections.get(connectionId) === hostId) this.activeConnections.delete(connectionId)
     for (const [requestId, pending] of this.pendingExecs) {
@@ -687,6 +712,72 @@ export class ServerOpsRuntimeClient {
     this.port?.postMessage({ type: 'server-ops.terminal-ack', input })
   }
 
+  /** 启动绑定完整身份的独立 SSH 任务 channel。 */
+  async startTask(input: ServerOpsTaskStartInput): Promise<ServerOpsTaskIdentity> {
+    if (this.activeConnections.get(input.connectionId) !== input.hostId || this.activeTasks.has(input.taskId)
+      || this.usedTaskIds.has(input.taskId) || this.usedTaskIds.size >= 65_536 || !this.port) throw new ServerOpsRuntimeError('SERVER_OPS_TASK_START_FAILED', '远程任务无法启动')
+    this.usedTaskIds.add(input.taskId)
+    if (this.activeConnections.get(input.connectionId) !== input.hostId) throw new ServerOpsRuntimeError('SERVER_OPS_TASK_START_FAILED', 'SSH 连接已关闭')
+    await new Promise<void>((resolve, reject) => {
+      const session = this.taskIdentity(input)
+      const timeout = setTimeout(() => {
+        this.pendingTaskStarts.delete(input.taskId)
+        try { this.port?.postMessage({ type: 'server-ops.task-stop', input: session }) } catch { this.stop() }
+        reject(new ServerOpsRuntimeError('SERVER_OPS_TASK_START_TIMEOUT', '远程任务启动超时'))
+      }, TASK_LIFECYCLE_TIMEOUT_MS)
+      this.pendingTaskStarts.set(input.taskId, { session, resolve, reject, timeout })
+      try { this.port!.postMessage({ type: 'server-ops.task-start', input }) } catch {
+        clearTimeout(timeout); this.pendingTaskStarts.delete(input.taskId)
+        reject(new ServerOpsRuntimeError('SERVER_OPS_TASK_START_FAILED', '远程任务启动消息发送失败'))
+      }
+    })
+    return this.taskIdentity(input)
+  }
+
+  /** 关闭 Task 并等待 utility 的精确 exit 确认。 */
+  async stopTask(input: ServerOpsTaskIdentity): Promise<void> {
+    const pending = this.pendingTaskStarts.get(input.taskId)
+    if (pending && this.sameTask(pending.session, input)) {
+      clearTimeout(pending.timeout); this.pendingTaskStarts.delete(input.taskId)
+      pending.reject(new ServerOpsRuntimeError('SERVER_OPS_TASK_CANCELLED', '远程任务启动已取消'))
+      try { this.port?.postMessage({ type: 'server-ops.task-stop', input }) } catch { this.stop() }
+      this.notifyTaskExit({ ...input, message: '远程任务启动已取消，远程结果未知' })
+      return
+    }
+    const active = this.activeTasks.get(input.taskId)
+    if (!active || !this.sameTask(active, input)) return
+    const existing = this.pendingTaskCloses.get(input.taskId)
+    if (existing) return await existing.promise
+    /** 当前关闭单飞 Promise 供重复关闭调用复用。 */
+    let resolveClose!: () => void
+    let rejectClose!: (error: ServerOpsRuntimeError) => void
+    const promise = new Promise<void>((resolve, reject) => { resolveClose = resolve; rejectClose = reject })
+    const timeout = setTimeout(() => {
+      this.pendingTaskCloses.delete(input.taskId)
+      this.activeTasks.delete(input.taskId)
+      this.notifyTaskExit({ ...input, message: '远程任务关闭确认超时，远程结果未知' })
+      // 未确认 channel 关闭时释放整条连接，避免信任门禁释放后仍有失管任务。
+      try { this.disconnect(input.hostId, input.connectionId) } catch { this.stop() }
+      rejectClose(new ServerOpsRuntimeError('SERVER_OPS_TASK_CLOSE_TIMEOUT', '远程任务关闭超时'))
+    }, TASK_LIFECYCLE_TIMEOUT_MS)
+    this.pendingTaskCloses.set(input.taskId, {
+      session: { ...input }, promise, resolve: resolveClose, reject: rejectClose, timeout,
+    })
+    try { this.port?.postMessage({ type: 'server-ops.task-stop', input }) } catch {
+      clearTimeout(timeout); this.pendingTaskCloses.delete(input.taskId); this.activeTasks.delete(input.taskId)
+      this.notifyTaskExit({ ...input, message: '远程任务关闭消息发送失败，远程结果未知' })
+      this.stop()
+      rejectClose(new ServerOpsRuntimeError('SERVER_OPS_TASK_CLOSE_FAILED', '远程任务关闭消息发送失败'))
+    }
+    return await promise
+  }
+
+  inputTask(input: ServerOpsTaskInput): void { if (this.matchesActiveTask(input)) this.port?.postMessage({ type: 'server-ops.task-input', input }) }
+  resizeTask(input: ServerOpsTaskResizeInput): void { if (this.matchesActiveTask(input)) this.port?.postMessage({ type: 'server-ops.task-resize', input }) }
+  acknowledgeTask(input: ServerOpsTaskAck): void { if (this.matchesActiveTask(input)) this.port?.postMessage({ type: 'server-ops.task-ack', input }) }
+  onTaskOutput(listener: (event: ServerOpsTaskOutputEvent) => void): () => void { this.taskOutputListeners.add(listener); return () => this.taskOutputListeners.delete(listener) }
+  onTaskExit(listener: (event: ServerOpsTaskExitEvent) => void): () => void { this.taskExitListeners.add(listener); return () => this.taskExitListeners.delete(listener) }
+
   /** 启动绑定完整身份的独立 Docker Console channel。 */
   async startConsole(input: ServerOpsConsoleRuntimeStart): Promise<void> {
     if (this.activeConnections.get(input.connectionId) !== input.hostId || this.activeConsoles.has(input.consoleId)
@@ -756,6 +847,7 @@ export class ServerOpsRuntimeClient {
     this.rejectPendingRedisCommands()
     this.rejectPendingLogStarts(new ServerOpsRuntimeError('SERVER_OPS_RUNTIME_STOPPED', 'SSH 运行时已停止'))
     this.finishAllLogStreams('error', 'SERVER_OPS_RUNTIME_STOPPED')
+    this.finishAllTasks(new ServerOpsRuntimeError('SERVER_OPS_RUNTIME_STOPPED', 'SSH 运行时已停止'))
     this.finishAllConsoles(new ServerOpsRuntimeError('SERVER_OPS_RUNTIME_STOPPED', 'SSH 运行时已停止'))
     this.emitRuntimeExit('SSH 运行时已停止')
     this.stopping = false
@@ -967,6 +1059,39 @@ export class ServerOpsRuntimeClient {
       pending.resolve()
       return
     }
+    if (message.type === 'server-ops.task-started') {
+      const pending = this.pendingTaskStarts.get(message.session.taskId)
+      if (!pending || !this.sameTask(pending.session, message.session)
+        || this.activeConnections.get(message.session.connectionId) !== message.session.hostId) {
+        this.port?.postMessage({ type: 'server-ops.task-stop', input: message.session }); return
+      }
+      clearTimeout(pending.timeout)
+      this.pendingTaskStarts.delete(message.session.taskId)
+      this.activeTasks.set(message.session.taskId, { ...message.session })
+      pending.resolve()
+      return
+    }
+    if (message.type === 'server-ops.task-output') {
+      if (!this.matchesActiveTask(message.event)) return
+      this.notifyTaskOutput(message.event)
+      return
+    }
+    if (message.type === 'server-ops.task-exit') {
+      const pendingStart = this.pendingTaskStarts.get(message.event.taskId)
+      if (pendingStart && this.sameTask(pendingStart.session, message.event)) {
+        clearTimeout(pendingStart.timeout); this.pendingTaskStarts.delete(message.event.taskId)
+        pendingStart.reject(new ServerOpsRuntimeError('SERVER_OPS_TASK_START_FAILED', '远程任务无法启动'))
+        this.notifyTaskExit(message.event)
+        return
+      }
+      const active = this.activeTasks.get(message.event.taskId)
+      if (!active || !this.sameTask(active, message.event)) return
+      this.activeTasks.delete(message.event.taskId)
+      const pendingClose = this.pendingTaskCloses.get(message.event.taskId)
+      if (pendingClose) { clearTimeout(pendingClose.timeout); this.pendingTaskCloses.delete(message.event.taskId); pendingClose.resolve() }
+      this.notifyTaskExit(message.event)
+      return
+    }
     if (message.type === 'server-ops.console-started') {
       const pending = this.pendingConsoleStarts.get(message.session.consoleId)
       if (!pending || !this.sameConsole(pending.session, message.session)
@@ -1031,6 +1156,8 @@ export class ServerOpsRuntimeClient {
       this.forgetSftpConnection(message.event.connectionId)
       this.rejectPendingLogStartsForConnection(message.event.hostId, message.event.connectionId, new ServerOpsRuntimeError('SERVER_OPS_CONNECTION_CLOSED', 'SSH 连接已断开'))
       this.finishLogStreamsForConnection(message.event.hostId, message.event.connectionId, 'connection-closed')
+      this.finishTasksForConnection(message.event.hostId, message.event.connectionId,
+        new ServerOpsRuntimeError('SERVER_OPS_CONNECTION_CLOSED', 'SSH 连接已断开'))
       this.finishConsolesForConnection(message.event.hostId, message.event.connectionId,
         new ServerOpsRuntimeError('SERVER_OPS_CONNECTION_CLOSED', 'SSH 连接已断开'))
       this.activeConnections.delete(message.event.connectionId)
@@ -1088,6 +1215,7 @@ export class ServerOpsRuntimeClient {
     this.rejectPendingRedisCommands()
     this.rejectPendingLogStarts(error)
     this.finishAllLogStreams('error', error.code)
+    this.finishAllTasks(error)
     this.finishAllConsoles(error)
     this.emitRuntimeExit(error.message)
   }
@@ -1116,6 +1244,43 @@ export class ServerOpsRuntimeClient {
   /** runtime 整体失联前将所有仍有远端资源的 owner 标记为不可确认。 */
   private markAllSftpOwnersUnconfirmed(): void {
     for (const ownerKey of this.sftpOwners.keys()) this.unconfirmedSftpOwners.add(ownerKey)
+  }
+
+  private taskIdentity(input: ServerOpsTaskIdentity): ServerOpsTaskIdentity {
+    return { taskId: input.taskId, hostId: input.hostId, connectionId: input.connectionId }
+  }
+
+  private sameTask(left: ServerOpsTaskIdentity, right: ServerOpsTaskIdentity): boolean {
+    return left.taskId === right.taskId && left.hostId === right.hostId && left.connectionId === right.connectionId
+  }
+
+  private matchesActiveTask(input: ServerOpsTaskIdentity): boolean {
+    const active = this.activeTasks.get(input.taskId)
+    return Boolean(active && this.sameTask(active, input) && this.activeConnections.get(input.connectionId) === input.hostId)
+  }
+
+  private finishTasksForConnection(hostId: string, connectionId: string, error: ServerOpsRuntimeError): void {
+    for (const [taskId, pending] of this.pendingTaskStarts) {
+      if (pending.session.hostId !== hostId || pending.session.connectionId !== connectionId) continue
+      clearTimeout(pending.timeout); this.pendingTaskStarts.delete(taskId); pending.reject(error); this.notifyTaskExit({ ...pending.session, message: error.message })
+    }
+    for (const [taskId, active] of this.activeTasks) {
+      if (active.hostId !== hostId || active.connectionId !== connectionId) continue
+      this.activeTasks.delete(taskId)
+      const closing = this.pendingTaskCloses.get(taskId)
+      if (closing) { clearTimeout(closing.timeout); this.pendingTaskCloses.delete(taskId); closing.resolve() }
+      const event = { ...active, message: error.message }
+      this.notifyTaskExit(event)
+    }
+  }
+
+  private finishAllTasks(error: ServerOpsRuntimeError): void {
+    const connections = new Set([...this.pendingTaskStarts.values(), ...this.activeTasks.values()]
+      .map((entry) => 'session' in entry ? `${entry.session.hostId}\0${entry.session.connectionId}` : `${entry.hostId}\0${entry.connectionId}`))
+    for (const connection of connections) {
+      const [hostId, connectionId] = connection.split('\0')
+      if (hostId && connectionId) this.finishTasksForConnection(hostId, connectionId, error)
+    }
   }
 
   private consoleIdentity(input: ServerOpsConsoleIdentity): ServerOpsConsoleIdentity {
@@ -1295,6 +1460,13 @@ export class ServerOpsRuntimeClient {
     }
   }
 
+  /** 隔离 Task 输出订阅者异常。 */
+  private notifyTaskOutput(event: ServerOpsTaskOutputEvent): void {
+    for (const listener of this.taskOutputListeners) {
+      try { listener({ ...event }) } catch { /* 单个订阅者无权阻断其它消费者。 */ }
+    }
+  }
+
   /** 隔离 Console 输出订阅者异常。 */
   private notifyConsoleOutput(event: ServerOpsConsoleOutputEvent): void {
     for (const listener of this.consoleOutputListeners) {
@@ -1303,6 +1475,12 @@ export class ServerOpsRuntimeClient {
   }
 
   /** 隔离 Console 终态订阅者异常。 */
+  private notifyTaskExit(event: ServerOpsTaskExitEvent): void {
+    for (const listener of this.taskExitListeners) {
+      try { listener({ ...event }) } catch { /* 单个订阅者无权阻断资源收口。 */ }
+    }
+  }
+
   private notifyConsoleExit(event: ServerOpsConsoleExitEvent): void {
     for (const listener of this.consoleExitListeners) {
       try { listener({ ...event }) } catch { /* 单个订阅者无权阻断资源收口。 */ }

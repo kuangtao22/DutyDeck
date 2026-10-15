@@ -353,7 +353,11 @@ export function mergeAgentRunFileChangesSnapshot(
     ...existing, runId: snapshot.runId, startedAt: snapshot.startedAt,
     endedAt: snapshot.endedAt ?? existing?.endedAt,
     observed: existing?.observed ?? false,
-    paths: mergeTurnFilePaths(existing?.paths ?? [], snapshot.files.map(file => file.path), caseInsensitive),
+    // 终态快照是经过主进程核验后的唯一文件集合；运行中快照仍保留监听候选，
+    // 让正在流式执行的消息不会因异步采集而提前消失。
+    paths: snapshot.endedAt !== undefined
+      ? snapshot.files.map(file => file.path)
+      : mergeTurnFilePaths(existing?.paths ?? [], snapshot.files.map(file => file.path), caseInsensitive),
     files: snapshot.files, revision: snapshot.revision,
     hasUnattributedChanges: existing?.hasUnattributedChanges === true || snapshot.hasUnattributedChanges === true,
   }

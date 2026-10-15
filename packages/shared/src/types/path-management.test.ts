@@ -13,6 +13,7 @@ describe('isDataRootLocatorFile', () => {
         id: 'migration-1',
         sourceRoot,
         targetRoot,
+        origin: 'default-root-upgrade',
         stage: 'copying',
         completedBytes: 1,
         totalBytes: 2,
@@ -40,6 +41,15 @@ describe('isDataRootLocatorFile', () => {
       { version: 1, activeRoot: targetRoot, postCommitCleanup: { migrationId: 'migration-1', targetRoot: 'relative' } },
       { version: 1, activeRoot: targetRoot, postCommitCleanup: { migrationId: 'migration-1', targetRoot: sourceRoot } },
       { version: 1, activeRoot: targetRoot, postCommitCleanup: { migrationId: 'migration-1', targetRoot, error: '' } },
+      { version: 1, activeRoot: targetRoot, defaultMigrationDismissed: 'yes' },
+      {
+        version: 1,
+        activeRoot: sourceRoot,
+        migration: {
+          id: 'migration-1', sourceRoot, targetRoot, origin: 'other', stage: 'copying', completedBytes: 0,
+          totalBytes: 1, startedAt: 1, updatedAt: 1,
+        },
+      },
       {
         version: 1,
         activeRoot: sourceRoot,
@@ -75,4 +85,25 @@ describe('workspace path management contract', () => {
       WORKSPACE_RELOCATION_PROGRESS: 'path-management:workspace-relocation-progress',
     })
   })
+})
+
+test('Given 默认移动请求 When 校验 Then 必须绑定活动源与完整物理身份且不能混有复制计划', () => {
+  /** 默认移动恢复依赖源身份而非仅靠目录名字推断。 */
+  const locator = { version: 1, activeRoot: '/home/.proma', defaultRootMoveRequest: {
+    sourceRoot: '/home/.proma', targetRoot: '/home/.DutyDeck', dev: '1', ino: '42',
+  } }
+  expect(isDataRootLocatorFile(locator)).toBe(true)
+  expect(isDataRootLocatorFile({ ...locator, defaultRootMoveRequest: { ...locator.defaultRootMoveRequest, ino: '' } })).toBe(false)
+  expect(isDataRootLocatorFile({ ...locator, activeRoot: '/other' })).toBe(false)
+  expect(isDataRootLocatorFile({ ...locator, postCommitCleanup: { migrationId: 'm', targetRoot: '/home/.proma' } })).toBe(false)
+})
+
+
+test('Given 历史根别名 When 校验 locator Then 只接受去重的绝对路径列表', () => {
+  /** 别名仅描述历史位置，不增加读取授权。 */
+  const base = { version: 1, activeRoot: '/data/current' }
+  expect(isDataRootLocatorFile({ ...base, historicalRoots: ['/data/old', 'D:\\older'] })).toBe(true)
+  for (const historicalRoots of ['not-array', [null], ['relative'], ['/data/old', '/data/old'], ['dutydeck-data:/old']]) {
+    expect(isDataRootLocatorFile({ ...base, historicalRoots })).toBe(false)
+  }
 })

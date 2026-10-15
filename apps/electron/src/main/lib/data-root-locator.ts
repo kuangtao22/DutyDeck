@@ -1,5 +1,5 @@
 import { accessSync, constants, existsSync, lstatSync, mkdirSync } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { isDataRootLocatorFile } from '@proma/shared'
 import type {
   DataRootLocatorFile,
@@ -10,6 +10,15 @@ import type {
 } from '@proma/shared'
 import { readJsonFileSafe, writeJsonFileAtomic } from './safe-file'
 
+/** 当前版本默认使用的用户级数据目录名称。项目内的 `.proma` 目录不受此常量影响。 */
+export const DEFAULT_DATA_ROOT_DIRECTORY_NAME = '.DutyDeck'
+/** 上一版本用户级默认数据目录名称，仅用于升级检测。 */
+export const LEGACY_DEFAULT_DATA_ROOT_DIRECTORY_NAME = '.proma'
+/** 当前 DutyDeck 使用的固定 locator 文件名，与旧 Proma 的 locator 隔离。 */
+export const DATA_ROOT_LOCATOR_FILE_NAME = '.DutyDeck-location.json'
+/** 旧 Proma 使用的 locator 文件名，仅在当前 locator 缺失时读取。 */
+export const LEGACY_DATA_ROOT_LOCATOR_FILE_NAME = '.proma-location.json'
+
 /** 固定定位器初始化参数。 */
 export interface DataRootLocatorOptions {
   /** 用户 home 目录，用于固定定位文件和默认数据根。 */
@@ -18,7 +27,7 @@ export interface DataRootLocatorOptions {
 
 /** 获取活动数据根时允许的显式副作用。 */
 export interface RequireActiveRootOptions {
-  /** 仅当定位文件缺失且默认根不存在时，允许创建默认根。 */
+  /** 仅当定位文件缺失或已明确取消默认迁移时，允许创建默认根。 */
   createDefault?: boolean
 }
 
@@ -50,11 +59,13 @@ export interface DataRootMigrationBaselineUpdate {
 }
 
 /**
- * 管理固定 `~/.proma-location.json`，让开发版与正式版解析同一个业务数据根。
+ * 管理 DutyDeck 固定 locator，并在首次升级时兼容读取旧 Proma locator。
  */
 export class DataRootLocator {
   /** 固定定位文件的绝对路径。 */
   private readonly locatorPath: string
+  /** 旧 Proma locator 的绝对路径，只读兼容，不作为 DutyDeck 写入口。 */
+  private readonly legacyLocatorPath: string
   /** 未配置自定义根时使用的默认绝对路径。 */
   private readonly defaultRoot: string
   /** 首次解析后复用的结果，写入成功时会被刷新。 */
@@ -70,17 +81,57 @@ export class DataRootLocator {
       throw new Error('homeDir 必须是绝对路径')
     }
 
-    this.locatorPath = join(resolve(options.homeDir), '.proma-location.json')
-    this.defaultRoot = join(resolve(options.homeDir), '.proma')
+    const homeDir = resolve(options.homeDir)
+    this.locatorPath = join(homeDir, DATA_ROOT_LOCATOR_FILE_NAME)
+    this.legacyLocatorPath = join(homeDir, LEGACY_DATA_ROOT_LOCATOR_FILE_NAME)
+    this.defaultRoot = join(homeDir, DEFAULT_DATA_ROOT_DIRECTORY_NAME)
   }
 
   /**
    * 返回位于数据根之外的固定定位文件路径。
    *
-   * @returns `homeDir/.proma-location.json` 的绝对路径。
+   * @returns `homeDir/.DutyDeck-location.json` 的绝对路径。
    */
   getLocatorPath(): string {
     return this.locatorPath
+  }
+
+  /**
+   * 返回旧 Proma locator 的只读兼容路径。
+   *
+   * @returns `homeDir/.proma-location.json` 的绝对路径。
+   */
+  getLegacyLocatorPath(): string {
+    return this.legacyLocatorPath
+  }
+
+  /**
+   * 返回当前版本未配置自定义根时使用的默认数据根。
+   *
+   * @returns `homeDir/.DutyDeck` 的绝对路径。
+   */
+  getDefaultRoot(): string {
+    return this.defaultRoot
+  }
+
+  /**
+   * 返回上一版本固定默认根，仅供升级迁移检测使用。
+   *
+   * @returns `homeDir/.proma` 的绝对路径。
+   */
+  getLegacyDefaultRoot(): string {
+    return join(dirname(this.locatorPath), LEGACY_DEFAULT_DATA_ROOT_DIRECTORY_NAME)
+  }
+
+  /** 返回历史引用可识别的数据根名称；仅用于映射到当前根，不授予旧目录读取权限。 */
+  getHistoricalRoots(): string[] {
+    /** 从已校验的定位器快照读取别名，不访问历史目录。 */
+    const locatorFile = this.inspect().locatorFile
+    return [...new Set([
+      this.getLegacyDefaultRoot(), this.defaultRoot,
+      ...(locatorFile?.previousRoot ? [locatorFile.previousRoot] : []),
+      ...(locatorFile?.historicalRoots ?? []),
+    ])]
   }
 
   /**
@@ -93,13 +144,17 @@ export class DataRootLocator {
       return this.cachedResult
     }
 
-    if (!this.hasLocatorCandidates()) {
+    const hasPrimaryLocator = this.hasLocatorCandidates(this.locatorPath)
+    const hasLegacyLocator = this.hasLocatorCandidates(this.legacyLocatorPath)
+    if (!hasPrimaryLocator && !hasLegacyLocator) {
       this.cachedResult = this.createResultForRoot(this.defaultRoot, undefined, true)
       return this.cachedResult
     }
 
-    /** safe-file 会依次尝试主文件、临时文件和备份文件。 */
-    const rawLocatorFile = readJsonFileSafe(this.locatorPath, { validate: isDataRootLocatorFile })
+    /** 主 locator 存在时不回退旧文件，避免损坏的新状态被旧状态遮盖。 */
+    const locatorPath = hasPrimaryLocator ? this.locatorPath : this.legacyLocatorPath
+    /** safe-file 会依次尝试选中 locator 的主文件、临时文件和备份文件。 */
+    const rawLocatorFile = readJsonFileSafe(locatorPath, { validate: isDataRootLocatorFile })
     if (rawLocatorFile === null) {
       this.cachedResult = {
         status: 'invalid',
@@ -124,12 +179,15 @@ export class DataRootLocator {
     const result = this.inspect()
     /** invalid 状态为 null，其余可用状态必须收窄为绝对路径。 */
     const activeRoot = result.state.activeRoot
-    /** 仅无定位文件时解析出的默认路径拥有自动创建权限。 */
-    const usesImplicitDefault = result.locatorFile === undefined && activeRoot === this.defaultRoot
+    if (result.locatorFile?.defaultRootMoveRequest) throw new Error('默认数据根移动尚未完成，请重启恢复')
+    /** 无 locator 或用户明确取消默认迁移后，固定默认根拥有自动创建权限。 */
+    const usesControlledDefault = activeRoot === this.defaultRoot
+      && (result.locatorFile === undefined || result.locatorFile.defaultMigrationDismissed === true)
 
-    if (result.status === 'ready' && result.state.availability === 'missing' && usesImplicitDefault && options.createDefault) {
+    if (result.status === 'ready' && result.state.availability === 'missing' && usesControlledDefault && options.createDefault) {
       mkdirSync(this.defaultRoot, { recursive: true })
-      this.cachedResult = this.createResultForRoot(this.defaultRoot, undefined, true)
+      // 按需创建目录不能把已持久化的历史别名或拒绝标记从缓存丢弃。
+      this.cachedResult = this.createResultForRoot(this.defaultRoot, result.locatorFile, result.locatorFile === undefined)
       return this.defaultRoot
     }
 
@@ -170,7 +228,7 @@ export class DataRootLocator {
     const result = this.inspect()
     const activeRoot = result.state.activeRoot
     if (activeRoot === null || result.state.availability !== 'available') throw new Error('当前活动数据根不可用')
-    if (result.locatorFile?.migration !== undefined) throw new Error('已有数据根迁移正在进行')
+    if (result.locatorFile?.migration !== undefined || result.locatorFile?.defaultRootMoveRequest !== undefined) throw new Error('已有数据根迁移正在进行')
     if (result.locatorFile?.postCommitCleanup !== undefined) throw new Error('上一次数据根迁移尚未完成清理')
     if (migration.sourceRoot !== activeRoot) throw new Error('迁移源根必须是当前活动数据根')
     if (migration.stage !== 'pending' || migration.completedBytes !== 0) throw new Error('新迁移必须从 pending 零进度开始')
@@ -178,6 +236,10 @@ export class DataRootLocator {
       version: 1,
       activeRoot,
       ...(result.locatorFile?.previousRoot === undefined ? {} : { previousRoot: result.locatorFile.previousRoot }),
+      ...(result.locatorFile?.historicalRoots?.length ? { historicalRoots: result.locatorFile.historicalRoots } : {}),
+      ...(result.locatorFile?.defaultMigrationDismissed === undefined
+        ? {}
+        : { defaultMigrationDismissed: result.locatorFile.defaultMigrationDismissed }),
       migration,
     })
   }
@@ -249,7 +311,7 @@ export class DataRootLocator {
   }
 
   /**
-   * 在切换前取消迁移并保留目标副本。
+   * 在切换前取消迁移；普通迁移保留断点，默认目录升级仅在目标尚不存在时切换到空默认根。
    *
    * @param migrationId 当前迁移 ID。
    * @returns 清除迁移记录后的定位状态。
@@ -262,6 +324,19 @@ export class DataRootLocator {
     if (migration.id !== migrationId) throw new Error('迁移 ID 不匹配')
     if (!['pending', 'failed', 'copying'].includes(migration.stage)) throw new Error('当前迁移阶段不能取消')
     const { migration: _migration, ...remaining } = locatorFile
+    if (migration.origin === 'default-root-upgrade') {
+      /** 目标可能只有部分副本；不跟随链接检查所有占用，禁止取消后把未校验内容当作正常数据根。 */
+      if (lstatSync(migration.targetRoot, { throwIfNoEntry: false }) !== undefined) {
+        throw new Error('目标目录已经存在，无法取消并切换到空数据根。原数据根与迁移记录已保留，请继续迁移；若目标被其他文件占用，请先处理冲突。')
+      }
+      /** 自动升级被取消后切换到独立空默认根，旧 Proma 根继续留在原处。 */
+      return this.write({
+        version: 1,
+        activeRoot: migration.targetRoot,
+        defaultMigrationDismissed: true,
+        ...(locatorFile.historicalRoots?.length ? { historicalRoots: locatorFile.historicalRoots } : {}),
+      })
+    }
     return this.write(remaining)
   }
 
@@ -292,10 +367,14 @@ export class DataRootLocator {
       throw new Error('迁移目标根不可用')
     }
 
+    /** defaults 与新 previousRoot 已能表达的根无需重复持久化；旧自定义根必须累积。 */
+    const historicalRoots = this.getHistoricalRoots().filter((root) => root !== migration.targetRoot
+      && root !== migration.sourceRoot && root !== this.defaultRoot && root !== this.getLegacyDefaultRoot())
     return this.write({
       version: 1,
       activeRoot: migration.targetRoot,
       previousRoot: migration.sourceRoot,
+      ...(historicalRoots.length ? { historicalRoots } : {}),
       postCommitCleanup: {
         migrationId: migration.id,
         targetRoot: migration.targetRoot,
@@ -347,10 +426,10 @@ export class DataRootLocator {
    *
    * @returns 任一候选文件存在时返回 true。
    */
-  private hasLocatorCandidates(): boolean {
-    return existsSync(this.locatorPath)
-      || existsSync(`${this.locatorPath}.tmp`)
-      || existsSync(`${this.locatorPath}.bak`)
+  private hasLocatorCandidates(path: string): boolean {
+    return existsSync(path)
+      || existsSync(`${path}.tmp`)
+      || existsSync(`${path}.bak`)
   }
 
   /**
@@ -373,9 +452,13 @@ export class DataRootLocator {
       ? null
       : toMigrationProgress(locatorFile.migration)
     /** 默认根缺失仍可进入 ready，等待调用方显式创建。 */
-    const status: DataRootLocatorStatus = migration !== null
+    const controlledDefault = activeRoot === this.defaultRoot
+      && (implicitDefault || locatorFile?.defaultMigrationDismissed === true)
+    const status: DataRootLocatorStatus = locatorFile?.defaultRootMoveRequest !== undefined
+      ? 'unavailable'
+      : migration !== null
       ? 'migration'
-      : availability === 'available' || (implicitDefault && availability === 'missing')
+      : availability === 'available' || (controlledDefault && availability === 'missing')
         ? 'ready'
         : 'unavailable'
 

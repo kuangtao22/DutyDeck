@@ -11,6 +11,9 @@ import { basename, dirname, isAbsolute, join, posix, relative, resolve } from 'n
 import type {
   KnowledgeDocumentWriteInput,
   KnowledgeEntry,
+  KnowledgeIndexPreview,
+  KnowledgeIndexRebuildInput,
+  KnowledgeIndexRebuildResult,
   KnowledgeOutline,
   KnowledgeOutlineInput,
   KnowledgeOutlineItem,
@@ -23,6 +26,7 @@ import type {
 import { ensureDirectoryDurable, writeJsonFileAtomic, writeTextFileAtomic } from '../safe-file'
 import { getKnowledgeRoot, validateResolvedProject } from './paths'
 import { containsKnowledgeSecret } from './sensitive-text'
+import { assessKnowledgeAdmission } from './admission'
 import type {
   KnowledgeTransactionCurrent,
   ProjectKnowledgeServiceDependencies,
@@ -47,10 +51,12 @@ const activeRefreshes = new Map<string, Promise<void>>()
 
 /** 资料库流程公开给 service/facade 的最小写接口。 */
 export interface KnowledgeVault {
-  proposePlan(input: KnowledgePlanProposalInput): Promise<void>
+  previewIndex(workspaceId: string): Promise<KnowledgeIndexPreview>
+  rebuildIndex(input: KnowledgeIndexRebuildInput): Promise<KnowledgeIndexRebuildResult>
+  proposePlan(input: KnowledgePlanProposalInput, assertCurrent?: () => void): Promise<void>
   confirmPlan(input: KnowledgePlanConfirmInput): Promise<void>
-  saveOutline(input: KnowledgeOutlineInput): Promise<void>
-  writeDocument(input: KnowledgeDocumentWriteInput): Promise<void>
+  saveOutline(input: KnowledgeOutlineInput, assertCurrent?: () => void): Promise<void>
+  writeDocument(input: KnowledgeDocumentWriteInput, assertCurrent?: () => void): Promise<void>
   pauseWorkflow(input: KnowledgeWorkflowPauseInput): Promise<void>
   refresh(workspaceId: string): Promise<void>
 }
@@ -255,6 +261,31 @@ function renderOutline(projectId: string, plan: KnowledgePlan, outline: Knowledg
   return `${lines.join('\n').trimEnd()}\n`
 }
 
+/** 校验待覆盖索引与已发布版本一致；旧格式只接受可从持久结构逐字重建的内容。 */
+function assertPublishedOutline(projectId: string, plan: KnowledgePlan, outline: KnowledgeOutline | undefined, indexPath: string): void {
+  if (!existsSync(indexPath)) return
+  /** 当前磁盘字节只能参与比较，不能直接成为可信基线。 */
+  const content = readSafeMarkdown(indexPath)
+  if (!outline) throw new Error('资料库索引已存在，拒绝接管')
+  if (outline.publishedContentRevision) {
+    if (sha256(content) === outline.publishedContentRevision) return
+  } else {
+    if (content === renderOutline(projectId, plan, outline)) return
+    if (outline.planRevision < plan.revision && outline.items.length > 0) {
+      /** 旧版扩展只向末尾增加分组，旧大纲引用的最末分组限定可证明的连续前缀。 */
+      const usedGroups = new Set(outline.items.map((item) => item.groupId))
+      /** 持久计划内最后一个仍被旧大纲引用的分组位置。 */
+      const lastUsedIndex = plan.groups.findLastIndex((group) => usedGroups.has(group.id))
+      /** 只允许剔除未被旧大纲引用的末尾新增分组，不猜测标题或分组改名。 */
+      const legacyGroups = plan.groups.slice(0, lastUsedIndex + 1)
+      if (legacyGroups.length < plan.groups.length
+        && [...usedGroups].every((id) => legacyGroups.some((group) => group.id === id))
+        && content === renderOutline(projectId, { ...plan, groups: legacyGroups }, outline)) return
+    }
+  }
+  throw new Error('资料库索引已被人工修改或缺少可验证的发布基线')
+}
+
 /** 检查已有根目录是否为空或确属当前项目资料库。 */
 function assertVaultRootAvailable(project: ResolvedKnowledgeProject, rootRelativePath: string): void {
   const rootPath = resolveSafeProjectPath(project, rootRelativePath, '资料库根目录')
@@ -398,15 +429,18 @@ export function createKnowledgeVault(
   }
 
   /** Agent 只提交待确认计划，不创建用户资料库目录。 */
-  async function proposePlan(input: KnowledgePlanProposalInput): Promise<void> {
+  async function proposePlan(input: KnowledgePlanProposalInput, assertCurrent?: () => void): Promise<void> {
     assertSafePayload(input, '知识库提案', 512 * 1024)
     normalizeRelativePath(input.rootRelativePath, '资料库根目录')
     if (input.groups.length === 0 || new Set(input.groups.map((group) => group.id)).size !== input.groups.length) {
       throw new Error('知识库提案分组非法')
     }
+    assertCurrent?.()
     const project = resolveProject(input.workspaceId)
     if (!store.readManifest(project)) await store.initialize(project, input.workspaceId)
     await store.transact(project, input.workspaceId, (current) => {
+      /** 锁等待后重新核验宿主运行，暂停再继续不能复活旧事务。 */
+      assertCurrent?.()
       recoverPendingJournal(project, current.manifest.vaultCommitId)
       const workflow = currentWorkflow(current)
       const entries = new Map(current.entries.map((entry) => [entry.id, entry]))
@@ -480,12 +514,15 @@ export function createKnowledgeVault(
   }
 
   /** 在已确认自由分组内保存大纲，并生成真实索引 Markdown。 */
-  async function saveOutline(input: KnowledgeOutlineInput): Promise<void> {
+  async function saveOutline(input: KnowledgeOutlineInput, assertCurrent?: () => void): Promise<void> {
     assertSafePayload(input, '知识库大纲', 512 * 1024)
+    assertCurrent?.()
     const project = resolveProject(input.workspaceId)
     let journal: VaultJournal | null = null
     try {
       await store.transact(project, input.workspaceId, (current) => {
+        /** 锁等待后重新核验宿主运行，暂停再继续不能复活旧事务。 */
+        assertCurrent?.()
         recoverPendingJournal(project, current.manifest.vaultCommitId)
         const workflow = currentWorkflow(current)
         if (workflow.paused) throw new Error('知识库流程已暂停')
@@ -505,6 +542,23 @@ export function createKnowledgeVault(
             throw new Error('大纲文档路径非法或重复')
           }
           paths.add(relativePath)
+          /** 按项依赖只接受已登记、当前且未排除的原始来源。 */
+          if (item.dependencyState !== undefined && !['known', 'unknown'].includes(item.dependencyState)) throw new Error('大纲依赖状态非法')
+          if (item.sources !== undefined && (!Array.isArray(item.sources) || item.sources.length > 8)) throw new Error('大纲来源依赖非法')
+          const sourceIds = new Set<string>()
+          for (const source of item.sources ?? []) {
+            const entry = current.entries.find((candidate) => candidate.id === source.entryId)
+            if (!entry || entry.revision !== source.revision || entry.document) throw new Error('大纲来源依赖版本或身份非法')
+            if (entry.state === 'archived' || entry.freshness === 'unavailable'
+              || (current.manifest.excludedSources ?? []).includes(entry.source.id)) throw new Error('大纲来源依赖已排除或不可用')
+            if (sourceIds.has(source.entryId)) throw new Error('大纲来源依赖重复')
+            sourceIds.add(source.entryId)
+          }
+          if (item.userEvidenceIds !== undefined && (!Array.isArray(item.userEvidenceIds) || item.userEvidenceIds.length > 8)) throw new Error('大纲用户证据依赖非法')
+          for (const identity of item.userEvidenceIds ?? []) {
+            if (!workflow.execution?.userEvidence.some((evidence) => evidence.id === identity)) throw new Error('大纲用户证据未经宿主登记')
+          }
+          if (item.dependencyState === 'known' && sourceIds.size === 0 && !item.userEvidenceIds?.length) throw new Error('已确定大纲依赖不能为空')
           return { ...item, relativePath, status: 'pending' }
         })
         /** 已有正文允许在精确大纲版本上重组，但不能从大纲中静默删除。 */
@@ -554,6 +608,7 @@ export function createKnowledgeVault(
             const byteSize = Buffer.byteLength(movedContent, 'utf8')
             const nextEntry = withEntryRevision({
               ...existingEntry,
+              admission: existingEntry.admission && movedContent !== cleanContent ? { ...existingEntry.admission, status: 'invalidated' } : existingEntry.admission,
               title: replacement.title,
               category: group.title,
               summary: replacement.summary,
@@ -585,11 +640,9 @@ export function createKnowledgeVault(
         assertVaultRootAvailable(project, approved.rootRelativePath)
         ensureSafeDirectory(project, approved.rootRelativePath)
         const indexPath = prepareSafeFile(project, approved.rootRelativePath, '索引.md')
-        if (workflow.outline && existsSync(indexPath)) {
-          const expected = renderOutline(project.projectId, approved, workflow.outline)
-          if (readSafeMarkdown(indexPath) !== expected) throw new Error('资料库索引已被人工修改')
-        }
+        assertPublishedOutline(project.projectId, approved, workflow.outline, indexPath)
         const nextIndexContent = renderOutline(project.projectId, approved, outline)
+        outline.publishedContentRevision = sha256(nextIndexContent)
         const journalChanges = new Map<string, Array<string | null>>()
         for (const move of movedDocuments) {
           if (move.oldPath === move.newPath) journalChanges.set(move.oldPath, [move.newDiskContent])
@@ -622,14 +675,18 @@ export function createKnowledgeVault(
   }
 
   /** 在大纲定位内发布正文，并同步索引与不可变历史版本。 */
-  async function writeDocument(input: KnowledgeDocumentWriteInput): Promise<void> {
+  async function writeDocument(input: KnowledgeDocumentWriteInput, assertCurrent?: () => void): Promise<void> {
     assertSafePayload(input.content, '知识库正文')
     assertSafePayload(input.summary, '知识库摘要', 64 * 1024)
     if (input.userEvidence) assertSafePayload(input.userEvidence, '用户原话证据', 64 * 1024)
+    if (input.admission) assertSafePayload(input.admission, '知识内容准入评估', 64 * 1024)
+    assertCurrent?.()
     const project = resolveProject(input.workspaceId)
     let journal: VaultJournal | null = null
     try {
       await store.transact(project, input.workspaceId, (current) => {
+        /** 锁等待后重新核验宿主运行，暂停再继续不能复活旧事务。 */
+        assertCurrent?.()
         recoverPendingJournal(project, current.manifest.vaultCommitId)
         const workflow = currentWorkflow(current)
         if (workflow.paused) throw new Error('知识库流程已暂停')
@@ -657,10 +714,18 @@ export function createKnowledgeVault(
           throw new Error('目标文档已存在，拒绝接管')
         }
         const diskContent = withDocumentIdentity(input.content, { topicKey: item.id, entryId })
+        /** 评估、历史正文和字节统计统一使用实际写盘的正文，避免末尾换行使哈希失效。 */
+        const savedContent = stripDocumentIdentity(diskContent)
         const expectedStatus = input.complete ? 'ready' : 'partial'
         /** 新请求未携带用户原话时保留当前版本证据，避免更新正文时静默丢失。 */
         const userEvidence = input.userEvidence ?? existing?.userEvidence
+        /** 准入只绑定本次正文与已验证证据；旧评估不能背书新正文。 */
+        if (input.admission?.claims?.some((claim) => claim.usesUserEvidence) && !input.userEvidence) {
+          throw new Error('新评估引用用户原话时必须重新提供本次用户证据')
+        }
+        const admission = assessKnowledgeAdmission(input.admission, savedContent, input.evidence, userEvidence)
         if (existing
+          && JSON.stringify(existing.admission) === JSON.stringify(admission)
           && existing.document?.contentRevision === sha256(diskContent)
           && existing.summary === input.summary
           && existing.title === item.title
@@ -671,10 +736,7 @@ export function createKnowledgeVault(
           return {}
         }
         const indexPath = prepareSafeFile(project, approved.rootRelativePath, outline.relativePath)
-        if (existsSync(indexPath)
-          && readSafeMarkdown(indexPath) !== renderOutline(project.projectId, approved, outline)) {
-          throw new Error('资料库索引已被人工修改')
-        }
+        assertPublishedOutline(project.projectId, approved, outline, indexPath)
         const nextOutline: KnowledgeOutline = {
           ...outline,
           revision: outline.revision + 1,
@@ -682,7 +744,7 @@ export function createKnowledgeVault(
             ? { ...candidate, entryId, status: expectedStatus }
             : candidate),
         }
-        const byteSize = Buffer.byteLength(input.content, 'utf8')
+        const byteSize = Buffer.byteLength(savedContent, 'utf8')
         /** source revision 表示本次磁盘正文版本；中文注释明确其不等同于 entry revision。 */
         const sourceRevision = sha256(diskContent)
         const entry = withEntryRevision({
@@ -696,6 +758,7 @@ export function createKnowledgeVault(
           source: { kind: 'managed', id: `vault:${project.projectId}:${item.id}`, revision: sourceRevision },
           evidence: input.evidence,
           userEvidence,
+          admission,
           document: {
             topicKey: item.id,
             groupId: item.groupId,
@@ -710,6 +773,7 @@ export function createKnowledgeVault(
           updatedAt: now(),
         })
         const nextIndexContent = renderOutline(project.projectId, approved, nextOutline)
+        nextOutline.publishedContentRevision = sha256(nextIndexContent)
         const writeJournal = beginJournal(project, [
           { path: documentPath, next: [diskContent] },
           { path: indexPath, next: [nextIndexContent] },
@@ -719,7 +783,7 @@ export function createKnowledgeVault(
         writeTextFileAtomic(indexPath, nextIndexContent)
         return {
           workflow: { ...workflow, outline: nextOutline },
-          commits: [{ entry, content: input.content }],
+          commits: [{ entry, content: savedContent }],
           vaultCommitId: writeJournal.transactionId,
           onCommitted: () => completeJournal(project),
           onAborted: () => { if (journal) rollbackJournal(project, journal) },
@@ -728,6 +792,70 @@ export function createKnowledgeVault(
     } catch (error) {
       throw error
     }
+  }
+
+  /** 只读展示当前文件与生成内容；不恢复日志，不创建目录，也不将磁盘视为可信基线。 */
+  async function previewIndex(workspaceId: string): Promise<KnowledgeIndexPreview> {
+    /** 已校验的当前工作区。 */
+    const project = resolveProject(workspaceId)
+    /** 当前持久流程快照。 */
+    const workflow = store.readManifest(project)?.workflow
+    if (!workflow?.approved || !workflow.outline) throw new Error('知识库尚未建立大纲')
+    if (existsSync(getJournalPath(project))) throw new Error('资料库存在待恢复写入，请先刷新后重试')
+    /** 只读解析的索引路径。 */
+    const indexPath = resolveSafeProjectPath(project, `${workflow.approved.rootRelativePath}/${workflow.outline.relativePath}`, '资料库索引路径')
+    /** 有界读取现有文件，缺失不伪造空正文。 */
+    const currentContent = existsSync(indexPath) ? readSafeMarkdown(indexPath) : null
+    return {
+      planRevision: workflow.approved.revision,
+      outlineRevision: workflow.outline.revision,
+      currentContent,
+      generatedContent: renderOutline(project.projectId, workflow.approved, workflow.outline),
+      currentRevision: currentContent === null ? null : sha256(currentContent),
+    }
+  }
+
+  /** 用户确认差异后重建索引；调用者负责工作区写租约，本层在 Store 锁内复核全部版本。 */
+  async function rebuildIndex(input: KnowledgeIndexRebuildInput): Promise<KnowledgeIndexRebuildResult> {
+    /** 已校验的当前工作区。 */
+    const project = resolveProject(input.workspaceId)
+    /** 仅在旧内容已安全备份后对外返回其位置。 */
+    let backupRelativePath: string | null = null
+    await store.transact(project, input.workspaceId, (current) => {
+      recoverPendingJournal(project, current.manifest.vaultCommitId)
+      /** 锁内的权威流程。 */
+      const workflow = currentWorkflow(current)
+      if (!workflow.approved || workflow.approved.revision !== input.planRevision) throw new Error('已确认计划版本冲突')
+      if (!workflow.outline || workflow.outline.revision !== input.outlineRevision) throw new Error('知识库大纲版本冲突')
+      /** 将要重建的安全索引路径。 */
+      const indexPath = prepareSafeFile(project, workflow.approved.rootRelativePath, workflow.outline.relativePath)
+      /** 与用户实际预览过的版本比较，不能覆盖迟到人工编辑。 */
+      const previous = existsSync(indexPath) ? readSafeMarkdown(indexPath) : null
+      if ((previous === null ? null : sha256(previous)) !== input.expectedContentRevision) throw new Error('索引预览版本已变化，请重新查看差异')
+      /** 重建结果与新发布基线，目录版本只在成功发布后推进。 */
+      const generated = renderOutline(project.projectId, workflow.approved, workflow.outline)
+      if (previous !== null) {
+        /** 原内容备份目录只在内部知识目录中创建，不允许符号链接。 */
+        const backupDirectory = join(getKnowledgeRoot(project), 'index-backups')
+        if (existsSync(backupDirectory)) {
+          if (!lstatSync(backupDirectory).isDirectory() || lstatSync(backupDirectory).isSymbolicLink()) throw new Error('索引备份目录不安全')
+        } else ensureDirectoryDurable(backupDirectory)
+        /** 每次显式恢复使用独立不可覆盖的备份文件名。 */
+        const backupPath = join(backupDirectory, `${randomUUID()}.json`)
+        writeJsonFileAtomic(backupPath, { projectId: project.projectId, content: previous, contentRevision: sha256(previous), createdAt: now() })
+        backupRelativePath = relative(project.projectRoot, backupPath).replaceAll('\\', '/')
+      }
+      /** 同既有正文发布共用的短事务日志。 */
+      const journal = beginJournal(project, [{ path: indexPath, next: [generated] }])
+      writeTextFileAtomic(indexPath, generated)
+      return {
+        workflow: { ...workflow, outline: { ...workflow.outline, revision: workflow.outline.revision + 1, planRevision: workflow.approved.revision, publishedContentRevision: sha256(generated) } },
+        vaultCommitId: journal.transactionId,
+        onCommitted: () => completeJournal(project),
+        onAborted: () => rollbackJournal(project, journal),
+      }
+    })
+    return { backupRelativePath }
   }
 
   /** 用户暂停或继续当前资料库流程。 */
@@ -884,6 +1012,7 @@ export function createKnowledgeVault(
           state: 'draft',
           freshness: 'unverified',
           evidence: undefined,
+          admission: existing?.admission ? { ...existing.admission, status: 'invalidated' } : undefined,
           source: { ...(existing?.source ?? { kind: 'managed' as const, id: `vault:${project.projectId}:${topicKey}` }), revision: contentRevision },
           document: {
             topicKey,
@@ -923,15 +1052,23 @@ export function createKnowledgeVault(
         }
       }
       if (commits.length === 0 && nextOutline === workflow.outline) return {}
-      if (nextOutline) {
-        const indexPath = prepareSafeFile(project, currentApproved.rootRelativePath, nextOutline.relativePath)
-        if (workflow.outline && existsSync(indexPath)
-          && readSafeMarkdown(indexPath) !== renderOutline(project.projectId, currentApproved, workflow.outline)) {
-          throw new Error('资料库索引已被人工修改')
-        }
-        writeTextFileAtomic(indexPath, renderOutline(project.projectId, currentApproved, nextOutline))
+      if (!nextOutline) return { commits, workflow }
+      /** 刷新也必须将索引和 manifest 作为同一可恢复事务发布。 */
+      const indexPath = prepareSafeFile(project, currentApproved.rootRelativePath, nextOutline.relativePath)
+      assertPublishedOutline(project.projectId, currentApproved, workflow.outline, indexPath)
+      /** 此次刷新生成的实际索引，与旧 outline 的发布摘要分离。 */
+      const nextIndexContent = renderOutline(project.projectId, currentApproved, nextOutline)
+      nextOutline = { ...nextOutline, publishedContentRevision: sha256(nextIndexContent) }
+      /** 在可见写入前持久恢复日志，manifest 失败时恢复索引。 */
+      const journal = beginJournal(project, [{ path: indexPath, next: [nextIndexContent] }])
+      writeTextFileAtomic(indexPath, nextIndexContent)
+      return {
+        commits,
+        workflow: { ...workflow, outline: nextOutline },
+        vaultCommitId: journal.transactionId,
+        onCommitted: () => completeJournal(project),
+        onAborted: () => rollbackJournal(project, journal),
       }
-      return { commits, workflow: nextOutline ? { ...workflow, outline: nextOutline } : workflow }
     })
     /** refresh 是显式恢复入口，因此即使原缓存丢失也按最终 manifest 重建。 */
     const indexRevision = refreshedManifest.indexRevision ?? refreshedManifest.revision
@@ -964,7 +1101,7 @@ export function createKnowledgeVault(
     return task
   }
 
-  return { proposePlan, confirmPlan, saveOutline, writeDocument, pauseWorkflow, refresh }
+  return { proposePlan, confirmPlan, saveOutline, writeDocument, pauseWorkflow, refresh, previewIndex, rebuildIndex }
 }
 
 /** 从当前磁盘读取权威资料库正文；来源失效不隐藏仍存在的本地正文。 */

@@ -41,6 +41,8 @@ interface RootPackageMetadata {
 interface PlatformArtifactConfig {
   /** 当前平台的安装包文件名模板。 */
   artifactName?: string
+  /** 自定义签名入口；按需下载引擎时应使用默认签名流程。 */
+  sign?: string
   /** 当前平台需要签名的额外二进制。 */
   binaries?: string[]
 }
@@ -50,6 +52,8 @@ interface ExtraResourceConfig {
   from?: string
   /** 安装包 resources 下的目标目录。 */
   to?: string
+  /** 限制进入安装包的资源文件。 */
+  filter?: string[]
 }
 
 interface ElectronBuilderConfig {
@@ -302,6 +306,19 @@ test('稳定目录 helper 进入三平台资源并纳入 macOS 签名', () => {
     }),
   ]))
   expect(config.mac?.binaries).toContain('resources/stable-directory/stable-directory-helper')
+})
+
+test('Given 引擎按需安装 When 打包应用 Then 仅携带版本信息且使用标准 macOS 签名流程', () => {
+  /** 真实打包配置必须与按需下载的安装职责一致。 */
+  const config = readElectronBuilderConfig()
+  /** 只允许分发引擎描述，避免误带本机下载的二进制或旧清单。 */
+  const engineResources = config.extraResources?.filter((resource) => resource.to === 'local-model-engine')
+  expect(engineResources).toEqual([{
+    from: 'resources/local-model-engine',
+    to: 'local-model-engine',
+    filter: ['engine-version.json', 'LICENSE'],
+  }])
+  expect(config.mac?.sign).toBeUndefined()
 })
 
 test('Windows 构建与发布在打包前执行稳定目录原生回归', () => {

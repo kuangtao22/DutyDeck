@@ -1,3 +1,5 @@
+import { createTokenUsageObserver } from './token-usage-observer'
+import { agentTokenUsageContext } from './token-usage-context'
 import { createAgentRunFileChanges } from './agent-run-file-changes-service'
 import { writeAgentRunFileChanges } from './agent-run-file-change-store'
 /**
@@ -43,6 +45,9 @@ import {
 } from '@proma/shared'
 import type { PromaPermissionMode, AskUserRequest, ExitPlanModeRequest, SDKSystemMessage } from '@proma/shared'
 import type { PiAgentQueryOptions } from './adapters/pi-agent-adapter'
+import { getLocalModelRuntime } from './local-model-runtime-singleton'
+import type { LocalModelLease } from './local-model-runtime'
+import { assertEnabledModelForChannel } from './agent-model-selection'
 import type { GithubCopilotOAuthCredentials } from '@proma/shared'
 import { persistGithubCopilotOAuthCredentials, resolveGithubCopilotOAuthCredentials } from './channel-manager'
 import { getAgentWorkspaceBySlug } from './agent-workspace-manager'
@@ -63,8 +68,9 @@ import { getPersistedAgentMessageReceipt, readPersistedAgentEvidence } from './a
 import { getAgentWorkspace, getProjectFilesPath, getWorkspaceMcpConfig, getWorkspaceAttachedDirectories, getWorkspaceAttachedFiles, getWorkspaceAgentsMdPath, readWorkspaceAgentsMd, getWorkspaceMemoryGuidance, isWorkspaceProjectKnowledgeMaintenanceApproved } from './agent-workspace-manager'
 import { getLocalProjectRootStatus } from './project-root-health'
 import { getMcpApiKeyEnvironment, getMcpOAuthHeaders } from './mcp-oauth-service'
-import { getAgentWorkspacePath, getAgentSessionWorkspacePath, getSdkConfigDir, getWorkspaceSkillsDir } from './config-paths'
+import { getAgentWorkspacePath, getAgentSessionWorkspacePath, getSdkConfigDir, getWorkspaceSkillsDir, getDataRootPathSnapshot } from './config-paths'
 import { getRuntimeStatus } from './runtime-init'
+import { recordTokenUsage } from './token-usage-recorder'
 import { getSettings } from './settings-service'
 import { buildSystemPrompt, buildDynamicContext } from './agent-prompt-builder'
 import { resolveProjectInstructions } from './project-instruction-resolver'
@@ -90,10 +96,15 @@ import { buildPiBuiltinTools } from './adapters/pi-builtin-tools'
 import { createProjectKnowledgeAgent } from './project-knowledge-agent'
 import { buildProjectKnowledgeTools } from './project-knowledge-tools'
 import { getProjectKnowledgeBinding, getProjectKnowledgeService } from './project-knowledge-runtime'
+import type { KnowledgeExecutionRun } from './project-knowledge-execution'
 import { createApiAgentFacade } from './api-workbench/api-agent-facade'
 import { buildApiAgentTools, API_AGENT_TOOL_NAMES } from './api-workbench/api-agent-tools'
 import { getApiWorkbenchService } from './api-workbench/api-workbench-singleton'
 import { buildCapabilityFactoryAgentTools, CAPABILITY_FACTORY_AGENT_TOOL_NAMES, CAPABILITY_FACTORY_AGENT_RUN_TOOL_NAMES } from './capability-factory/capability-factory-agent-tools'
+import { createInteractionDesignAgentAccess } from './interaction-design/agent-access'
+import { createInteractionDesignRun } from './interaction-design/agent-run'
+import { createProductionInteractionDesignAccess } from './interaction-design/integration'
+import { buildInteractionDesignAgentTools, INTERACTION_DESIGN_AGENT_TOOL_NAMES, INTERACTION_DESIGN_AGENT_WRITE_TOOL_NAMES } from './interaction-design/agent-tools'
 import { createCapabilityFactoryAgentFacade } from './capability-factory/capability-factory-agent-facade'
 import { getCapabilityFactoryService } from './capability-factory/capability-factory-singleton'
 import { createCapabilityFactoryAgentAccess } from './capability-factory/capability-factory-agent-access'
@@ -331,6 +342,8 @@ export class AgentOrchestrator {
   private activeSessions = new Map<string, number>()
   /** 当前代际的远端只读调用取消控制器；旧代际收尾不得清除新代际。 */
   private activeRunControllers = new Map<string, AgentRunIdentity>()
+  /** 发布任务只在用户显式停止本轮时取消，正常回复后仍可在运维终端输入。 */
+  private activeServerTaskControllers = new Map<string, { generation: number; controller: AbortController }>()
   private activeSessionStartedAt = new Map<string, number>()
   private nextRunGenerationBySession = new Map<string, number>()
 
@@ -429,7 +442,7 @@ export class AgentOrchestrator {
    *
    * 复用当前 Agent 的 Pi 模型路由；非中止失败统一返回本地兜底标题。
    */
-  async generateTitle(input: AgentGenerateTitleInput, signal?: AbortSignal): Promise<string | null> {
+  async generateTitle(input: AgentGenerateTitleInput, signal?: AbortSignal, usageSessionId?: string): Promise<string | null> {
     const { userMessage, channelId, modelId } = input
     if (signal?.aborted) return null
     console.log('[Agent 标题生成] 开始生成标题:', { channelId, modelId, userMessage: userMessage.slice(0, 50) })
@@ -452,7 +465,7 @@ export class AgentOrchestrator {
     }
 
     // Copilot 的模型额度留给 Agent 正文请求，标题采用稳定的本地摘要。
-    if (channel.provider === 'github-copilot') return fallbackTitle
+    if (channel.provider === 'github-copilot' || channel.provider === 'dutydeck-local') return fallbackTitle
 
     try {
       /** API Key 渠道的运行时密钥；OAuth 渠道保持为空。 */
@@ -474,6 +487,7 @@ export class AgentOrchestrator {
 
       /** Pi 返回的原始可见标题文本。 */
       const generatedTitle = await generatePiTitle({
+        onUsageAttempt: createTokenUsageObserver({ ...agentTokenUsageContext(usageSessionId, 'title'), channelId, channelName: channel.name, modelId, hiddenRetriesPossible: true }, recordTokenUsage),
         channelId,
         channelName: channel.name,
         provider: channel.provider,
@@ -536,7 +550,7 @@ export class AgentOrchestrator {
         updateAgentSessionMeta(sessionId, { explorationTitleInitializedAt })
       }
 
-      const title = await this.generateTitle({ userMessage, channelId, modelId }, signal)
+      const title = await this.generateTitle({ userMessage, channelId, modelId }, signal, sessionId)
         ?? (isFirstExplorationMessage ? createFallbackTitle(userMessage) : null)
       if (!isCurrent()) return
       if (!title || signal?.aborted) return
@@ -803,6 +817,12 @@ export class AgentOrchestrator {
     const streamStartedAt = input.startedAt ?? Date.now()
     let userMessagePersisted = false
     let initialUserMessageUuid: string | undefined
+    /** 知识任务能力绑定本次真实运行，不影响普通聊天终态。 */
+    let knowledgeExecutionRun: KnowledgeExecutionRun | undefined
+    let knowledgeRunFailed = false
+    let knowledgeRunStopped = false
+    /** 只清理本轮创建的原型任务，避免异常结束后一直显示等待生成。 */
+    let interactionRun: ReturnType<typeof createInteractionDesignRun> | undefined
     /** 当前运行消息仍按原顺序落盘，知识维护在本回合工具内完成。 */
     const persistRunSDKMessages = (messages: SDKMessage[], durationMs?: number): void => {
       this.persistSDKMessages(sessionId, messages, durationMs)
@@ -810,8 +830,12 @@ export class AgentOrchestrator {
     let sessionMeta = getAgentSessionMeta(sessionId)
     /** 即使入参非法，也通过单次终态通知器隔离调用方回调异常。 */
     const terminalNotifier = createAgentRunTerminalNotifier<AgentMessage[], AgentRunCompleteOptions>({
-      onError: callbacks.onError,
-      onComplete: callbacks.onComplete,
+      onError: (error) => { knowledgeRunFailed = true; callbacks.onError(error) },
+      onComplete: (messages, opts) => {
+        knowledgeRunStopped ||= Boolean(opts?.stoppedByUser)
+        knowledgeRunFailed ||= Boolean(opts?.resultErrors?.length || (opts?.resultSubtype && /^(error|failed|empty_response)/.test(opts.resultSubtype)))
+        callbacks.onComplete(messages, opts)
+      },
       onCallbackError: (kind, error) => {
         console.error(`[Agent 编排] terminal ${kind} callback 执行失败:`, error)
       },
@@ -858,6 +882,8 @@ export class AgentOrchestrator {
       if (runGeneration === 0) return
       const ownsActiveRun = this.activeSessions.get(sessionId) === runGeneration
       if (ownsActiveRun) {
+        /** 正常释放只摘除取消入口，不中断已交给运维任务服务的命令。 */
+        if (this.activeServerTaskControllers.get(sessionId)?.generation === runGeneration) this.activeServerTaskControllers.delete(sessionId)
         const activeController = this.activeRunControllers.get(sessionId)
         if (activeController && activeController.generation === runGeneration) {
           activeController.abort()
@@ -952,6 +978,9 @@ export class AgentOrchestrator {
       && (getAgentSessionMeta(sessionId)?.toolMode ?? AGENT_DEFAULT_TOOL_MODE) === runToolMode
     ))
     this.activeRunControllers.set(sessionId, runIdentity)
+    /** 独立于工具闭包失效信号，避免正常对话结束误杀等待 sudo 的任务。 */
+    const serverTaskController = new AbortController()
+    this.activeServerTaskControllers.set(sessionId, { generation: runGeneration, controller: serverTaskController })
     this.activeSessions.set(sessionId, runGeneration)
     this.activeSessionStartedAt.set(sessionId, streamStartedAt)
     this.latestRunGenerations.set(sessionId, runGeneration)
@@ -976,6 +1005,16 @@ export class AgentOrchestrator {
         terminalNotifier.onComplete([], { startedAt: streamStartedAt, stoppedByUser: true })
       },
     }, async (checkpoint) => {
+
+    /** 只有已由界面启动并精确排队的控制消息才能获得有界续接。 */
+    if ((rawUserMessage ?? userMessage).startsWith('[knowledge-execution:')) {
+      if (automationContext || (input.triggeredBy && input.triggeredBy !== 'user') || runToolMode !== 'standard') throw new Error('当前运行不能领取知识任务')
+      knowledgeExecutionRun = await getProjectKnowledgeService().claimExecution(sessionId, rawUserMessage ?? userMessage, runGeneration, () => {
+        if (this.activeSessions.get(sessionId) === runGeneration) this.stop(sessionId)
+        else runIdentity.abort()
+      })
+      if (!knowledgeExecutionRun) throw new Error('知识任务消息已过期，请从整理进度继续')
+    }
 
     // 手动重试直接删除原错误，避免它在下一轮完成后仍被历史回放。
     // 删除失败不阻断重试（例如旧版本遗留的无 UUID 错误）。
@@ -1095,7 +1134,9 @@ export class AgentOrchestrator {
     try {
       // 订阅 OAuth 渠道必须保留完整凭据给 Pi runtime，才能在执行中按真实 expires
       // 自动刷新；其余渠道只需解密 API Key。
-      if (channel.provider === 'openai-codex') {
+      if (channel.provider === 'dutydeck-local') {
+        apiKey = ''
+      } else if (channel.provider === 'openai-codex') {
         codexOAuthCredentials = await resolveCodexOAuthCredentials(channelId)
         apiKey = codexOAuthCredentials.access
       } else if (channel.provider === 'github-copilot') {
@@ -1216,6 +1257,8 @@ export class AgentOrchestrator {
     let agentCwd: string | undefined
     let workspaceSlug: string | undefined
     let workspace: import('@proma/shared').AgentWorkspace | undefined
+    /** 本轮独占本地推理资源，直到 adapter 完全收尾后再交给下一任务。 */
+    let localModelLease: LocalModelLease | undefined
 
     try {
       console.log(`[Agent 编排] 启动 Pi runtime — 模型: ${modelId || DEFAULT_MODEL_ID}, resume: ${existingSdkSessionId ?? '无'}`)
@@ -1311,6 +1354,7 @@ export class AgentOrchestrator {
         triggeredBy: input.triggeredBy,
         getSession: getAgentSessionMeta,
         runSignal: runIdentity.signal, assertRunActive: runIdentity.assertActive,
+        taskSignal: serverTaskController.signal,
       }) : undefined
       /** 数据库能力复用真实运行身份；普通会话写入另走单次审批，内部来源不继承权限。 */
       const serverOpsReadFacade = createServerOpsAgentReadFacade({
@@ -1361,6 +1405,14 @@ export class AgentOrchestrator {
         assertWorkspaceWritable: (id) => { if (!getAgentWorkspace(id)) throw new Error('API_AGENT_WORKSPACE_NOT_FOUND'); workspaceOperationGuard.assertWorkspaceWritable(id) },
         runWorkspaceWrite: (id, effect) => workspaceOperationGuard.runWorkspaceWrite(id, effect),
       })
+      /** 原型工具绑定当前主会话，仅生成候选；用户在工作区采纳正式版本。 */
+      const interactionAccess = createInteractionDesignAgentAccess({
+        sessionId, toolMode: runToolMode, triggeredBy: input.triggeredBy, automation: Boolean(automationContext),
+        getSession: getAgentSessionMeta, assertRunActive: runIdentity.assertActive,
+        canWrite: () => getPermissionMode() !== 'plan', createAccess: createProductionInteractionDesignAccess,
+      })
+      if (interactionAccess) interactionRun = createInteractionDesignRun(sessionId, interactionAccess,
+        createProductionInteractionDesignAccess(sessionId, { canWrite: () => getPermissionMode() !== 'plan' }))
       /**
        * 提示词编排工厂：存储按工作区隔离，所以服务按工作区根目录取。
        * 没有工作区（例如临时会话）时不注册工具 —— 工厂是工作区级的模块。
@@ -1386,7 +1438,7 @@ export class AgentOrchestrator {
           const sessionModel = current?.channelId && current.modelId ? { channelId: current.channelId, modelId: current.modelId } : null
           return {
             resolveModels: (definition) => resolveCapabilityFactoryModels(definition, listChannels(), sessionModel),
-            callModel: createCapabilityFactoryModelCall({ listChannels, resolveApiKey: resolveChannelRuntimeApiKey,
+            callModel: createCapabilityFactoryModelCall({ usageContext: () => agentTokenUsageContext(sessionId, 'factory'), listChannels, resolveApiKey: resolveChannelRuntimeApiKey,
               resolveSubscriptionCredentials: resolveCapabilityFactorySubscriptionCredentials,
               resolveProxyUrl: getEffectiveProxyUrl, sessionModel: () => sessionModel }),
           }
@@ -1416,11 +1468,26 @@ export class AgentOrchestrator {
         },
         assertExperimentAdoptable: (sceneId, experimentId, definition) => factoryRuntime.experiments().assertAdoptable(sceneId, experimentId, definition),
         markExposureForRead: (request) => factoryRuntime.experiments().markExposureForRead(request),
+        /** 定点补评由宿主绑定源运行与当前会话，模型不能指定宿主身份。 */
+        diagnoseRun: factoryRuntime.diagnoseRun,
+        retryReview: factoryRuntime.retryReview,
         runBatch: factoryRuntime.runBatch,
         listBatches: (sceneId) => factoryRuntime.batches().list(sceneId),
         getBatch: (sceneId, batchId) => factoryRuntime.batches().get(sceneId, batchId),
         assertAdoptable: (sceneId, batchId) => factoryRuntime.batches().assertAdoptable(sceneId, batchId),
       }) : null
+      /** 在构建系统提示词前读取一次当前工作区的场景摘要，帮助 Agent 沿用已有 sceneId。 */
+      const capabilityFactoryScenes = capabilityFactoryFacade
+        ? (() => {
+            try {
+              return capabilityFactoryFacade.listScenes()
+            } catch (error) {
+              /** 场景摘要只是提示词辅助信息，读取失败不能阻断普通 Agent 回合。 */
+              console.warn('[Agent 编排] 读取编排工厂场景摘要失败，继续运行:', error)
+              return undefined
+            }
+          })()
+        : undefined
       /** 普通前台回合的知识能力；提炼复用当前模型和 Skill，不另起后台模型。 */
       const projectKnowledge = !automationContext ? createProjectKnowledgeAgent({
         sessionId, toolMode: runToolMode, triggeredBy: input.triggeredBy,
@@ -1428,12 +1495,21 @@ export class AgentOrchestrator {
         getBinding: getProjectKnowledgeBinding,
         assertRunActive: runIdentity.assertActive,
         get service() { return getProjectKnowledgeService() },
+        ...(knowledgeExecutionRun ? {
+          onBudget: knowledgeExecutionRun.onBudget,
+          onProgress: knowledgeExecutionRun.onProgress,
+          onItemError: knowledgeExecutionRun.onItemError,
+          onSourceError: knowledgeExecutionRun.onSourceError,
+          beforeSourceRecovery: knowledgeExecutionRun.beforeSourceRecovery,
+          taskUserEvidence: () => getProjectKnowledgeService().getTaskUserEvidence(sessionId),
+        } : {}),
         /** 维护工厂惰性执行，只在普通前台会话通过 Facade 准入后绑定。 */
         ...(initialUserMessageUuid && runWorkspaceSkillsEnabled ? {
           maintenance: () => getProjectKnowledgeService().createAgentMaintenance({
             sessionId, userMessageId: initialUserMessageUuid!,
             assertRunActive: runIdentity.assertActive,
             canMutate: () => getPermissionMode() !== 'plan',
+            execution: knowledgeExecutionRun,
           }),
         } : {}),
       }) : undefined
@@ -1442,6 +1518,13 @@ export class AgentOrchestrator {
         ...(projectKnowledge ? buildProjectKnowledgeTools(piSdk, projectKnowledge) : []),
         ...(apiFacade ? buildApiAgentTools(piSdk, apiFacade) : []),
         ...(capabilityFactoryFacade ? buildCapabilityFactoryAgentTools(piSdk, capabilityFactoryFacade) : []),
+        ...(interactionAccess ? buildInteractionDesignAgentTools({
+          sessionId, sdk: piSdk, execute: (method, request, signal) => interactionRun!.execute(method, request, signal),
+          assertAccess: (write) => {
+            interactionAccess.assertCurrent()
+            if (write && getPermissionMode() === 'plan') throw new Error('计划模式不能修改原型')
+          },
+        }) : []),
       ]
       const collaborationAvailable = builtinMcpResult.collaborationAvailable
 
@@ -1705,7 +1788,7 @@ export class AgentOrchestrator {
 
         /** 知识写工具经过通用参数、次数和扩展守卫，计划模式不会隐式写入。 */
         const knowledgeWriteTools = new Set([
-          'proma_knowledge_submit', 'proma_knowledge_plan', 'proma_knowledge_outline', 'proma_knowledge_document', 'proma_knowledge_asset',
+          'proma_knowledge_submit', 'proma_knowledge_plan', 'proma_knowledge_outline', 'proma_knowledge_document', 'proma_knowledge_asset', 'proma_knowledge_refresh_sources', 'proma_knowledge_scan_sources', 'proma_knowledge_import_sources',
         ])
         if (toolName === 'proma_knowledge_status') {
           if (!projectKnowledge || options.signal.aborted) return { behavior: 'deny', message: '当前运行不能读取项目知识流程' }
@@ -1764,6 +1847,20 @@ export class AgentOrchestrator {
           }
         }
 
+        /** 原型仅有候选与资源写入；正式采纳没有 Agent 工具，计划模式严格只读。 */
+        if (INTERACTION_DESIGN_AGENT_TOOL_NAMES.some((name) => name === toolName)) {
+          if (!interactionAccess) return { behavior: 'deny', message: '当前会话不具备交互设计能力' }
+          try {
+            interactionAccess.assertCurrent()
+            if (INTERACTION_DESIGN_AGENT_WRITE_TOOL_NAMES.some((name) => name === toolName) && currentMode === 'plan') {
+              return { behavior: 'deny', message: '计划模式不能创建原型、资源、候选或验证记录' }
+            }
+            return { behavior: 'allow', updatedInput: input }
+          } catch (error) {
+            return { behavior: 'deny', message: error instanceof Error ? error.message : '原型访问权限已失效' }
+          }
+        }
+
         /** 编排工厂：执行沿用会话权限，写入审批展示宿主签发的真实操作快照。 */
         if (CAPABILITY_FACTORY_AGENT_TOOL_NAMES.some((name) => name === toolName)) {
           if (!capabilityFactoryFacade) return { behavior: 'deny', message: '当前会话不具备编排工厂能力' }
@@ -1810,7 +1907,7 @@ export class AgentOrchestrator {
         }
 
         // 远程命令使用独立窄只读语法。未知或高风险命令在 plan 中拒绝，其他模式也必须逐次审批。
-        if (toolName === 'server_exec' || toolName === 'server_docker_action' || toolName === 'server_files_mutate' || toolName === 'server_disconnect') {
+        if (toolName === 'server_exec' || toolName === 'server_task_start' || toolName === 'server_task_interrupt' || toolName === 'server_docker_action' || toolName === 'server_files_mutate' || toolName === 'server_disconnect') {
           if (!serverOpsFacade) return { behavior: 'deny' as const, message: '当前运行不具备服务器操作能力。' }
           const command = typeof input.command === 'string' ? input.command : ''
           if (toolName === 'server_exec' && isServerOpsReadOnlyCommand(command)) return { behavior: 'allow' as const, updatedInput: input }
@@ -2176,6 +2273,7 @@ export class AgentOrchestrator {
         serverOpsWriteAvailable: Boolean(serverOpsFacade),
         /** 工厂是工作区级能力：能建 facade 就说明这个会话能用它，注入场景设计方法论。 */
         capabilityFactoryAvailable: capabilityFactoryFacade !== null,
+        capabilityFactoryScenes,
         currentModelId: selectedModelId,
         projectInstructions,
         projectKnowledgeMaintenanceApproved,
@@ -2186,7 +2284,9 @@ export class AgentOrchestrator {
         workspaceMemoryRecordAvailable: runToolMode === 'standard' && initialPermissionMode !== 'plan' && Boolean(workspaceSlug) && (!input.triggeredBy || input.triggeredBy === 'user'),
       }) + (automationContext ? `\n\n## 定时任务执行上下文\n\n${automationContext}` : '')
       /** 单次可信运行场景放在通用规则之后，使专用会话覆盖普通入口分流语义。 */
-      const systemPromptAppend = [baseSystemPrompt, extensions.systemPromptAppend]
+      const systemPromptAppend = [baseSystemPrompt,
+        interactionAccess ? '交互设计使用 prototype_* 工具：用户可直接描述要还原的项目页面，Agent 先读取现有原型和当前版本，再从路由、组件、主题和实际素材建立最小源码证据闭包；修改先 begin_job，再 propose 完整候选，由用户在工作区采纳。元素引用是修改上下文，自动保护范围为所属页面。不要用 Write/Edit 直接改 .proma/interaction-design 数据，也不要把结构检查或访问路径记录宣称为视觉一比一验证。详细流程按 interaction-design Skill。' : undefined,
+        extensions.systemPromptAppend]
         .filter((section): section is string => Boolean(section?.trim()))
         .join('\n\n')
       const startAutoTitleGeneration = (): void => {
@@ -2246,7 +2346,7 @@ export class AgentOrchestrator {
       const handleModelResolved = (model: string): void => {
         if (!isLatestRunGeneration(this.latestRunGenerations, sessionId, runGeneration)) return
         // `[1m]` 是 SDK 内部上下文变体，不应泄漏到标题生成或用户可见的模型名。
-        resolvedModel = model.replace(/\[1m\]$/i, '')
+        resolvedModel = channel.provider === 'dutydeck-local' ? selectedModelId : model.replace(/\[1m\]$/i, '')
         console.log(`[Agent 编排] SDK 确认模型: ${resolvedModel}`)
         this.eventBus.emit(sessionId, { kind: 'proma_event', event: { type: 'model_resolved', model: resolvedModel } })
       }
@@ -2267,6 +2367,11 @@ export class AgentOrchestrator {
         : [...piBuiltinTools, ...piMcpTools, ...(extensions.piCustomTools ?? [])]
       /** 运行期间已确认的凭据版本，刷新只能条件替换相同版本，不能覆盖用户换号。 */
       let githubCopilotCredentialsSnapshot = githubCopilotOAuthCredentials
+      if (channel.provider === 'dutydeck-local') {
+        assertEnabledModelForChannel({ channelId, modelId: selectedModelId, purpose: 'Agent' })
+        localModelLease = await getLocalModelRuntime().acquire(selectedModelId, runIdentity.signal)
+        checkpoint()
+      }
       const queryOptions: PiAgentQueryOptions = {
         sessionId,
         toolMode: runToolMode,
@@ -2279,8 +2384,21 @@ export class AgentOrchestrator {
         apiKey,
         baseUrl: channel.baseUrl,
         provider: channel.provider,
+        ...(localModelLease ? { localModelBinding: {
+          assetId: selectedModelId,
+          ...localModelLease.endpoint,
+          contextWindow: localModelLease.contextWindow,
+          maxTokens: localModelLease.maxTokens,
+          engineVersion: getLocalModelRuntime().listSnapshot().runtime.engineVersion ?? '',
+        } } : {}),
         channelId,
         channelName: channel.name,
+        /** 主进程冻结归属，utility 仅传回供应商用量，父任务不再次计量 result。 */
+        onUsageAttempt: createTokenUsageObserver({
+          ...agentTokenUsageContext(sessionId, knowledgeExecutionRun ? 'knowledge' : input.triggeredBy === 'automation' ? 'automation' : input.triggeredBy === 'delegation' ? 'delegation' : 'agent'),
+          channelId: channel.id, channelName: channel.name, modelId: selectedModelId,
+          hiddenRetriesPossible: true,
+        }, (record) => recordTokenUsage({ ...record, modelId: resolvedModel })),
         proxyUrl,
         runtimeEnv,
         ...(maxTurns != null && { maxTurns }),
@@ -2298,6 +2416,7 @@ export class AgentOrchestrator {
         initialUserMessageUuid,
         piAgentDir: getSdkConfigDir(),
         piSessionDir: join(getSdkConfigDir(), 'sessions'),
+        dataRootPaths: getDataRootPathSnapshot(),
         activeToolNames: runToolMode === 'server-ops-read' || runToolMode === 'server-ops-write' ? resolveAgentModeToolNames(runToolMode) : resolvePiActiveToolNames(
           extensions.allowedToolNames,
           extensions.allowedToolNamesMode,
@@ -2970,6 +3089,7 @@ export class AgentOrchestrator {
       failRun(recoveryFailure, getAgentSessionMessages(sessionId), { startedAt: streamStartedAt })
 
     } finally {
+      localModelLease?.release()
       await runFileChanges?.finish()
       /** 旧 run 收尾时若新 generation 已占槽，不得清理新运行的审批状态。 */
       const activeGenerationAtCleanup = this.activeSessions.get(sessionId)
@@ -2984,6 +3104,13 @@ export class AgentOrchestrator {
         exitPlanService.clearSessionPending(sessionId)
       }
     }
+    }).catch((error: unknown) => { knowledgeRunFailed = true; throw error }).finally(async () => {
+      /** 运行结束仅结算本轮任务；归属或写权限变化时保留未知状态，不越权回填。 */
+      try { await interactionRun?.finish(knowledgeRunStopped) }
+      catch (error) { console.error('[交互设计] 保存任务终态失败:', error) }
+      /** 生命周期释放旧槽后再入 deferred queue，不能递归发起 Agent。 */
+      try { await knowledgeExecutionRun?.finish({ failed: knowledgeRunFailed, stopped: knowledgeRunStopped }) }
+      catch (error) { console.error('[知识任务] 保存终态失败:', error) }
     })
     })
   }
@@ -3004,6 +3131,12 @@ export class AgentOrchestrator {
   /** 同步撤销运行身份并等待适配器收尾；失败直接返回给删除调用方。 */
   async stopAndDrain(sessionId: string, stopBeforeRun = false): Promise<void> {
     const runGeneration = this.activeSessions.get(sessionId)
+    /** 显式停止先关闭本轮发起的任务；其它会话及已完成轮次不受影响。 */
+    const taskController = this.activeServerTaskControllers.get(sessionId)
+    if (taskController && taskController.generation === runGeneration) {
+      taskController.controller.abort()
+      this.activeServerTaskControllers.delete(sessionId)
+    }
     const activeController = this.activeRunControllers.get(sessionId)
     if (activeController && activeController.generation === runGeneration) {
       activeController.abort()

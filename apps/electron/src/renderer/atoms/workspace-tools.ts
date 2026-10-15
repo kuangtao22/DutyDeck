@@ -106,9 +106,9 @@ export const consumeWorkspaceToolRequestAtom = atom(
 )
 
 /** 固定工具清单用于共享导航守卫，避免展示与命令校验漂移。 */
-const ALL_WORKSPACE_TOOLS: readonly WorkspaceToolId[] = ['browser', 'files', 'terminal', 'canvas', 'todos', 'calendar', 'automations', 'skills', 'mcp', 'memory', 'vault', 'server-ops', 'api-workbench', 'capability-factory']
+const ALL_WORKSPACE_TOOLS: readonly WorkspaceToolId[] = ['browser', 'files', 'terminal', 'canvas', 'todos', 'calendar', 'automations', 'skills', 'mcp', 'memory', 'vault', 'server-ops', 'api-workbench', 'capability-factory', 'interaction-design']
 /** 这些入口必须拥有 Agent 会话才能维持资源归属。 */
-const SESSION_TOOLS: readonly WorkspaceToolId[] = ['browser', 'files', 'terminal', 'canvas', 'server-ops', 'api-workbench', 'capability-factory']
+const SESSION_TOOLS: readonly WorkspaceToolId[] = ['browser', 'files', 'terminal', 'canvas', 'server-ops', 'api-workbench', 'capability-factory', 'interaction-design']
 /** Chat 继续只提供原有的效率工具与 Obsidian 整页入口。 */
 const CAPABILITY_TOOLS: readonly WorkspaceToolId[] = ['skills', 'mcp', 'memory']
 

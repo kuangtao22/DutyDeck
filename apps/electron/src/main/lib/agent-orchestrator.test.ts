@@ -320,9 +320,28 @@ describe('Agent sendMessage 准入顺序合同', () => {
     expect(sendBody).toContain('createAgentRunTerminalNotifier')
     expect(sendBody).toContain('onError: terminalNotifier.onError')
     expect(sendBody).toContain('onComplete: completeBeforeRun')
-    expect(sendBody).not.toMatch(/callbacks\.on(?:Error|Complete)\(/)
+    /** notifier 的受保护回调包装内允许调用用户回调，其余业务路径仍必须走 notifier。 */
+    const notifierStart = sendBody.indexOf('const terminalNotifier = createAgentRunTerminalNotifier')
+    const notifierEnd = sendBody.indexOf('\n    })', notifierStart) + '\n    })'.length
+    expect(notifierStart).toBeGreaterThan(0)
+    expect(notifierEnd).toBeGreaterThan(notifierStart)
+    expect(sendBody.slice(0, notifierStart) + sendBody.slice(notifierEnd)).not.toMatch(/callbacks\.on(?:Error|Complete)\(/)
     expect(sendBody).toContain('callbacks.onRunStarted?.({')
     expect(sendBody).toContain('userMessageUuid: initialUserMessageUuid')
+  })
+
+  test('Given 独立服务器任务 When 正常释放运行或用户停止 Then 只有显式停止中断本轮任务', () => {
+    /** 任务取消入口与旧工具闭包失效分离；源码边界约束其真实接线。 */
+    const source = readFileSync(join(import.meta.dir, 'agent-orchestrator.ts'), 'utf8')
+    const releaseStart = source.indexOf('const releaseActiveRun =')
+    const release = source.slice(releaseStart, source.indexOf('\n    /** 生命周期完全退出后', releaseStart))
+    expect(release).toContain('activeServerTaskControllers.delete(sessionId)')
+    expect(release).not.toContain('taskController.controller.abort()')
+    expect(source).toContain('taskSignal: serverTaskController.signal')
+    const stopStart = source.indexOf('async stopAndDrain(')
+    const stop = source.slice(stopStart, source.indexOf('await this.adapter.abort(sessionId)', stopStart))
+    expect(stop).toContain('taskController.generation === runGeneration')
+    expect(stop).toContain('taskController.controller.abort()')
   })
 
   test('Given Pi typed-error 与正常 result When 完成运行 Then 只有正常 result 透传可证明的 success subtype', () => {
@@ -418,7 +437,7 @@ describe('Agent sendMessage 准入顺序合同', () => {
     const end = source.indexOf('// 13. 构建 Adapter 查询选项', start)
     const body = source.slice(start, end)
     const policyIndex = body.indexOf("extensions.toolApprovalPolicy?.getMode(toolName, input) === 'automatic'")
-    const serverOpsIndex = body.indexOf("if (toolName === 'server_exec' || toolName === 'server_docker_action' || toolName === 'server_files_mutate' || toolName === 'server_disconnect')")
+    const serverOpsIndex = body.indexOf("if (toolName === 'server_exec' || toolName === 'server_task_start' || toolName === 'server_task_interrupt' || toolName === 'server_docker_action' || toolName === 'server_files_mutate' || toolName === 'server_disconnect')")
 
     expect(policyIndex).toBeGreaterThan(body.indexOf('extensions.singleApprovalToolNames?.includes(toolName)'))
     expect(policyIndex).toBeGreaterThan(serverOpsIndex)
@@ -429,7 +448,7 @@ describe('Agent sendMessage 准入顺序合同', () => {
   test('Given bypass 模式的文件和容器变更 When 进入权限边界 Then 先逐次审批并复核当前运行代次', () => {
     /** 真实编排路径必须在全局 bypass 分支之前处理高权限运维动作。 */
     const source = readFileSync(join(import.meta.dir, 'agent-orchestrator.ts'), 'utf8')
-    const start = source.indexOf("if (toolName === 'server_exec' || toolName === 'server_docker_action' || toolName === 'server_files_mutate' || toolName === 'server_disconnect')")
+    const start = source.indexOf("if (toolName === 'server_exec' || toolName === 'server_task_start' || toolName === 'server_task_interrupt' || toolName === 'server_docker_action' || toolName === 'server_files_mutate' || toolName === 'server_disconnect')")
     const bypass = source.indexOf("case 'bypassPermissions':", start)
     expect(start).toBeGreaterThan(0)
     expect(bypass).toBeGreaterThan(start)

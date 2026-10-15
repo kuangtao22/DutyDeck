@@ -94,7 +94,7 @@ export function KnowledgeFileTree({ entries, outline, query = '', rootRelativePa
           /** 只有宿主返回的实体条目才能提供正文入口。 */
           const readable = Boolean(file.entry)
           /** 等待生成与依据缺失以状态行展示，不制造虚假正文按钮。 */
-          const statusLabel = file.status === 'pending' ? '等待生成' : file.status === 'missing' ? '缺少依据' : file.status === 'partial' ? '部分完成' : undefined
+          const statusLabel = file.status === 'pending' ? '等待生成' : file.status === 'missing' ? '文件已删除' : file.status === 'partial' ? '部分完成' : file.entry?.document ? file.entry.admission?.status === 'eligible' ? '内容达标' : file.entry.admission?.status === 'needs_evidence' ? '待补依据' : file.entry.admission?.status === 'invalidated' ? '评估已失效' : '尚未评估' : undefined
           /** 状态点以颜色辅助辨认，悬浮与无障碍名称提供完整含义。 */
           const statusColor = file.status === 'partial' ? 'bg-amber-500' : file.status === 'missing' ? 'bg-destructive' : 'bg-muted-foreground/50'
           /** 文件名占据行内剩余空间，状态点不挤占窄目录的阅读宽度。 */

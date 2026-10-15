@@ -16,7 +16,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { rebaseDataRootOwnedPaths, rebaseOwnedPath } from './owned-path-rebaser'
+import { rebaseDataRootOwnedPaths, rebaseMovedDataRootOwnedPaths, rebaseOwnedPath } from './owned-path-rebaser'
 import {
   captureDirectoryGuard,
   fsyncParentDirectory,
@@ -268,6 +268,60 @@ describe('rebaseDataRootOwnedPaths', () => {
     targetRoot = join(tempDir, 'target')
     mkdirSync(sourceRoot)
     mkdirSync(targetRoot)
+  })
+
+  test('Given 索引和配置已保存根相对引用 When 执行数据根迁移 Then 引用原字节保持且无需重写', () => {
+    /** 使用真实迁移入口确认新引用不会被错误解释为系统路径。 */
+    const sessionsPath = join(targetRoot, 'agent-sessions.json')
+    const workspacesPath = join(targetRoot, 'agent-workspaces.json')
+    const configPath = join(targetRoot, 'agent-workspaces', 'alpha', 'config.json')
+    mkdirSync(join(targetRoot, 'agent-workspaces', 'alpha'), { recursive: true })
+    writeJson(sessionsPath, { version: 4, sessions: [createSession({
+      piSessionFile: 'dutydeck-data:/sdk-config/sessions/a.jsonl',
+      attachedFiles: ['dutydeck-data:/attachments/a.png'],
+      activeWorktree: { path: 'dutydeck-data:/worktrees/a', mainRepoRoot: 'dutydeck-data:/projects/a', branch: 'main', selectedAt: 1 },
+    })] })
+    writeJson(workspacesPath, { version: 2, workspaces: [createWorkspace({ projectRootPath: 'dutydeck-data:/projects/a' })] })
+    writeJson(configPath, { attachedDirectories: ['dutydeck-data:/directories/a'], worktreeRepos: [{ name: 'a', repoPath: 'dutydeck-data:/projects/a', worktreesPath: 'dutydeck-data:/worktrees' }] })
+    /** 迁移不应修改已具备可移植语义的持久化文件。 */
+    const originals = [sessionsPath, workspacesPath, configPath].map((path) => ({ path, bytes: readFileSync(path) }))
+    const result = rebaseDataRootOwnedPaths({ sourceRoot, targetRoot })
+    expect(result.updatedFiles).toEqual([])
+    for (const { path, bytes } of originals) {
+      expect(readFileSync(path)).toEqual(bytes)
+    }
+  })
+
+  test('Given 数据根已原地移动且源目录消失 When 重写 Then 校验移动身份并更新活动 worktree 与项目根', () => {
+    /** 移动前数据根及其目标路径。 */
+    const movedSource = join(tempDir, 'move-source')
+    const movedTarget = join(tempDir, 'move-target')
+    mkdirSync(movedSource, { recursive: true })
+    writeJson(join(movedSource, 'agent-sessions.json'), {
+      version: 4,
+      sessions: [{
+        id: 's', title: 't', workspaceId: 'w', createdAt: 1, updatedAt: 1,
+        activeWorktree: { path: join(movedSource, 'wt'), mainRepoRoot: join(movedSource, 'repo'), branch: 'main', selectedAt: 1 },
+      }],
+    })
+    writeJson(join(movedSource, 'agent-workspaces.json'), {
+      version: 2,
+      workspaces: [{ id: 'w', name: 'W', slug: 'w', createdAt: 1, updatedAt: 1, projectRootPath: join(movedSource, 'project') }],
+    })
+    const identity = statSync(movedSource)
+    renameSync(movedSource, movedTarget)
+    const result = rebaseMovedDataRootOwnedPaths({
+      sourceRoot: movedSource,
+      targetRoot: movedTarget,
+      sourceIdentity: { dev: String(identity.dev), ino: String(identity.ino) },
+    })
+    expect(result.updatedFiles).toEqual([join(movedTarget, 'agent-sessions.json'), join(movedTarget, 'agent-workspaces.json')])
+    const sessions = readJson(join(movedTarget, 'agent-sessions.json'))
+    expect((sessions.sessions as Array<Record<string, unknown>>)[0]?.activeWorktree).toEqual({
+      path: join(movedTarget, 'wt'), mainRepoRoot: join(movedTarget, 'repo'), branch: 'main', selectedAt: 1,
+    })
+    const workspaces = readJson(join(movedTarget, 'agent-workspaces.json'))
+    expect((workspaces.workspaces as Array<Record<string, unknown>>)[0]?.projectRootPath).toBe(join(movedTarget, 'project'))
   })
 
   afterEach(() => {

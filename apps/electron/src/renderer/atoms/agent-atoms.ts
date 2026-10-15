@@ -13,6 +13,7 @@ import type { AgentSessionMeta, AgentEvent, AgentEventUsage, AgentWorkspace, Age
 import { PROMA_DEFAULT_PERMISSION_MODE } from '@proma/shared'
 import { calculateDockBadgeCount, countPendingRequests } from '@/lib/dock-badge-count'
 import { setBoundedSDKMessageCache } from '@/lib/agent-message-cache-budget'
+import { agentTerminalRunMarkersAtom, isSameOrNewerRun } from '@/lib/agent-active-session-snapshot'
 import type { AgentQueuedMessage } from '@/lib/agent-message-queue'
 import type { SessionFileChange } from '@/lib/session-file-changes'
 import type { AgentRunFileChanges } from '@/lib/agent-run-file-changes'
@@ -774,8 +775,8 @@ export function pruneFileBrowserStateMap<T>(state: Map<string, T>, retainedSessi
  * 工作区级组件：内容归属项目而非单个会话，但在当前会话的右侧工作区中呈现。
  * 同一项目下的打开状态跨会话保留；关闭一个组件不会影响其他项目。
  */
-export type WorkspaceComponentTab = 'todos' | 'calendar' | 'automations' | 'skills' | 'mcp' | 'memory' | 'vault' | 'server-ops' | 'api-workbench' | 'capability-factory'
-export const WORKSPACE_COMPONENT_TABS: readonly WorkspaceComponentTab[] = ['todos', 'calendar', 'automations', 'skills', 'mcp', 'memory', 'vault', 'server-ops', 'api-workbench', 'capability-factory']
+export type WorkspaceComponentTab = 'todos' | 'calendar' | 'automations' | 'skills' | 'mcp' | 'memory' | 'vault' | 'server-ops' | 'api-workbench' | 'capability-factory' | 'interaction-design'
+export const WORKSPACE_COMPONENT_TABS: readonly WorkspaceComponentTab[] = ['todos', 'calendar', 'automations', 'skills', 'mcp', 'memory', 'vault', 'server-ops', 'api-workbench', 'capability-factory', 'interaction-design']
 
 export function isWorkspaceComponentTab(tab: AgentSidePanelTab | string): tab is WorkspaceComponentTab {
   return (WORKSPACE_COMPONENT_TABS as readonly string[]).includes(tab)
@@ -1422,7 +1423,7 @@ export const agentRunningSessionIdsAtom = atom<Set<string>>((get) => {
 })
 
 /** 侧边栏会话指示点状态 */
-export type SessionIndicatorStatus = 'idle' | 'running' | 'blocked' | 'completed'
+export type SessionIndicatorStatus = 'idle' | 'running' | 'blocked' | 'failed' | 'completed'
 
 /** 已完成但用户尚未查看的顶层会话 ID 集合。参与 Dock/Launcher 角标。 */
 export const unviewedCompletedSessionIdsAtom = atom<Set<string>>(new Set<string>())
@@ -1438,6 +1439,11 @@ const delegatedAgentSessionIdsAtom = atom<Set<string>>((get) => new Set(
   get(agentSessionsAtom)
     .filter((session) => !!session.sourceDelegationId)
     .map((session) => session.id),
+))
+
+/** 只在终态记录变化时筛选失败，避免每个流式事件都遍历全部历史成功会话。 */
+const failedAgentTerminalRunsAtom = atom((get) => (
+  Array.from(get(agentTerminalRunMarkersAtom)).filter(([, terminal]) => terminal.failed)
 ))
 
 function getStableIndicatorMap(entries: Array<[string, SessionIndicatorStatus]>): Map<string, SessionIndicatorStatus> {
@@ -1461,7 +1467,7 @@ export const dockBadgeCountAtom = atom<number>((get) => {
 
 /**
  * 每个会话的指示点状态（只包含非 idle 的会话）
- * 优先级：blocked > running > completed > idle
+ * 优先级：blocked > running > failed > completed > idle
  */
 export const agentSessionIndicatorMapAtom = atom<Map<string, SessionIndicatorStatus>>((get) => {
   const streamStates = get(agentStreamingStatesAtom)
@@ -1471,6 +1477,8 @@ export const agentSessionIndicatorMapAtom = atom<Map<string, SessionIndicatorSta
   const pendingExitPlan = get(allPendingExitPlanRequestsAtom)
   const unviewedCompleted = get(unviewedCompletedSessionIdsAtom)
   const unviewedDelegatedCompleted = get(unviewedCompletedDelegatedSessionIdsAtom)
+  /** 终态独立于已读与消息缓存；失败不会被“未查看完成”误判为成功。 */
+  const failedTerminalRuns = get(failedAgentTerminalRunsAtom)
 
   const map = new Map<string, SessionIndicatorStatus>()
 
@@ -1492,6 +1500,15 @@ export const agentSessionIndicatorMapAtom = atom<Map<string, SessionIndicatorSta
     } else {
       map.set(id, 'running')
     }
+  }
+
+  for (const [id, terminal] of failedTerminalRuns) {
+    if (map.has(id)) continue
+    /** 新一轮等待后台任务时，不能重新显示上一轮失败。 */
+    const current = streamStates.get(id)
+    if (current?.backgroundWaiting || (current && isSameOrNewerRun(current, terminal)
+      && !isSameOrNewerRun(terminal, current))) continue
+    map.set(id, 'failed')
   }
 
   for (const id of unviewedCompleted) {

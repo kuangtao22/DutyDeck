@@ -10,6 +10,7 @@ import type {
 } from '@proma/shared'
 import {
   buildKnowledgeGenerationPendingPrompt,
+  dispatchScannedKnowledge,
   buildKnowledgeMaintenancePendingPrompt,
   buildKnowledgePlanAdjustmentPendingPrompt,
   ProjectKnowledgeResourcesView,
@@ -129,6 +130,36 @@ describe('项目知识库 Agent 提炼', () => {
     expect(prompt.message).toContain('无需逐篇等待审批')
   })
 
+  test('Given 已批准范围且没有新提案 When 更新知识库扫描完成 Then 使用宿主执行且续接原任务', async () => {
+    const snapshot = createSnapshot({ workflow: { paused: false, approved: {
+      id: 'approved-1', revision: 7, title: '知识库', rootRelativePath: '知识库', groups: [], createdAt: 1, confirmedAt: 2,
+    } } })
+    let dispatches = 0
+    await dispatchScannedKnowledge(snapshot, async (_createPrompt, isCurrent, sessionMode, execution) => {
+      dispatches += 1
+      expect(isCurrent()).toBe(true)
+      expect(sessionMode).toBe('continue')
+      expect(execution).toEqual({ planRevision: 7 })
+    }, () => true)
+    expect(dispatches).toBe(1)
+  })
+
+  test('Given 仍有待确认提案 When 更新知识库扫描完成 Then 仅派发普通规划而不启动正文执行', async () => {
+    const plan = { id: 'proposal-1', revision: 8, title: '知识库', rootRelativePath: '知识库', groups: [], createdAt: 1 }
+    const snapshot = createSnapshot({ workflow: { paused: false, approved: { ...plan, revision: 7 }, proposal: plan } })
+    await dispatchScannedKnowledge(snapshot, async (createPrompt, _isCurrent, sessionMode, execution) => {
+      expect(sessionMode).toBe('new')
+      expect(execution).toBeUndefined()
+      expect(createPrompt('session-1').message).toContain('不要保存大纲')
+    }, () => true)
+  })
+
+  test('Given 扫描结束前项目已切换 When 尝试提交维护 Then 不派发任务', async () => {
+    let dispatches = 0
+    await dispatchScannedKnowledge(createSnapshot(), async () => { dispatches += 1 }, () => false)
+    expect(dispatches).toBe(0)
+  })
+
   test('Given 用户要求调整清单 When 构造任务 Then 绑定当前版本并要求重新提案而不自动确认', () => {
     const prompt = buildKnowledgePlanAdjustmentPendingPrompt('agent-1', 'plan-1', 2, '合并产品与上线分组，并把根目录改为 docs/handbook')
     expect(prompt).toEqual(expect.objectContaining({ sessionId: 'agent-1', autoSend: true }))
@@ -232,7 +263,11 @@ describe('项目知识库两步工作流', () => {
     expect(html).toContain('2 项已生成')
     expect(html).toContain('1 项部分完成')
     expect(html).toContain('1 项等待生成')
-    expect(html).toContain('1 项缺少依据')
+    expect(html).toContain('1 项文件已删除')
+    expect(html).toContain('未运行')
+    expect(html).toContain('继续处理')
+    expect(html).not.toContain('暂停生成')
+    expect(html).toContain('尚未评估')
     expect(html).toContain('打开发布流程')
     expect(html).toContain('打开首页外文档')
     expect(html).toContain('打开部分文档')
@@ -240,6 +275,40 @@ describe('项目知识库两步工作流', () => {
     expect(html).toContain('缺少依据')
     expect(html).not.toContain('打开产品原则')
     expect(html).not.toContain('打开缺失文档')
+  })
+
+  test.each([
+    ['queued', '等待执行', '暂停生成'], ['running', '正在生成', '暂停生成'],
+    ['paused', '已暂停', '继续处理'], ['blocked', '已阻塞', '继续处理'],
+    ['interrupted', '已中断', '继续处理'], ['finished', '本次处理完成', '继续处理'],
+  ] as const)('Given 宿主状态 %s When 查看进度 Then 展示 %s 和正确控制动作', (status, label, action) => {
+    const workflow = createWorkflow({ proposal: undefined, approved: { ...createWorkflow().proposal!, confirmedAt: 2 }, execution: {
+      id: 'execution-1', generation: 1, sessionId: 'session-1', planRevision: 2, itemIds: [], status,
+      dispatchId: 'dispatch-1', turns: 1, calls: 0, bytes: 0, activeMs: 0, readPages: [], progress: 0,
+      turnStartProgress: 0, failures: {}, userEvidence: [], updatedAt: 1,
+      reason: status === 'blocked' ? 'budget_exhausted' : status === 'interrupted' ? 'process_restarted' : undefined,
+    } })
+    const html = renderToStaticMarkup(<KnowledgeWorkflowPanel workflow={workflow} entries={[]} pendingAction={null} error={null} onConfirm={noop} onPause={noop} onSelectEntryId={noop} onRequestAdjustment={noop} />)
+    expect(html).toContain(label)
+    expect(html).toContain(action)
+    if (status === 'blocked') expect(html).toContain('本段额度已用完')
+    if (status === 'interrupted') { expect(html).toContain('应用重启'); expect(html).not.toContain('process_restarted') }
+    if (status !== 'queued' && status !== 'running') expect(html).not.toContain('暂停生成')
+  })
+
+  test('Given 已保存正文但准入待补依据 When 查看进度 Then 可阅读且明确缺口并可单项重试', () => {
+    const entry = createEntry({ admission: {
+      contentType: 'rule', importance: 'high', purpose: '购买决策', scope: '当前版本',
+      claims: [], coverage: [{ topic: '会员权益', status: 'gap', reason: '月度与永久权益尚未核对' }],
+      issues: ['付费口径冲突'], outcome: 'needs_evidence', ruleVersion: 1,
+      contentHash: 'hash', evidenceHash: 'evidence', status: 'needs_evidence',
+    } })
+    const workflow = createWorkflow({ proposal: undefined, approved: { ...createWorkflow().proposal!, confirmedAt: 2 }, outline: {
+      revision: 1, planRevision: 2, relativePath: '知识库/大纲.md', items: [{ id: 'item-1', groupId: 'group-a', title: '会员规则', relativePath: '规则.md', summary: '指导购买决策', sections: ['适用权益'], gaps: ['尚缺退款规则'], status: 'ready', entryId: entry.id }],
+    } })
+    const html = renderToStaticMarkup(<KnowledgeWorkflowPanel workflow={workflow} entries={[entry]} pendingAction={null} error={null} onConfirm={noop} onPause={noop} onRetryItem={noop} onSelectEntryId={noop} onRequestAdjustment={noop} />)
+    for (const text of ['内容性质：业务规则', '重要程度：重要', '月度与永久权益尚未核对', '已保存 1/1 篇', '待补依据', '付费口径冲突', '指导购买决策', '适用权益', '尚缺退款规则', '仅重试此项', '打开会员规则']) expect(html).toContain(text)
+    expect(html).toContain('内容达标 0 篇')
   })
 
   test('Given proposal 来源仅支持元数据 When 展示覆盖状态 Then 明确标记暂不支持', () => {

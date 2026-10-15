@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-10-11T14:42:54.937Z",
+  "reviewer": "/root/pilot_label_review",
+  "method": "独立Agent逐条阅读原文核对姓名集合，准备者与审查者分离；不是被测模型输出自评，也不是用户人工签署",
+  "reviewed": 30,
+  "passed": 30,
+  "pending": 0,
+  "files": [
+    {
+      "file": "optimization.json",
+      "sha256": "0d5b58018665a1b3f78eb55a8db3227a628ec9508c7604ce5d662571fffda247"
+    },
+    {
+      "file": "validation.json",
+      "sha256": "9a5c1522af5b6230f1aaa770f9babb340e15f33597ff084c4a0792518f69ace9"
+    },
+    {
+      "file": "held-out.json",
+      "sha256": "bbeb0e754daae64a5fd47f51652ede64d44b66badcb6dd2fe4d72ac0758f75fa"
+    }
+  ],
+  "firstPass": {
+    "passed": 25,
+    "pending": 5,
+    "issueCaseIds": [
+      "held-out-01",
+      "held-out-02",
+      "held-out-05",
+      "held-out-08",
+      "held-out-10"
+    ],
+    "issueTypes": [
+      "稳定代称覆盖存在歧义",
+      "多个合法称谓使精确姓名匹配不公平"
+    ]
+  },
+  "resolution": "替换5条片段，逐条复验与全组唯一性、非重叠、逐字证据检查通过",
+  "scope": "name集合；不证明身份、关系、事件穷尽完整，不代表真实模型效果",
+  "exposure": {
+    "leaderSourceExposure": "exposed",
+    "finalHeldOutTextPrintedToLeader": false,
+    "nextOptimizerRequirement": "仅提供优化包的新隔离优化上下文；做不到则标unknown/exposed而非独立留出"
+  }
+}

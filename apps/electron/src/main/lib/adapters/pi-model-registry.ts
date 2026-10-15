@@ -203,6 +203,16 @@ export interface PiModelBuildInput extends CodexModelInput, GithubCopilotModelIn
   baseUrl?: string
   provider: ProviderType
   channelName?: string
+  /** 主进程取得的本地运行时租约快照；utility 进程不得自行创建或管理引擎。 */
+  localModelBinding?: {
+    assetId: string
+    modelId: string
+    baseUrl: string
+    token: string
+    contextWindow: number
+    maxTokens: number
+    engineVersion: string
+  }
 }
 
 /** Pi runtime 使用的 Copilot OAuth 凭据结构。 */
@@ -504,6 +514,7 @@ function normalizePiApi(provider: ProviderType): Api {
     case 'doubao':
     case 'doubao-api':
     case 'qwen':
+    case 'dutydeck-local':
     case 'custom':
       return 'openai-completions'
     case 'openai-responses':
@@ -1136,13 +1147,31 @@ export async function buildModel(sdk: PiSdk, input: PiModelBuildInput) {
     return buildGithubCopilotModel(sdk, input)
   }
   const providerName = `proma-${input.provider}-${input.sessionId}`
-  const resolvedApiKey = resolvePiApiKey(input.provider, input.apiKey)
+  /** 本地模型只接受主进程签发的短期租约，避免 utility 进程重复加载模型。 */
+  if (input.provider === 'dutydeck-local' && !input.localModelBinding) {
+    throw new Error('本地模型缺少主进程运行时租约')
+  }
+  const localBinding = input.provider === 'dutydeck-local' ? input.localModelBinding : undefined
+  if (localBinding && (
+    localBinding.assetId !== input.model
+    || !/^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(localBinding.baseUrl)
+    || !localBinding.token || !localBinding.modelId || !localBinding.engineVersion
+    || !Number.isSafeInteger(localBinding.contextWindow) || localBinding.contextWindow < 256
+    || !Number.isSafeInteger(localBinding.maxTokens) || localBinding.maxTokens < 1
+    || localBinding.maxTokens >= localBinding.contextWindow
+  )) throw new Error('本地模型运行时租约无效')
+  const resolvedApiKey = localBinding?.token ?? resolvePiApiKey(input.provider, input.apiKey)
   // pi runtime 统一剥离历史 `[1m]` 后缀：无论上游从哪条路径传入，注册与查找都用干净 ID。
-  const resolvedModelId = stripLegacyAgentSdkContextSuffix(input.model)
+  const resolvedModelId = localBinding?.modelId ?? stripLegacyAgentSdkContextSuffix(input.model)
   const modelRuntime = await sdk.ModelRuntime.create({ allowModelNetwork: false })
-  const modelDefaults = await resolvePiModelDefaults({ ...input, model: resolvedModelId })
+  /** GGUF 能力只来自本次验证的运行配置，不继承同名云端模型的视觉或推理能力。 */
+  const modelDefaults: PiModelDefaults = localBinding ? {
+    api: 'openai-completions', reasoning: false, input: ['text'], cost: ZERO_MODEL_COST,
+    contextWindow: localBinding.contextWindow, maxTokens: localBinding.maxTokens,
+    compat: { supportsDeveloperRole: false, supportsReasoningEffort: false, supportsStore: false, maxTokensField: 'max_tokens' },
+  } : await resolvePiModelDefaults({ ...input, model: resolvedModelId })
   const api = modelDefaults.api
-  const baseUrl = normalizePiBaseUrl(input.baseUrl, input.provider, api)
+  const baseUrl = normalizePiBaseUrl(localBinding?.baseUrl ?? input.baseUrl, input.provider, api)
   if (!baseUrl) {
     throw new Error(`渠道 ${input.channelName ?? input.provider} 缺少 Base URL`)
   }

@@ -2,13 +2,13 @@ import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { opendir } from 'node:fs/promises'
 import { extname, join, relative } from 'node:path'
-import type { KnowledgeCategory, KnowledgeEntry, KnowledgeSource } from '@proma/shared'
+import type { KnowledgeCategory, KnowledgeEntry, KnowledgeSource, KnowledgePlanSource } from '@proma/shared'
 import type {
   ProjectKnowledgeControlledSource,
   ProjectKnowledgeControlledSourceList,
   ProjectKnowledgeSources,
 } from '../project-knowledge-sources'
-import { normalizeSourceRelativePath, titleFromRelativePath } from './paths'
+import { normalizeSourceRelativePath, resolveSourcePath, titleFromRelativePath } from './paths'
 import { containsKnowledgeSecret } from './sensitive-text'
 import {
   MAX_INDEXED_FILE_BYTES,
@@ -97,6 +97,8 @@ export interface KnowledgeScannerDependencies {
   manifest: KnowledgeManifest
   now: () => number
   isCancelled: () => boolean
+  /** Agent 来源发现的动态授权断言，锁内提交前再次执行。 */
+  assertCurrent?: () => void
   onProgress: (progress: { discovered?: number; indexed?: number; skipped?: number; changed?: number }) => void
   /** 受控业务来源只通过宿主服务纯读接口进入扫描。 */
   controlledSources?: ProjectKnowledgeSources
@@ -180,6 +182,12 @@ async function discoverRoot(
         const absolutePath = join(directoryPath, directoryEntry.name)
         /** 当前候选相对来源根的稳定路径。 */
         const relativePath = normalizeSourceRelativePath(relative(rootPath, absolutePath))
+        /** 导入包的清单与未发布暂存属于维护元数据，不能成为 Agent 的知识依据。 */
+        if (sourceKind === 'project-file' && relativePath.startsWith('.context/knowledge-imports/')
+          && (directoryEntry.name === '.import-manifest.json' || directoryEntry.name.startsWith('.staging-'))) {
+          skipped += 1
+          continue
+        }
         if (vaultRoots.some((root) => relativePath === root || relativePath.startsWith(`${root}/`))) {
           skipped += 1
           continue
@@ -354,6 +362,52 @@ function createUnavailableEntry(entry: KnowledgeEntry, now: number): KnowledgeEn
   return { ...base, revision: createEntryRevision(base) }
 }
 
+/** 全量与定向刷新共用安全读取、敏感文本检查和读取预算。 */
+function extractSourceCandidate(
+  candidate: SourceCandidate,
+  excludedSources: string[],
+  reserveBytes: (bytes: number) => boolean,
+): Promise<SourceExtractionResult> {
+  try {
+    /** 持久化排除来源不再读取或索引。 */
+    const sourceId = `${candidate.sourceKind}:${candidate.relativePath}`
+    if (excludedSources.includes(sourceId)) {
+      return Promise.resolve({ status: 'excluded', candidate })
+    }
+    /** no-follow 元数据预检同时给读取预算提供可信文件大小。 */
+    const sourcePath = resolveSourcePath(candidate.rootPath, candidate.relativePath)
+    const metadata = readSafeMetadataRevision(sourcePath)
+    if (candidate.metadataOnly) {
+      return Promise.resolve({
+        status: 'metadata',
+        candidate,
+        revision: metadata.revision,
+        byteSize: metadata.byteSize,
+        text: '',
+      })
+    }
+    /** 在启动并发读取前预留完整单文件提取预算，避免同批超额读取。 */
+    const requiredBytes = Math.min(metadata.byteSize, MAX_INDEXED_FILE_BYTES)
+    if (!reserveBytes(requiredBytes)) {
+      return Promise.resolve({ status: 'budget-skipped', candidate })
+    }
+    return readSafeTextSnapshot(sourcePath).then((snapshot): SourceExtractionResult => (
+      containsKnowledgeSecret(snapshot.text)
+        ? { status: 'sensitive', candidate, revision: snapshot.revision, byteSize: snapshot.byteSize }
+        : {
+          status: 'text',
+          candidate,
+          revision: snapshot.revision,
+          byteSize: snapshot.byteSize,
+          text: snapshot.text,
+          sourceTruncated: snapshot.truncated,
+        }
+    )).catch(() => ({ status: 'failed' as const, candidate }))
+  } catch {
+    return Promise.resolve({ status: 'failed', candidate })
+  }
+}
+
 /** 执行一轮有界、可取消的项目与 memory 扫描。 */
 export async function scanProjectKnowledge(
   dependencies: KnowledgeScannerDependencies,
@@ -469,44 +523,11 @@ export async function scanProjectKnowledge(
     const batch = candidates.slice(batchStart, batchStart + MAX_READ_CONCURRENCY)
     /** 当前批次各来源的安全读取结果。 */
     const results: SourceExtractionResult[] = await Promise.all(batch.map((candidate): Promise<SourceExtractionResult> => {
-      try {
-        /** 持久化排除来源不再读取或索引。 */
-        const sourceId = `${candidate.sourceKind}:${candidate.relativePath}`
-        if ((dependencies.manifest.excludedSources ?? []).includes(sourceId)) {
-          return Promise.resolve({ status: 'excluded', candidate })
-        }
-        /** no-follow 元数据预检同时给读取预算提供可信文件大小。 */
-        const metadata = readSafeMetadataRevision(candidate.absolutePath)
-        if (candidate.metadataOnly) {
-          return Promise.resolve({
-            status: 'metadata',
-            candidate,
-            revision: metadata.revision,
-            byteSize: metadata.byteSize,
-            text: '',
-          })
-        }
-        /** 在启动并发读取前预留完整单文件提取预算，避免同批超额读取。 */
-        const requiredBytes = Math.min(metadata.byteSize, MAX_INDEXED_FILE_BYTES)
-        if (readBudget + requiredBytes > MAX_TOTAL_INDEX_BYTES) {
-          return Promise.resolve({ status: 'budget-skipped', candidate })
-        }
-        readBudget += requiredBytes
-        return readSafeTextSnapshot(candidate.absolutePath).then((snapshot): SourceExtractionResult => (
-          containsKnowledgeSecret(snapshot.text)
-            ? { status: 'sensitive', candidate, revision: snapshot.revision, byteSize: snapshot.byteSize }
-            : {
-              status: 'text',
-              candidate,
-              revision: snapshot.revision,
-              byteSize: snapshot.byteSize,
-              text: snapshot.text,
-              sourceTruncated: snapshot.truncated,
-            }
-        )).catch(() => ({ status: 'failed' as const, candidate }))
-      } catch {
-        return Promise.resolve({ status: 'failed', candidate })
-      }
+      return extractSourceCandidate(candidate, dependencies.manifest.excludedSources ?? [], (bytes) => {
+        if (readBudget + bytes > MAX_TOTAL_INDEX_BYTES) return false
+        readBudget += bytes
+        return true
+      })
     }))
 
     for (const result of results) {
@@ -704,8 +725,10 @@ export async function scanProjectKnowledge(
       dependencies.manifest.revision,
       commits,
       dependencies.workspaceId,
+      dependencies.assertCurrent,
     )
     : dependencies.manifest
+  dependencies.assertCurrent?.()
   /** 与发布清单精确绑定的可重建缓存。 */
   const cache: KnowledgeIndexCache = {
     schemaVersion: 1,
@@ -730,4 +753,63 @@ export async function scanProjectKnowledge(
     complete: fileDiscoveryComplete && (!dependencies.controlledSources || controlledDiscoveryComplete),
     message,
   }
+}
+
+/** 刷新至多四个已登记文件来源；不枚举目录、不推断其他来源被删除。 */
+export async function refreshRegisteredKnowledgeSources(
+  project: ResolvedKnowledgeProject,
+  workspaceId: string,
+  store: ProjectKnowledgeStore,
+  references: KnowledgePlanSource[],
+  now: () => number,
+  assertCurrent?: () => void,
+): Promise<KnowledgeEntry[]> {
+  assertCurrent?.()
+  if (!Array.isArray(references) || references.length < 1 || references.length > 4) throw new Error('定向刷新每批限 1 至 4 个来源')
+  /** 当前授权及索引快照，发布时必须仍精确匹配。 */
+  const manifest = store.readManifest(project)
+  if (!manifest) throw new Error('知识来源尚未登记')
+  const seen = new Set<string>()
+  const pending: Array<{ entry: KnowledgeEntry; text: string }> = []
+  for (const reference of references) {
+    if (!reference || seen.has(reference.entryId)) throw new Error('定向刷新来源重复或非法')
+    seen.add(reference.entryId)
+    const previous = store.readEntry(project, manifest, reference.entryId)
+    if (previous.revision !== reference.revision) throw new Error('定向刷新来源版本已过期，请重新获取引用')
+    if ((manifest.excludedSources ?? []).includes(previous.source.id) || previous.state === 'archived') throw new Error('定向刷新来源已排除')
+    const kind = previous.source.kind
+    if (kind !== 'project-file' && kind !== 'memory-file') throw new Error('定向刷新暂只支持已登记的项目文件和记忆文件')
+    const relativePath = normalizeSourceRelativePath(previous.source.relativePath ?? '')
+    if (relativePath.split('/').some((part) => EXCLUDED_DIRECTORIES.has(part.toLowerCase())) || isCredentialPath(relativePath)) throw new Error('定向刷新来源路径被排除')
+    const roots = [manifest.workflow?.approved?.rootRelativePath, manifest.workflow?.proposal?.rootRelativePath]
+    if (kind === 'project-file' && roots.some((root) => root && (relativePath === root || relativePath.startsWith(`${root}/`)))) throw new Error('不能把知识正文当作来源刷新')
+    const mode = resolveSourceMode(relativePath)
+    if (!mode) throw new Error('定向刷新来源格式不支持')
+    const rootPath = kind === 'project-file' ? project.projectRoot : project.memoryRoot
+    const candidate: SourceCandidate = { sourceKind: kind, rootPath, relativePath, absolutePath: resolveSourcePath(rootPath, relativePath), metadataOnly: mode === 'metadata' }
+    if (createEntryId(candidate) !== previous.id || previous.source.id !== `${kind}:${relativePath}`) throw new Error('定向刷新来源身份不匹配')
+    const result = await extractSourceCandidate(candidate, manifest.excludedSources ?? [], () => true)
+    if (result.status !== 'text' && result.status !== 'metadata') throw new Error(`定向刷新来源不可安全读取：${result.status}`)
+    const text = result.text
+    const entry = previous.source.revision === result.revision && previous.freshness === 'current' ? previous
+      : createEntry(candidate, result.revision, result.byteSize, Buffer.byteLength(text, 'utf8'), result.status === 'text' && result.sourceTruncated, resolveTitle(relativePath, text), now())
+    pending.push({ entry, text })
+  }
+  const previousIndex = store.readIndex(project, manifest.indexRevision ?? manifest.revision)
+  const updated = await store.transact(project, workspaceId, (current) => {
+    assertCurrent?.()
+    if (current.manifest.revision !== manifest.revision) throw new Error('定向刷新期间目录版本变化，请重试')
+    if (current.manifest.workflow?.paused) throw new Error('知识库流程已暂停')
+    return { commits: pending.filter(({ entry }) => manifest.entries[entry.id] !== entry.revision).map(({ entry }) => ({ entry })) }
+  })
+  /** 缓存仅发布在同版本下，缺失旧缓存时不伪造完整索引。 */
+  if (previousIndex) {
+    const records = { ...previousIndex.records }
+    for (const { entry, text } of pending) {
+      if (text) records[entry.id] = { entryId: entry.id, entryRevision: entry.revision, text }
+      else delete records[entry.id]
+    }
+    store.writeIndex(project, { ...previousIndex, manifestRevision: updated.indexRevision ?? updated.revision, records })
+  }
+  return pending.map(({ entry }) => entry)
 }

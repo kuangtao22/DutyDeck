@@ -78,23 +78,23 @@ async function runSmoke() {
   /** 本次回归独占的临时 home；其内不预建 server-ops。 */
   const fixtureRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'proma-first-startup-')))
   try {
-    fs.mkdirSync(path.join(fixtureRoot, '.proma'))
+    fs.mkdirSync(path.join(fixtureRoot, '.DutyDeck'))
     // 关闭 LAN 监听，避免与用户当前实例争抢端口；这是临时夹具文件。
-    fs.writeFileSync(path.join(fixtureRoot, '.proma', 'lan-bridge.json'), '{"enabled":false}')
-    assert.equal(fs.existsSync(path.join(fixtureRoot, '.proma', 'server-ops')), false)
+    fs.writeFileSync(path.join(fixtureRoot, '.DutyDeck', 'lan-bridge.json'), '{"enabled":false}')
+    assert.equal(fs.existsSync(path.join(fixtureRoot, '.DutyDeck', 'server-ops')), false)
     await runClient(executable, fixtureRoot)
     /** 第一次启动后形成的固定目录身份。 */
-    const directoryIdentity = fs.statSync(path.join(fixtureRoot, '.proma', 'server-ops')).ino
+    const directoryIdentity = fs.statSync(path.join(fixtureRoot, '.DutyDeck', 'server-ops')).ino
     /** 合成的既有配置文件；再次启动必须保持其原文。 */
-    const existingConfigPath = path.join(fixtureRoot, '.proma', 'server-ops', 'hosts.json')
+    const existingConfigPath = path.join(fixtureRoot, '.DutyDeck', 'server-ops', 'hosts.json')
     /** 合法空列表保留可辨识空白，重新序列化或重建文件会使原文断言失败。 */
     const existingConfig = '\n[ ]\n'
     fs.writeFileSync(existingConfigPath, existingConfig)
     await runClient(executable, fixtureRoot)
-    assert.equal(fs.statSync(path.join(fixtureRoot, '.proma', 'server-ops')).ino, directoryIdentity)
+    assert.equal(fs.statSync(path.join(fixtureRoot, '.DutyDeck', 'server-ops')).ino, directoryIdentity)
     assert.equal(fs.readFileSync(existingConfigPath, 'utf8'), existingConfig)
     /** 文件冲突必须进入独立恢复窗口，不能覆盖旧数据根。 */
-    const conflictingRoot = path.join(fixtureRoot, '.proma', 'server-ops')
+    const conflictingRoot = path.join(fixtureRoot, '.DutyDeck', 'server-ops')
     fs.rmSync(conflictingRoot, { recursive: true, force: true })
     fs.writeFileSync(conflictingRoot, 'legacy-server-ops-file')
     const recoveryTarget = path.join(fixtureRoot, 'recovery-empty-root')
@@ -205,7 +205,7 @@ function runElectronClient() {
             window.electronAPI.listAgentSessions(),
           ])`)
           assert.deepEqual(result, [[], []])
-          assert.equal(fs.lstatSync(path.join(fixtureRoot, '.proma', 'server-ops')).isDirectory(), true)
+          assert.equal(fs.lstatSync(path.join(fixtureRoot, '.DutyDeck', 'server-ops')).isDirectory(), true)
           finish()
           return
         }

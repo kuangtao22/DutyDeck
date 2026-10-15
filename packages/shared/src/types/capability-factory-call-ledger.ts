@@ -1,3 +1,32 @@
+/** 普通整链运行的可选硬限额；不承诺未知单价下的金额封顶。 */
+export interface CapabilityFactoryRunLimits {
+  /** 最多逻辑调用数，包含执行与评审。 */
+  maxCalls: number
+  /** 最多可观测传输尝试次数。 */
+  maxTransportAttempts: number
+  /** 绝对截止时间，Unix 毫秒；过期判断由运行时完成。 */
+  deadlineAt: number
+}
+
+/** 校验不可信限额并返回独立快照；只检查结构与整数边界，不读取时钟。 */
+export function validateCapabilityFactoryRunLimits(value: unknown): CapabilityFactoryRunLimits {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('CAPABILITY_FACTORY_INVALID: limits')
+  }
+  /** 显式三字段白名单防止把额外执行控制带入运行时。 */
+  const limits = value as Record<string, unknown>
+  if (Object.keys(limits).length !== 3 || Object.keys(limits).some((key) => !['maxCalls', 'maxTransportAttempts', 'deadlineAt'].includes(key))) {
+    throw new Error('CAPABILITY_FACTORY_INVALID: limits')
+  }
+  /** 分别限制逻辑调用、可观察传输和绝对时间的安全整数范围。 */
+  for (const [key, maximum] of [['maxCalls', 1000], ['maxTransportAttempts', 2000], ['deadlineAt', Number.MAX_SAFE_INTEGER]] as const) {
+    if (typeof limits[key] !== 'number' || !Number.isSafeInteger(limits[key]) || limits[key] < 1 || limits[key] > maximum) {
+      throw new Error(`CAPABILITY_FACTORY_INVALID: limits.${key}`)
+    }
+  }
+  return { maxCalls: limits.maxCalls as number, maxTransportAttempts: limits.maxTransportAttempts as number, deadlineAt: limits.deadlineAt as number }
+}
+
 /** 供应商实际返回的 token 用量；缺少用量时整项为 null，不推断为零。 */
 export interface CapabilityFactoryCallUsage {
   /** 输入 token。 */

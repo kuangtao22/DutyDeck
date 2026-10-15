@@ -1543,6 +1543,7 @@ describe('stable directory native host', () => {
     }
   })
 
+  // 单次归档串行启动多个真实 helper；Windows CI 需要独立的总预算，保留全部容量与字节断言。
   test.skipIf(!nativeHelperPlatformSupported)('Given 511 个终态 intent 与 workflow-runs When 写满、拒绝超额并归档 64 条 Then 可再次新增', async () => {
     const root = mkdtempSync(join(tmpdir(), 'proma-native-intent-archive-capacity-'))
     const canvasRoot = join(root, 'canvas')
@@ -1618,7 +1619,7 @@ describe('stable directory native host', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, 20_000)
 
   test.skipIf(process.platform !== 'darwin')('Given 预算为零且只有合法 UUID 名非普通项 When 扫描 Then 忽略杂项而非误报 intent limit', async () => {
     const root = mkdtempSync(join(tmpdir(), 'proma-native-intent-non-regular-budget-'))

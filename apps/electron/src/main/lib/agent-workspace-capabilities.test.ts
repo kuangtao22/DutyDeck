@@ -7,6 +7,9 @@ import { join } from 'node:path'
 const testRoot = mkdtempSync(join(tmpdir(), 'proma-workspace-capabilities-'))
 
 mock.module('./config-paths', () => ({
+  /** 此组测试不涉及迁移，路径投影恒等且不访问真实定位器。 */
+  createDataRootPathResolver: () => (path: string) => path,
+  createDataRootPathSerializer: () => (path: string) => path,
   getAgentWorkspacesIndexPath: () => join(testRoot, 'agent-workspaces.json'),
   getAgentWorkspacesDir: () => testRoot,
   getAgentWorkspacePath: (slug: string) => join(testRoot, slug),

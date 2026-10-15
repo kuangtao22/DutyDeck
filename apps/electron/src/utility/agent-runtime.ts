@@ -181,6 +181,7 @@ function handleQueryStart(request: RuntimeRequest): void {
     onSessionId: (sdkSessionId: string, sessionFile?: string) => sendCallback(active, 'session_id', { sdkSessionId, sessionFile }),
     onPiEntryBindings: (bindings: Record<string, string>) => sendCallback(active, 'pi_entry_bindings', { bindings }),
     onModelResolved: (model: string) => sendCallback(active, 'model_resolved', { model }),
+    onUsageAttempt: (usage: import('@proma/shared').TokenUsageAmounts | null, status: 'completed' | 'failed' | 'cancelled', timing?: import('../main/lib/token-usage-observer').TokenUsageTiming) => sendCallback(active, 'usage_attempt', { usage, status, timing }),
     onContextWindow: (contextWindow: number) => sendCallback(active, 'context_window', { contextWindow }),
     // 不传工具取消 signal：部分写入后的 finally 仍需完成采集。
     onFileChangeCapture: (capture: import('@proma/shared').AgentFileChangeCapture) => requestParent(

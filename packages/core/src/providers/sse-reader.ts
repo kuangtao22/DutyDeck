@@ -11,6 +11,16 @@
  */
 
 import type { ProviderAdapter, ProviderRequest, StreamEventCallback, ThinkingBlock, ToolCall } from './types.ts'
+import type { TokenUsageAmounts } from '@proma/shared'
+import { emptyUsage, inclusiveAnthropicInput, mergeUsage } from './usage.ts'
+
+/** 单次真实 HTTP 请求的起止时间，单位为 Unix 毫秒，不包含重试等待。 */
+interface UsageAttemptTiming {
+  /** 当前尝试即将发起请求的时刻。 */
+  startedAt: number
+  /** 请求成功、失败或取消收口的时刻。 */
+  finishedAt: number
+}
 
 // ===== 流式请求 =====
 
@@ -28,6 +38,8 @@ export interface StreamSSEOptions {
   timeoutMs?: number
   /** 自定义 fetch 函数（代理等场景下由调用方注入） */
   fetchFn?: typeof globalThis.fetch
+  /** 每个实际 transport attempt 结束时观察 usage；观察器异常不得影响请求。 */
+  onUsageAttempt?: (usage: TokenUsageAmounts | null, status: 'completed' | 'failed' | 'cancelled', timing: UsageAttemptTiming) => void
 }
 
 /** streamSSE 的返回结果 */
@@ -47,6 +59,8 @@ export interface StreamSSEResult {
   toolCalls: ToolCall[]
   /** 停止原因（'tool_use' 表示需要执行工具后继续） */
   stopReason?: string
+  /** 本轮 provider 报告的 usage，未报告字段为 null。 */
+  usage: TokenUsageAmounts
 }
 
 // ===== 首字节前自动重试 =====
@@ -152,19 +166,30 @@ export async function streamSSE(options: StreamSSEOptions): Promise<StreamSSERes
   let elapsedRetryDelayMs = 0
 
   for (let attempt = 1; ; attempt++) {
+    // 预取消不属于实际调用：必须在创建 attempt 和发起 fetch 前退出。
+    signal?.throwIfAborted()
     // 跟踪本次尝试是否已发出事件——一旦发出就不能再重试
     let hasEmitted = false
+    let lastObservedUsage: TokenUsageAmounts | null = null
     const trackedOptions: StreamSSEOptions = {
       ...options,
       onEvent: (event) => {
-        hasEmitted = true
+        if (event.type === 'usage') lastObservedUsage = event.usage
+        else hasEmitted = true
         options.onEvent(event)
       },
     }
 
+    /** 每轮尝试独立计时，前轮退避等待不进入本次请求时长。 */
+    const startedAt = Date.now()
     try {
-      return await runStreamAttempt(trackedOptions)
+      const result = await runStreamAttempt(trackedOptions)
+      try { options.onUsageAttempt?.(lastObservedUsage, 'completed', { startedAt, finishedAt: Date.now() }) } catch { /* 观察器不得影响流 */ }
+      return result
     } catch (error) {
+      try {
+        options.onUsageAttempt?.(lastObservedUsage, signal?.aborted || (error instanceof Error && error.name === 'AbortError') ? 'cancelled' : 'failed', { startedAt, finishedAt: Date.now() })
+      } catch { /* 观察器不得影响流 */ }
       // 用户主动取消：不重试
       if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
         throw error
@@ -207,15 +232,18 @@ async function runStreamAttempt(options: StreamSSEOptions): Promise<StreamSSERes
     : timeoutController.signal
 
   // 1. 发起请求（支持通过 fetchFn 注入代理）
-  const response = await fetchFn(request.url, {
-    method: 'POST',
-    headers: request.headers,
-    body: request.body,
-    signal: effectiveSignal,
-  })
-
-  // 已收到 HTTP 响应头，清除首字节超时——后续流式读取不应受时间限制
-  clearTimeout(timer)
+  let response: Response
+  try {
+    response = await fetchFn(request.url, {
+      method: 'POST',
+      headers: request.headers,
+      body: request.body,
+      signal: effectiveSignal,
+    })
+  } finally {
+    // fetch 失败同样释放计时器，避免每次重试残留资源。
+    clearTimeout(timer)
+  }
 
   // 2. 错误检查
   if (!response.ok) {
@@ -231,6 +259,9 @@ async function runStreamAttempt(options: StreamSSEOptions): Promise<StreamSSERes
   let content = ''
   let reasoning = ''
   let stopReason: string | undefined
+  let usage: TokenUsageAmounts = emptyUsage()
+  /** Anthropic 跨事件保留未缓存输入基数，缓存累计值变化不重复相加。 */
+  let uncachedInputTokens: number | null = null
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -319,6 +350,15 @@ async function runStreamAttempt(options: StreamSSEOptions): Promise<StreamSSERes
             }
           } else if (event.type === 'done' && event.stopReason) {
             stopReason = event.stopReason
+          } else if (event.type === 'usage') {
+            usage = mergeUsage(usage, event.usage)
+            if ('uncachedInputTokens' in event) {
+              uncachedInputTokens = event.uncachedInputTokens ?? uncachedInputTokens
+              usage.inputTokens = inclusiveAnthropicInput(uncachedInputTokens, usage.cacheReadTokens, usage.cacheWriteTokens)
+            }
+            // 观察器接收合并后的累计快照，错误和取消也能保存此前报告。
+            onEvent({ ...event, usage })
+            continue
           } else if (event.type === 'error') {
             throw new ProviderStreamError(event.error)
           }
@@ -357,7 +397,7 @@ async function runStreamAttempt(options: StreamSSEOptions): Promise<StreamSSERes
   }
 
   onEvent({ type: 'done', stopReason })
-  return { content, reasoning, thinkingBlocks, toolCalls, stopReason }
+  return { content, reasoning, thinkingBlocks, toolCalls, stopReason, usage }
 }
 
 // ===== 非流式标题请求 =====
@@ -373,10 +413,16 @@ export async function fetchTitle(
   request: ProviderRequest,
   adapter: ProviderAdapter,
   fetchFn: typeof globalThis.fetch = fetch,
+  onUsage?: (usage: TokenUsageAmounts | null, status: 'completed' | 'failed' | 'cancelled', timing: UsageAttemptTiming) => void,
 ): Promise<string | null> {
   // 标题请求必须有时限：OpenCode Go 等推理模型响应慢，若无限挂起，
   // 会话会一直停在默认标题（fallback 也不会执行）。
   const TITLE_REQUEST_TIMEOUT_MS = 30_000
+  /** 整个调用共享结果，finally 确保每次 fetch 只观察一次。 */
+  let usage: TokenUsageAmounts | null = null
+  let status: 'completed' | 'failed' | 'cancelled' = 'failed'
+  /** 标题生成只有一个 transport attempt，单独记录调用时间。 */
+  let startedAt: number | undefined
   try {
     console.log('[fetchTitle] 发送请求:', {
       url: request.url,
@@ -384,6 +430,7 @@ export async function fetchTitle(
       bodyPreview: request.body.slice(0, 200),
     })
 
+    startedAt = Date.now()
     const response = await fetchFn(request.url, {
       method: 'POST',
       headers: request.headers,
@@ -407,6 +454,7 @@ export async function fetchTitle(
     }
 
     const data: unknown = await response.json()
+    usage = adapter.parseUsageResponse?.(data) ?? null
     console.log('[fetchTitle] 解析响应体:', {
       provider: adapter.providerType,
       dataPreview: JSON.stringify(data).slice(0, 500),
@@ -414,9 +462,13 @@ export async function fetchTitle(
 
     const title = adapter.parseTitleResponse(data)
     console.log('[fetchTitle] 解析标题结果:', { title })
+    status = 'completed'
     return title
   } catch (error) {
+    status = error instanceof Error && error.name === 'AbortError' ? 'cancelled' : 'failed'
     console.error('[fetchTitle] 异常:', error)
     return null
+  } finally {
+    try { if (startedAt !== undefined) onUsage?.(usage, status, { startedAt, finishedAt: Date.now() }) } catch { /* 统计观察器异常不能改变标题生成结果。 */ }
   }
 }

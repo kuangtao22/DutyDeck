@@ -87,6 +87,7 @@ function resolveTarget(
   if (!parsed) throw new Error('生图模型不可用：请重新选择模型')
   const profile = catalog.profiles.find((candidate) => candidate.id === parsed.profileId)
   if (!profile) throw new Error('生图模型不可用：配置已删除，请重新选择模型')
+  if (profile.provider !== parsed.provider) throw new Error('生图模型不可用：供应商已变更，请重新选择模型')
   const model = profile.models.find((candidate) => candidate.id === parsed.modelId)
   if (!model) throw new Error('生图模型不可用：模型已移除，请重新选择模型')
   if (!profile.enabled) throw new Error('生图模型不可用：配置已停用，请重新启用后再生成')

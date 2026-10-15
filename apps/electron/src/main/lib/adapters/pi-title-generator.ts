@@ -1,3 +1,4 @@
+import { normalizePiTokenUsage, type TokenUsageObserver } from '../token-usage-observer'
 /**
  * 通过 Pi ModelRuntime 发起隔离的轻量标题请求。
  *
@@ -33,6 +34,8 @@ const TITLE_REQUEST_TIMEOUT_MS = 30_000
 
 /** 标题请求所需的当前渠道与模型配置。 */
 export interface PiTitleGenerationInput {
+  /** 每个实际完成请求的供应商用量观察端。 */
+  onUsageAttempt?: TokenUsageObserver
   channelId: string
   channelName: string
   provider: ProviderType
@@ -58,12 +61,12 @@ export interface PiTitleRuntime {
       textVerbosity?: 'low'
       toolChoice?: 'none'
     },
-  ) => Promise<Pick<AssistantMessage, 'content' | 'stopReason' | 'errorMessage'>>
+  ) => Promise<Pick<AssistantMessage, 'content' | 'stopReason' | 'errorMessage'> & { usage?: unknown }>
   completeSimple: (
     model: Model<Api>,
     context: Context,
     options?: ModelsSimpleStreamOptions,
-  ) => Promise<Pick<AssistantMessage, 'content' | 'stopReason' | 'errorMessage'>>
+  ) => Promise<Pick<AssistantMessage, 'content' | 'stopReason' | 'errorMessage'> & { usage?: unknown }>
 }
 
 /** 可注入测试的代理请求环境。 */
@@ -129,8 +132,15 @@ export async function completePiTitleRequest(
   environment: PiTitleRequestEnvironment,
   signal?: AbortSignal,
   transport: PiTitleTransport = 'auto',
+  onUsageAttempt?: TokenUsageObserver,
 ): Promise<string | null> {
+  /** 只在进入实际模型端口后记调用，预取消和代理准备失败不计。 */
+  let sent = false
+  /** 仅进入实际 runtime 时设置开始时间，不包含凭据和工具等待。 */
+  let startedAt = 0
+  let reported = false
   try {
+    signal?.throwIfAborted()
     environment.installRequestProxyFetch()
     /** 独立上下文确保标题请求不进入前台 Agent 历史。 */
     const context: Context = {
@@ -146,6 +156,9 @@ export async function completePiTitleRequest(
       signal,
     }
     /** Codex 支持显式 none；其它协议由 completeSimple 映射各自的关闭或最低开销语义。 */
+    signal?.throwIfAborted()
+    startedAt = Date.now()
+    sent = true
     const response = await environment.runWithRequestProxy(environment.dispatcher, () => (
       model.api === 'openai-codex-responses'
         ? runtime.complete(model, context, {
@@ -158,11 +171,20 @@ export async function completePiTitleRequest(
         : runtime.completeSimple(model, context, options)
     ))
 
+    /** 在解析业务正文前上报一次，正文解析失败不重复算调用。 */
+    const status = response.stopReason === 'aborted' ? 'cancelled' : response.stopReason === 'error' ? 'failed' : 'completed'
+    reported = true
+    try { onUsageAttempt?.(normalizePiTokenUsage(response.usage, status), status, { startedAt, finishedAt: Date.now() }) } catch { /* 观察器隔离 */ }
     if (response.stopReason === 'error' || response.stopReason === 'aborted') {
       throw new Error(response.errorMessage?.trim() || 'Pi 标题请求未完成')
     }
 
     return extractPiResponseText(response.content).trim() || null
+  } catch (error) {
+    if (sent && !reported) {
+      try { onUsageAttempt?.(null, signal?.aborted || (error instanceof Error && error.name === 'AbortError') ? 'cancelled' : 'failed', { startedAt, finishedAt: Date.now() }) } catch { /* 观察器隔离 */ }
+    }
+    throw error
   } finally {
     await environment.closeRequestProxyDispatcher(environment.dispatcher)
   }
@@ -207,5 +229,6 @@ export async function generatePiTitle(input: PiTitleGenerationInput): Promise<st
     },
     input.signal,
     connection.transport,
+    input.onUsageAttempt,
   )
 }

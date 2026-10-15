@@ -1,5 +1,9 @@
+import { createTokenUsagePreload } from './token-usage-preload'
+import type { TokenUsageAPI } from '@proma/shared'
 import { createApiWorkbenchPreload } from './api-workbench-preload'
 import { createCapabilityFactoryPreload } from './capability-factory-preload'
+import { createInteractionDesignPreload } from './interaction-design-preload'
+import type { InteractionDesignApi } from '@proma/shared'
 import { createProjectKnowledgePreload } from './project-knowledge-preload'
 import type { ProjectKnowledgeApi } from '@proma/shared'
 import type { ApiWorkbenchApi } from '@proma/shared'
@@ -13,7 +17,7 @@ import type { AgentToolMode } from '@proma/shared'
  */
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, SLACK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, PLANNING_IPC_CHANNELS, VAULT_IPC_CHANNELS, AGENT_ISLAND_IPC_CHANNELS, TERMINAL_IPC_CHANNELS, PATH_MANAGEMENT_IPC_CHANNELS, SERVER_OPS_IPC_CHANNELS, WORKSPACE_MENU_IPC_CHANNELS } from '@proma/shared'
+import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, LOCAL_MODEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, SLACK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, PLANNING_IPC_CHANNELS, VAULT_IPC_CHANNELS, AGENT_ISLAND_IPC_CHANNELS, TERMINAL_IPC_CHANNELS, PATH_MANAGEMENT_IPC_CHANNELS, SERVER_OPS_IPC_CHANNELS, WORKSPACE_MENU_IPC_CHANNELS } from '@proma/shared'
 import { createLanBridgePreloadApi } from './lan-bridge-preload'
 import type { LanBridgePreloadApi } from './lan-bridge-preload'
 import { createDesignPreloadApi } from './design-preload'
@@ -32,6 +36,8 @@ import { createServerOpsDockerPreload } from './server-ops-docker-preload'
 import type { ServerOpsDockerPreload } from './server-ops-docker-preload'
 import { createServerOpsFilesPreload } from './server-ops-files-preload'
 import type { ServerOpsFilesPreload } from './server-ops-files-preload'
+import { createServerOpsTaskPreload } from './server-ops-task-preload'
+import type { ServerOpsTaskPreloadApi } from './server-ops-task-preload'
 import { createServerOpsConsolePreload } from './server-ops-console-preload'
 import type { ServerOpsConsolePreloadApi } from './server-ops-console-preload'
 import { createServerOpsTransferPreload } from './server-ops-transfer-preload'
@@ -70,6 +76,14 @@ import type {
   FetchModelsInput,
   FetchModelsResult,
   ChannelPlanQuotaResult,
+  LocalModelSnapshot,
+  LocalModelDownloadInput,
+  LocalModelAssetInput,
+  LocalModelEnabledInput,
+  LocalModelTestInput,
+  LocalModelRuntimeSnapshot,
+  LocalModelTestResult,
+  LocalModelProgressEvent,
   CodexOAuthLoginResult,
   XaiOAuthLoginResult,
   XaiOAuthDeviceCode,
@@ -298,7 +312,7 @@ import { QUICK_TASK_IPC_CHANNELS, TRAY_IPC_CHANNELS, VOICE_DICTATION_IPC_CHANNEL
 /**
  * 暴露给渲染进程的 API 接口定义
  */
-export interface ElectronAPI extends LanBridgePreloadApi, NormalPathManagementPreloadApi, DesignPreloadApi, ServerOpsTrustPreload, ServerOpsDockerPreload, ServerOpsFilesPreload, ServerOpsConsolePreloadApi, ServerOpsTransferPreload, ServerOpsDataPreload, ServerOpsProjectPreload, ServerOpsScriptPreload, ServerOpsAgentReadPreload, ServerOpsConnectionDraftPreload, MediaPreloadApi, CanvasMediaPreloadApi, ProjectKnowledgeApi {
+export interface ElectronAPI extends ServerOpsTaskPreloadApi, TokenUsageAPI, LanBridgePreloadApi, NormalPathManagementPreloadApi, DesignPreloadApi, ServerOpsTrustPreload, ServerOpsDockerPreload, ServerOpsFilesPreload, ServerOpsConsolePreloadApi, ServerOpsTransferPreload, ServerOpsDataPreload, ServerOpsProjectPreload, ServerOpsScriptPreload, ServerOpsAgentReadPreload, ServerOpsConnectionDraftPreload, MediaPreloadApi, CanvasMediaPreloadApi, ProjectKnowledgeApi {
   // ===== 运行时相关 =====
 
   /**
@@ -330,6 +344,8 @@ export interface ElectronAPI extends LanBridgePreloadApi, NormalPathManagementPr
   apiWorkbench: ApiWorkbenchApi
   /** 提示词编排工厂：界面侧可采纳 / 回滚 / 导出（人的动作），与 Agent 侧的方法集刻意不同。 */
   capabilityFactory: CapabilityFactoryApi
+  /** 项目内页面原型、候选、资源和版本接口。 */
+  interactionDesign: InteractionDesignApi
   listServerOpsHosts: () => Promise<ServerOpsHost[]>
   upsertServerOpsHost: (input: ServerOpsSaveHostInput) => Promise<ServerOpsHost>
   deleteServerOpsHost: (hostId: string) => Promise<boolean>
@@ -466,6 +482,29 @@ export interface ElectronAPI extends LanBridgePreloadApi, NormalPathManagementPr
 
   /** 查询渠道订阅 Plan 额度 */
   getChannelPlanQuota: (channelId: string) => Promise<ChannelPlanQuotaResult>
+
+  /** 获取 DutyDeck 本地模型目录、资产和运行时状态。 */
+  listLocalModels: () => Promise<LocalModelSnapshot>
+  /** 按需下载并校验当前平台的 llama.cpp 本地运行环境。 */
+  downloadLocalModelEngine: () => Promise<void>
+  /** 取消本地运行环境下载，保留可续传部分。 */
+  cancelLocalModelEngineDownload: () => Promise<void>
+  /** 下载并校验指定本地模型。 */
+  downloadLocalModel: (input: LocalModelDownloadInput) => Promise<import('@proma/shared').LocalModelAsset>
+  /** 取消指定本地模型下载。 */
+  cancelLocalModelDownload: (input: LocalModelDownloadInput) => Promise<void>
+  /** 加载本地模型到受管 llama-server。 */
+  startLocalModel: (input: LocalModelAssetInput) => Promise<LocalModelRuntimeSnapshot>
+  /** 停止本地模型并释放运行内存。 */
+  stopLocalModel: () => Promise<void>
+  /** 测试本地模型回复和能力。 */
+  testLocalModel: (input: LocalModelTestInput) => Promise<LocalModelTestResult>
+  /** 只切换模型选择可见性，不会隐式加载模型。 */
+  setLocalModelEnabled: (input: LocalModelEnabledInput) => Promise<import('@proma/shared').LocalModelAsset>
+  /** 订阅本地模型状态变化。 */
+  onLocalModelChanged: (callback: (snapshot: LocalModelSnapshot) => void) => () => void
+  /** 订阅本地模型下载进度。 */
+  onLocalModelProgress: (callback: (event: LocalModelProgressEvent) => void) => () => void
 
   /** 发起 ChatGPT (Codex) OAuth 登录，返回序列化凭据（作为 apiKey 存储） */
   codexOAuthLogin: (method?: import('@proma/shared').CodexOAuthLoginMethod) => Promise<CodexOAuthLoginResult>
@@ -1549,7 +1588,13 @@ const designPreloadApi = createDesignPreloadApi(ipcRenderer)
 const pathManagementPreloadApi = createNormalPathManagementPreloadApi(ipcRenderer)
 
 const electronAPI: ElectronAPI = {
-  ...createProjectKnowledgePreload((channel, input) => ipcRenderer.invoke(channel, input)),
+  ...createTokenUsagePreload((channel, ...args) => ipcRenderer.invoke(channel, ...args)),
+  ...createProjectKnowledgePreload((channel, input) => ipcRenderer.invoke(channel, input), (listener) => {
+    /** 只转发固定事件载荷，避免把 Electron event 传入 renderer。 */
+    const handler = (_event: Electron.IpcRendererEvent, value: { workspaceId: string; generation?: number }) => listener(value)
+    ipcRenderer.on('project-knowledge:changed', handler)
+    return () => ipcRenderer.removeListener('project-knowledge:changed', handler)
+  }),
   ...createServerOpsTrustPreload((channel, input) => ipcRenderer.invoke(channel, input)),
   ...createServerOpsDockerPreload((channel, input) => ipcRenderer.invoke(channel, input)),
   ...createServerOpsFilesPreload((channel, input) => ipcRenderer.invoke(channel, input)),
@@ -1580,6 +1625,15 @@ const electronAPI: ElectronAPI = {
       return () => { ipcRenderer.removeListener(channel, handler) }
     },
   ),
+  interactionDesign: createInteractionDesignPreload(
+    (channel, input) => ipcRenderer.invoke(channel, input),
+    (channel, listener) => {
+      /** 业务广播不暴露 Electron 事件。 */
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown): void => { listener(value) }
+      ipcRenderer.on(channel, handler)
+      return () => { ipcRenderer.removeListener(channel, handler) }
+    },
+  ),
   ...createServerOpsProjectPreload((channel, input) => ipcRenderer.invoke(channel, input)),
   ...createServerOpsScriptPreload((channel, input) => ipcRenderer.invoke(channel, input), (channel, listener) => {
     /** 草稿事件只传身份提示，隔离 Electron 事件对象后交给界面按会话重读。 */
@@ -1588,6 +1642,7 @@ const electronAPI: ElectronAPI = {
     return () => ipcRenderer.removeListener(channel, handler)
   }),
   ...createServerOpsConsolePreload(ipcRenderer),
+  ...createServerOpsTaskPreload(ipcRenderer),
   ...createServerOpsTransferPreload((channel, input) => ipcRenderer.invoke(channel, input), (channel, listener) => {
     /** 隔离 Electron 事件对象，只向文件视图传递严格解析的进度。 */
     const bridge = (_event: unknown, value: unknown): void => listener(value)
@@ -1869,6 +1924,55 @@ const electronAPI: ElectronAPI = {
 
   getChannelPlanQuota: (channelId: string) => {
     return ipcRenderer.invoke(CHANNEL_IPC_CHANNELS.GET_PLAN_QUOTA, channelId)
+  },
+
+  // DutyDeck 内置本地模型
+  listLocalModels: () => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.LIST)
+  },
+
+  downloadLocalModelEngine: () => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.ENGINE_DOWNLOAD)
+  },
+
+  cancelLocalModelEngineDownload: () => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.ENGINE_CANCEL_DOWNLOAD)
+  },
+
+  downloadLocalModel: (input: LocalModelDownloadInput) => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.DOWNLOAD, input)
+  },
+
+  cancelLocalModelDownload: (input: LocalModelDownloadInput) => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.CANCEL_DOWNLOAD, input)
+  },
+
+  startLocalModel: (input: LocalModelAssetInput) => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.START, input)
+  },
+
+  stopLocalModel: () => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.STOP)
+  },
+
+  testLocalModel: (input: LocalModelTestInput) => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.TEST, input)
+  },
+
+  setLocalModelEnabled: (input: LocalModelEnabledInput) => {
+    return ipcRenderer.invoke(LOCAL_MODEL_IPC_CHANNELS.SET_ENABLED, input)
+  },
+
+  onLocalModelChanged: (callback: (snapshot: LocalModelSnapshot) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, snapshot: LocalModelSnapshot) => callback(snapshot)
+    ipcRenderer.on(LOCAL_MODEL_IPC_CHANNELS.CHANGED, listener)
+    return () => ipcRenderer.removeListener(LOCAL_MODEL_IPC_CHANNELS.CHANGED, listener)
+  },
+
+  onLocalModelProgress: (callback: (event: LocalModelProgressEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: LocalModelProgressEvent) => callback(progress)
+    ipcRenderer.on(LOCAL_MODEL_IPC_CHANNELS.PROGRESS, listener)
+    return () => ipcRenderer.removeListener(LOCAL_MODEL_IPC_CHANNELS.PROGRESS, listener)
   },
 
   codexOAuthLogin: (method?: import('@proma/shared').CodexOAuthLoginMethod) => {

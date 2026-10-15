@@ -81,6 +81,13 @@ export class UnifiedMediaGenerationService {
     return this.copy(this.requireOwned(ownerSessionId, runId).snapshot)
   }
 
+  /** 为原卡回填读取指定会话的冻结输入与运行事实；返回独立副本，不包含路由凭据。 */
+  getAttachmentSource(ownerSessionId: string, runId: string): { request: MediaGenerationRequest; snapshot: MediaGenerationSnapshot } {
+    /** 所有权验证与普通查询使用同一入口。 */
+    const record = this.requireOwned(ownerSessionId, runId)
+    return structuredClone({ request: record.request, snapshot: record.snapshot })
+  }
+
   /** 等待 revision 变化或终态；超时只返回当前快照，不取消远端任务。 */
   async wait(ownerSessionId: string, runId: string, timeoutMs = 30_000, afterRevision?: number, signal?: AbortSignal): Promise<MediaGenerationSnapshot> {
     const record = this.requireOwned(ownerSessionId, runId)

@@ -251,6 +251,47 @@ describe('路径管理 IPC', () => {
     }
   })
 
+  test('Given 迁移窗口继续复制 When 另一个实例仍活跃 Then 先阻断且不执行复制；无冲突时释放 guard 后重启', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => unknown>()
+    let resumed = 0
+    let relaunched = 0
+    let released = 0
+    const coordinator = {
+      getStatus: () => createLocatorResult().state,
+      createPlan: async () => ({ migrationId: 'migration-1', stage: 'pending' as const, completedBytes: 0, totalBytes: 1 }),
+      runPending: async () => undefined,
+      resumePending: async () => { resumed += 1 },
+      cancel: async () => undefined,
+    }
+    const register = (hasOtherPromaInstance: () => Promise<boolean>) => {
+      handlers.clear()
+      registerPathManagementIpcHandlers({
+        mode: 'data-root-migration',
+        ipc: {
+          handle: (channel, handler) => { handlers.set(channel, handler) },
+          removeHandler: () => undefined,
+        },
+        app: { relaunch: () => { relaunched += 1 }, quit: () => undefined },
+        getExpectedWebContents: () => expectedWebContents,
+        coordinator,
+        hasOtherPromaInstance,
+        acquireMigrationGuard: async () => ({ release: () => { released += 1 } }),
+      })
+    }
+
+    register(async () => true)
+    await expect(handlers.get(PATH_MANAGEMENT_IPC_CHANNELS.RESUME_DATA_ROOT_MIGRATION)?.({ sender: expectedWebContents })).rejects.toThrow('另一个 DutyDeck 实例')
+    expect(resumed).toBe(0)
+    expect(relaunched).toBe(0)
+    expect(released).toBe(1)
+
+    register(async () => false)
+    await handlers.get(PATH_MANAGEMENT_IPC_CHANNELS.RESUME_DATA_ROOT_MIGRATION)?.({ sender: expectedWebContents })
+    expect(resumed).toBe(1)
+    expect(relaunched).toBe(1)
+    expect(released).toBe(2)
+  })
+
   test('Given 开发热重载从 recovery 切到 normal When 重新注册 Then 不残留旧敏感 handler', () => {
     /** 真实模拟 removeHandler 对同一个 ipcMain handler 表的影响。 */
     const handlers = new Map<string, (...args: unknown[]) => unknown>()
@@ -1399,5 +1440,76 @@ describe('路径管理 IPC', () => {
       previousRoot,
       postCommitCleanup: cleanup,
     })
+  })
+})
+
+
+describe('设置页默认位置选择', () => {
+  test('Given 当前使用自定义根 When 选择默认位置并确认 Then 沿用复制计划且不创建直接移动请求', async () => {
+    /** 自定义根和默认根都放入临时 home，不操作实际配置。 */
+    const homeDir = await mkdtemp(join(tmpdir(), 'default-pick-from-custom-'))
+    const activeRoot = join(homeDir, 'custom-data')
+    mkdirSync(activeRoot)
+    /** 当前活动根明确是自定义位置，不能被默认选择误判为旧根改名。 */
+    const locator = new DataRootLocator({ homeDir })
+    locator.write({ version: 1, activeRoot })
+    /** 捕获完整 IPC 流程中的预检、计划和重启，证明使用原复制协调器。 */
+    const calls: string[] = []
+    const handlers = new Map<string, (...args: unknown[]) => unknown>()
+    registerPathManagementIpcHandlers({
+      mode: 'normal', homeDir,
+      ipc: { handle: (channel, handler) => { handlers.set(channel, handler) }, removeHandler: () => undefined },
+      app: { relaunch: () => { calls.push('relaunch') }, quit: () => { calls.push('quit') } },
+      getExpectedWebContents: () => expectedWebContents,
+      coordinator: {
+        getStatus: () => locator.inspect().state,
+        previewTarget: async (targetRoot) => { calls.push(`preview:${targetRoot}`); return createSafePreview(targetRoot) },
+        createPlan: async (targetRoot) => {
+          calls.push(`copy:${targetRoot}`)
+          return { migrationId: 'copy-to-default', stage: 'pending', completedBytes: 0, totalBytes: 1 }
+        },
+        runPending: async () => undefined, resumePending: async () => undefined, cancel: async () => undefined,
+      },
+    })
+    /** 默认目标授权由主进程生成，不打开选择器。 */
+    const selection = await handlers.get(PATH_MANAGEMENT_IPC_CHANNELS.PICK_DATA_ROOT)!(expectedEvent, 'default')
+    const preview = await handlers.get(PATH_MANAGEMENT_IPC_CHANNELS.PREVIEW_DATA_ROOT_MIGRATION)!(expectedEvent, selection)
+    expect(preview).not.toHaveProperty('strategy', 'move')
+    await handlers.get(PATH_MANAGEMENT_IPC_CHANNELS.START_DATA_ROOT_MIGRATION)!(expectedEvent, selection)
+    expect(calls).toEqual([`preview:${join(homeDir, '.DutyDeck')}`, `copy:${join(homeDir, '.DutyDeck')}`, 'relaunch', 'quit'])
+    expect(new DataRootLocator({ homeDir }).inspect().locatorFile?.defaultRootMoveRequest).toBeUndefined()
+  })
+
+  test('Given 旧根且曾拒绝自动迁移 When 选择默认并确认 Then 不扫描复制且仅保存请求后重启', async () => {
+    /** 使用隔离 home，绝不操作真实用户数据。 */
+    const home = await mkdtemp(join(tmpdir(), 'default-pick-'))
+    const source = join(home, '.proma')
+    mkdirSync(source)
+    writeFileSync(join(source, 'settings.json'), JSON.stringify({ themeMode: 'dark' }))
+    const locator = new DataRootLocator({ homeDir: home })
+    locator.write({ version: 1, activeRoot: source, defaultMigrationDismissed: true })
+    const handlers = new Map<string, (...args: unknown[]) => unknown>()
+    let restarted = 0
+    registerPathManagementIpcHandlers({
+      mode: 'normal', homeDir: home,
+      ipc: { handle: (channel, handler) => handlers.set(channel, handler), removeHandler: () => undefined },
+      app: { relaunch: () => { restarted += 1 }, quit: () => undefined },
+      getExpectedWebContents: () => expectedWebContents,
+      acquireMigrationGuard: async () => ({ release: () => undefined }),
+      coordinator: { getStatus: () => locator.inspect().state,
+        previewTarget: async () => { throw new Error('不能扫描复制') },
+        createPlan: async () => { throw new Error('不能创建复制计划') },
+        runPending: async () => undefined, resumePending: async () => undefined, cancel: async () => undefined },
+    })
+    const selection = await handlers.get(PATH_MANAGEMENT_IPC_CHANNELS.PICK_DATA_ROOT)!(expectedEvent, 'default')
+    expect(selection).toMatchObject({ targetRoot: join(home, '.DutyDeck') })
+    const preview = await handlers.get(PATH_MANAGEMENT_IPC_CHANNELS.PREVIEW_DATA_ROOT_MIGRATION)!(expectedEvent, selection)
+    expect(preview).toMatchObject({ strategy: 'move', requiredBytes: 0, blockers: [] })
+    await handlers.get(PATH_MANAGEMENT_IPC_CHANNELS.START_DATA_ROOT_MIGRATION)!(expectedEvent, selection)
+    expect(restarted).toBe(1)
+    const saved = new DataRootLocator({ homeDir: home }).inspect()
+    expect(saved.state.activeRoot).toBe(source)
+    expect(saved.locatorFile?.defaultRootMoveRequest?.targetRoot).toBe(join(home, '.DutyDeck'))
+    await expect(handlers.get(PATH_MANAGEMENT_IPC_CHANNELS.START_DATA_ROOT_MIGRATION)!(expectedEvent, selection)).rejects.toThrow('目标选择已失效')
   })
 })

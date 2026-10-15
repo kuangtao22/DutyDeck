@@ -502,6 +502,52 @@ describe('原生 Canvas 纯投影', () => {
     })
   })
 
+  test('Given 未采用图片的准备错误或失败任务 When 完整与增量投影 Then 显示准确状态', () => {
+    /** 没有正式图片的初始卡片。 */
+    const document = createDocument()
+    /** 生图节点用于模拟配置准备与任务终态。 */
+    const node = document.nodes.find((entry) => entry.kind === 'image')!
+    if (node.kind !== 'image') throw new Error('需要图片夹具')
+    delete node.adoptedAssetId
+    /** 每种状态同时覆盖完整投影和增量刷新，避免两条路径漂移。 */
+    for (const [state, label, summary] of [
+      [{ preparationMessage: '请选择可用的生图模型' }, '待配置', '请选择可用的生图模型'],
+      [{ failed: true }, '生成失败', '上次生成失败，请打开详情查看原因'],
+    ] as const) {
+      /** 仅使用可信轻量状态，不加载模块或媒体。 */
+      const options = {
+        nodeIssues: [], runningSessionIds: new Set<string>(),
+        imageStatusByNodeId: new Map([[node.id, state]]),
+        canCreateChild: false, onCreateChild: () => undefined, onWorkbenchNodeChange: () => undefined,
+      }
+      expect(toNativeCanvasFlowNodes(document, options).find((entry) => entry.id === node.id)?.data)
+        .toMatchObject({ statusLabel: label, summary })
+      /** 初始投影模拟收到迟到配置或任务事件之前的节点。 */
+      const initial = toNativeCanvasFlowNodes(document).find((entry) => entry.id === node.id)!
+      expect(patchNativeCanvasFlowNodeRuntimeState(initial, node, options).data)
+        .toMatchObject({ statusLabel: label, summary })
+      expect(toNativeCanvasFlowNodes(document, { ...options, imageCandidateNodeIds: new Set([node.id]) })
+        .find((entry) => entry.id === node.id)?.data.statusLabel).toBe('待采用')
+      expect(toNativeCanvasFlowNodes(document, { ...options, nodeActivityStates: new Map([[node.id, 'running' as const]]) })
+        .find((entry) => entry.id === node.id)?.data.statusLabel).toBe('运行中')
+    }
+  })
+
+  test('Given 已绑定图片来源没有正式素材 When 投影 Then 保留规划关系并提示等待上游素材', () => {
+    /** 图片来源与下游节点身份保持不变，素材准备状态不修改关系。 */
+    const document = createDocument()
+    document.nodes.push({ id: 'source', kind: 'image', title: '原图', imageModuleId: 'source-module', position: { x: 0, y: 0 } })
+    document.edges = [{ id: 'planned', sourceNodeId: 'source', sourcePort: 'image.asset', targetNodeId: 'image-1', targetPort: 'image.reference', relation: 'reference' }]
+    expect(toNativeCanvasFlowEdges(document)[0]).toMatchObject({ label: '引用 · 等待上游素材', data: { relation: 'reference', bindingState: 'bound' } })
+    /** 正式采用后自然恢复普通引用标签，无需重新连线。 */
+    const source = document.nodes.find((entry) => entry.id === 'source')!
+    if (source.kind === 'image') source.adoptedAssetId = 'adopted'
+    expect(toNativeCanvasFlowEdges(document)[0]?.label).toBe('引用')
+    if (source.kind === 'image') delete source.adoptedAssetId
+    document.edges[0] = { ...document.edges[0]!, relation: 'association', sourcePort: 'unbound', targetPort: 'unbound' }
+    expect(toNativeCanvasFlowEdges(document)[0]?.label).toBe('关联')
+  })
+
   test('Given WebView 设备预设 When 计算节点几何 Then 返回稳定网页与手机卡片尺寸', () => {
     expect(resolveNativeCanvasNodeSize({ kind: 'webview', devicePreset: 'desktop' }))
       .toEqual({ width: 384, height: 316 })

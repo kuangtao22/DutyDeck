@@ -1,5 +1,6 @@
 import type {
   KnowledgeEntry,
+  KnowledgePlanSource,
   KnowledgeReadInput,
   KnowledgeReadResult,
   KnowledgeReviewInput,
@@ -16,6 +17,10 @@ import type {
   KnowledgeAssetCopyInput,
   KnowledgeAssetCopyResult,
   KnowledgeSourceKind,
+  KnowledgeImportResult,
+  KnowledgeIndexPreview,
+  KnowledgeIndexRebuildInput,
+  KnowledgeIndexRebuildResult,
 } from '@proma/shared'
 import { KNOWLEDGE_SOURCE_KINDS } from '@proma/shared'
 import {
@@ -24,7 +29,7 @@ import {
   undoManagedKnowledge,
 } from './organizer'
 import { resolveSourcePath, validateResolvedProject } from './paths'
-import { scanProjectKnowledge } from './scanner'
+import { scanProjectKnowledge, refreshRegisteredKnowledgeSources } from './scanner'
 import { containsKnowledgeSecret } from './sensitive-text'
 import {
   MAX_READ_PAGE_BYTES,
@@ -35,6 +40,8 @@ import {
 import { createProjectKnowledgeStore } from './store'
 import { createKnowledgeVault, readVaultDocument } from './vault'
 import { copyKnowledgeAsset } from './assets'
+import { isKnowledgeAdmissionCurrent, knowledgeEvidenceHash } from './admission'
+import { importKnowledgeSources } from './import'
 import type {
   KnowledgeManifest,
   KnowledgeScanTask,
@@ -121,28 +128,42 @@ const SEARCH_ALIASES: ReadonlyArray<ReadonlyArray<string>> = [
   ['login', 'auth', 'authentication', '登录', '鉴权', '认证'],
 ]
 
+/** Agent 扫描生命周期：取消检查保持轻量，完整身份在批次和发布时核验。 */
+export interface KnowledgeScanGuard {
+  assertCurrent(): void
+  isCancelled(): boolean
+}
+
 /** 项目知识核心服务公开合同。 */
 export interface ProjectKnowledgeService {
   /** 将已登记资产复制进已确认资料库，返回可移植相对链接。 */
   copyAsset: (input: KnowledgeAssetCopyInput) => Promise<KnowledgeAssetCopyResult>
   /** 保存待用户确认的分组提案，不生成正式正文。 */
-  proposePlan: (input: KnowledgePlanProposalInput) => Promise<KnowledgeSnapshot>
+  proposePlan: (input: KnowledgePlanProposalInput, assertCurrent?: () => void) => Promise<KnowledgeSnapshot>
   /** 仅由宿主 UI 确认用户所见版本和选中分组。 */
   confirmPlan: (input: KnowledgePlanConfirmInput) => Promise<KnowledgeSnapshot>
   /** 在已确认范围内保存真实文件大纲。 */
-  saveOutline: (input: KnowledgeOutlineInput) => Promise<KnowledgeSnapshot>
+  saveOutline: (input: KnowledgeOutlineInput, assertCurrent?: () => void) => Promise<KnowledgeSnapshot>
   /** 依据大纲及磁盘版本保存自包含正文。 */
-  writeDocument: (input: KnowledgeDocumentWriteInput) => Promise<KnowledgeSnapshot>
+  writeDocument: (input: KnowledgeDocumentWriteInput, assertCurrent?: () => void) => Promise<KnowledgeSnapshot>
   /** 用户暂停或恢复已确认范围的维护。 */
   pauseWorkflow: (input: KnowledgeWorkflowPauseInput) => Promise<KnowledgeSnapshot>
   getSnapshot: (workspaceId: string) => Promise<KnowledgeSnapshot>
-  startScan: (workspaceId: string) => Promise<KnowledgeSnapshot>
+  startScan: (workspaceId: string, guard?: KnowledgeScanGuard, onStarted?: () => void) => Promise<KnowledgeSnapshot>
   cancelScan: (workspaceId: string) => Promise<KnowledgeSnapshot>
   search: (input: KnowledgeSearchInput) => Promise<KnowledgeSearchResult>
+  /** 有界刷新已登记文件，不能拓展来源范围。 */
+  refreshSources: (workspaceId: string, sources: KnowledgePlanSource[], assertCurrent?: () => void) => Promise<KnowledgeEntry[]>
   read: (input: KnowledgeReadInput) => Promise<KnowledgeReadResult>
   reviewEntry: (input: KnowledgeReviewInput) => Promise<KnowledgeSnapshot>
   organize: (workspaceId: string) => Promise<KnowledgeSnapshot>
   undo: (workspaceId: string, operationId: string) => Promise<KnowledgeSnapshot>
+  /** 将宿主选择的旧知识库安全暂存到项目来源区。 */
+  importSources: (workspaceId: string, paths: string[], assertCurrent?: () => void) => Promise<KnowledgeImportResult>
+  /** 只读索引差异预览。 */
+  previewIndex: (workspaceId: string) => Promise<KnowledgeIndexPreview>
+  /** 用户确认后的索引恢复。 */
+  rebuildIndex: (input: KnowledgeIndexRebuildInput) => Promise<KnowledgeIndexRebuildResult>
   /** 等待已登记扫描任务结束；无任务时立即返回。 */
   waitForScan: (workspaceId: string) => Promise<void>
   /** 后续 1B/1C 复用的显式版本存储扩展点。 */
@@ -393,7 +414,7 @@ export function createProjectKnowledgeService(
   ): KnowledgeSearchHit {
     return {
       ...hit,
-      entry: { ...hit.entry, freshness, summary: '' },
+      entry: { ...hit.entry, freshness, summary: '', admission: hit.entry.admission ? { ...hit.entry.admission, status: 'invalidated' } : undefined },
       snippet: '',
       line: 1,
     }
@@ -401,10 +422,20 @@ export function createProjectKnowledgeService(
 
   /** 只为待展示知识核验有限来源，拒绝递归知识引用及过期文件依据。 */
   async function getEvidenceFreshness(
+    workspaceId: string,
     project: ResolvedKnowledgeProject,
     manifest: KnowledgeManifest,
     entry: KnowledgeEntry,
   ): Promise<'current' | 'changed' | 'unavailable'> {
+    if (entry.userEvidence) {
+      if (!entry.userEvidence.sha256 || !/^[a-f0-9]{64}$/.test(entry.userEvidence.sha256) || !dependencies.revalidateUserEvidence) return 'unavailable'
+      try {
+        const userFreshness = await dependencies.revalidateUserEvidence(workspaceId, entry.userEvidence)
+        if (userFreshness !== 'current') return userFreshness === 'changed' ? 'changed' : 'unavailable'
+      } catch {
+        return 'unavailable'
+      }
+    }
     if (!entry.evidence || (entry.document && entry.evidence.length === 0)) return 'current'
     if (entry.evidence.length === 0 || entry.evidence.length > 8) return 'unavailable'
     for (const reference of entry.evidence) {
@@ -436,14 +467,21 @@ export function createProjectKnowledgeService(
     return 'current'
   }
 
+  /** 根据实际正文和来源检查结果使旧评估失效，不修改历史证据。 */
+  function presentAdmission(entry: KnowledgeEntry, content: string, freshness: string): KnowledgeEntry {
+    if (!entry.admission || (freshness === 'current' && isKnowledgeAdmissionCurrent(entry, content))) return entry
+    return { ...entry, admission: { ...entry.admission, status: 'invalidated' } }
+  }
+
   /** 只对已经分页选中的命中复核来源，避免查询读取全部正文。 */
   async function refreshSearchHit(
+    workspaceId: string,
     project: ResolvedKnowledgeProject,
     manifest: KnowledgeManifest,
     hit: KnowledgeSearchHit,
     terms: string[] | null,
   ): Promise<KnowledgeSearchHit> {
-    const entry = presentSourceState(hit.entry)
+    let entry = presentSourceState(hit.entry)
     hit = { ...hit, entry }
     if (entry.source.kind === 'canvas' || entry.source.kind === 'api') {
       if (!dependencies.controlledSources) return staleSearchHit(hit, 'unavailable')
@@ -465,12 +503,13 @@ export function createProjectKnowledgeService(
     if (entry.source.kind === 'managed' || entry.source.kind === 'conversation') {
       try {
         /** 真实文档保留可读内容，来源变化单独标记为待核对。 */
-        const freshness = await getEvidenceFreshness(project, manifest, entry)
+        const freshness = await getEvidenceFreshness(workspaceId, project, manifest, entry)
         if (!entry.document && freshness !== 'current') return staleSearchHit(hit, freshness)
         /** 新文档以磁盘正文为准，旧碎片继续读取固定历史版本。 */
         const content = entry.document ? readVaultDocument(project, entry) : store.readContent(project, manifest, entry.id)
         if (content === null) return staleSearchHit(hit, 'unavailable')
         /** 阅读状态独立于事实新鲜度，保留原证据便于追溯。 */
+        entry = presentAdmission(entry, content, freshness)
         const currentEntry = { ...entry, freshness: freshness === 'current' ? entry.freshness : freshness }
         if (!terms) return { ...hit, entry: currentEntry, snippet: entry.summary }
         return scoreEntry(currentEntry, content.slice(0, 256 * 1024), terms) ?? staleSearchHit(hit, 'changed')
@@ -530,12 +569,24 @@ export function createProjectKnowledgeService(
     await vault.refresh(workspaceId)
     /** 当前 fresh 解析的项目。 */
     const project = resolveWorkspace(workspaceId)
-    return createSnapshot(project, store.readManifest(project))
+    const manifest = store.readManifest(project)
+    const snapshot = createSnapshot(project, manifest)
+    if (!manifest) return snapshot
+    /** 首页至多两百项，分批最多四个来源复核，避免集中读取会话或受控 API。 */
+    for (let offset = 0; offset < snapshot.entries.length; offset += 4) {
+      const checked = await Promise.all(snapshot.entries.slice(offset, offset + 4).map(async (entry) => {
+        if (!entry.admission) return entry
+        const freshness = await getEvidenceFreshness(workspaceId, project, manifest, entry)
+        return freshness === 'current' ? entry : { ...entry, freshness, admission: { ...entry.admission, status: 'invalidated' as const } }
+      }))
+      snapshot.entries.splice(offset, checked.length, ...checked)
+    }
+    return snapshot
   }
 
   /** 提案只更新工作流，返回最新权威清单供 Agent 等待用户确认。 */
-  async function proposePlan(input: KnowledgePlanProposalInput): Promise<KnowledgeSnapshot> {
-    await vault.proposePlan(input)
+  async function proposePlan(input: KnowledgePlanProposalInput, assertCurrent?: () => void): Promise<KnowledgeSnapshot> {
+    await vault.proposePlan(input, assertCurrent)
     return getSnapshot(input.workspaceId)
   }
 
@@ -546,15 +597,36 @@ export function createProjectKnowledgeService(
   }
 
   /** 大纲先于正文落盘，待补项保持无正文身份。 */
-  async function saveOutline(input: KnowledgeOutlineInput): Promise<KnowledgeSnapshot> {
-    await vault.saveOutline(input)
+  async function saveOutline(input: KnowledgeOutlineInput, assertCurrent?: () => void): Promise<KnowledgeSnapshot> {
+    await vault.saveOutline(input, assertCurrent)
     return getSnapshot(input.workspaceId)
   }
 
   /** 正文写入由 vault 复核磁盘和计划版本，拒绝覆盖人工修改。 */
-  async function writeDocument(input: KnowledgeDocumentWriteInput): Promise<KnowledgeSnapshot> {
-    await vault.writeDocument(input)
+  async function writeDocument(input: KnowledgeDocumentWriteInput, assertCurrent?: () => void): Promise<KnowledgeSnapshot> {
+    await vault.writeDocument(input, assertCurrent)
     return getSnapshot(input.workspaceId)
+  }
+
+  /** 将用户选择的旧库原文暂存为受管项目来源，扫描与 Agent 后续负责智能归档。 */
+  async function importSources(workspaceId: string, paths: string[], assertCurrent?: () => void): Promise<KnowledgeImportResult> {
+    if (!Array.isArray(paths) || paths.length > 64) throw new Error('导入来源数量无效')
+    const project = resolveWorkspace(workspaceId)
+    if (dependencies.assertWritable) await dependencies.assertWritable(workspaceId)
+    const assertImportCurrent = (): void => {
+      assertCurrent?.()
+    }
+    return importKnowledgeSources({ projectRoot: project.projectRoot, paths, assertCurrent: assertImportCurrent })
+  }
+
+  /** 索引预览不触碰 manifest 与文件。 */
+  async function previewIndex(workspaceId: string): Promise<KnowledgeIndexPreview> {
+    return vault.previewIndex(workspaceId)
+  }
+
+  /** 索引恢复由 vault 在事务锁内复核版本并建立旧内容备份。 */
+  async function rebuildIndex(input: KnowledgeIndexRebuildInput): Promise<KnowledgeIndexRebuildResult> {
+    return vault.rebuildIndex(input)
   }
 
   /** 暂停只修改后续维护状态，不改变已有可读文件。 */
@@ -564,15 +636,21 @@ export function createProjectKnowledgeService(
   }
 
   /** 启动后台扫描并在返回前登记可等待任务。 */
-  async function startScan(workspaceId: string): Promise<KnowledgeSnapshot> {
+  async function startScan(workspaceId: string, guard?: KnowledgeScanGuard, onStarted?: () => void): Promise<KnowledgeSnapshot> {
+    guard?.assertCurrent()
     /** 本次启动 fresh 解析的项目。 */
     const project = resolveWorkspace(workspaceId)
     /** 同项目已有扫描时直接返回当前状态。 */
     const existingTask = scanTasks.get(project.projectId)
     if (existingTask?.progress.status === 'running') return createSnapshot(project, store.readManifest(project))
     if (dependencies.assertWritable) await dependencies.assertWritable(workspaceId)
+    guard?.assertCurrent()
     /** 首次扫描才初始化权威空清单。 */
-    const manifest = await store.initialize(project, workspaceId)
+    const manifest = await store.initialize(project, workspaceId, guard?.assertCurrent)
+    guard?.assertCurrent()
+    /** 初始化期间其他调用可能已创建任务；重检后到注册之间不得再异步等待。 */
+    const concurrentTask = scanTasks.get(project.projectId)
+    if (concurrentTask?.progress.status === 'running') return createSnapshot(project, store.readManifest(project))
     /** 对外立即可见的运行状态。 */
     const progress: KnowledgeScanProgress = {
       status: 'running',
@@ -589,6 +667,7 @@ export function createProjectKnowledgeService(
       promise: Promise.resolve(),
     }
     scanTasks.set(project.projectId, task)
+    onStarted?.()
     task.promise = (async () => {
       await new Promise<void>((resolvePromise) => setImmediate(resolvePromise))
       try {
@@ -598,6 +677,8 @@ export function createProjectKnowledgeService(
         /** 执行扫描时的最新权威清单。 */
         const currentManifest = store.readManifest(currentProject)
         if (!currentManifest) throw new Error('知识库尚未初始化')
+        /** 每批至多 64 次取消检查才重读会话/项目元数据，发布仍在锁内完整核验。 */
+        let cancellationChecks = 0
         /** 本轮扫描发布结果。 */
         const result = await scanProjectKnowledge({
           project: currentProject,
@@ -605,7 +686,14 @@ export function createProjectKnowledgeService(
           store,
           manifest: currentManifest,
           now,
-          isCancelled: () => task.cancelled,
+          isCancelled: () => {
+            if (guard?.isCancelled()) task.cancelled = true
+            if (!task.cancelled && guard && cancellationChecks++ % 64 === 0) {
+              try { guard.assertCurrent() } catch { task.cancelled = true }
+            }
+            return task.cancelled
+          },
+          assertCurrent: guard?.assertCurrent,
           onProgress: (partial) => Object.assign(task.progress, partial),
           controlledSources: dependencies.controlledSources,
         })
@@ -656,6 +744,7 @@ export function createProjectKnowledgeService(
     if (input.sourceKind !== undefined && !KNOWLEDGE_SOURCE_KINDS.includes(input.sourceKind as KnowledgeSourceKind)) {
       throw new Error('知识检索来源类型非法')
     }
+    if (input.includeUnassessed !== undefined && typeof input.includeUnassessed !== 'boolean') throw new Error('知识待核检索选项非法')
     /** 去除首尾空白后的查询。 */
     const query = input.query.trim()
     if (query.length > MAX_QUERY_LENGTH) throw new Error('知识检索查询过长')
@@ -674,17 +763,22 @@ export function createProjectKnowledgeService(
     const allEntries = store.readEntries(project, manifest)
     /** 默认知识查询去掉已经完整迁移的旧碎片，includeHistory 可再次查看。 */
     const migratedIds = migratedLegacyIds(manifest, allEntries)
-    const entries = allEntries
+    const candidates = allEntries
       .filter((entry) => input.includeHistory || input.scope === 'sources' || !migratedIds.has(entry.id))
       .filter((entry) => !(manifest.excludedSources ?? []).includes(entry.source.id))
       .filter((entry) => input.scope === 'knowledge' ? isDistilledKnowledge(entry)
         : input.scope === 'sources' ? !isDistilledKnowledge(entry) : true)
+      .filter((entry) => input.includeUnassessed === true || !isDistilledKnowledge(entry) || entry.admission?.status === 'eligible')
       .filter((entry) => !input.sourceKind || entry.source.kind === input.sourceKind)
       .filter((entry) => !input.category || entry.category === input.category)
       .filter((entry) => input.includeHistory
         ? true
         : entry.state !== 'archived' && entry.state !== 'superseded'
           && (entry.freshness === 'current' || Boolean(entry.document && entry.freshness !== 'unavailable')))
+    /** 仅做内存绑定检查；实际来源读取留到匹配、分页之后。total 表示候选数。 */
+    const entries = candidates.filter((candidate) => input.includeUnassessed === true || !isDistilledKnowledge(candidate)
+      || (candidate.admission?.ruleVersion === 1
+        && candidate.admission.evidenceHash === knowledgeEvidenceHash(candidate.evidence, candidate.userEvidence)))
     /** 与当前 manifest 精确匹配的缓存。 */
     const index = store.readIndex(project, manifest.indexRevision ?? manifest.revision)
     /** 当前扫描是否正在构建索引。 */
@@ -704,12 +798,13 @@ export function createProjectKnowledgeService(
         score: 0,
       }))
       /** 当前页复核后的目录命中。 */
-      const items = await Promise.all(page.map((hit) => refreshSearchHit(project, manifest, hit, null)))
+      const items = (await Promise.all(page.map((hit) => refreshSearchHit(input.workspaceId, project, manifest, hit, null))))
+        .filter((hit) => input.includeUnassessed === true || !isDistilledKnowledge(hit.entry) || hit.entry.admission?.status === 'eligible')
       return {
         revision: manifest.revision,
         items,
         total: entries.length,
-        nextOffset: offset + items.length < sorted.length ? offset + items.length : undefined,
+        nextOffset: offset + page.length < sorted.length ? offset + page.length : undefined,
         indexStatus,
       }
     }
@@ -731,14 +826,20 @@ export function createProjectKnowledgeService(
     hits.sort((left, right) => right.score - left.score || right.entry.updatedAt - left.entry.updatedAt)
     /** 先分页，再只复核当前页命中的真实来源。 */
     const page = hits.slice(offset, offset + limit)
-    const items = await Promise.all(page.map((hit) => refreshSearchHit(project, manifest, hit, terms)))
+    const items = (await Promise.all(page.map((hit) => refreshSearchHit(input.workspaceId, project, manifest, hit, terms))))
+      .filter((hit) => input.includeUnassessed === true || !isDistilledKnowledge(hit.entry) || hit.entry.admission?.status === 'eligible')
     return {
       revision: manifest.revision,
       items,
       total: hits.length,
-      nextOffset: offset + items.length < hits.length ? offset + items.length : undefined,
+      nextOffset: offset + page.length < hits.length ? offset + page.length : undefined,
       indexStatus,
     }
+  }
+
+  /** 重新解析授权项目后刷新指定来源，不隐式全量扫描。 */
+  async function refreshSources(workspaceId: string, sources: KnowledgePlanSource[], assertCurrent?: () => void): Promise<KnowledgeEntry[]> {
+    return refreshRegisteredKnowledgeSources(resolveWorkspace(workspaceId), workspaceId, store, sources, dependencies.now ?? Date.now, assertCurrent)
   }
 
   /** 从已登记来源有界读取当前正文。 */
@@ -828,7 +929,7 @@ export function createProjectKnowledgeService(
     }
     if (entry.source.kind === 'managed' || entry.source.kind === 'conversation') {
       /** 来源新鲜度与正式文档的可读性分离，旧碎片沿用原契约。 */
-      const freshness = await getEvidenceFreshness(project, manifest, entry)
+      const freshness = await getEvidenceFreshness(input.workspaceId, project, manifest, entry)
       if (!entry.document && freshness !== 'current') {
         return { entry: { ...entry, freshness, summary: '' }, content: '', status: freshness, offset, truncated: false }
       }
@@ -838,7 +939,7 @@ export function createProjectKnowledgeService(
       /** 当前正文页。 */
       const page = paginateManagedContent(content, offset)
       return {
-        entry: { ...entry, freshness: freshness === 'current' ? entry.freshness : freshness },
+        entry: { ...presentAdmission(entry, content, freshness), freshness: freshness === 'current' ? entry.freshness : freshness },
         content: page.content,
         status: 'readable',
         offset,
@@ -939,10 +1040,14 @@ export function createProjectKnowledgeService(
     startScan,
     cancelScan,
     search,
+    refreshSources,
     read,
     reviewEntry,
     organize,
     undo,
+    importSources,
+    previewIndex,
+    rebuildIndex,
     waitForScan,
     store,
   }

@@ -1,4 +1,6 @@
+import type { TokenUsageTiming } from '../token-usage-observer'
 import type {
+  TokenUsageAmounts,
   AgentRuntimeEvent,
   AgentRuntimeRequest,
   AgentRuntimeError,
@@ -362,6 +364,9 @@ export class PiUtilityAdapter {
       case 'model_resolved':
         pending.input.onModelResolved?.(String(callbackPayload?.model ?? ''))
         break
+      case 'usage_attempt':
+        try { pending.input.onUsageAttempt?.((callbackPayload?.usage ?? null) as TokenUsageAmounts | null, callbackPayload?.status as 'completed' | 'failed' | 'cancelled', callbackPayload?.timing as TokenUsageTiming | undefined) } catch { /* 统计失败不终止流 */ }
+        break
       case 'context_window':
         pending.input.onContextWindow?.(Number(callbackPayload?.contextWindow ?? 0))
         break
@@ -387,6 +392,7 @@ function serializeQueryInput(input: PiAgentQueryOptions): Record<string, unknown
     onPiEntryBindings: _onPiEntryBindings,
     onModelResolved: _onModelResolved,
     onContextWindow: _onContextWindow,
+    onUsageAttempt: _onUsageAttempt,
     onRetry: _onRetry,
     onFileChangeCapture: _onFileChangeCapture,
     onSkillActivated: _onSkillActivated,

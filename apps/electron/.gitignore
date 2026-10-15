@@ -1,0 +1,3 @@
+
+# 固定本地引擎归档缓存，不进入版本库。
+.local-model-engine-cache/

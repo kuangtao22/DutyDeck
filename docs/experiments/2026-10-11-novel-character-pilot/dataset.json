@@ -1,0 +1,1148 @@
+{
+  "id": "novel-character-real-pilot-20261011",
+  "name": "小说角色提取真实试点30条-20261011",
+  "version": 1,
+  "updatedAt": 1791729820465,
+  "protocol": {
+    "protocolVersion": "novel-character-real-pilot-20261011-v1",
+    "scorerVersion": 1,
+    "primaryMetric": "f1",
+    "mode": "tuple-set",
+    "outputPath": "characters",
+    "expectedPath": "characters",
+    "tupleFields": [
+      "name"
+    ],
+    "normalization": {
+      "trim": true,
+      "caseFold": false,
+      "arrayOrder": "ordered"
+    },
+    "requireReview": true
+  },
+  "cases": [
+    {
+      "id": "optimization-01",
+      "name": "本机真实片段 1",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"c0-p0\",\"text\":\"红日西坠，列车远去，在与铁轨的震动声中带起大片枯黄的落叶，也带起秋的萧瑟。\"}\n{\"paragraphRef\":\"c0-p1\",\"text\":\"王煊注视，直至列车渐消失，他才收回目光，又送走了几位同学。\"}\n{\"paragraphRef\":\"c0-p2\",\"text\":\"自此一别，将天各一方，不知道多少年后才能再相见，甚至有些人再无重逢期。\"}\n{\"paragraphRef\":\"c0-p3\",\"text\":\"周围，有人还在缓慢地挥手，久久未曾放下，也有人沉默着，颇为伤感。\"}\n{\"paragraphRef\":\"c0-p4\",\"text\":\"大学四年，一起走过，积淀下的情谊总有些难以割舍。\"}\n{\"paragraphRef\":\"c0-p5\",\"text\":\"落日余晖斜照飘落的黄叶，光影斑驳，交织出几许岁月流逝之感。\"}\n{\"paragraphRef\":\"c0-p6\",\"text\":\"一位清秀的女生转过身去，暗自擦去镜片后的眼泪。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "王煊",
+            "nameEvidence": {
+              "paragraphRef": "c0-p1",
+              "selectedText": "王煊注视，直至列车渐消失，他才收回目光，又送走了几位同学。"
+            }
+          }
+        ],
+        "scanComplete": true
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "local-source",
+        "name-set-only"
+      ],
+      "scoring": {
+        "split": "optimization",
+        "sourceGroupId": "local-saved-novel-wangxuan-qincheng",
+        "inputFingerprint": "76774eb1f448cbe3867c05232a8f2c9ffd9858b1d5e43cb9e91cb48734dfcf74",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "optimization-02",
+      "name": "本机真实片段 2",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"c0-p7\",\"text\":\"在这个特殊的年代，毕业后他们将各自归去，此生可能都不再相遇。\"}\n{\"paragraphRef\":\"c0-p8\",\"text\":\"秋风吹过，黄叶凌乱，纷纷扬扬。\"}\n{\"paragraphRef\":\"c0-p9\",\"text\":\"在这个季节，有人失意，有人得意。\"}\n{\"paragraphRef\":\"c0-p10\",\"text\":\"毕业四个月了，有人留在了这座城市，前程灿烂，也有人在忐忑中等待，坚守，而更多的人则怅然离去，将回故里。\"}\n{\"paragraphRef\":\"c0-p11\",\"text\":\"王煊走在回去的路上，也在想自己将何去何从。\"}\n{\"paragraphRef\":\"c0-p12\",\"text\":\"街道陈旧，路两旁的梧桐树大片地坠落叶子，满地都是。\"}\n{\"paragraphRef\":\"c0-p13\",\"text\":\"有人与他并肩走在一起，为他鸣不平：“留下的人没有你，为什么会这样？他们竟将你放弃！”\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "王煊",
+            "nameEvidence": {
+              "paragraphRef": "c0-p11",
+              "selectedText": "王煊走在回去的路上，也在想自己将何去何从。"
+            }
+          }
+        ],
+        "scanComplete": true
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "local-source",
+        "name-set-only"
+      ],
+      "scoring": {
+        "split": "optimization",
+        "sourceGroupId": "local-saved-novel-wangxuan-qincheng",
+        "inputFingerprint": "a58a9c0169a763367fba555e17c6aa8aec2c72d4736b8b735e258ecd214d336d",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "optimization-03",
+      "name": "本机真实片段 3",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"c0-p14\",\"text\":\"身为同窗兼好友，在秦诚看来，但凡有名额都绕不开王煊，他必然会被选中。\"}\n{\"paragraphRef\":\"c0-p15\",\"text\":\"结果出来后，许多人心情复杂，王煊居然落选。\"}\n{\"paragraphRef\":\"c0-p16\",\"text\":\"“不说我了，你怎么样，有结果了吗？”王煊问他。\"}\n{\"paragraphRef\":\"c0-p17\",\"text\":\"秦诚小声告诉他，家里托了关系，可能要去新月。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "秦诚",
+            "nameEvidence": {
+              "paragraphRef": "c0-p14",
+              "selectedText": "身为同窗兼好友，在秦诚看来，但凡有名额都绕不开王煊，他必然会被选中。"
+            }
+          },
+          {
+            "name": "王煊",
+            "nameEvidence": {
+              "paragraphRef": "c0-p14",
+              "selectedText": "身为同窗兼好友，在秦诚看来，但凡有名额都绕不开王煊，他必然会被选中。"
+            }
+          }
+        ],
+        "scanComplete": true
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "local-source",
+        "name-set-only"
+      ],
+      "scoring": {
+        "split": "optimization",
+        "sourceGroupId": "local-saved-novel-wangxuan-qincheng",
+        "inputFingerprint": "35c43990d990e00e16c825f3a24629f2497b7c5f9cbfdb8707abc47afd8b7e3a",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "optimization-04",
+      "name": "本机真实片段 4",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"c0-p18\",\"text\":\"“新月，深空对岸，不知道以后我们还能不能再见。”王煊停下脚步，身边的好友都将远行了。\"}\n{\"paragraphRef\":\"c0-p19\",\"text\":\"他身材颀长，并不单薄，匀称有力，在晚霞中，身上有一层淡金光彩，一双眼睛清澈而有神。\"}\n{\"paragraphRef\":\"c0-p20\",\"text\":\"“我会回来的，肯定还能相见。”秦诚是个感性的人，难舍故土，尤其是想到，很难再见到好友，心中有些不好受。\"}\n{\"paragraphRef\":\"c0-p21\",\"text\":\"“回来时喊我！”王煊用力抱了抱他的肩头。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "王煊",
+            "nameEvidence": {
+              "paragraphRef": "c0-p18",
+              "selectedText": "“新月，深空对岸，不知道以后我们还能不能再见。”王煊停下脚步，身边的好友都将远行了。"
+            }
+          },
+          {
+            "name": "秦诚",
+            "nameEvidence": {
+              "paragraphRef": "c0-p20",
+              "selectedText": "“我会回来的，肯定还能相见。”秦诚是个感性的人，难舍故土，尤其是想到，很难再见到好友，心中有些不好受。"
+            }
+          }
+        ],
+        "scanComplete": true
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "local-source",
+        "name-set-only"
+      ],
+      "scoring": {
+        "split": "optimization",
+        "sourceGroupId": "local-saved-novel-wangxuan-qincheng",
+        "inputFingerprint": "c8e97dca312848c2e7e75fee5edaf2cbab9eeac58e6b100fd2f9946c3cf3c2e1",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "optimization-05",
+      "name": "本机真实片段 5",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"c0-p22\",\"text\":\"风中有哽咽声传来，王煊与秦诚回头，看到一位男同学情绪很激动。\"}\n{\"paragraphRef\":\"c0-p23\",\"text\":\"他脸色苍白，哭出声来，用力喊着：“我真的很想留在这座城市，想等到最后的机会，我不想这样回老家！”\"}\n{\"paragraphRef\":\"c0-p24\",\"text\":\"在这里生活与学习了四年，他已经很努力了，拼搏、争取、规划自己的未来，想找到自己的位置，但终究留不下来。\"}\n{\"paragraphRef\":\"c0-p25\",\"text\":\"他失声痛哭。\"}\n{\"paragraphRef\":\"c0-p26\",\"text\":\"秋风带着凉意，一些同窗跟着心情低落。\"}\n{\"paragraphRef\":\"c0-p27\",\"text\":\"另一边，一对情侣停下脚步，彼此相顾，没有言语，只是在无声地落泪。\"}\n{\"paragraphRef\":\"c0-p28\",\"text\":\"他们将分别，从此以后相距不是数千里，而是隔着一片星空，此生或许再也见不到了。\"}\n{\"paragraphRef\":\"c0-p29\",\"text\":\"两人脸上满是泪水，最后一次相拥，而后，只剩下沉默。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "王煊",
+            "nameEvidence": {
+              "paragraphRef": "c0-p22",
+              "selectedText": "风中有哽咽声传来，王煊与秦诚回头，看到一位男同学情绪很激动。"
+            }
+          },
+          {
+            "name": "秦诚",
+            "nameEvidence": {
+              "paragraphRef": "c0-p22",
+              "selectedText": "风中有哽咽声传来，王煊与秦诚回头，看到一位男同学情绪很激动。"
+            }
+          }
+        ],
+        "scanComplete": true
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "local-source",
+        "name-set-only"
+      ],
+      "scoring": {
+        "split": "optimization",
+        "sourceGroupId": "local-saved-novel-wangxuan-qincheng",
+        "inputFingerprint": "5a5f0d2dbd5f30e65cd02a895b3aff4484073991b6653849dd4e7502466b013a",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "optimization-06",
+      "name": "本机真实片段 6",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"c0-p30\",\"text\":\"这座城市很大，但却有些陈旧，保留着旧时代的痕迹，路旁不少古树都很粗，有一两百年了。\"}\n{\"paragraphRef\":\"c0-p31\",\"text\":\"相对而言，整座城市承接过去的风格，在岁月中保存下来。\"}\n{\"paragraphRef\":\"c0-p32\",\"text\":\"其他地方，有些旧时代留下的城市则废弃了，久无人迹，大面积的荒芜，爬满藤蔓，荆棘丛生，渐渐被草木淹没。\"}\n{\"paragraphRef\":\"c0-p33\",\"text\":\"回到校区后，秦诚还在为王煊不忿，劝他去找人了解原因，为什么被放弃，讨一个说法。\"}\n{\"paragraphRef\":\"c0-p34\",\"text\":\"即便毕业了，他们也被允许住宿在校区，直到确定完最终的所有人选。\"}\n{\"paragraphRef\":\"c0-p35\",\"text\":\"这次机会难得，被选中的人留在这座城市等待，不久后将前往新星，那边似乎有了某种非同寻常的发现。\"}\n{\"paragraphRef\":\"c0-p36\",\"text\":\"秦诚也没有被选中，他家里人费尽力气也只是给了他进入深空的机会。\"}\n{\"paragraphRef\":\"c0-p37\",\"text\":\"他将前往新月，那颗围绕新星转动的月亮，是新星外最重要的基地。\"}\n{\"paragraphRef\":\"c0-p38\",\"text\":\"秦诚低声道：“你知道吗，即便现在那边只有一鳞半爪的传闻，也已经让提前得到小道消息的人热血沸腾。无论如何，你都要得到一个名额！”\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "秦诚",
+            "nameEvidence": {
+              "paragraphRef": "c0-p33",
+              "selectedText": "回到校区后，秦诚还在为王煊不忿，劝他去找人了解原因，为什么被放弃，讨一个说法。"
+            }
+          },
+          {
+            "name": "王煊",
+            "nameEvidence": {
+              "paragraphRef": "c0-p33",
+              "selectedText": "回到校区后，秦诚还在为王煊不忿，劝他去找人了解原因，为什么被放弃，讨一个说法。"
+            }
+          }
+        ],
+        "scanComplete": true
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "local-source",
+        "name-set-only"
+      ],
+      "scoring": {
+        "split": "optimization",
+        "sourceGroupId": "local-saved-novel-wangxuan-qincheng",
+        "inputFingerprint": "bb9e5dd9328c3c1cc1d0753fb48218de2912f69af55ae4760af8fe31c7a6d723",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "optimization-07",
+      "name": "本机真实片段 7",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"c0-p39\",\"text\":\"月色下，树影婆娑，王煊在草坪上舒展身体，他在演练旧时代的“散术”，实战性极强，将地面上大量的黄叶都带动的飞舞了起来，漫天都是。\"}\n{\"paragraphRef\":\"c0-p40\",\"text\":\"他没有停下，动作很快，但呼吸平稳，道：“我在等最后的结果。”\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "王煊",
+            "nameEvidence": {
+              "paragraphRef": "c0-p39",
+              "selectedText": "月色下，树影婆娑，王煊在草坪上舒展身体，他在演练旧时代的“散术”，实战性极强，将地面上大量的黄叶都带动的飞舞了起来，漫天都是。"
+            }
+          }
+        ],
+        "scanComplete": true
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "local-source",
+        "name-set-only"
+      ],
+      "scoring": {
+        "split": "optimization",
+        "sourceGroupId": "local-saved-novel-wangxuan-qincheng",
+        "inputFingerprint": "542d2cd28e36f20a467e80a66e7ccd89ba47f27d516d88d15e5d2dd7340855a5",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "optimization-08",
+      "name": "本机真实片段 8",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"c0-p41\",\"text\":\"深空无垠，宇宙广袤，但它却是冰冷的，死寂的，除却旧土外，人们只寻到另外一颗生命新星。\"}\n{\"paragraphRef\":\"c0-p42\",\"text\":\"然而，很多年前，移居新星的大门就关闭了，旧土的普通人很难再进入。\"}\n{\"paragraphRef\":\"c0-p43\",\"text\":\"相对新星，有些人逐渐开始将这里称为旧土。\"}\n{\"paragraphRef\":\"c0-p44\",\"text\":\"而昔日，这里名为地球，是人类的起源地。\"}\n{\"paragraphRef\":\"c0-p45\",\"text\":\"或许，它的确有些“陈旧”了，各地有不少荒芜的城市，蒿草丛生，无人居住。\"}\n{\"paragraphRef\":\"c0-p46\",\"text\":\"所有这一切，都是因为旧时代的一场战争导致的。\"}\n{\"paragraphRef\":\"c0-p47\",\"text\":\"当科技发展到一定高度，一旦发生热战将非常可怕。\"}\n{\"paragraphRef\":\"c0-p48\",\"text\":\"繁华世界被摧毁，变得无比荒凉与萧条。\"}\n{\"paragraphRef\":\"c0-p49\",\"text\":\"当时，有大批的人逃向太空中。\"}\n{\"paragraphRef\":\"c0-p50\",\"text\":\"其实，那时人类的科技并没有想象中那么璀璨，战前刚开始在月球上建立基地。\"}\n{\"paragraphRef\":\"c0-p51\",\"text\":\"所以，逃走的人只能暂时以月亮为立足地。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [],
+        "scanComplete": true
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "local-source",
+        "name-set-only",
+        "negative-case"
+      ],
+      "scoring": {
+        "split": "optimization",
+        "sourceGroupId": "local-saved-novel-wangxuan-qincheng",
+        "inputFingerprint": "2131fbc8c8ab080d373fa93d91d524871f8faa8b7899ac436442d3005ded9b51",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "optimization-09",
+      "name": "本机真实片段 9",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"c0-p52\",\"text\":\"就是在这种情况下，人类竟突然间实现大迁移，发现并进入一颗生命新星！\"}\n{\"paragraphRef\":\"c0-p53\",\"text\":\"旧土的人至今都觉得不可思议。\"}\n{\"paragraphRef\":\"c0-p54\",\"text\":\"许多人都不禁对那个历史时间节点产生疑问，究竟是什么原因导致前沿科技突然大爆发？\"}\n{\"paragraphRef\":\"c0-p55\",\"text\":\"各方讳莫如深。\"}\n{\"paragraphRef\":\"c0-p56\",\"text\":\"以当年的科技高度而言，无论是稳态虫洞，还是曲速引擎等黑科技，都不可能在短时间内实现。\"}\n{\"paragraphRef\":\"c0-p57\",\"text\":\"旧土有人怀疑，一切答案都可能在月球上！\"}\n{\"paragraphRef\":\"c0-p58\",\"text\":\"可惜，热战造成的后果太严重了，大地半摧毁，旧土这么多年过去都没有恢复过来，科技等严重倒退，很长时间无法登月。\"}\n{\"paragraphRef\":\"c0-p59\",\"text\":\"一百多年过去了，旧土人口才恢复到十亿左右，远无法与当年相比，许多地方至今都还很荒凉。\"}\n{\"paragraphRef\":\"c0-p60\",\"text\":\"早期开发新星时，曾将旧土大量的幸存者带走，大批人才随之离去，这也是旧土严重倒退、久未恢复的原因之一，而这种大迁移持续了数十年。\"}\n{\"paragraphRef\":\"c0-p61\",\"text\":\"直到百余年前，新星才关闭大门。\"}\n{\"paragraphRef\":\"c0-p62\",\"text\":\"再加上热战后大地上满目疮痍，环境极其恶劣，旧土人口没剩下多少，想要恢复谈何容易。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [],
+        "scanComplete": true
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "local-source",
+        "name-set-only",
+        "negative-case"
+      ],
+      "scoring": {
+        "split": "optimization",
+        "sourceGroupId": "local-saved-novel-wangxuan-qincheng",
+        "inputFingerprint": "821fe9ff572bea42dc10e866383a61055e1bab2df1ff1cb11b19cd023e95049c",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "optimization-10",
+      "name": "本机真实片段 10",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"c0-p63\",\"text\":\"朦胧月光下，王煊正在演绎“散术”，动作忽然加快，砰的一声，其右手在一棵大树上留下清晰的手印，大树剧烈颤动，漫天黄叶如瀑坠落。\"}\n{\"paragraphRef\":\"c0-p64\",\"text\":\"秦诚很吃惊：“散术，你竟然真的练出了一些名堂？他们放弃你绝对会后悔的！”\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "王煊",
+            "nameEvidence": {
+              "paragraphRef": "c0-p63",
+              "selectedText": "朦胧月光下，王煊正在演绎“散术”，动作忽然加快，砰的一声，其右手在一棵大树上留下清晰的手印，大树剧烈颤动，漫天黄叶如瀑坠落。"
+            }
+          },
+          {
+            "name": "秦诚",
+            "nameEvidence": {
+              "paragraphRef": "c0-p64",
+              "selectedText": "秦诚很吃惊：“散术，你竟然真的练出了一些名堂？他们放弃你绝对会后悔的！”"
+            }
+          }
+        ],
+        "scanComplete": true
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "local-source",
+        "name-set-only"
+      ],
+      "scoring": {
+        "split": "optimization",
+        "sourceGroupId": "local-saved-novel-wangxuan-qincheng",
+        "inputFingerprint": "869fc1cdad660dfddb9cac0dbb3ca28110d55fa8d4a77094b6ed9417c4b0324f",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-01",
+      "name": "真实小说验证样本 01",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-01-p0\",\"text\":\"阿Q不獨是姓名籍貫有些渺茫，連他先前的“行狀”　也渺茫。因為未莊的人們\\r\\n\\r\\n    之于阿Q，只要他幫忙，只拿他玩笑，從來沒有留心他的“行狀”的。而阿Q自己也\\r\\n\\r\\n    不說，獨有和別人口角的時候，間或瞪著眼楮道︰\\r\\n\\r\\n    “我們先前——比你闊的多啦！你算是什麼東西！”\\r\\n\\r\\n    阿Q沒有家，住在未莊的土谷祠　里；也沒有固定的職業，只給人家做短工，割\\r\\n\\r\\n    麥便割麥，舂米便舂米，撐船便撐船。工作略長久時，他也或住在臨時主人的家里，\\r\\n\\r\\n    但一完就走了。所以，人們忙碌的時候，也還記起阿Q來，然而記起的是做工，並不\\r\\n\\r\\n    是“行狀”；一閑空，連阿Q都早忘卻，更不必說“行狀”了。只是有一回，有一個\\r\\n\\r\\n    老頭子頌揚說︰“阿Q真能做！”這時阿Q赤著膊，懶洋洋的瘦伶仃的正在他面前，\\r\\n\\r\\n    別人也摸不著這話是真心還是譏笑，然而阿Q很喜歡。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "阿Q",
+            "nameEvidence": {
+              "paragraphRef": "val-01-p0",
+              "selectedText": "阿Q"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "9d0a219529225bb402b5fcc84307e58519a28b1a7d142945f0ce250e1fb7183f",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-02",
+      "name": "真实小说验证样本 02",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-02-p0\",\"text\":\"阿Q“先前闊”，見識高，而且“真能做”，本來幾乎是一個“完人”了，但可\\r\\n\\r\\n    惜他體質上還有一些缺點。最惱人的是在他頭皮上，頗有幾處不知于何時的癩瘡疤。\\r\\n\\r\\n    這雖然也在他身上，而看阿Q的意思，倒也似乎以為不足貴的，因為他諱說“癩”以\\r\\n\\r\\n    及一切近于“賴”的音，後來推而廣之，“光”也諱，“亮”也諱，再後來，連\\r\\n\\r\\n    “燈”“燭”都諱了。一犯諱，不問有心與無心，阿Q便全疤通紅的發起怒來，估量\\r\\n\\r\\n    了對手，口訥的他便罵，氣力小的他便打；然而不知怎麼一回事，總還是阿Q吃虧的\\r\\n\\r\\n    時候多。于是他漸漸的變換了方針，大抵改為怒目而視了。\\r\\n\\r\\n    誰知道阿Q采用怒目主義之後，未莊的閑人們便愈喜歡玩笑他。一見面，他們便\\r\\n\\r\\n    假作吃驚的說︰噲，亮起來了。”\\r\\n\\r\\n    阿Q照例的發了怒，他怒目而視了。\\r\\n\\r\\n    “原來有保險燈在這里！”他們並不怕。\\r\\n\\r\\n    阿Q沒有法，只得另外想出報復的話來︰\\r\\n\\r\\n    “你還不配……”這時候，又仿佛在他頭上的是一種高尚的光容的癩頭瘡，並\\r\\n\\r\\n    非平常的癩頭瘡了；但上文說過，阿Q是有見識的，他立刻知道和“犯忌”有點抵觸，\\r\\n\\r\\n    便不再往底下說。\\r\\n\\r\\n    閑人還不完，只撩他，于是終而至于打。阿Q在形式上打敗了，被人揪住黃辮子，\\r\\n\\r\\n    在壁上踫了四五個響頭，閑人這才心滿意足的得勝的走了，阿Q站了一刻，心里想，\\r\\n\\r\\n    “我總算被兒子打了，現在的世界真不像樣……”于是也心滿意足的得勝的走了。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "阿Q",
+            "nameEvidence": {
+              "paragraphRef": "val-02-p0",
+              "selectedText": "阿Q"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "7e2f6da664e38f981f6bb22f8d4983977c4f6140c32ecb4df8a7c036090f5fb8",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-03",
+      "name": "真实小说验证样本 03",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-03-p0\",\"text\":\"阿Q想在心里的，後來每每說出口來，所以凡是和阿Q玩笑的人們，幾乎全知道\\r\\n\\r\\n    他有這一種精神上的勝利法，此後每逢揪住他黃辮子的時候，人就先一著對他說︰\\r\\n\\r\\n    “阿Q，這不是兒子打老子，是人打畜生。自己說︰人打畜生！”\\r\\n\\r\\n    阿Q兩只手都捏住了自己的辮根，歪著頭，說道︰\\r\\n\\r\\n    “打蟲豸，好不好？我是蟲豸——還不放麼？”\\r\\n\\r\\n    但雖然是蟲豸，閑人也並不放，仍舊在就近什麼地方給他踫了五六個響頭，這\\r\\n\\r\\n    才心滿意足的得勝的走了，他以為阿Q這回可遭了瘟。然而不到十秒鐘，阿Q也心滿\\r\\n\\r\\n    意足的得勝的走了，他覺得他是第一個能夠自輕自賤的人，除了“自輕自賤”不算\\r\\n\\r\\n    外，余下的就是“第一個”。狀元　不也是“第一個”麼？“你算是什麼東西”呢！？\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "阿Q",
+            "nameEvidence": {
+              "paragraphRef": "val-03-p0",
+              "selectedText": "阿Q"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "937aa869cc763abc8836f48d101f56a2736eafe3662b4d9a3341f74e21e3d318",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-04",
+      "name": "真实小说验证样本 04",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-04-p0\",\"text\":\"阿Q也脫下破夾襖來，翻檢了一回，不知道因為新洗呢還是因為粗心，許多工夫，\\r\\n\\r\\n    只捉到三四個。他看那王胡，卻是一個又一個，兩個又三個，只放在嘴里畢畢剝剝\\r\\n\\r\\n    的響。\\r\\n\\r\\n    阿Q最初是失望，後來卻不平了︰看不上眼的王胡尚且那麼多，自己倒反這樣少，\\r\\n\\r\\n    這是怎樣的大失體統的事呵！他很想尋一兩個大的，然而竟沒有，好容易才捉到一\\r\\n\\r\\n    個中的，恨恨的塞在厚嘴唇里，狠命一咬，劈的一聲，又不及王胡的響。\\r\\n\\r\\n    他癩瘡疤塊塊通紅了，將衣服摔在地上，吐一口唾沫，說︰\\r\\n\\r\\n    “這毛蟲！”\\r\\n\\r\\n    “癩皮狗，你罵誰？”王胡輕蔑的抬起眼來說。\\r\\n\\r\\n    阿Q近來雖然比較的受人尊敬，自己也更高傲些，但和那些打慣的閑人們見面還\\r\\n\\r\\n    膽怯，獨有這回卻非常武勇了。這樣滿臉胡子的東西，也敢出言無狀麼？\\r\\n\\r\\n    “誰認便罵誰！”他站起來，兩手叉在腰間說。\\r\\n\\r\\n    “你的骨頭癢了麼？”王胡也站起來，披上衣服說。\\r\\n\\r\\n    阿Q以為他要逃了，搶進去就是一拳。這拳頭還未達到身上，已經被他抓住了，\\r\\n\\r\\n    只一拉，阿Q蹌蹌踉踉的跌進去，立刻又被王胡扭住了辮子，要拉到牆上照例去踫頭。\\r\\n\\r\\n    “‘君子動口不動手’！”阿Q歪著頭說。\\r\\n\\r\\n    王胡似乎不是君子，並不理會，一連給他踫了五下，又用力的一推，至于阿Q跌\\r\\n\\r\\n    出六尺多遠，這才滿足的去了。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "阿Q",
+            "nameEvidence": {
+              "paragraphRef": "val-04-p0",
+              "selectedText": "阿Q"
+            }
+          },
+          {
+            "name": "王胡",
+            "nameEvidence": {
+              "paragraphRef": "val-04-p0",
+              "selectedText": "王胡"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "b408f76c1c77cd99f40399d0d750156a547f00105b82ad3da7493d21753a124b",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-05",
+      "name": "真实小说验证样本 05",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-05-p0\",\"text\":\"但對面走來了靜修庵里的小尼姑。阿Q便在平時，看見伊也一定要唾罵，而況在\\r\\n\\r\\n    屈辱之後呢？他于是發生了回憶，又發生了敵愾了。\\r\\n\\r\\n    “我不知道我今天為什麼這樣晦氣，原來就因為見了你！”他想。\\r\\n\\r\\n    他迎上去，大聲的吐一口唾沫︰\\r\\n\\r\\n    “咳，呸！”\\r\\n\\r\\n    小尼姑全不睬，低了頭只是走。阿Q走近伊身旁，突然伸出手去摩著伊新剃的頭\\r\\n\\r\\n    皮，呆笑著，說︰\\r\\n\\r\\n    “禿兒！快回去，和尚等著你……”\\r\\n\\r\\n    “你怎麼動手動腳……”尼姑滿臉通紅的說，一面趕快走。\\r\\n\\r\\n    酒店里的人大笑了。阿Q看見自己的勛業得了賞識，便愈加興高采烈起來︰\\r\\n\\r\\n    “和尚動得，我動不得？”他扭住伊的面頰。\\r\\n\\r\\n    酒店里的人大笑了。阿Q更得意，而且為了滿足那些賞鑒家起見，再用力的一擰，\\r\\n\\r\\n    才放手。\\r\\n\\r\\n    他這一戰，早忘卻了王胡，也忘卻了假洋鬼子，似乎對于今天的一切“晦氣”\\r\\n\\r\\n    都報了仇；而且奇怪，又仿佛全身比拍拍的響了之後輕松，飄飄然的似乎要飛去了。\\r\\n\\r\\n    “這斷子絕孫的阿Q！”遠遠地听得小尼姑的帶哭的聲音。\\r\\n\\r\\n    “哈哈哈！”阿Q十分得意的笑。\\r\\n\\r\\n    “哈哈哈！”酒店里的人也九分得意的笑。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "小尼姑",
+            "nameEvidence": {
+              "paragraphRef": "val-05-p0",
+              "selectedText": "小尼姑"
+            }
+          },
+          {
+            "name": "阿Q",
+            "nameEvidence": {
+              "paragraphRef": "val-05-p0",
+              "selectedText": "阿Q"
+            }
+          },
+          {
+            "name": "王胡",
+            "nameEvidence": {
+              "paragraphRef": "val-05-p0",
+              "selectedText": "王胡"
+            }
+          },
+          {
+            "name": "假洋鬼子",
+            "nameEvidence": {
+              "paragraphRef": "val-05-p0",
+              "selectedText": "假洋鬼子"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "2e8598f3b389c6d518de319b136a23080887faf79fe54ebd8133751eb51f35b4",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-06",
+      "name": "真实小说验证样本 06",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-06-p0\",\"text\":\"待到淒風冷雨這一天，教員們因為向政府去索欠薪が，在新華門前爛泥里被國\\r\\n\\r\\n    軍打得頭破血出之後，倒居然也發了一點薪水。方玄綽不費舉手之勞的領了錢，酌\\r\\n\\r\\n    還些舊債，卻還缺一大筆款，這是因為官俸也頗有些拖欠了。當是時，便是廉吏清\\r\\n\\r\\n    官們也漸以為薪之不可不索，而況兼做教員的方玄綽，自然更表同情于學界起來，\\r\\n\\r\\n    所以大家主張繼續罷課的時候，他雖然仍未到場，事後卻尤其心悅誠服的確守了公\\r\\n\\r\\n    共的決議。\\r\\n\\r\\n\\r\\n    然而政府竟又付錢，學校也就開課了。但在前幾天，卻有學生總會上一個呈文\\r\\n\\r\\n    給政府，說“教員倘若不上課，便要付欠薪。”這雖然並無效，而方玄綽卻忽而記\\r\\n\\r\\n    起前回政府所說的“上了課才給錢”的話來，“差不多”這一個影子在他眼前又一\\r\\n\\r\\n    幌，而且並不消滅，于是他便在講堂上公表了。\\r\\n\\r\\n    準此，可見如果將“差不多說”鍛煉羅織起來，自然也可以判作一種挾帶私心\\r\\n\\r\\n    的不平，但總不能說是專為自己做官的辯解。只是每到這些時，他又常常喜歡拉上\\r\\n\\r\\n    中國將來的命運之類的問題，一不小心，便連自己也以為是一個憂國的志士；人們\\r\\n\\r\\n    是每苦于沒有“自知之明”的。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "方玄綽",
+            "nameEvidence": {
+              "paragraphRef": "val-06-p0",
+              "selectedText": "方玄綽"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "2179476b3b500ee80ce544d2449631187f9e6f31ebcc44b6040b418a71917546",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-07",
+      "name": "真实小说验证样本 07",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-07-p0\",\"text\":\"大家左索右索，總自一節一節的挨過去了，但比起先前來，方玄綽究竟是萬分\\r\\n\\r\\n    的拮據，所以使用的小廝和交易的店家不消說，便是方太太對于他也漸漸的缺了敬\\r\\n\\r\\n    意，只要看伊近來不很附和，而且常常提出獨創的意見，有些唐突的舉動，也就可\\r\\n\\r\\n    以了然了。到了陰歷五月初四的午前，他一回來，伊便將一疊賬單塞在他的鼻子跟\\r\\n\\r\\n    前，這也是往常所沒有的。\\r\\n\\r\\n\\r\\n    “一總總得一百八十塊錢才夠開消……發了麼？”伊並不對著他看的說。\\r\\n\\r\\n    “哼，我明天不做官了。錢的支票是領來的了，可是索薪大會的代表不發放，\\r\\n\\r\\n    先說是沒有同去的人都不發，後來又說是要到他們跟前去親領。他們今天單捏著支\\r\\n\\r\\n    票，就變了閻王臉了，我實在怕看見……我錢也不要了，官也不做了，這樣無限量\\r\\n\\r\\n    的卑屈……”\\r\\n\\r\\n\\r\\n    方太太見了這少見的義憤，倒有些愕然了，但也就沉靜下來。\\r\\n\\r\\n\\r\\n    “我想，還不如去親領罷，這算什麼呢。”伊看著他的臉說。\\r\\n\\r\\n\\r\\n    “我不去！這是官俸，不是賞錢，照例應該由會計科送來的。”\\r\\n\\r\\n\\r\\n    “可是不送來又怎麼好呢……哦，昨夜忘記說了，孩子們說那學費，學校里已\\r\\n\\r\\n    經催過好幾次了，說是倘若再不繳……”\\r\\n\\r\\n\\r\\n    “胡說！做老子的辦事教書都不給錢，兒子去念幾句書倒要錢？”\\r\\n\\r\\n\\r\\n    伊覺得他已經不很顧忌道理，似乎就要將自己當作校長來出氣，犯不上，便不\\r\\n\\r\\n    再言語了。\\r\\n\\r\\n\\r\\n    兩個默默的吃了午飯。他想了一會，又懊惱的出去了。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "方玄綽",
+            "nameEvidence": {
+              "paragraphRef": "val-07-p0",
+              "selectedText": "方玄綽"
+            }
+          },
+          {
+            "name": "方太太",
+            "nameEvidence": {
+              "paragraphRef": "val-07-p0",
+              "selectedText": "方太太"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "35b5249c881b3e8115d0b055a3b74f668ed996a8888c55cb574a1468087e55cb",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-08",
+      "name": "真实小说验证样本 08",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-08-p0\",\"text\":\"方玄綽低下頭來了，覺得這也無怪其然的，況且自己和金永生本來很疏遠。他\\r\\n\\r\\n    接著就記起去年年關的事來，那時有一個同鄉來借十塊錢，他其時明明已經收到了\\r\\n\\r\\n    衙門的領款憑單的了，因為死怕這人將來未必會還錢，便裝了副為難的神色，說道\\r\\n\\r\\n    衙門里既然領不到俸錢，學校里又不發薪水，實在“愛莫能助”，將他空手送走了。\\r\\n\\r\\n    他雖然自已並不看見裝了怎樣的臉，但此時卻覺得很局促，嘴唇微微一動，又搖一\\r\\n\\r\\n    搖頭。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "方玄綽",
+            "nameEvidence": {
+              "paragraphRef": "val-08-p0",
+              "selectedText": "方玄綽"
+            }
+          },
+          {
+            "name": "金永生",
+            "nameEvidence": {
+              "paragraphRef": "val-08-p0",
+              "selectedText": "金永生"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "4d49611855923315e46b269c79993da5845e2677ca70b1ca2febcb69f29ec55d",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-09",
+      "name": "真实小说验证样本 09",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-09-p0\",\"text\":\"孔乙己是站著喝酒而穿長衫的唯一的人。他身材很高大；青白臉色，皺紋間時\\r\\n\\r\\n    常夾些傷痕；一部亂蓬蓬的花白的胡子。穿的雖然是長衫，可是又髒又破，似乎十\\r\\n\\r\\n    多年沒有補，也沒有洗。他對人說話，總是滿口之乎者也，教人半懂不懂的。因為\\r\\n\\r\\n    他姓孔，別人便從描紅紙え上的“上大人孔乙己”這半懂不懂的話里，替他取下一\\r\\n\\r\\n    個綽號，叫作孔乙己。孔乙己一到店，所有喝酒的人便都看著他笑，有的叫道，\\r\\n\\r\\n    “孔乙己，你臉上又添上新傷疤了！”他不回答，對櫃里說，“溫兩碗酒，要一碟\\r\\n\\r\\n    茴香豆。”便排出九文大錢。他們又故意的高聲嚷道，“你一定又偷了人家的東西\\r\\n\\r\\n    了！”孔乙己睜大眼楮說，“你怎麼這樣憑空污人清白……”“什麼清白？我前天\\r\\n\\r\\n    親眼見你偷了何家的書，吊著打。”孔乙己便漲紅了臉，額上的青筋條條綻出，爭\\r\\n\\r\\n    辯道，“竊書不能算偷……竊書！……讀書人的事，能算偷麼？”接連便是難懂的\\r\\n\\r\\n    話，什麼“君子固窮”ぉ，什麼“者乎”之類，引得眾人都哄笑起來︰店內外充滿\\r\\n\\r\\n    了快活的空氣。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "孔乙己",
+            "nameEvidence": {
+              "paragraphRef": "val-09-p0",
+              "selectedText": "孔乙己"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "37f66c2803ec31cf7c08b519e6d9af5b5fca7810478e9d6e39e3381a3e9bed09",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "validation-10",
+      "name": "真实小说验证样本 10",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"val-10-p0\",\"text\":\"魯鎮的酒店的格局，是和別處不同的︰都是當街一個曲尺形的大櫃台，櫃里面\\r\\n\\r\\n    預備著熱水，可以隨時溫酒。做工的人，傍午傍晚散了工，每每花四文銅錢，買一\\r\\n\\r\\n    碗酒，——這是二十多年前的事，現在每碗要漲到十文，——靠櫃外站著，熱熱的\\r\\n\\r\\n    喝了休息；倘肯多花一文，便可以買一碟鹽煮筍，或者茴香豆，做下酒物了，如果\\r\\n\\r\\n    出到十幾文，那就能買一樣葷菜，但這些顧客，多是短衣幫，大抵沒有這樣闊綽。\\r\\n\\r\\n    只有穿長衫的，才踱進店面隔壁的房子里，要酒要菜，慢慢地坐喝。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": []
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "validation",
+        "sourceGroupId": "gutenberg-27166",
+        "inputFingerprint": "f6492d28b9d39c6919fc828dadf8b6c9571da16720bfb61d55c2fd07a2b75da4",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-01",
+      "name": "真实小说留出片段 01",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-01-p0\",\"text\":\"黃龍子向子平道：「申先生睏不睏？如其不睏，今夜良會，可以不必早睡，明天遲遲起來最好。柏樹峪地方，路極險峻，很不好走。又有這場大雪，路影看不清楚，跌下去有性命之憂。劉仁甫今天晚上檢點行李，大約明日午牌時候，可以到集上關帝廟。你明天用過早飯動身，正好相遇了。」子平聽說大喜，說道：「今日得遇諸仙，三生有幸。請教上仙誕降之辰，還是在唐在宋？」黃龍子又大笑道：「何以知之？」答：「尊作明說『迴首滄桑五百年』，可知斷不止五六百歲了。」黃龍子道：「『盡信書，則不如無書。』此鄙人之遊戲筆墨耳。公直當《桃花源記》讀可矣。」就舉起茶杯，品那新茶。\\r\\n\\r\\n璵姑見子平杯內茶已將盡，就持小茶壺代為斟滿。子平連連欠身道：「不敢。」亦舉起杯來詳細品量。卻聽窗外遠遠唔了一聲，那窗紙微覺颯颯價動，屋塵簌簌價落。想起方纔路上光景，不覺毛骨森竦，勃然色變。黃龍道：「這是虎嘯，不要緊的。山家看著此種物事，如你們城市中人看騾馬一樣，雖知他會踢人，卻不怕他。因為相習已久，知他傷人也不是常有的事。山上人與虎相習，尋常人固避虎，虎也避人，故傷害人也不是常有的事，不必怕他。」\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "黃龍子",
+            "nameEvidence": {
+              "paragraphRef": "held-01-p0",
+              "selectedText": "黃龍子"
+            }
+          },
+          {
+            "name": "子平",
+            "nameEvidence": {
+              "paragraphRef": "held-01-p0",
+              "selectedText": "子平"
+            }
+          },
+          {
+            "name": "劉仁甫",
+            "nameEvidence": {
+              "paragraphRef": "held-01-p0",
+              "selectedText": "劉仁甫"
+            }
+          },
+          {
+            "name": "璵姑",
+            "nameEvidence": {
+              "paragraphRef": "held-01-p0",
+              "selectedText": "璵姑"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "f4aea53bb80115fa1f81c16369c7e04693f822273ecb71d709476c24335ee0e9",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-02",
+      "name": "真实小说留出片段 02",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-02-p0\",\"text\":\"黃龍子移了兩張小長幾，摘下一張琴、一張瑟來。璵姑也移了三張凳子，讓子平坐了一張。彼此調了一調弦，同黃龍各坐了一張凳子。弦已調好，璵姑與黃龍商酌了兩句，就彈起來了。初起不過輕挑漫剔，聲響悠柔，一段以後，散泛相錯，其聲清脆，兩段以後，吟揉漸多。那瑟之勾挑夾縫中，與琴之綽註相應，粗聽若彈琴鼓瑟，各自為調，細聽則如珠鳥一雙，此唱彼和，問來答往。四五段以後，吟揉漸少，雜以批拂、蒼蒼涼涼，磊磊落落，下指甚重，聲韻繁興。六七八段，間以曼衍，愈轉愈清，其調愈逸。\\r\\n\\r\\n子平本會彈十幾調琴，所以聽得入彀，因為瑟是未曾聽過，格外留神。那知瑟的妙用也在左手，看他右手發聲之後，那左手進退揉顫，其餘音也就隨著猗猗靡靡，真是聞所未聞。初聽還在算計他的指法、調頭，既而便耳中有音，目中無指。久之，耳目俱無，覺得自己的身體飄飄蕩蕩，如隨長風，浮沉於雲霞之際。久之又久，心身俱忘，如醉如夢。於恍惚杳冥之中，錚鏦數聲，琴瑟俱息，乃通見聞，人亦警覺。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "黃龍子",
+            "nameEvidence": {
+              "paragraphRef": "held-02-p0",
+              "selectedText": "黃龍子"
+            }
+          },
+          {
+            "name": "璵姑",
+            "nameEvidence": {
+              "paragraphRef": "held-02-p0",
+              "selectedText": "璵姑"
+            }
+          },
+          {
+            "name": "子平",
+            "nameEvidence": {
+              "paragraphRef": "held-02-p0",
+              "selectedText": "子平"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "054ec7ada67d626c4938c815a319227e664cc8a3733bd4a730c2618c85142623",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-03",
+      "name": "真实小说留出片段 03",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-03-p0\",\"text\":\"話說子平聽得天崩地塌價一聲，腳下震震搖動，嚇得魂不附體，怕是山倒下來。黃龍子在身後說道：「不怕的，這是山上的凍雪被泉水漱空了，滾下一大塊來，夾冰夾雪，所以有這大的聲音。」說著，又朝向北一轉，便是一個洞門。這洞不過有兩間房大，朝外半截窗臺，上面安著窗戶。其餘三面俱斬平雪白，頂是圓的，像城門洞的樣子。洞裡陳設甚簡，有幾張樹根的坐具，卻是七大八小的不勻，又都是磨得絹光。几案也全是古籐天生的，不方不圓，隨勢製成。東壁橫了一張枯槎獨睡榻子，設著衾枕。榻旁放了兩三個黃竹箱子，想必是盛衣服什物的了。洞內並無燈燭，北牆上嵌了兩個滴圓夜明珠，有巴斗大小，光色發紅，不甚光亮。地下鋪著地毯，甚厚軟，微覺有聲。榻北立了一個曲尺形書架，放了許多書，都是草訂，不曾切過書頭的。雙夜明珠中間掛了幾件樂器，有兩張瑟、兩張琴，是認得的，還有些不認得的。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "子平",
+            "nameEvidence": {
+              "paragraphRef": "held-03-p0",
+              "selectedText": "子平"
+            }
+          },
+          {
+            "name": "黃龍子",
+            "nameEvidence": {
+              "paragraphRef": "held-03-p0",
+              "selectedText": "黃龍子"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "629f9fac999531098d3eae9c2c7ef16df00043a96a253cf9c2f0b7481c2dfbc2",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-04",
+      "name": "真实小说留出片段 04",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-04-p0\",\"text\":\"當時璵姑立起身來，向西壁有個小門，開了門，對著大聲喊了幾句，不知甚話，聽不清楚。看黃龍子亦立起身，將琴瑟懸在壁上。子平於是也立起，走到壁間，仔細看那夜明珠到底甚麼樣子，以便回去誇耀於人。及走至珠下，伸手一摸，那夜明珠卻甚熱，有些烙手，心裡詫異道：「這是甚麼道理呢？」看黃龍子琴瑟已俱掛好，即問道：「先生，這是什麼？」笑答道：「驪龍之珠，你不認得嗎？」問：「驪珠怎樣會熱呢？」答：「這是火龍所吐的珠，自然熱的。」子平說：「火龍珠那得如此一樣大的一對呢？雖說是火龍，難道永遠這們熱麼？」笑答道：「然則我說的話，先生有不信的意思了。既不信，我就把這熱的道理開給你看。」說著，便向那夜明珠的旁邊有個小銅鼻子一拔，那珠子便像一扇門似的張開來了。原來是個珠殼，裡面是很深的油池，當中用棉花線捲的個燈心，外面用千層紙做的個燈筩，上面有個小煙囪，從壁子上出去，上頭有許多的黑煙，同洋燈的道理一樣，卻不及洋燈精緻，所以不免有黑煙上去，看過也就笑了。再看那珠殼，原來是用大螺蚌殼磨出來的，所以也不及洋燈光亮。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "璵姑",
+            "nameEvidence": {
+              "paragraphRef": "held-04-p0",
+              "selectedText": "璵姑"
+            }
+          },
+          {
+            "name": "黃龍子",
+            "nameEvidence": {
+              "paragraphRef": "held-04-p0",
+              "selectedText": "黃龍子"
+            }
+          },
+          {
+            "name": "子平",
+            "nameEvidence": {
+              "paragraphRef": "held-04-p0",
+              "selectedText": "子平"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "767be5e6f789f40cb4ebc7c213838b51f9b91cff31ab4ac3d883ca5aa503f0e9",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-05",
+      "name": "真实小说留出片段 05",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-05-p0\",\"text\":\"黃龍子道：「我且問你，這個月亮，十五就明瞭，三十就暗了，上弦下弦就明暗各半了，那初三四裡的月亮只有一牙，請問他怎麼便會慢慢地長滿了呢？十五以後怎麼慢慢地又會爛掉了呢？」子平道：「這個理容易明白，因為月球本來無光，受太陽的光，所以朝太陽的半個是明的，背太陽的半個是暗的。初三四，月身斜對太陽，所以人眼看見的正是三分明、七分暗，就像一牙似的。其實月球並無分別，只是半個明、半個暗，盈虧圓缺，都是人眼睛現出來的景相，與月球毫不相干。」\\r\\n\\r\\n黃龍子道：「你既明白這個道理，應須知道好即是壞，壞即是好，同那月球的明暗，是一個道理。」子平道：「這個道理實不能同。月球雖無圓缺，實有明暗。因永遠是半個明的，半個暗的，所以明的半邊朝人，人就說月圓了；暗的半邊朝人，人就說月黑了。初八、二十三，人正對他側面，所以覺得半明半暗，就叫做上弦、下弦。因人所看的方面不同，喚做個盈虧圓缺。若在二十八九，月亮全黑的時候，人若能飛到月球上邊去看，自然仍是明的。這就是明暗的道理，我們都懂得的。然究竟半個明的、半個暗的，是一定不移的道理。半個明的終久是明，半個暗的終久是暗。若說暗即是明，明即是暗，理性總不能通。」\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "黃龍子",
+            "nameEvidence": {
+              "paragraphRef": "held-05-p0",
+              "selectedText": "黃龍子"
+            }
+          },
+          {
+            "name": "子平",
+            "nameEvidence": {
+              "paragraphRef": "held-05-p0",
+              "selectedText": "子平"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "cd47a9f2987641ee5d7e057fbc5ecbbe4466cb2069ed9ed93ec6afdd5b8fdaf1",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-06",
+      "name": "真实小说留出片段 06",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-06-p0\",\"text\":\"「那些南革的首領，初起都是官商人物，並都是聰明出眾的人才。因為所秉的是婦女陰水嫉妒性質，只知有己，不知有人，所以在世界上就不甚行得開了。由憤懣生嫉妒，由嫉妒生破壞。這破壞豈是一人做得的事呢！於是同類相呼，『水流濕，火就燥』，漸漸的越聚越多，鉤連上些人家的敗類子弟，一發做得如火如荼。其已得舉人、進士、翰林、部曹等官的呢，就談朝廷革命；其讀書不成，無著子弟，就學兩句愛皮西提衣或阿衣烏愛窩，便談家庭革命。一談了革命，就可以不受天理國法人情的拘束，豈不大痛快呢？可知太痛快了不是好事，吃得痛快，傷食；飲得痛快，病酒。今者，不管天理、不畏國法、不近人情，放肆做去。這種痛快不有人災，必有鬼禍，能得長久嗎？」\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": []
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "80649e1e776d72cc6eb535508119223708aea3fc7e3fce31748129eef0ffccd0",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-07",
+      "name": "真实小说留出片段 07",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-07-p0\",\"text\":\"老殘對著雪月交輝的景緻，想起謝靈運的詩，「明月照積雪，北風勁且哀」兩句。若非經歷北方苦寒景象，那裡知道「北風勁且哀」的個「哀」字下的好呢？這時月光照的滿地的亮，抬起頭來，天上的星一個也看不見，只有北邊，北斗七星開陽搖光，像幾個淡白點子一樣，還看得清楚。那北斗正斜倚在紫微垣的西邊上面，杓在上，魁在下。心裡想道：「歲月如流，眼見鬥杓又將東指了，人又要添一歲了。一年一年的這樣瞎混下去，如何是個了局呢？」又想到《詩經》上說的「維北有鬥，不可以挹酒漿。」──「現在國家正當多事之秋，那王公大臣只是恐怕擔處分，多一事不如少一事，弄的百事俱廢，將來又是怎樣個了局，國是如此，丈夫何以家為！」想到此地，不覺滴下淚來，也就無心觀玩景緻，慢慢回店去了。一面走著，覺得臉上有樣物件附著似的，用手一摸，原來兩邊著了兩條滴滑的冰。初起不懂什麼緣故，既而想起，自己也就笑了。原來就是方纔流的淚，天寒，立刻就凍住了，地下必定還有幾多冰珠子呢。悶悶的回到店裡，也就睡了。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "老殘",
+            "nameEvidence": {
+              "paragraphRef": "held-07-p0",
+              "selectedText": "老殘"
+            }
+          },
+          {
+            "name": "謝靈運",
+            "nameEvidence": {
+              "paragraphRef": "held-07-p0",
+              "selectedText": "謝靈運"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "7131b141bf62f49a99f3ec54887de339fcff95bcbc9c8b957474f7dc065be30c",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-08",
+      "name": "真实小说留出片段 08",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-08-p0\",\"text\":\"人瑞卻從懷中把剛才縣裡送來的紅封套遞給老殘，說：「你瞧，這是貴如夫人原來的賣身契一紙，這是新寫的身契一紙，總共奉上。你看愚弟辦事周到不周到？」老殘說：「既已如此，感激的很。你又何苦把我套在圈子裡做甚麼呢？」人瑞道：「我不對你說『是前生註定事，莫錯過姻緣』嗎？我為翠環計，救人須救徹，非如此，總不十分妥當。為你計，亦不吃虧。天下事就該這麼做法，是不錯的。」說過，呵呵大笑。又說：「不用費話罷，我們肚子餓的了不得，要吃飯了。」人瑞拉著老殘，翠花拉著翠環，要他們兩個上坐。老殘決意不肯，仍是去了桌裙，四方兩對面坐的。這一席酒，不消說，各人有各人快樂處，自然是盡歡而散，以後無非是送房睡覺，無庸贅述。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "人瑞",
+            "nameEvidence": {
+              "paragraphRef": "held-08-p0",
+              "selectedText": "人瑞"
+            }
+          },
+          {
+            "name": "老殘",
+            "nameEvidence": {
+              "paragraphRef": "held-08-p0",
+              "selectedText": "老殘"
+            }
+          },
+          {
+            "name": "翠環",
+            "nameEvidence": {
+              "paragraphRef": "held-08-p0",
+              "selectedText": "翠環"
+            }
+          },
+          {
+            "name": "翠花",
+            "nameEvidence": {
+              "paragraphRef": "held-08-p0",
+              "selectedText": "翠花"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "1968da1d659c9508b5fe9ce533afa3c4446bbb58dedcfa329e8bf0e6e5f47eb6",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-09",
+      "name": "真实小说留出片段 09",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-09-p0\",\"text\":\"大家聽了這話，都不禁發了一笑，連翠環遮著臉也撲嗤的笑了一聲。原來翠環本來知道在客人面前萬不能哭的，只因老殘問到他老家的事，又被翠花說出他二年前還是個大財主，所以觸起他的傷心，故眼淚不由的直穿出來，要強忍也忍不住。及至聽到老殘說他受了一肚子悶氣，到那裡去哭，讓他哭個夠，也算痛快一回。心裡想道：「自從落難以來，從沒有人這樣體貼過他，可見世界上男子並不是個個人都是拿女兒家當糞土一般作踐的。只不知道像這樣的人世界上多不多，我今生還能遇見幾個？想既能遇見一個，恐怕一定總還有呢。」心裡只顧這麼盤算，倒把剛才的傷心盤算的忘記了，反側著耳朵聽他們再說什麼。忽然被黃人瑞喊著，要託他替哭，怎樣不好笑呢？所以含著兩包眼淚，撲嗤的笑了一聲，並抬起頭來看了人瑞一眼。那知被他們看了這個形景，越發笑個不止。翠環此刻心裡一點主意沒有，看看他們傻笑，只好糊裡糊塗，陪著他們嘻嘻的傻了一回。\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "翠環",
+            "nameEvidence": {
+              "paragraphRef": "held-09-p0",
+              "selectedText": "翠環"
+            }
+          },
+          {
+            "name": "老殘",
+            "nameEvidence": {
+              "paragraphRef": "held-09-p0",
+              "selectedText": "老殘"
+            }
+          },
+          {
+            "name": "翠花",
+            "nameEvidence": {
+              "paragraphRef": "held-09-p0",
+              "selectedText": "翠花"
+            }
+          },
+          {
+            "name": "黃人瑞",
+            "nameEvidence": {
+              "paragraphRef": "held-09-p0",
+              "selectedText": "黃人瑞"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "a900617cd46a058a650e002b550e26a81be33b88a357d0caac0a0e18e891316f",
+        "labelStatus": "complete"
+      }
+    },
+    {
+      "id": "held-out-10",
+      "name": "真实小说留出片段 10",
+      "input": {
+        "corpusText": "{\"paragraphRef\":\"held-10-p0\",\"text\":\"彼此序了幾句閒話，老殘就問：「聽說先生同青龍子長相往來，近來知道他雲遊何處嗎？」安貧子道：「噯呀！你要見他嗎？有啥事體？」老殘便將以上事告知安貧子。安貧子說：「太不巧了！他昨日在我這裡坐了半天，說今日清晨回山去，此刻出南門怕還不到十里路呢！」老殘說：「這可真不巧了！只是他回什麼山？」安貧子道：「裡山玄珠洞。他去年住靈岩山，因近來香客漸多，常有到他茅篷裡的，所以他厭煩，搬到裡山玄珠洞去了。」老殘問：「玄珠洞離此地有幾十里？」安貧子道：「我也沒去過，聽他說，大約五十里路不到點。此去一直向南，過黃芽嘴子，向西到白雪塢，再向南，就到玄珠洞了。」\"}",
+        "knownCharacters": "[]",
+        "continuationContext": ""
+      },
+      "expected": {
+        "characters": [
+          {
+            "name": "老殘",
+            "nameEvidence": {
+              "paragraphRef": "held-10-p0",
+              "selectedText": "老殘"
+            }
+          },
+          {
+            "name": "青龍子",
+            "nameEvidence": {
+              "paragraphRef": "held-10-p0",
+              "selectedText": "青龍子"
+            }
+          },
+          {
+            "name": "安貧子",
+            "nameEvidence": {
+              "paragraphRef": "held-10-p0",
+              "selectedText": "安貧子"
+            }
+          }
+        ]
+      },
+      "source": "agent",
+      "tags": [
+        "real-text",
+        "public-classic"
+      ],
+      "scoring": {
+        "split": "held-out",
+        "sourceGroupId": "gutenberg-23850",
+        "inputFingerprint": "5fcf3a2ccf91e2fe45a2023650d699f35e1eacbb384d77b8c9159ffd55cecfd5",
+        "labelStatus": "complete"
+      }
+    }
+  ]
+}

@@ -107,6 +107,12 @@ export interface DataRootMigrationCoordinatorOptions {
   progressPersistIntervalMs?: number
 }
 
+/** 创建迁移计划时的来源标记；仅自动升级旧默认根使用。 */
+export interface DataRootMigrationPlanOptions {
+  /** 标记用户级默认目录改名触发的自动计划。 */
+  origin?: 'default-root-upgrade'
+}
+
 /** 实例锁文件的最小持久化结构。 */
 interface MigrationLockRecord {
   version: 1
@@ -283,9 +289,13 @@ export class DataRootMigrationCoordinator {
    * 完成全部只读预检后创建 pending 计划；失败会释放临时实例锁。
    *
    * @param targetRoot 用户选择的绝对目标目录。
+   * @param options 可选的计划来源标记。
    * @returns 已持久化的 pending 进度。
    */
-  async createPlan(targetRoot: string): Promise<DataRootMigrationProgress> {
+  async createPlan(
+    targetRoot: string,
+    options: DataRootMigrationPlanOptions = {},
+  ): Promise<DataRootMigrationProgress> {
     if (this.activeRun !== null) throw new DataRootMigrationError('MIGRATION_BUSY', '数据根迁移正在运行')
     if (this.startupCleanupRetry) await this.startupCleanupRetry
     /** 标记本次规划调用是否新建 lease，避免释放已有待执行计划持有的 lease。 */
@@ -299,6 +309,7 @@ export class DataRootMigrationCoordinator {
         id: migrationId,
         sourceRoot: preflight.sourceRoot,
         targetRoot: preflight.targetRoot,
+        ...(options.origin === undefined ? {} : { origin: options.origin }),
         stage: 'pending',
         completedBytes: 0,
         totalBytes: preflight.totalBytes,
@@ -570,6 +581,8 @@ export class DataRootMigrationCoordinator {
     code: DataRootMigrationErrorCode,
     cause: unknown,
   ): DataRootMigrationError {
+    /** 将底层文件系统错误压缩进持久化摘要，便于 Windows 现场定位具体冲突。 */
+    const publicMessage = appendMigrationFailureDetail(message, cause)
     try {
       const current = this.locator.inspect().locatorFile?.migration
       if (current && current.stage !== 'switching') {
@@ -577,13 +590,13 @@ export class DataRootMigrationCoordinator {
           stage: 'failed',
           completedBytes: current.completedBytes,
           updatedAt: Math.max(this.now(), current.updatedAt),
-          error: message,
+          error: publicMessage,
         })
       }
     } catch (locatorError) {
       return new DataRootMigrationError('LOCATOR_WRITE_FAILED', '保存迁移失败状态失败', locatorError)
     }
-    return new DataRootMigrationError(code, message, cause)
+    return new DataRootMigrationError(code, publicMessage, cause)
   }
 
   /** switching 失败保持阶段不倒退，只原子记录可读错误供下次恢复。 */
@@ -929,6 +942,16 @@ function toPreviewBlocker(error: unknown): {
     return { code: error.code, message: error.message }
   }
   return { code: 'UNSAFE_TARGET', message: error instanceof Error ? error.message : '无法预检目标数据根' }
+}
+
+/** 将底层错误转换为单行且有界的用户可见迁移摘要。 */
+function appendMigrationFailureDetail(message: string, cause: unknown): string {
+  if (!(cause instanceof Error)) return message
+  /** 错误消息可能包含换行或重复前缀，先压成单行再限制长度。 */
+  const detail = cause.message.replace(/\s+/g, ' ').trim()
+  if (detail.length === 0 || detail === message) return message
+  const suffix = detail.length > 480 ? `${detail.slice(0, 477)}...` : detail
+  return `${message}：${suffix}`
 }
 
 /** 预览只公开用户可在确认前处理的预检错误。 */

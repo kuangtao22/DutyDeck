@@ -116,6 +116,7 @@ import { upsertAgentSession, mergeFetchedAgentSessions, selectDelegatedSession }
 import {
   getAgentCompletionMarkers,
   getDelegatedCompletionAttention,
+  isSuccessfulAgentCompletion,
   markSessionCompletionUnviewed,
   markSessionCompletionViewed,
   notifyAgentCompletion,
@@ -906,6 +907,28 @@ export function startGlobalAgentCanvasActivityConsumer(
 /** 普通聊天与可信委托共用修改回执消费者；自动展示仅作用于前台普通聊天。 */
 export const startGlobalAgentCanvasChangeConsumer = createAgentCanvasChangeConsumer
 
+/**
+ * 记录本轮完成结果，供侧栏在消息展示状态回收后继续区分成功与失败。
+ * @param store 当前 Renderer 状态容器。
+ * @param routeKind 已通过归属校验的会话类型；内部会话不参与普通侧栏失败提示。
+ * @param completion 主进程完成载荷；后台等待与旧轮终态不覆盖当前结果。
+ */
+export function recordAgentCompletionOutcome(
+  store: Store,
+  routeKind: 'agent' | 'canvas' | 'internal-invalid',
+  completion: AgentStreamCompletePayload,
+): void {
+  if (completion.backgroundTasksPending || !isTerminalEventForCurrentRun(
+    store.get(agentSessionStreamingStateAtomFamily(completion.sessionId)), completion,
+  )) return
+  recordAgentTerminalRun(store, completion.sessionId, {
+    ...completion,
+    failed: routeKind === 'agent'
+      && !completion.stoppedByUser
+      && !isSuccessfulAgentCompletion(completion, store.get(agentStreamErrorsAtom).has(completion.sessionId)),
+  })
+}
+
 export function useGlobalAgentListeners(): void {
   const store = useStore()
 
@@ -1118,7 +1141,11 @@ export function useGlobalAgentListeners(): void {
             ? upserted
             : { ...upserted, updatedAt: Math.max(upserted.updatedAt, event.startedAt) }))
         }
-        if (!duplicateRunStart) promoteDelegatedSessionForRunStart(event.sessionId, event.startedAt)
+        if (!duplicateRunStart) {
+          promoteDelegatedSessionForRunStart(event.sessionId, event.startedAt)
+          // 外部入口不经过 AgentView 的发送清理，新运行必须自行清除上一轮错误。
+          store.set(agentStreamErrorsAtom, (prev) => clearAgentStreamError(prev, event.sessionId))
+        }
         const activationModelId = activation.modelId
         if (activationModelId) {
           store.set(agentSessionModelMapAtom, (prev) => {
@@ -1666,6 +1693,7 @@ export function useGlobalAgentListeners(): void {
           if (!isCanvasAgent && acceptedRunStart) {
             promoteDelegatedSessionForRunStart(sessionId, runStartedEvent.startedAt)
             clearCompletionAttention(sessionId)
+            store.set(agentStreamErrorsAtom, (prev) => clearAgentStreamError(prev, sessionId))
           }
         }
 
@@ -2088,6 +2116,10 @@ export function useGlobalAgentListeners(): void {
     /** 按权威 metadata 处理错误；Canvas 错误禁止触发普通消息刷新。 */
     const handleAgentError = (data: AgentStreamErrorPayload): void => {
       unstable_batchedUpdates(() => {
+        // 迟到的上一轮错误不能污染新一轮完成结果或把成功状态染红。
+        if (!isTerminalEventForCurrentRun(
+          store.get(agentSessionStreamingStateAtomFamily(data.sessionId)), data,
+        )) return
         console.error('[GlobalAgentListeners] 流式错误:', data.error)
         const route = resolveCanvasAgentCompletion(
           data.sessionId,
@@ -2255,7 +2287,6 @@ export function useGlobalAgentListeners(): void {
         // 等后台任务完成时 Agent 会自动唤醒续轮。
         const backgroundTasksPending = data.backgroundTasksPending === true
         if (!backgroundTasksPending && (data.runGeneration != null || data.startedAt != null)) {
-          recordAgentTerminalRun(store, data.sessionId, data)
           // 本轮主体结束：关闭文件改动分桶。后台任务等待态不关闭，后续唤醒属于新一轮。
           closeRunFileChanges(data.sessionId, data.startedAt)
         }
@@ -2272,6 +2303,8 @@ export function useGlobalAgentListeners(): void {
           if (data.startedAt == null
             || !isCanvasAgentGenerationCurrent(store, data.sessionId, data.startedAt)) return
         }
+        // 错误可能只由完成载荷携带，不能只根据 STREAM_ERROR 或未读集合判断颜色。
+        recordAgentCompletionOutcome(store, completionRoute.kind, data)
         if (completionRoute.kind === 'internal-invalid') {
           store.set(canvasAgentLifecycleAtom, {
             type: 'invalidated',

@@ -5,6 +5,7 @@ import type {
   CanvasOrchestrationRecord,
   CanvasTarget,
 } from '@proma/shared'
+import { LEGACY_DESIGN_CANVAS_ID } from '@proma/shared'
 import type { CanvasOrchestrationState } from '@/atoms/canvas-orchestration-atoms'
 import { createCanvasOrchestrationController, type CanvasOrchestrationController } from '@/components/design/CanvasOrchestrationPanel'
 
@@ -97,7 +98,10 @@ export function createAgentCanvasOrchestrationController(
   /** 使用最新关联集合只增删差异，保留未变画布的 revision 去重状态。 */
   const applyBinding = (bindings: AgentCanvasBinding[]): CanvasEntry[] => {
     const binding = bindings.find(item => item.projectId === dependencies.projectId && item.sessionId === dependencies.sessionId)
-    const nextCanvasIds = binding ? [...binding.linkedCanvasIds] : []
+    /** 制作流程摘要只读取 native Canvas；旧版画布仍保留在绑定中供工作区打开。 */
+    const nextCanvasIds = binding
+      ? binding.linkedCanvasIds.filter(canvasId => canvasId !== LEGACY_DESIGN_CANVAS_ID)
+      : []
     const nextSet = new Set(nextCanvasIds)
     for (const [canvasId, entry] of entries) {
       if (nextSet.has(canvasId)) continue
