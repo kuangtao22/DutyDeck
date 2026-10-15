@@ -4,12 +4,12 @@ import { basename, join, posix } from 'node:path'
 import type { InteractionDesignInputs, InteractionDesignMethod, InteractionDesignResults, PrototypeCandidate, PrototypeCandidateSummary, PrototypeCheck, PrototypeDocument, PrototypeDraft, PrototypeJob, PrototypeSnapshot, PrototypeVersion } from '@proma/shared'
 import { assertPrototypeDraft, parsePrototypeDraft, parseInteractionDesignCommand, PROTOTYPE_LIMITS, validatePrototypeStructure } from '@proma/shared'
 import { acquireMediaFileLock } from '../media/media-file-lock'
-import { readAtomicFileState, writeJsonFileAtomicSecure } from '../safe-file'
+import { readAtomicFileState, removeFileAtomic, writeJsonFileAtomicSecure } from '../safe-file'
 import { assertInteractionId, interactionDirectory, readInteractionFile } from './paths'
 import { InteractionAssetService, MAX_INTERACTION_IMAGE_BYTES } from './asset-service'
 import { InteractionSourceService, interactionHash } from './source-service'
 import type { InteractionSourceReader } from './source-service'
-import { createInteractionDelivery } from './delivery-service'
+import { createInteractionDelivery, createInteractionHandoff } from './delivery-service'
 
 /** 主进程为已授权项目构造的依赖，真实来源读取使用稳定目录能力。 */
 export interface InteractionDesignServiceDependencies {
@@ -59,6 +59,14 @@ export class InteractionDesignService {
   }
   /** 获取已校验的正式目录；不把全局缓存当权威数据。 */
   private root(create = false): string { return interactionDirectory(this.dependencies.projectRoot, ['.proma', 'interaction-design'], create) }
+  /** 检查项目是否已经存在正式交互模块；旧模块目录保留以避免重复创建。 */
+  private hasPrototype(): boolean {
+    const path = join(this.dependencies.projectRoot, '.proma', 'interaction-design', 'prototypes')
+    if (!existsSync(path)) return false
+    /** 原型目录也必须逐级拒绝符号链接，不能因唯一性检查绕过正式路径边界。 */
+    interactionDirectory(this.dependencies.projectRoot, ['.proma', 'interaction-design', 'prototypes'])
+    return readdirSync(path, { withFileTypes: true }).some(entry => entry.isDirectory() && /^[A-Za-z0-9_-]+$/.test(entry.name) && existsSync(join(path, entry.name, 'head.json')))
+  }
   /** 校验原型身份并定位独立目录。 */
   private directory(id: string, child?: string, create = false): string {
     assertInteractionId(id)
@@ -77,8 +85,8 @@ export class InteractionDesignService {
     if (head.schemaVersion !== 1 || head.workspaceId !== this.dependencies.workspaceId || head.prototypeId !== id
       || !Number.isSafeInteger(head.revision) || head.revision < 1
       || !Number.isSafeInteger(latestRevision) || latestRevision < head.revision) throw new Error('原型归属或版本记录损坏')
-    /** 高水位必须对应已经完整写入的历史文件，不能把空洞当成可恢复版本。 */
-    if (!existsSync(join(this.directory(id, 'revisions'), `${latestRevision}.json`))) throw new Error('原型历史版本记录损坏')
+    /** 当前指针必须对应已经完整写入的版本；历史高水位允许因用户删除而出现空洞。 */
+    if (!existsSync(join(this.directory(id, 'revisions'), `${head.revision}.json`))) throw new Error('原型当前版本记录损坏')
     /** 兼容旧 head 文件时在内存中补齐历史最高版本号。 */
     head.latestRevision = latestRevision
     return head
@@ -88,8 +96,10 @@ export class InteractionDesignService {
     /** 当前指针与历史高水位只读取一次，避免恢复/导出时重复读取 head。 */
     const head = this.head(id)
     if (!Number.isSafeInteger(revision) || revision < 1 || revision > (head.latestRevision ?? head.revision)) throw new Error('原型版本不存在')
-    /** 不可变版本记录。 */
-    const stored = this.json<StoredVersion>(join(this.directory(id, 'revisions'), `${revision}.json`), 2 * 1024 * 1024)
+    /** 不可变版本记录；删除后的历史统一返回领域错误，不泄漏底层文件路径。 */
+    const versionPath = join(this.directory(id, 'revisions'), `${revision}.json`)
+    if (!existsSync(versionPath)) throw new Error('原型版本不存在')
+    const stored = this.json<StoredVersion>(versionPath, 2 * 1024 * 1024)
     if (!stored.document || !Array.isArray(stored.document.pages) || stored.document.pages.length > PROTOTYPE_LIMITS.pages) throw new Error('版本页面记录非法')
     /** 在加载下一页前扣除正文读取预算。 */
     let remainingContentBytes = PROTOTYPE_LIMITS.totalChars * 4
@@ -126,6 +136,38 @@ export class InteractionDesignService {
       remaining -= bytes.length
       return JSON.parse(bytes.toString('utf8')) as T
     })
+  }
+  /** 删除前核验固定交接引用；输入模块和版本，遇到引用或不可验证记录时拒绝删除。 */
+  private assertVersionUnreferenced(id: string, revision: number): void {
+    if (this.records<PrototypeJob>(id, 'jobs').some(job => job.status === 'running' && job.baseRevision === revision)) {
+      throw new Error('该版本仍用于运行中的生成任务，请先取消任务再删除')
+    }
+    /** 交接目录首次使用前允许不存在，存在时逐级拒绝符号链接。 */
+    const path = join(this.directory(id), 'deliveries')
+    if (!existsSync(path)) return
+    this.directory(id, 'deliveries')
+    /** 流式枚举避免文件数量过大时一次性分配目录列表。 */
+    const directory = opendirSync(path)
+    /** 包含无关交付文件在内的枚举预算。 */
+    let count = 0
+    /** 交接记录的累计读取预算。 */
+    let remainingBytes = 32 * 1024 * 1024
+    try {
+      for (;;) {
+        /** 当前目录项；文件读取仍使用 no-follow 稳定句柄。 */
+        const entry = directory.readSync()
+        if (!entry) break
+        if (++count > 2000) throw new Error('交付记录数量超过读取预算，无法安全删除版本')
+        if (!entry.name.endsWith('.handoff.json')) continue
+        /** 只需核验交接身份和固定版本，不加载额外正文或素材。 */
+        const bytes = readInteractionFile(join(path, entry.name), Math.min(remainingBytes, 2 * 1024 * 1024))
+        remainingBytes -= bytes.length
+        /** 来自受管文件的最小交接身份，损坏时不能假定没有引用。 */
+        const handoff = JSON.parse(bytes.toString('utf8')) as { schemaVersion?: number; prototypeId?: string; revision?: number }
+        if (!handoff || handoff.schemaVersion !== 1 || handoff.prototypeId !== id || !Number.isSafeInteger(handoff.revision) || handoff.revision! < 1) throw new Error('开发交接记录损坏，无法安全删除版本')
+        if (handoff.revision === revision) throw new Error('该版本已用于开发交接，不能删除')
+      }
+    } finally { directory.closeSync() }
   }
   /** 候选可采纳性由当前 head 推导，不修改旧生成结果。 */
   private candidate(id: string, candidateId: string): PrototypeCandidate {
@@ -258,7 +300,8 @@ export class InteractionDesignService {
     this.assertAssets(input.draft)
     /** 当前原型提交点。 */
     const head = this.head(input.prototypeId)
-    if (input.baseRevision < 1 || input.baseRevision > head.revision) throw new Error('候选基线版本不存在')
+    /** 所有候选都必须有真实基线，包含整模块任务及恢复后仍存在的历史版本。 */
+    this.version(input.prototypeId, input.baseRevision)
     if (input.jobId) {
       /** 绑定当前任务，拒绝取消后回填或跨会话伪造。 */
       const job = this.job(input.prototypeId, input.jobId)
@@ -363,11 +406,13 @@ export class InteractionDesignService {
         /** 已解析的新建参数。 */
         const request = input as InteractionDesignInputs['create']
         return this.write(() => {
+          if (this.hasPrototype()) throw new Error('当前项目已存在交互设计模块，请在现有模块中新增页面')
           /** 新原型稳定身份。 */
           const id = randomUUID()
           /** 页面入口传 pageName 时直接使用用户的页面名，避免先创建容器再生成重复首页。 */
           const pageName = request.pageName ?? '首页'
-          this.commit(id, 0, { name: request.name, platform: request.platform, brief: '', groups: [{ id: 'main', name: '主要页面' }], pages: [{ id: 'home', groupId: 'main', name: pageName, html: '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><body><main><h1 data-prototype-element="title">新页面</h1><p>在主会话描述这个页面的内容和交互。</p></main></body></html>' }], entryPageId: 'home', flows: [] }, request.pageName ? '创建页面' : '创建原型')
+          /** 页面入口创建的是项目唯一模块，模块名称固定为默认值；Agent 直接创建时仍保留其明确命名。 */
+          this.commit(id, 0, { name: request.pageName ? '交互设计' : request.name, platform: request.platform, brief: '', groups: [{ id: 'main', name: '主要页面' }], pages: [{ id: 'home', groupId: 'main', name: pageName, html: '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><body><main><h1 data-prototype-element="title">新页面</h1><p>在主会话描述这个页面的内容和交互。</p></main></body></html>' }], entryPageId: 'home', flows: [] }, request.pageName ? '创建页面' : '创建原型')
           return this.snapshot(id)
         })
       }
@@ -402,6 +447,27 @@ export class InteractionDesignService {
             latestRevision: head.latestRevision ?? head.revision,
             adopted: head.adopted,
           }, { expectedDestination: { kind: 'state', state } })
+          return this.snapshot(request.prototypeId)
+        })
+      }
+      case 'deleteVersion': {
+        /** 删除历史版本；当前 head 只允许切换，不允许被删除。 */
+        const request = input as InteractionDesignInputs['deleteVersion']
+        return this.write(() => {
+          /** 模块写锁内复核当前基线，避免旧历史面板删除新上下文中的记录。 */
+          const head = this.head(request.prototypeId)
+          if (head.revision !== request.baseRevision) throw new Error('原型版本已变化，请重新读取后删除')
+          if (request.revision === head.revision) throw new Error('当前版本不能删除')
+          if (request.revision > (head.latestRevision ?? head.revision)) throw new Error('原型版本不存在')
+          /** 先完整校验历史正文与内容身份，再按文件身份原子删除。 */
+          this.version(request.prototypeId, request.revision)
+          this.assertVersionUnreferenced(request.prototypeId, request.revision)
+          /** 已验证且未被固定交接或运行任务引用的历史文件。 */
+          const versionPath = join(this.directory(request.prototypeId, 'revisions'), `${request.revision}.json`)
+          /** 删除时的文件身份，防止替换后的条目被误删。 */
+          const versionState = readAtomicFileState(versionPath)
+          if (!versionState) throw new Error('原型版本不存在')
+          removeFileAtomic(versionPath, { expectedIdentity: versionState })
           return this.snapshot(request.prototypeId)
         })
       }
@@ -503,6 +569,15 @@ export class InteractionDesignService {
         /** 固定的版本完整文档。 */
         const document = this.version(request.prototypeId, request.revision)
         return this.write(() => createInteractionDelivery(document, this.assets, this.directory(request.prototypeId, 'deliveries', true)))
+      }
+      case 'createHandoff': {
+        /** 开发交接固定读取调用方指定版本，不跟随之后的 head 变化。 */
+        const request = input as InteractionDesignInputs['createHandoff']
+        return this.write(() => {
+          /** 读取基线与登记引用共享模块锁，不能与版本删除交错。 */
+          const document = this.version(request.prototypeId, request.revision)
+          return createInteractionHandoff(document, this.assets, this.directory(request.prototypeId, 'deliveries', true))
+        })
       }
       case 'validate': case 'recordExperience': {
         /** 验证证据严格绑定明确版本。 */

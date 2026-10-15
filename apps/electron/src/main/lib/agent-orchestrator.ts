@@ -2277,7 +2277,7 @@ export class AgentOrchestrator {
       }) + (automationContext ? `\n\n## 定时任务执行上下文\n\n${automationContext}` : '')
       /** 单次可信运行场景放在通用规则之后，使专用会话覆盖普通入口分流语义。 */
       const systemPromptAppend = [baseSystemPrompt,
-        interactionAccess ? '交互设计使用 prototype_* 工具：先读取现有原型和当前版本，基于真实项目源码/主题/素材还原页面；修改先 begin_job，再 propose 完整候选，由用户在工作区采纳。元素引用是修改上下文，自动保护范围为所属页面。不要用 Write/Edit 直接改 .proma/interaction-design 数据，也不要把结构检查或访问路径记录宣称为视觉一比一验证。详细流程按 interaction-design Skill。' : undefined,
+        interactionAccess ? '交互设计使用 prototype_* 工具：用户可直接描述要还原的项目页面，Agent 先读取现有原型和当前版本，再从路由、组件、主题和实际素材建立最小源码证据闭包；修改先 begin_job，再 propose 完整候选，由用户在工作区采纳。元素引用是修改上下文，自动保护范围为所属页面。不要用 Write/Edit 直接改 .proma/interaction-design 数据，也不要把结构检查或访问路径记录宣称为视觉一比一验证。详细流程按 interaction-design Skill。' : undefined,
         extensions.systemPromptAppend]
         .filter((section): section is string => Boolean(section?.trim()))
         .join('\n\n')

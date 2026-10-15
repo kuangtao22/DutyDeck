@@ -64,10 +64,22 @@ export function parsePrototypeDraft(value: unknown): PrototypeDraft {
   if (platform !== 'mobile' && platform !== 'desktop') return invalid('设备类型')
   const groups = array(draft.groups, '页面分组', PROTOTYPE_LIMITS.groups, 1).map((value) => {
     const group = record(value, '分组')
-    return { id: id(group.id), name: string(group.name, '分组名称', 120) }
+    const parentId = group.parentId === undefined || group.parentId === null ? undefined : id(group.parentId)
+    return { id: id(group.id), name: string(group.name, '分组名称', 120), ...(parentId ? { parentId } : {}) }
   })
   unique(groups.map((group) => group.id), '分组身份重复')
   const groupIds = new Set(groups.map((group) => group.id))
+  /** 父链必须指向当前版本中的分组且不能形成循环，避免目录树递归失控。 */
+  const groupsById = new Map(groups.map((group) => [group.id, group]))
+  for (const group of groups) {
+    const seen = new Set<string>([group.id])
+    let parentId = group.parentId
+    while (parentId) {
+      if (!groupIds.has(parentId) || seen.has(parentId)) invalid('页面分组父级无效')
+      seen.add(parentId)
+      parentId = groupsById.get(parentId)?.parentId
+    }
+  }
   let totalChars = 0
   const pages = array(draft.pages, '页面集合', PROTOTYPE_LIMITS.pages, 1).map((value) => {
     const page = record(value, '页面')
@@ -125,8 +137,8 @@ export function parseInteractionDesignCommand(value: unknown): InteractionDesign
   switch (method) {
     case 'load': return result(method, base)
     case 'save': return result(method, { ...base, baseRevision: revision(input.baseRevision), draft: parsePrototypeDraft(input.draft), summary: string(input.summary, '保存说明', 2000) })
-    case 'getVersion': case 'validate': case 'exportHtml': return result(method, { ...base, revision: revision(input.revision) })
-    case 'restore': return result(method, { ...base, revision: revision(input.revision), baseRevision: revision(input.baseRevision) })
+    case 'getVersion': case 'validate': case 'exportHtml': case 'createHandoff': return result(method, { ...base, revision: revision(input.revision) })
+    case 'restore': case 'deleteVersion': return result(method, { ...base, revision: revision(input.revision), baseRevision: revision(input.baseRevision) })
     case 'propose': return result(method, { ...base, baseRevision: revision(input.baseRevision), draft: parsePrototypeDraft(input.draft), summary: string(input.summary, '候选说明', 2000), ...(input.jobId === undefined ? {} : { jobId: id(input.jobId) }) })
     case 'getCandidate': case 'discardCandidate': return result(method, { ...base, candidateId: id(input.candidateId) })
     case 'adopt': return result(method, { ...base, candidateId: id(input.candidateId), baseRevision: revision(input.baseRevision) })

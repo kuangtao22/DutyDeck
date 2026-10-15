@@ -17,6 +17,12 @@ describe('交互设计完整版本合同', () => {
     expect(() => parsePrototypeDraft({ ...draft(), entryPageId: 'missing' })).toThrow('入口')
     expect(() => parsePrototypeDraft({ ...draft(), groups: [{ id: 'other', name: '其他' }] })).toThrow('分组')
   })
+  test('Given 多级页面分组 When 解析 Then 保留父子关系并拒绝循环', () => {
+    const base = draft()
+    const nested = { ...base, groups: [{ id: 'root', name: '产品' }, { id: 'account', name: '账号', parentId: 'root' }, { id: 'settings', name: '设置', parentId: 'account' }], pages: [{ ...base.pages[0]!, groupId: 'settings' }, { ...base.pages[1]!, groupId: 'account' }] }
+    expect(parsePrototypeDraft(nested).groups[2]!.parentId).toBe('account')
+    expect(() => parsePrototypeDraft({ ...nested, groups: [{ id: 'root', name: '产品', parentId: 'settings' }, ...nested.groups.slice(1)] })).toThrow('分组')
+  })
   test('Given 重复身份或动作 When 解析 Then 不容许模糊映射', () => {
     const value = draft()
     expect(() => parsePrototypeDraft({ ...value, pages: [...value.pages, value.pages[0]] })).toThrow('重复')
@@ -38,6 +44,18 @@ describe('交互设计完整版本合同', () => {
   test('Given 采纳请求缺基线或版本非整数 When 解析 Then 拒绝', () => {
     expect(() => parseInteractionDesignCommand({ method: 'adopt', input: { sessionId: 'session-1', prototypeId: 'proto-1', candidateId: 'candidate-1' } })).toThrow()
     expect(() => parseInteractionDesignCommand({ method: 'restore', input: { sessionId: 'session-1', prototypeId: 'proto-1', baseRevision: 1.1, revision: 1 } })).toThrow()
+  })
+  test('Given 固定版本 When 创建开发交接请求 Then 只接受明确的原型与版本', () => {
+    const parsed = parseInteractionDesignCommand({ method: 'createHandoff', input: { sessionId: 'session-1', prototypeId: 'proto-1', revision: 3, ignored: true } })
+    expect(parsed.input).toEqual({ sessionId: 'session-1', prototypeId: 'proto-1', revision: 3 })
+    expect(() => parseInteractionDesignCommand({ method: 'createHandoff', input: { sessionId: 'session-1', prototypeId: 'proto-1', revision: 0 } })).toThrow()
+  })
+  test('Given 历史版本删除请求 When 缺少基线或版本无效 Then 拒绝越权删除', () => {
+    /** 合法删除请求必须同时携带当前基线和历史目标。 */
+    const parsed = parseInteractionDesignCommand({ method: 'deleteVersion', input: { sessionId: 'session-1', prototypeId: 'proto-1', baseRevision: 3, revision: 2 } })
+    expect(parsed.input).toEqual({ sessionId: 'session-1', prototypeId: 'proto-1', baseRevision: 3, revision: 2 })
+    expect(() => parseInteractionDesignCommand({ method: 'deleteVersion', input: { sessionId: 'session-1', prototypeId: 'proto-1', revision: 2 } })).toThrow()
+    expect(() => parseInteractionDesignCommand({ method: 'deleteVersion', input: { sessionId: 'session-1', prototypeId: 'proto-1', baseRevision: 3, revision: 0 } })).toThrow()
   })
   test('Given 危险对象键 When 解析 Then 拒绝', () => {
     expect(() => parseInteractionDesignCommand({ method: 'load', input: { sessionId: 'session-1', prototypeId: '__proto__' } })).toThrow()

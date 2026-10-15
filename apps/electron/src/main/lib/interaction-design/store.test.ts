@@ -24,9 +24,15 @@ describe('交互设计版本与候选', () => {
     /** 隔离服务。 */
     const { service } = setup()
     const snapshot = await service.invoke('create', { sessionId, name: '欢迎页', pageName: '欢迎页', platform: 'mobile' })
+    expect(snapshot.document.name).toBe('交互设计')
     expect(snapshot.document.pages).toHaveLength(1)
     expect(snapshot.document.pages[0]!.name).toBe('欢迎页')
     expect(snapshot.document.entryPageId).toBe(snapshot.document.pages[0]!.id)
+  })
+  it('Given 项目已有交互模块 When 再次创建 Then 拒绝创建第二个模块', async () => {
+    const { service } = setup()
+    await service.invoke('create', { sessionId, name: '唯一模块', platform: 'mobile' })
+    await expect(service.invoke('create', { sessionId, name: '重复模块', platform: 'desktop' })).rejects.toThrow('已存在')
   })
   it('Given 新项目 When 创建、保存及恢复 Then 只切换当前版本且保留后续历史', async () => {
     /** 隔离服务。 */
@@ -54,6 +60,126 @@ describe('交互设计版本与候选', () => {
     const continued = await service.invoke('save', { sessionId, prototypeId: first.document.id, baseRevision: 1, draft: restored.document, summary: '从旧版本继续' })
     expect(continued.document.revision).toBe(3)
     expect(continued.versions.map(version => version.revision)).toEqual([3, 2, 1])
+  })
+  it('Given 当前版本与历史版本 When 删除历史 Then 只移除目标记录且保留版本高水位', async () => {
+    /** 隔离项目目录与服务。 */
+    const { root, service } = setup()
+    /** 初始版本，用作历史基线。 */
+    const first = await service.invoke('create', { sessionId, name: '原型', platform: 'mobile' })
+    /** 第二版，作为中间历史删除目标。 */
+    const second = await service.invoke('save', { sessionId, prototypeId: first.document.id, baseRevision: 1, draft: { ...first.document, name: '第二版' }, summary: '第二版' })
+    /** 当前第三版，必须保留。 */
+    const third = await service.invoke('save', { sessionId, prototypeId: first.document.id, baseRevision: 2, draft: { ...second.document, name: '第三版' }, summary: '第三版' })
+    /** 临时项目版本目录，用于核对实际文件删除。 */
+    const revisionsDirectory = join(root, '.proma', 'interaction-design', 'prototypes', first.document.id, 'revisions')
+    await expect(service.invoke('deleteVersion', { sessionId, prototypeId: first.document.id, baseRevision: 2, revision: 1 })).rejects.toThrow('版本已变化')
+    await expect(service.invoke('deleteVersion', { sessionId, prototypeId: first.document.id, baseRevision: 3, revision: 9 })).rejects.toThrow('版本不存在')
+    /** 删除中间历史后的权威快照。 */
+    const deleted = await service.invoke('deleteVersion', { sessionId, prototypeId: first.document.id, baseRevision: 3, revision: 2 })
+    expect(deleted.document.revision).toBe(3)
+    expect(deleted.versions.map(version => version.revision)).toEqual([3, 1])
+    expect(readdirSync(revisionsDirectory).sort()).toEqual(['1.json', '3.json'])
+    await expect(service.invoke('getVersion', { sessionId, prototypeId: first.document.id, revision: 2 })).rejects.toThrow('版本不存在')
+    await expect(service.invoke('deleteVersion', { sessionId, prototypeId: first.document.id, baseRevision: 3, revision: 2 })).rejects.toThrow('版本不存在')
+    await expect(service.invoke('deleteVersion', { sessionId, prototypeId: first.document.id, baseRevision: 3, revision: 3 })).rejects.toThrow('当前版本不能删除')
+    /** 删除后继续保存的新版本。 */
+    const continued = await service.invoke('save', { sessionId, prototypeId: first.document.id, baseRevision: 3, draft: { ...third.document, name: '第四版' }, summary: '第四版' })
+    expect(continued.document.revision).toBe(4)
+    expect(continued.versions.map(version => version.revision)).toEqual([4, 3, 1])
+    /** 恢复到旧版本后的快照。 */
+    const restored = await service.invoke('restore', { sessionId, prototypeId: first.document.id, baseRevision: 4, revision: 1 })
+    /** 恢复只切换指针，仍存在的较高历史版本可以提交过期候选。 */
+    const historicalCandidate = await service.invoke('propose', { sessionId, prototypeId: first.document.id, baseRevision: 4, draft: continued.document, summary: '历史基线候选' })
+    expect(historicalCandidate.status).toBe('stale')
+    /** 删除历史最高版本后的快照。 */
+    const deletedHighest = await service.invoke('deleteVersion', { sessionId, prototypeId: first.document.id, baseRevision: 1, revision: 4 })
+    expect(restored.document.revision).toBe(1)
+    expect(deletedHighest.document.revision).toBe(1)
+    expect(deletedHighest.versions.map(version => version.revision)).toEqual([3, 1])
+    /** 验证历史最高编号删除后仍不复用的后续版本。 */
+    const afterHighestDelete = await service.invoke('save', { sessionId, prototypeId: first.document.id, baseRevision: 1, draft: restored.document, summary: '第五版' })
+    expect(afterHighestDelete.document.revision).toBe(5)
+  })
+  it('Given 开发交接引用历史版本 When 删除 Then 拒绝并保留交接基线', async () => {
+    /** 隔离服务及固定交接基线。 */
+    const { service } = setup()
+    /** 初始版本，用作历史基线。 */
+    const first = await service.invoke('create', { sessionId, name: '交接基线', platform: 'mobile' })
+    await service.invoke('createHandoff', { sessionId, prototypeId: first.document.id, revision: 1 })
+    await service.invoke('save', { sessionId, prototypeId: first.document.id, baseRevision: 1, draft: first.document, summary: '后续版本' })
+    await expect(service.invoke('deleteVersion', { sessionId, prototypeId: first.document.id, baseRevision: 2, revision: 1 })).rejects.toThrow('已用于开发交接')
+    expect((await service.invoke('getVersion', { sessionId, prototypeId: first.document.id, revision: 1 })).revision).toBe(1)
+  })
+  it('Given 运行任务引用历史版本 When 删除及取消后删除 Then 保护运行任务且拒绝已删基线的新候选', async () => {
+    /** 隔离服务与运行中的整模块任务。 */
+    const { service } = setup()
+    /** 初始版本，用作历史基线。 */
+    const first = await service.invoke('create', { sessionId, name: '任务基线', platform: 'mobile' })
+    /** 引用旧基线的运行任务。 */
+    const job = await service.invoke('beginJob', { sessionId, prototypeId: first.document.id, baseRevision: 1, instruction: '生成页面' })
+    /** 删除前已保存的候选仍有完整独立正文。 */
+    const candidate = await service.invoke('propose', { sessionId, prototypeId: first.document.id, baseRevision: 1, draft: first.document, summary: '已有候选' })
+    await service.invoke('save', { sessionId, prototypeId: first.document.id, baseRevision: 1, draft: first.document, summary: '后续版本' })
+    await expect(service.invoke('deleteVersion', { sessionId, prototypeId: first.document.id, baseRevision: 2, revision: 1 })).rejects.toThrow('运行中的生成任务')
+    await service.invoke('cancelJob', { sessionId, prototypeId: first.document.id, jobId: job.id })
+    await service.invoke('deleteVersion', { sessionId, prototypeId: first.document.id, baseRevision: 2, revision: 1 })
+    await expect(service.invoke('propose', { sessionId, prototypeId: first.document.id, baseRevision: 1, draft: first.document, summary: '无效基线' })).rejects.toThrow('版本不存在')
+    await expect(service.invoke('propose', { sessionId, prototypeId: first.document.id, baseRevision: 1, jobId: job.id, draft: first.document, summary: '迟到回填' })).rejects.toThrow('版本不存在')
+    /** 旧候选保留可读但不可直接采纳的事实。 */
+    const preserved = await service.invoke('getCandidate', { sessionId, prototypeId: first.document.id, candidateId: candidate.id })
+    expect(preserved.status).toBe('stale')
+    expect(preserved.draft.pages).toEqual(first.document.pages)
+  })
+  it('Given 已采纳候选与离线导出 When 删除旧版本 Then 保留采纳幂等与导出正文', async () => {
+    /** 隔离服务、采纳版本和独立导出。 */
+    const { service } = setup()
+    /** 初始版本，用作历史基线。 */
+    const first = await service.invoke('create', { sessionId, name: '独立记录', platform: 'mobile' })
+    /** 独立保存正文的候选记录。 */
+    const candidate = await service.invoke('propose', { sessionId, prototypeId: first.document.id, baseRevision: 1, draft: first.document, summary: '采纳候选' })
+    await service.invoke('adopt', { sessionId, prototypeId: first.document.id, baseRevision: 1, candidateId: candidate.id })
+    /** 已导出的离线页面内容。 */
+    const delivery = await service.invoke('exportHtml', { sessionId, prototypeId: first.document.id, revision: 2 })
+    await service.invoke('save', { sessionId, prototypeId: first.document.id, baseRevision: 2, draft: first.document, summary: '后续版本' })
+    await service.invoke('deleteVersion', { sessionId, prototypeId: first.document.id, baseRevision: 3, revision: 2 })
+    expect(delivery.html).toContain('在主会话描述这个页面的内容和交互。')
+    expect((await service.invoke('getCandidate', { sessionId, prototypeId: first.document.id, candidateId: candidate.id })).adoptedRevision).toBe(2)
+    expect((await service.invoke('adopt', { sessionId, prototypeId: first.document.id, baseRevision: 1, candidateId: candidate.id })).document.revision).toBe(3)
+  })
+  it('Given 交接记录被替换为符号链接 When 删除历史版本 Then 拒绝跳过无法验证的引用', async () => {
+    /** 隔离项目与交接记录。 */
+    const { root, service } = setup()
+    /** 初始版本，用作历史基线。 */
+    const first = await service.invoke('create', { sessionId, name: '受保护引用', platform: 'mobile' })
+    /** 固定版本的开发交接记录。 */
+    const handoff = await service.invoke('createHandoff', { sessionId, prototypeId: first.document.id, revision: 1 })
+    await service.invoke('save', { sessionId, prototypeId: first.document.id, baseRevision: 1, draft: first.document, summary: '后续版本' })
+    /** 仅在测试临时根内替换为链接，以验证 no-follow 边界。 */
+    const path = join(root, '.proma', 'interaction-design', 'prototypes', first.document.id, 'deliveries', `${handoff.id}.handoff.json`)
+    /** 测试根内的交接副本，作为符号链接目标。 */
+    const target = join(root, 'handoff-copy.json')
+    writeFileSync(target, readFileSync(path))
+    rmSync(path)
+    symlinkSync(target, path)
+    await expect(service.invoke('deleteVersion', { sessionId, prototypeId: first.document.id, baseRevision: 2, revision: 1 })).rejects.toThrow()
+    expect((await service.invoke('getVersion', { sessionId, prototypeId: first.document.id, revision: 1 })).revision).toBe(1)
+  })
+  it('Given 固定版本 When 生成开发交接包 Then 带上视口、元素身份、流程和视觉 tokens 且不带本机路径', async () => {
+    const { root, service } = setup()
+    const first = await service.invoke('create', { sessionId, name: '交接原型', platform: 'desktop' })
+    const draft = { ...first.document, groups: [{ id: 'root', name: '产品' }, { id: 'account', name: '账号', parentId: 'root' }], pages: [{ ...first.document.pages[0]!, groupId: 'account', name: '登录', html: '<style>:root{--brand:#123456;--gap:16px}</style><button data-prototype-element="submit">进入</button>' }, { id: 'dashboard', groupId: 'root', name: '首页', html: '<h1 data-prototype-element="title">首页</h1>' }], entryPageId: first.document.pages[0]!.id, flows: [{ id: 'to-home', fromPageId: first.document.pages[0]!.id, elementId: 'submit', targetPageId: 'dashboard' }] }
+    await service.invoke('save', { sessionId, prototypeId: first.document.id, baseRevision: 1, draft, summary: '准备开发交接' })
+    const handoff = await service.invoke('createHandoff', { sessionId, prototypeId: first.document.id, revision: 2 })
+    expect(handoff.revision).toBe(2)
+    expect(handoff.visualContract.viewport).toEqual({ width: 1280, height: 800 })
+    expect(handoff.groups.find(group => group.id === 'account')?.path).toBe('产品 / 账号')
+    expect(handoff.pages.find(page => page.name === '登录')?.elementIds).toEqual(['submit'])
+    expect(handoff.pages.find(page => page.name === '登录')?.flowIds).toEqual(['to-home'])
+    expect(handoff.designTokens).toEqual({ '--brand': '#123456', '--gap': '16px' })
+    expect(handoff.manifestHash).toMatch(/^[a-f0-9]{64}$/)
+    expect(JSON.stringify(handoff)).not.toContain(root)
+    const deliveryRoot = join(root, '.proma', 'interaction-design', 'prototypes', first.document.id, 'deliveries')
+    expect(readdirSync(deliveryRoot).some(name => name.endsWith('.handoff.json'))).toBe(true)
   })
   it('Given 相同基线 When 两次保存 Then 旧写入不能覆盖当前稿', async () => {
     /** 隔离服务及原型。 */
@@ -357,39 +483,34 @@ it('Given 放弃候选 When 重读与列表展示 Then 校验hash保留但不暴
   expect(JSON.parse(readFileSync(join(directory, `${candidate.id}.summary.json`), 'utf8')).draftHash).toBeUndefined()
 })
 
-it('Given 多个原型包含大页面且正文损坏 When list Then 仅读摘要而load仍拒绝损坏正文', async () => {
-  /** 多原型、大正文的隔离项目。 */
+it('Given 唯一项目模块包含大页面且正文损坏 When list Then 仅读摘要而load仍拒绝损坏正文', async () => {
+  /** 单模块、大正文的隔离项目。 */
   const { root, service } = setup()
-  for (const name of ['原型一', '原型二']) {
-    /** 每个原型保存两份接近单页上限的正文。 */
-    const first = await service.invoke('create', { sessionId, name, platform: 'mobile' })
-    const draft = { ...first.document, pages: [
-      { ...first.document.pages[0]!, html: `<main>${'a'.repeat(400_000)}</main>` },
-      { id: 'second', groupId: 'main', name: '第二页', html: `<main>${'b'.repeat(400_000)}</main>` },
-    ] }
-    await service.invoke('save', { sessionId, prototypeId: first.document.id, baseRevision: 1, draft, summary: '大页面' })
-    /** 删除全部内容文件，任何正文读取都会失败。 */
-    const contents = join(root, '.proma', 'interaction-design', 'prototypes', first.document.id, 'contents')
-    for (const file of readdirSync(contents)) rmSync(join(contents, file))
-    await expect(service.invoke('load', { sessionId, prototypeId: first.document.id })).rejects.toThrow()
-  }
+  /** 保存两份接近单页上限的正文。 */
+  const first = await service.invoke('create', { sessionId, name: '唯一模块', platform: 'mobile' })
+  const draft = { ...first.document, pages: [
+    { ...first.document.pages[0]!, html: `<main>${'a'.repeat(400_000)}</main>` },
+    { id: 'second', groupId: 'main', name: '第二页', html: `<main>${'b'.repeat(400_000)}</main>` },
+  ] }
+  await service.invoke('save', { sessionId, prototypeId: first.document.id, baseRevision: 1, draft, summary: '大页面' })
+  /** 删除全部内容文件，任何正文读取都会失败。 */
+  const contents = join(root, '.proma', 'interaction-design', 'prototypes', first.document.id, 'contents')
+  for (const file of readdirSync(contents)) rmSync(join(contents, file))
+  await expect(service.invoke('load', { sessionId, prototypeId: first.document.id })).rejects.toThrow()
   /** 摘要可以展示，但不宣称已经验证正文完整性。 */
   const summaries = await service.invoke('list', { sessionId })
-  expect(summaries).toHaveLength(2)
-  expect(summaries.every(summary => summary.pageCount === 2 && summary.revision === 2)).toBe(true)
-  expect(summaries.map(summary => summary.name).sort()).toEqual(['原型一', '原型二'])
+  expect(summaries).toHaveLength(1)
+  expect(summaries[0]).toMatchObject({ pageCount: 2, revision: 2, name: '唯一模块' })
 })
 
 it('Given 版本元数据累计超预算 When list Then 明确拒绝无界摘要读取', async () => {
   /** 累计元数据预算的隔离项目。 */
   const { root, service } = setup()
-  for (let index = 0; index < 9; index += 1) {
-    /** 仅版本元数据增大，不创建大正文。 */
-    const first = await service.invoke('create', { sessionId, name: `原型${index}`, platform: 'mobile' })
-    const path = join(root, '.proma', 'interaction-design', 'prototypes', first.document.id, 'revisions', '1.json')
-    const stored = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
-    stored.padding = 'x'.repeat(1024 * 1024)
-    writeFileSync(path, JSON.stringify(stored))
-  }
+  /** 单模块元数据超过列表预算。 */
+  const first = await service.invoke('create', { sessionId, name: '唯一模块', platform: 'mobile' })
+  const path = join(root, '.proma', 'interaction-design', 'prototypes', first.document.id, 'revisions', '1.json')
+  const stored = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+  stored.padding = 'x'.repeat(9 * 1024 * 1024)
+  writeFileSync(path, JSON.stringify(stored))
   await expect(service.invoke('list', { sessionId })).rejects.toThrow('预算')
 })

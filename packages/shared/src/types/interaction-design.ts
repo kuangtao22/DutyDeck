@@ -10,6 +10,8 @@ export interface PrototypeGroup {
   id: string
   /** 用户可修改的分组名称。 */
   name: string
+  /** 父分组身份；缺省表示项目根分组。 */
+  parentId?: string
 }
 
 /** 来源只保存项目相对路径和内容身份，不携带本机绝对路径。 */
@@ -70,7 +72,7 @@ export interface PrototypeDraft {
 export interface PrototypeDocument extends PrototypeDraft {
   /** 数据结构版本。 */
   schemaVersion: 1
-  /** 项目内稳定原型身份。 */
+  /** 项目内稳定交互模块身份；每个项目只有一个正式模块。 */
   id: string
   /** 当前版本号，严格递增。 */
   revision: number
@@ -82,7 +84,7 @@ export interface PrototypeDocument extends PrototypeDraft {
 
 /** 列表不携带 HTML 或图片字节。 */
 export interface PrototypeSummary {
-  /** 原型身份。 */
+  /** 交互模块身份。 */
   id: string
   /** 名称。 */
   name: string
@@ -190,6 +192,78 @@ export interface PrototypeCheck {
   createdAt: number
 }
 
+/** 固定版本交给生产开发时使用的视口与视觉约束。 */
+export interface PrototypeVisualContract {
+  /** 设计验收时使用的固定预览尺寸。 */
+  viewport: { width: number; height: number }
+  /** 开发必须优先保持的视觉事实。 */
+  preserve: string[]
+}
+
+/** 页面分组在开发交接包中的可读路径。 */
+export interface PrototypeHandoffGroup {
+  /** 稳定分组身份。 */
+  id: string
+  /** 分组显示名称。 */
+  name: string
+  /** 可选父分组身份。 */
+  parentId?: string
+  /** 从根分组到当前分组的显示路径。 */
+  path: string
+}
+
+/** 交接包中的页面摘要；正文仍可通过 prototype_read_version 读取。 */
+export interface PrototypeHandoffPage {
+  /** 稳定页面身份。 */
+  id: string
+  /** 页面显示名称。 */
+  name: string
+  /** 所属分组身份。 */
+  groupId: string
+  /** 所属分组的完整显示路径。 */
+  groupPath: string
+  /** 页面 HTML 中声明的稳定元素身份。 */
+  elementIds: string[]
+  /** 从当前页面发出的交互连接身份。 */
+  flowIds: string[]
+}
+
+/** 固定 revision 的开发交接包；只保存设计事实，不携带图片字节或本机路径。 */
+export interface PrototypeHandoff {
+  /** 交接包格式版本。 */
+  schemaVersion: 1
+  /** 交接包身份。 */
+  id: string
+  /** 原型身份。 */
+  prototypeId: string
+  /** 交接所依据的不可变版本。 */
+  revision: number
+  /** 生成时间（毫秒）。 */
+  createdAt: number
+  /** 原型名称。 */
+  name: string
+  /** 目标平台。 */
+  platform: 'mobile' | 'desktop'
+  /** 原型说明。 */
+  brief: string
+  /** 页面分组目录。 */
+  groups: PrototypeHandoffGroup[]
+  /** 页面结构与稳定元素身份。 */
+  pages: PrototypeHandoffPage[]
+  /** 唯一入口页。 */
+  entryPageId: string
+  /** 页面之间的交互连接。 */
+  flows: PrototypeFlow[]
+  /** 当前版本实际引用的资源元数据。 */
+  assets: PrototypeAsset[]
+  /** 从页面样式中提取的 CSS 自定义属性。 */
+  designTokens: Record<string, string>
+  /** 视觉开发和验收规则。 */
+  visualContract: PrototypeVisualContract
+  /** 不含交接包身份和时间的内容 hash。 */
+  manifestHash: string
+}
+
 /** UI 首屏读取当前文档与轻量历史，不注入所有候选正文。 */
 export interface PrototypeSnapshot {
   /** 当前已采纳内容。 */
@@ -229,6 +303,7 @@ export interface InteractionDesignInputs {
   save: { sessionId: string; prototypeId: string; baseRevision: number; draft: PrototypeDraft; summary: string }
   getVersion: { sessionId: string; prototypeId: string; revision: number }
   restore: { sessionId: string; prototypeId: string; baseRevision: number; revision: number }
+  deleteVersion: { sessionId: string; prototypeId: string; baseRevision: number; revision: number }
   propose: { sessionId: string; prototypeId: string; baseRevision: number; draft: PrototypeDraft; summary: string; jobId?: string }
   getCandidate: { sessionId: string; prototypeId: string; candidateId: string }
   adopt: { sessionId: string; prototypeId: string; candidateId: string; baseRevision: number }
@@ -245,6 +320,7 @@ export interface InteractionDesignInputs {
   exportHtml: { sessionId: string; prototypeId: string; revision: number }
   validate: { sessionId: string; prototypeId: string; revision: number }
   recordExperience: { sessionId: string; prototypeId: string; revision: number; visitedPageIds: string[] }
+  createHandoff: { sessionId: string; prototypeId: string; revision: number }
 }
 
 /** IPC 返回类型与具体命令保持关联。 */
@@ -255,6 +331,7 @@ export interface InteractionDesignResults {
   save: PrototypeSnapshot
   getVersion: PrototypeDocument
   restore: PrototypeSnapshot
+  deleteVersion: PrototypeSnapshot
   propose: PrototypeCandidateSummary
   getCandidate: PrototypeCandidate
   adopt: PrototypeSnapshot
@@ -271,6 +348,7 @@ export interface InteractionDesignResults {
   exportHtml: { deliveryId: string; fileName: string; html: string; revision: number }
   validate: PrototypeCheck
   recordExperience: PrototypeCheck
+  createHandoff: PrototypeHandoff
 }
 
 /** 有限命令集合。 */

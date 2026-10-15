@@ -1,15 +1,16 @@
 import * as React from 'react'
 import { useAtom, useSetAtom } from 'jotai'
-import { Download, Expand, History, ListTree, Monitor, MoreHorizontal, MousePointer2, PanelLeftClose, Play, Plus, RefreshCw, Route, Search, Smartphone, Sparkles, Workflow, X } from 'lucide-react'
-import type { PrototypeCandidate, PrototypeDraft, PrototypeFlow, PrototypeProjectInspection, PrototypeSnapshot, PrototypeSummary } from '@proma/shared'
+import { ChevronDown, ChevronRight, ClipboardCheck, Download, Expand, Folder, FolderPlus, History, ListTree, Monitor, MoreHorizontal, MousePointer2, PanelLeftClose, Play, Plus, RefreshCw, Route, Search, Smartphone, Sparkles, Workflow, X } from 'lucide-react'
+import type { PrototypeCandidate, PrototypeDraft, PrototypeFlow, PrototypeSnapshot, PrototypeSummary } from '@proma/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { agentPendingPromptAtom } from '@/atoms/agent-atoms'
 import { interactionDesignViewsAtom } from '@/atoms/interaction-design-atoms'
-import { buildPrototypePrompt, copyPrototypeDraft, deletePrototypePage, movePrototypePage, PrototypeRequestGate } from './interaction-design-model'
+import { buildPrototypeGroupTree, buildPrototypeHandoffPrompt, buildPrototypePrompt, copyPrototypeDraft, deletePrototypeGroup, deletePrototypePage, movePrototypePage, PrototypeRequestGate, type PrototypeGroupTreeNode } from './interaction-design-model'
 import { InteractionDesignPreview } from './InteractionDesignPreview'
 import './interaction-design.css'
 
@@ -17,6 +18,8 @@ import './interaction-design.css'
 interface InteractionDesignWorkspaceProps { projectId: string; sessionId: string; paneActive?: boolean }
 /** 输入表单冻结目标与基线，目录操作不得跟随稍后选择漂移。 */
 interface EditorForm { kind: 'create' | 'page' | 'group' | 'rename-page' | 'rename-group' | 'html' | 'import' | 'asset' | 'reference' | 'element'; elementId?: string; title: string; value: string; targetId?: string; baseRevision?: number; prototypeId?: string }
+/** 删除确认冻结会话、模块和基线，切换项目后不得沿用旧确认。 */
+interface VersionDeletion { context: string; sessionId: string; prototypeId: string; baseRevision: number; revision: number }
 /** 空素材字典复用，避免每次渲染重建 iframe。 */
 const EMPTY_ASSETS: Record<string, string> = {}
 
@@ -42,10 +45,10 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
   const [reset, setReset] = React.useState(0)
   const [visited, setVisited] = React.useState<string[]>([])
   const [form, setForm] = React.useState<EditorForm | null>(null)
-  const [panel, setPanel] = React.useState<'history' | 'flow' | 'project' | null>(null)
+  const [panel, setPanel] = React.useState<'history' | 'flow' | null>(null)
   const [flowDraft, setFlowDraft] = React.useState<PrototypeFlow[] | null>(null)
-  const [inspection, setInspection] = React.useState<PrototypeProjectInspection | null>(null)
-  const [sourcePaths, setSourcePaths] = React.useState<string[]>([])
+  /** 等待用户确认的历史版本及其发起上下文。 */
+  const [deletion, setDeletion] = React.useState<VersionDeletion | null>(null)
   const [changed, setChanged] = React.useState(false)
   const gate = React.useRef(new PrototypeRequestGate())
   const listGate = React.useRef(new PrototypeRequestGate())
@@ -54,12 +57,27 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
   const currentContext = React.useRef(context)
   /** 渲染时立即撤销旧上下文，早于 effect 清理，隔离同帧迟到结果。 */
   if (currentContext.current !== context) { currentContext.current = context; ticket.current = gate.current.next() }
-  const latest = React.useRef({ form, flowDraft, busy, snapshot, paneActive })
-  latest.current = { form, flowDraft, busy, snapshot, paneActive }
+  const latest = React.useRef({ form, flowDraft, deletion, busy, snapshot, paneActive })
+  latest.current = { form, flowDraft, deletion, busy, snapshot, paneActive }
   const document = snapshot?.document
   const draft = candidate?.draft ?? document
   const pageId = draft?.pages.some(page => page.id === view.pageId) ? view.pageId! : draft?.entryPageId ?? ''
   const page = draft?.pages.find(item => item.id === pageId)
+  /** 当前草稿的分组树；候选预览也使用同一目录关系。 */
+  const groupTree = React.useMemo(() => draft ? buildPrototypeGroupTree(draft) : [], [draft])
+  const groupById = React.useMemo(() => new Map((document?.groups ?? []).map(group => [group.id, group])), [document])
+  /** 页面移动菜单显示完整的祖先路径，避免同名分组造成误操作。 */
+  const groupPath = React.useCallback((groupId: string): string => {
+    const names: string[] = []
+    const seen = new Set<string>()
+    let current = groupById.get(groupId)
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id); names.unshift(current.name); current = current.parentId ? groupById.get(current.parentId) : undefined
+    }
+    return names.join(' / ')
+  }, [groupById])
+  /** 新页面默认放入第一个根分组，避免落入某个深层分组。 */
+  const rootGroupId = document?.groups.find(group => !group.parentId)?.id ?? document?.groups[0]?.id
 
   /** 只更新发起项目的轻量偏好。 */
   const updateView = React.useCallback((patch: Partial<typeof view>): void => {
@@ -94,7 +112,7 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
 
   React.useEffect(() => {
     const request = listGate.current.next()
-    setSummaries([]); setSnapshot(null); setCandidate(null); setForm(null); setPanel(null); setFlowDraft(null); setBusy(false); setError(null); setLoading(true)
+    setSummaries([]); setSnapshot(null); setCandidate(null); setForm(null); setPanel(null); setFlowDraft(null); setDeletion(null); setBusy(false); setError(null); setLoading(true)
     void window.electronAPI.interactionDesign.invoke('list', { sessionId }).then(items => {
       if (!listGate.current.accepts(request)) return
       setSummaries(items)
@@ -108,7 +126,7 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
     }
   }, [projectId, sessionId])
 
-  React.useEffect(() => { setSnapshot(null); setCandidate(null); setForm(null); setPanel(null); setFlowDraft(null); setBusy(false); setSelectedElement(null); setNotice(null); void load() }, [load])
+  React.useEffect(() => { setSnapshot(null); setCandidate(null); setForm(null); setPanel(null); setFlowDraft(null); setDeletion(null); setBusy(false); setSelectedElement(null); setNotice(null); void load() }, [load])
 
   React.useEffect(() => window.electronAPI.interactionDesign.onChanged(event => {
     if (event.workspaceId !== projectId) return
@@ -116,7 +134,7 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
     const affectsCurrentPrototype = Boolean(event.prototypeId && view.prototypeId && event.prototypeId === view.prototypeId)
     if (affectsCurrentPrototype) {
       /** 当前原型正在编辑时保留用户上下文，只提示外部版本变化。 */
-      if ((latest.current.form?.prototypeId || latest.current.flowDraft || latest.current.busy) && latest.current.form?.kind !== 'create') { setChanged(true); return }
+      if ((latest.current.form?.prototypeId || latest.current.flowDraft || latest.current.deletion || latest.current.busy) && latest.current.form?.kind !== 'create') { setChanged(true); return }
       void load()
       return
     }
@@ -229,7 +247,7 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
       return
     }
     if (form.kind === 'page' && !document) {
-      void run(() => window.electronAPI.interactionDesign.invoke('create', { sessionId, name: value, pageName: value, platform: view.device }), result => {
+      void run(() => window.electronAPI.interactionDesign.invoke('create', { sessionId, name: '交互设计', pageName: value, platform: view.device }), result => {
         /** 空项目首次新建页面时由服务端一次性创建隐藏空间和首个页面。 */
         latest.current.busy = false
         setBusy(false)
@@ -258,11 +276,11 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
       element.textContent = form.value
       target.html = '<!doctype html>\n' + parsed.documentElement.outerHTML
     }
-    if (form.kind === 'group') next.groups.push({ id: crypto.randomUUID(), name: value })
+    if (form.kind === 'group') next.groups.push({ id: crypto.randomUUID(), name: value, ...(form.targetId ? { parentId: form.targetId } : {}) })
     if (form.kind === 'rename-group') { const group = next.groups.find(item => item.id === form.targetId); if (group) group.name = value }
     if (form.kind === 'page') {
       const id = crypto.randomUUID()
-      next.pages.push({ id, groupId: form.targetId ?? next.groups[0]!.id, name: value, html: '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>body{font-family:system-ui;padding:32px;background:#fafafa;color:#242424}h1{font-size:24px}</style></head><body><h1 data-prototype-element="title">新页面</h1><p data-prototype-element="description">请在主会话描述这个页面的内容和交互。</p></body></html>' })
+      next.pages.push({ id, groupId: form.targetId ?? next.groups.find(group => !group.parentId)?.id ?? next.groups[0]!.id, name: value, html: '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>body{font-family:system-ui;padding:32px;background:#fafafa;color:#242424}h1{font-size:24px}</style></head><body><h1 data-prototype-element="title">新页面</h1><p data-prototype-element="description">请在主会话描述这个页面的内容和交互。</p></body></html>' })
       if (!next.entryPageId) next.entryPageId = id
     }
     if (form.kind === 'rename-page' || form.kind === 'html') {
@@ -282,6 +300,16 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
     })
   }
 
+  /** 将固定 revision 生成开发交接包并预填主会话，避免开发只依据截图猜尺寸。 */
+  function createDevelopmentHandoff(): void {
+    if (!document) return
+    void run(() => window.electronAPI.interactionDesign.invoke('createHandoff', { sessionId, prototypeId: document.id, revision: document.revision }), handoff => {
+      setPrompt({ sessionId, message: buildPrototypeHandoffPrompt(handoff), autoSend: false })
+      setNotice(`已生成 v${handoff.revision} 开发交接包，并引用到主会话输入框。`)
+      setFocus(false)
+    })
+  }
+
   /** 实际点击只记录页面路径，目录浏览不计为流程验证。 */
   function navigate(target: string): void { updateView({ pageId: target }); setVisited(previous => [...previous, ...(previous.length ? [] : [pageId]), target].slice(-200)); setSelectedElement(null) }
 
@@ -294,28 +322,55 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
     return elements.length === 1 && element && element.childElementCount === 0 && !/^(SCRIPT|STYLE|IFRAME|OBJECT|EMBED|LINK|META)$/.test(element.tagName) ? element.textContent : null
   }, [page, selectedElement, candidate])
 
+  /** 切换目录分组折叠状态，只影响 renderer 视图偏好。 */
+  function toggleGroup(groupId: string): void {
+    updateView({ collapsedGroups: view.collapsedGroups.includes(groupId) ? view.collapsedGroups.filter(id => id !== groupId) : [...view.collapsedGroups, groupId] })
+  }
+
+  /** 删除空分组并把同步错误留在当前面板，不让事件回调冒泡。 */
+  function removeGroup(groupId: string): void {
+    if (!document) return
+    try { save(deletePrototypeGroup(document, groupId), '删除页面分组') } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+  }
+
+  /** 递归渲染分组与页面，页面仍可通过 groupId 跨层移动。 */
+  function renderGroup(node: PrototypeGroupTreeNode, depth = 0): React.ReactNode {
+    if (!document) return null
+    const group = node.group
+    const collapsed = view.collapsedGroups.includes(group.id)
+    const pages = document.pages.filter(item => item.groupId === group.id && (!search || item.name.toLowerCase().includes(search.toLowerCase())))
+    return <React.Fragment key={group.id}>
+      <div className="id-group" style={{ paddingLeft: `${depth * 12}px` }} onDragOver={event => event.preventDefault()} onDrop={event => { const moving = event.dataTransfer.getData('application/x-prototype-page'); if (moving && moving !== group.id) { event.preventDefault(); save(movePrototypePage(document, moving, group.id), '移动页面') } }}>
+        <button onClick={() => toggleGroup(group.id)} aria-expanded={!collapsed}><span>{collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}<Folder size={13} /></span><span>{group.name}</span><small>{document.pages.filter(item => item.groupId === group.id).length}</small></button>
+        <DropdownMenu><DropdownMenuTrigger asChild><button aria-label={`${group.name}分组操作`}><MoreHorizontal size={14} /></button></DropdownMenuTrigger><DropdownMenuContent className="id-directory-menu" side="right" align="start"><DropdownMenuItem disabled={busy} onSelect={() => openForm('group', '新建子分组', '', group.id)}>新建子分组</DropdownMenuItem><DropdownMenuItem disabled={busy} onSelect={() => openForm('rename-group', '重命名分组', group.name, group.id)}>重命名</DropdownMenuItem><DropdownMenuItem disabled={busy} onSelect={() => removeGroup(group.id)}>删除分组</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+      </div>
+      {!collapsed && <div className="id-group-children">{pages.map(item => <div className={`id-page ${pageId === item.id ? 'active' : ''}`} key={item.id} draggable={!busy} onDragStart={event => { event.dataTransfer.setData('application/x-prototype-page', item.id) }} onDragOver={event => event.preventDefault()} onDrop={event => { const moving = event.dataTransfer.getData('application/x-prototype-page'); if (moving && moving !== item.id) { event.preventDefault(); save(movePrototypePage(document, moving, item.groupId, item.id), '调整页面顺序') } }}>
+        <button onClick={() => { setCandidate(null); updateView({ pageId: item.id }); setDirectory(false); setSelectedElement(null) }}><span className="id-page-thumb"><Workflow size={14} /></span><span>{item.name}</span>{document.entryPageId === item.id && <small>入口</small>}</button>
+        <DropdownMenu><DropdownMenuTrigger asChild><button aria-label={`${item.name}页面操作`}><MoreHorizontal size={15} /></button></DropdownMenuTrigger><DropdownMenuContent className="id-directory-menu" side="right" align="start"><DropdownMenuItem disabled={busy} onSelect={() => { const next = copyPrototypeDraft(document); next.pages.push({ ...structuredClone(item), id: crypto.randomUUID(), name: `${item.name} 副本` }); save(next, '复制页面') }}>复制</DropdownMenuItem><DropdownMenuItem onSelect={() => openForm('rename-page', '重命名页面', item.name, item.id)}>重命名</DropdownMenuItem><DropdownMenuSub><DropdownMenuSubTrigger>移动到</DropdownMenuSubTrigger><DropdownMenuSubContent className="id-directory-menu">{document.groups.map(groupItem => <DropdownMenuItem key={groupItem.id} disabled={busy || groupItem.id === item.groupId} onSelect={() => save(movePrototypePage(document, item.id, groupItem.id), '移动页面')}>{groupPath(groupItem.id)}</DropdownMenuItem>)}</DropdownMenuSubContent></DropdownMenuSub><DropdownMenuItem disabled={document.entryPageId === item.id || busy} onSelect={() => { const next = copyPrototypeDraft(document); next.entryPageId = item.id; save(next, '设置入口页') }}>设为入口</DropdownMenuItem><DropdownMenuItem disabled={busy || document.entryPageId === item.id || document.pages.length <= 1} onSelect={() => save(deletePrototypePage(document, item.id), '删除页面')}>删除</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+      </div>)}{node.children.map(child => renderGroup(child, depth + 1))}</div>}
+    </React.Fragment>
+  }
+
   return <section className={`interaction-design ${focus && paneActive ? 'id-focus' : ''}`} aria-label="交互设计工作区">
     <header className="id-header">
       <div className="id-title"><span className="id-product-mark"><MousePointer2 size={18} /></span><div>
-        <select aria-label="选择原型" value={view.prototypeId ?? ''} disabled={busy || !!form || !!flowDraft} onChange={event => { updateView({ prototypeId: event.target.value, pageId: null }); setDirectory(false) }}>
-          {!summaries.length && <option value="">交互设计</option>}{summaries.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-        </select><p>{loading ? '正在读取…' : document ? `${document.pages.length} 个页面 · 已保存 v${document.revision}` : '从需求或现有项目开始'}</p>
+        <strong>交互设计</strong><p>{loading ? '正在读取…' : document ? `${document.pages.length} 个页面 · 已保存 v${document.revision}` : '从需求或现有项目开始'}</p>
       </div></div>
       <div className="id-actions">
         <Button variant="outline" size="sm" disabled={busy} aria-expanded={directory} onClick={() => setDirectory(value => !value)}><ListTree size={14} /><span>页面</span></Button>
-        <Button variant="ghost" size="sm" disabled={!document} onClick={() => setPanel('history')}><History size={14} /><span>v{document?.revision ?? 0}</span></Button>
         <Button variant="outline" size="sm" disabled={!document} onClick={() => setPanel('flow')}><Route size={14} /><span>交互流程</span></Button>
+        <Button variant="outline" size="sm" aria-label="生成开发交接包" disabled={!document || busy} onClick={createDevelopmentHandoff}><ClipboardCheck size={14} /><span>开发交接</span></Button>
         <Button size="sm" disabled={!document || busy} onClick={exportCurrent}><Download size={14} /><span>导出原型</span></Button>
       </div>
     </header>
     {error && <div className="id-feedback id-error" role="alert">{error}<Button variant="ghost" size="sm" onClick={() => { setForm(null); setFlowDraft(null); void load() }}>重新加载</Button></div>}
     {notice && <div className="id-feedback" role="status">{notice}<button aria-label="关闭提示" onClick={() => setNotice(null)}><X size={14} /></button></div>}
     {changed && <div className="id-feedback" role="status">外部设计已更新。当前编辑保留，重新加载后再提交。<Button size="sm" variant="ghost" onClick={() => { setForm(null); setFlowDraft(null); void load() }}>放弃编辑并加载</Button></div>}
-    {!document ? <div className="id-empty"><MousePointer2 size={32} /><h2>{loading ? '正在加载原型' : '让想法变成可点击的页面'}</h2><p>打开“页面”列表，从列表中创建原型或页面，再向当前主会话描述需求。</p></div> : <>
-      <div className="id-toolbar"><div className="id-mode"><button aria-pressed={mode === 'play'} onClick={() => { setMode('play'); setSelectedElement(null) }}><Play size={13} />体验</button><button aria-pressed={mode === 'select'} onClick={() => setMode('select')}><MousePointer2 size={13} />选择修改</button></div><span className="id-spacer" />
+    {!document ? <div className="id-empty"><MousePointer2 size={32} /><h2>{loading ? '正在加载交互模块' : '让想法变成可点击的页面'}</h2><p>打开“页面”列表创建页面；每个项目只有一个交互模块，页面可用多级分组组织。</p></div> : <>
+      <div className="id-toolbar"><div className="id-mode"><button aria-pressed={mode === 'play'} onClick={() => { setMode('play'); setSelectedElement(null) }}><Play size={13} />体验</button><button aria-pressed={mode === 'select'} onClick={() => setMode('select')}><MousePointer2 size={13} />选择修改</button></div><span className="id-spacer" /><button className="id-version-button" aria-label="查看版本与候选" disabled={!document} onClick={() => setPanel('history')}><History size={14} /><span>v{document?.revision ?? 0}</span></button>
         <button aria-label="手机预览" aria-pressed={view.device === 'mobile'} onClick={() => updateView({ device: 'mobile' })}><Smartphone size={16} /></button><button aria-label="桌面预览" aria-pressed={view.device === 'desktop'} onClick={() => updateView({ device: 'desktop' })}><Monitor size={16} /></button><span className="id-rule" />
         <button aria-label="重新体验" onClick={() => { updateView({ pageId: draft?.entryPageId }); setReset(value => value + 1); setVisited([]); setSelectedElement(null) }}><RefreshCw size={15} /></button><button aria-label={focus ? '退出专注' : '专注预览'} aria-pressed={focus} onClick={() => setFocus(value => !value)}>{focus ? <X size={16} /> : <Expand size={16} />}</button>
-        <DropdownMenu><DropdownMenuTrigger asChild><button aria-label="更多原型操作"><MoreHorizontal size={16} /></button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => openForm('reference', '引用到主会话', '请根据需求完善当前原型的页面与交互。')}>描述需求并引用到会话</DropdownMenuItem><DropdownMenuItem onSelect={() => { setPanel('project'); setInspection(null); setSourcePaths([]); void run(() => window.electronAPI.interactionDesign.invoke('inspectProject', { sessionId }), setInspection) }}>从现有项目还原</DropdownMenuItem><DropdownMenuItem onSelect={() => openForm('import', '导入项目 HTML')}>导入项目 HTML</DropdownMenuItem><DropdownMenuItem onSelect={() => openForm('asset', '导入项目图片')}>导入项目图片</DropdownMenuItem>{page && <DropdownMenuItem disabled={!!candidate} onSelect={() => openForm('html', '编辑页面 HTML', page.html, page.id)}>编辑当前页面 HTML</DropdownMenuItem>}</DropdownMenuContent></DropdownMenu>
+        <DropdownMenu><DropdownMenuTrigger asChild><button aria-label="更多原型操作"><MoreHorizontal size={16} /></button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => openForm('reference', '引用到主会话', '请根据需求完善当前原型的页面与交互。')}>描述需求并引用到会话</DropdownMenuItem><DropdownMenuItem onSelect={() => openForm('import', '导入项目 HTML')}>导入项目 HTML</DropdownMenuItem><DropdownMenuItem onSelect={() => openForm('asset', '导入项目图片')}>导入项目图片</DropdownMenuItem>{page && <DropdownMenuItem disabled={!!candidate} onSelect={() => openForm('html', '编辑页面 HTML', page.html, page.id)}>编辑当前页面 HTML</DropdownMenuItem>}</DropdownMenuContent></DropdownMenu>
       </div>
       {snapshot.candidates.filter(item => item.status === 'ready' || item.status === 'stale').length > 0 && <div className="id-candidates">{snapshot.candidates.filter(item => item.status === 'ready' || item.status === 'stale').map(item => <div key={item.id}><Sparkles size={14} /><span>{item.summary} <small>{item.baseRevision !== document.revision || item.status === 'stale' ? '基线已变化，不能采纳' : `基于 v${item.baseRevision}`}</small></span><Button size="sm" variant="ghost" disabled={busy} onClick={() => void run(() => window.electronAPI.interactionDesign.invoke('getCandidate', { sessionId, prototypeId: document.id, candidateId: item.id }), result => {
         /** 导入候选新增页面时直接定位新增页，让用户第一次预览就能看到导入结果；普通修改仍保留当前页。 */
@@ -331,27 +386,31 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
       <footer className="id-footer"><span>本次体验 · {visited.length ? `${visited.length} 次页面访问` : '尚未记录跳转'}</span><span>{view.device === 'mobile' ? '390 × 844' : '1280 × 800'}</span></footer>
     </>}
     {directory && <><button className="id-directory-backdrop" aria-label="关闭页面列表" onClick={() => setDirectory(false)} /><aside className="id-directory" aria-label="项目页面">
-      <header><strong>项目页面 {document && <small>{document.pages.length}</small>}</strong><button aria-label="收起页面列表" onClick={() => setDirectory(false)}><PanelLeftClose size={16} /></button></header>
-      <div className="id-directory-create">
-        <button disabled={busy} onClick={() => openForm('page', '新建页面', '', document?.groups[0]?.id)}><Plus size={15} />新建页面</button>
-      </div>
+      <header><strong>页面 {document && <small>{document.pages.length}</small>}</strong><div className="id-directory-header-actions"><button aria-label="新建页面" title="新建页面" disabled={busy} onClick={() => openForm('page', '新建页面', '', rootGroupId)}><Plus size={16} /></button>{document && <button aria-label="新建分组" title="新建分组" disabled={busy} onClick={() => openForm('group', '新建分组')}><FolderPlus size={16} /></button>}<button aria-label="收起页面列表" title="收起页面列表" onClick={() => setDirectory(false)}><PanelLeftClose size={16} /></button></div></header>
       {document ? <><label className="id-search"><Search size={14} /><input autoFocus type="search" placeholder="搜索页面" aria-label="搜索页面" value={search} onChange={event => setSearch(event.target.value)} /></label><div className="id-directory-content">
-        {document.pages.filter(item => item.name.toLowerCase().includes(search.toLowerCase())).map(item => <div className={`id-page ${pageId === item.id ? 'active' : ''}`} key={item.id} draggable={!busy} onDragStart={event => { event.dataTransfer.setData('application/x-prototype-page', item.id) }} onDragOver={event => event.preventDefault()} onDrop={event => { const moving = event.dataTransfer.getData('application/x-prototype-page'); if (moving && moving !== item.id) { event.preventDefault(); save(movePrototypePage(document, moving, item.groupId, item.id), '调整页面顺序') } }}>
-          <button onClick={() => { setCandidate(null); updateView({ pageId: item.id }); setDirectory(false); setSelectedElement(null) }}><span className="id-page-thumb"><Workflow size={14} /></span><span>{item.name}</span>{document.entryPageId === item.id && <small>入口</small>}</button>
-          <DropdownMenu><DropdownMenuTrigger asChild><button aria-label={`${item.name}页面操作`}><MoreHorizontal size={15} /></button></DropdownMenuTrigger><DropdownMenuContent side="right" align="start"><DropdownMenuItem disabled={busy} onSelect={() => { const next = copyPrototypeDraft(document); next.pages.push({ ...structuredClone(item), id: crypto.randomUUID(), name: `${item.name} 副本` }); save(next, '复制页面') }}>复制</DropdownMenuItem><DropdownMenuItem onSelect={() => openForm('rename-page', '重命名页面', item.name, item.id)}>重命名</DropdownMenuItem><DropdownMenuItem disabled={document.entryPageId === item.id || busy} onSelect={() => { const next = copyPrototypeDraft(document); next.entryPageId = item.id; save(next, '设置入口页') }}>设为入口</DropdownMenuItem><DropdownMenuItem disabled={busy || document.entryPageId === item.id || document.pages.length <= 1} onSelect={() => save(deletePrototypePage(document, item.id), '删除页面')}>删除</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
-        </div>)}
+        {groupTree.map(node => renderGroup(node))}
         {search && !document.pages.some(item => item.name.toLowerCase().includes(search.toLowerCase())) && <p className="id-no-results">没有匹配的页面</p>}
-      </div></> : <div className="id-directory-empty"><strong>当前项目的页面</strong>{summaries.map(item => <button key={item.id} onClick={() => { updateView({ prototypeId: item.id, pageId: null }); setDirectory(false) }}><span>{item.name}</span><small>{item.pageCount} 个页面</small></button>)}{!summaries.length && <p>当前项目还没有页面</p>}<p>新建页面会自动创建交互设计空间。</p></div>}
-      <footer>{document ? '拖拽排序 · 页面列表不使用分组' : '页面从此列表进入，内部空间自动创建'}</footer>
+      </div></> : <div className="id-directory-empty"><strong>当前项目的页面</strong><p>当前项目还没有交互设计模块。</p><p>新建页面会自动创建唯一模块，之后可在目录中建立多级分组。</p></div>}
+      <footer>{document ? '拖拽页面可排序或移入分组 · 分组支持多级嵌套' : '页面从此列表进入，项目只创建一个交互模块'}</footer>
     </aside></>}
     <Dialog open={!!form} onOpenChange={open => { if (!open && !busy) setForm(null) }}><DialogContent><DialogHeader><DialogTitle>{form?.title}</DialogTitle><DialogDescription>{form?.kind === 'reference' ? '引用将填入当前主会话，由你检查后发送给真实 Agent。' : form?.kind === 'import' || form?.kind === 'asset' ? '填写当前项目内的相对路径，不访问项目外文件。' : form?.kind === 'html' ? '保存后形成新版本。页面使用 data-prototype-element 声明可选元素。' : '修改仅保存到当前项目的交互设计模块。'}</DialogDescription></DialogHeader>{form && (form.kind === 'html' || form.kind === 'reference' || form.kind === 'element' ? <Textarea aria-label={form.title} className={form.kind === 'html' ? 'min-h-72 font-mono text-xs' : 'min-h-28'} value={form.value} onChange={event => setForm({ ...form, value: event.target.value })} /> : <Input aria-label={form.title} value={form.value} onChange={event => setForm({ ...form, value: event.target.value })} onKeyDown={event => { if (event.key === 'Enter') submitForm() }} />)}{error && <p role="alert" className="text-xs text-destructive">{error}</p>}{changed && <p className="text-xs text-destructive">外部版本已变化，请关闭表单并重新加载。</p>}<DialogFooter><Button variant="ghost" disabled={busy} onClick={() => setForm(null)}>取消</Button><Button disabled={busy || !form?.value.trim() || changed} onClick={submitForm}>{busy ? '处理中…' : form?.kind === 'reference' ? '引用到会话' : '保存'}</Button></DialogFooter></DialogContent></Dialog>
-    <Dialog open={!!panel} onOpenChange={open => { if (!open && !busy) { setPanel(null); setFlowDraft(null) } }}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>{panel === 'history' ? '版本与候选记录' : panel === 'flow' ? '交互流程' : '从现有项目还原'}</DialogTitle><DialogDescription>{panel === 'history' ? '恢复只切换当前版本，不新增版本；后续修改或采纳候选时才会生成新版本。' : panel === 'flow' ? '结构检查与实际体验独立记录；没有点击记录不能代表流程已通过。' : '选择页面和样式来源，交给当前主会话分析并生成独立可编辑候选。'}</DialogDescription></DialogHeader>
+    <Dialog open={!!panel} onOpenChange={open => { if (!open && !busy) { setPanel(null); setFlowDraft(null) } }}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>{panel === 'history' ? '版本与候选记录' : '交互流程'}</DialogTitle><DialogDescription>{panel === 'history' ? '恢复只切换当前版本，不新增版本；历史版本可以删除，当前版本不能删除。' : '结构检查与实际体验独立记录；没有点击记录不能代表流程已通过。'}</DialogDescription></DialogHeader>
       <div className="id-dialog-list">
-      {panel === 'history' && document && snapshot?.versions.map(version => <div className="id-version" key={version.revision}><div><strong>v{version.revision} {version.summary}</strong><small>{new Date(version.createdAt).toLocaleString()}</small></div><Button size="sm" variant="outline" disabled={busy || version.revision === document.revision} onClick={() => void run(() => window.electronAPI.interactionDesign.invoke('restore', { sessionId, prototypeId: document.id, baseRevision: document.revision, revision: version.revision }), result => { acceptSnapshot(result); setPanel(null); setNotice(`已切换到 v${result.document.revision}，未新增版本`) })}>恢复此版本</Button></div>)}
+      {panel === 'history' && document && snapshot?.versions.map(version => <div className="id-version" key={version.revision}><div><strong>v{version.revision} {version.summary}</strong><small>{new Date(version.createdAt).toLocaleString()}</small></div><div className="id-version-actions"><Button size="sm" variant="outline" disabled={busy || version.revision === document.revision} onClick={() => void run(() => window.electronAPI.interactionDesign.invoke('restore', { sessionId, prototypeId: document.id, baseRevision: document.revision, revision: version.revision }), result => { acceptSnapshot(result); setPanel(null); setNotice(`已切换到 v${result.document.revision}，未新增版本`) })}>恢复此版本</Button>{version.revision === document.revision ? <Button size="sm" variant="ghost" disabled>当前版本</Button> : <Button size="sm" variant="ghost" aria-label={`删除 v${version.revision}`} disabled={busy} onClick={() => { setError(null); setDeletion({ context, sessionId, prototypeId: document.id, baseRevision: document.revision, revision: version.revision }) }}>删除</Button>}</div></div>)}
       {panel === 'history' && snapshot?.jobs.map(job => <div className="id-version" key={job.id}><div><strong>{job.instruction}</strong><small>{({ running: '等待生成结果', candidate: '候选已生成', cancelled: '已取消', failed: '失败', interrupted: '已中断' })[job.status]} {job.message}</small></div>{job.status === 'running' && document && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void run(() => window.electronAPI.interactionDesign.invoke('cancelJob', { sessionId, prototypeId: document.id, jobId: job.id }), acceptSnapshot)}>取消</Button>}</div>)}
       {panel === 'flow' && document && <><div className="id-flow-list">{(flowDraft ?? document.flows).map((flow, index) => <div className="id-flow" key={flow.id}><select aria-label={`连接${index + 1}来源页`} value={flow.fromPageId} onChange={event => setFlowDraft((flowDraft ?? document.flows).map(item => item.id === flow.id ? { ...item, fromPageId: event.target.value } : item))}>{document.pages.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><Input aria-label={`连接${index + 1}元素身份`} value={flow.elementId} placeholder="元素 ID" onChange={event => setFlowDraft((flowDraft ?? document.flows).map(item => item.id === flow.id ? { ...item, elementId: event.target.value } : item))} /><span>→</span><select aria-label={`连接${index + 1}目标页`} value={flow.targetPageId} onChange={event => setFlowDraft((flowDraft ?? document.flows).map(item => item.id === flow.id ? { ...item, targetPageId: event.target.value } : item))}>{document.pages.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button aria-label={`删除连接${index + 1}`} onClick={() => setFlowDraft((flowDraft ?? document.flows).filter(item => item.id !== flow.id))}><X size={14} /></button></div>)}</div><div className="id-flow-actions"><Button size="sm" variant="outline" disabled={!document.pages.length} onClick={() => setFlowDraft([...(flowDraft ?? document.flows), { id: crypto.randomUUID(), fromPageId: pageId, elementId: '', targetPageId: document.entryPageId }])}>添加跳转</Button><Button size="sm" disabled={busy || !flowDraft || changed} onClick={() => { const next = copyPrototypeDraft(document); next.flows = flowDraft!; save(next, '修改交互流程') }}>保存流程</Button><Button size="sm" variant="outline" disabled={busy || !!flowDraft} onClick={() => void run(() => window.electronAPI.interactionDesign.invoke('validate', { sessionId, prototypeId: document.id, revision: document.revision }), check => { setSnapshot(previous => previous ? { ...previous, checks: [...previous.checks, check] } : previous) })}>结构检查</Button><Button size="sm" variant="outline" disabled={busy || !visited.length || !!candidate || !!flowDraft} onClick={() => void run(() => window.electronAPI.interactionDesign.invoke('recordExperience', { sessionId, prototypeId: document.id, revision: document.revision, visitedPageIds: visited }), check => { setSnapshot(previous => previous ? { ...previous, checks: [...previous.checks, check] } : previous); setNotice('已保存本次体验路径，不代表未访问场景通过。') })}>记录本次体验</Button></div>{snapshot?.checks.filter(check => check.revision === document.revision).map(check => <div className="id-check" key={check.id}><strong>{check.kind === 'structure' ? '结构检查' : '实际体验'} · {check.kind === 'experience' ? (check.passed ? '已记录访问路径' : '记录失败') : (check.passed ? '已通过本次检查' : '发现问题')}</strong>{check.issues.map((issue, index) => <p key={index}>{issue}</p>)}{check.kind === 'experience' && <p>记录 {check.visitedPageIds.length} 次页面访问</p>}</div>)}</>}
-      {panel === 'project' && (!inspection ? <p>{busy ? '正在读取项目目录…' : '项目扫描未完成，请关闭后重试。'}</p> : <><p>{inspection.projectName} · {inspection.frameworks.join(' / ') || '未识别技术栈'}</p>{inspection.warnings.map((warning, index) => <p className="id-warning" key={index}>{warning}</p>)}{inspection.truncated && <p className="id-warning">目录超过扫描预算，仅展示本次读取到的文件。</p>}<div className="id-source-list">{inspection.files.map(file => <label key={file.path}><input type="checkbox" checked={sourcePaths.includes(file.path)} onChange={event => setSourcePaths(previous => event.target.checked ? [...previous, file.path] : previous.filter(path => path !== file.path))} /><span>{file.path}</span><small>{file.kind}</small></label>)}</div><Button disabled={!sourcePaths.length} onClick={() => reference(`请从当前项目的以下文件还原页面视觉和交互：\n${sourcePaths.map(path => `- ${path}`).join('\n')}\n先用 prototype_read_source 读取并核对源代码，保留主题、字体、布局与素材；生成独立可编辑原型候选。明确模拟数据、未支持依赖和待验证的交互，不修改原项目。`, undefined, 'prototype')}>引用到主会话</Button></>)}
       </div>
     </DialogContent></Dialog>
+    <ConfirmDialog open={deletion !== null && deletion.context === context} onOpenChange={open => { if (!open && !busy) setDeletion(null) }} title={`删除 v${deletion?.revision ?? ''}？`} confirmLabel="删除版本" loadingLabel="删除中…" loading={busy} closeOnConfirm={false} onConfirm={() => {
+      if (!deletion || deletion.context !== currentContext.current || deletion.prototypeId !== document?.id) return
+      if (changed || deletion.baseRevision !== document.revision) { setError('版本记录已变化，请取消并重新加载后删除。'); return }
+      /** 使用打开确认框时冻结的请求，避免后台更新改变删除基线。 */
+      const { context: _context, ...request } = deletion
+      void run(() => window.electronAPI.interactionDesign.invoke('deleteVersion', request), result => {
+        acceptSnapshot(result)
+        setDeletion(null)
+        setNotice(`已删除 v${request.revision}，当前仍为 v${result.document.revision}`)
+      })
+    }}><div className="space-y-2"><p>删除后不能恢复该历史版本，当前版本不会变化。</p>{(error || changed) && <p role="alert" className="text-destructive">{error ?? '版本记录已变化，请取消并重新加载后删除。'}</p>}</div></ConfirmDialog>
   </section>
 }

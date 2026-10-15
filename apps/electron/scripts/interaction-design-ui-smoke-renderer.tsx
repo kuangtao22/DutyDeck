@@ -1,12 +1,12 @@
 import * as React from 'react'
 import { createRoot } from 'react-dom/client'
 import { createStore, Provider } from 'jotai'
-import type { InteractionDesignApi, InteractionDesignChanged, InteractionDesignInputs, InteractionDesignMethod, InteractionDesignResults, PrototypeCandidate, PrototypeDocument, PrototypeSnapshot } from '@proma/shared'
+import type { InteractionDesignApi, InteractionDesignChanged, InteractionDesignInputs, InteractionDesignMethod, InteractionDesignResults, PrototypeCandidate, PrototypeDocument, PrototypeHandoff, PrototypeSnapshot } from '@proma/shared'
 import { agentPendingPromptAtom } from '../src/renderer/atoms/agent-atoms'
 import { TooltipProvider } from '../src/renderer/components/ui/tooltip'
 import '../src/renderer/styles/globals.css'
 /** 内存测试正文，绝不访问真实项目。 */
-const initial: PrototypeDocument = { schemaVersion: 1, id: 'proto-a', revision: 1, createdAt: 1, updatedAt: 1, name: '拾光测试', brief: '', platform: 'mobile', groups: [{ id: 'group-a', name: '开始' }, { id: 'group-b', name: '核心' }], pages: [{ id: 'home', groupId: 'group-a', name: '欢迎', html: '<html><head><style>body{font:18px system-ui;background:#f3f6ed;padding:28px}button{padding:15px;background:#557b60;color:white;border:0;border-radius:12px}</style></head><body><h1 data-prototype-element="title">拾光</h1><input placeholder="你的名字"><button data-prototype-element="next" data-prototype-page="detail">开始体验</button></body></html>' }, { id: 'detail', groupId: 'group-b', name: '今日习惯', html: '<html><body><h1 data-prototype-element="title">今日习惯</h1><button data-prototype-page="home">返回首页</button></body></html>' }], entryPageId: 'home', flows: [] }
+const initial: PrototypeDocument = { schemaVersion: 1, id: 'proto-a', revision: 1, createdAt: 1, updatedAt: 1, name: '拾光测试', brief: '', platform: 'mobile', groups: [{ id: 'group-a', name: '开始' }, { id: 'group-b', name: '核心', parentId: 'group-a' }], pages: [{ id: 'home', groupId: 'group-a', name: '欢迎', html: '<html><head><style>body{font:18px system-ui;background:#f3f6ed;padding:28px}button{padding:15px;background:#557b60;color:white;border:0;border-radius:12px}</style></head><body><h1 data-prototype-element="title">拾光</h1><input placeholder="你的名字"><button data-prototype-element="next" data-prototype-page="detail">开始体验</button></body></html>' }, { id: 'detail', groupId: 'group-b', name: '今日习惯', html: '<html><body><h1 data-prototype-element="title">今日习惯</h1><button data-prototype-page="home">返回首页</button></body></html>' }], entryPageId: 'home', flows: [] }
 /** 候选与 head 不同以检验不自动采用。 */
 const candidate: PrototypeCandidate = { id: 'candidate-a', prototypeId: 'proto-a', baseRevision: 1, summary: '明确欢迎文案', status: 'ready', createdAt: 2, draft: { ...structuredClone(initial), pages: initial.pages.map(page => ({ ...page, html: page.html.replace('拾光</h1>', '开始你的第一天</h1>') })) } }
 /** 模拟 Agent 在当前项目新建的原型及其导入候选，验证目录不会漏掉其他原型事件。 */
@@ -44,7 +44,27 @@ const api: InteractionDesignApi = {
       case 'getCandidate': if (state.holdCandidate) { state.pendingCandidate = true; await new Promise<void>(resolve => { releaseCandidate = resolve }); state.pendingCandidate = false } result = structuredClone(candidate); break
       case 'save': { const request = input as InteractionDesignInputs['save']; if (request.baseRevision !== state.snapshot.document.revision) throw new Error('fixture 版本冲突'); state.snapshot.document = { ...state.snapshot.document, ...request.draft, revision: request.baseRevision + 1 }; state.snapshot.versions.push({ revision: state.snapshot.document.revision, summary: request.summary, createdAt: 3 }); result = structuredClone(state.snapshot); break }
       case 'adopt': state.snapshot.document = { ...state.snapshot.document, ...candidate.draft, revision: state.snapshot.document.revision + 1 }; state.snapshot.candidates = [{ ...candidate, status: 'adopted' }]; state.snapshot.versions.push({ revision: state.snapshot.document.revision, summary: '采纳候选', createdAt: 4 }); result = structuredClone(state.snapshot); break
-      case 'restore': state.snapshot.document = { ...structuredClone(initial), revision: state.snapshot.document.revision + 1 }; state.snapshot.versions.push({ revision: state.snapshot.document.revision, summary: '恢复初始版本', createdAt: 5 }); result = structuredClone(state.snapshot); break
+      case 'restore': state.snapshot.document = { ...structuredClone(initial), revision: 1 }; result = structuredClone(state.snapshot); break
+      case 'deleteVersion': {
+        /** 删除请求使用打开确认时冻结的基线；模拟真实服务的冲突校验。 */
+        const request = input as InteractionDesignInputs['deleteVersion']
+        if (request.baseRevision !== state.snapshot.document.revision) throw new Error('fixture 版本冲突')
+        if (request.revision === state.snapshot.document.revision) throw new Error('当前版本不能删除')
+        state.snapshot.versions = state.snapshot.versions.filter(version => version.revision !== request.revision)
+        result = structuredClone(state.snapshot)
+        break
+      }
+      case 'createHandoff': {
+        const request = input as InteractionDesignInputs['createHandoff']
+        const handoff: PrototypeHandoff = {
+          schemaVersion: 1, id: 'handoff-a', prototypeId: request.prototypeId, revision: request.revision, createdAt: 4, name: initial.name, platform: 'mobile', brief: '主路径',
+          groups: [{ id: 'group-a', name: '开始', path: '开始' }, { id: 'group-b', name: '核心', parentId: 'group-a', path: '开始 / 核心' }],
+          pages: [{ id: 'home', name: '欢迎', groupId: 'group-a', groupPath: '开始', elementIds: ['title', 'next'], flowIds: [] }, { id: 'detail', name: '今日习惯', groupId: 'group-b', groupPath: '开始 / 核心', elementIds: ['title'], flowIds: [] }],
+          entryPageId: 'home', flows: [], assets: [], designTokens: {}, visualContract: { viewport: { width: 390, height: 844 }, preserve: ['布局比例'] }, manifestHash: 'a'.repeat(64),
+        }
+        result = handoff
+        break
+      }
       case 'inspectProject': result = { projectName: '当前项目', frameworks: ['React'], files: [{ path: 'src/App.tsx', kind: 'code', byteSize: 120 }], warnings: [], truncated: false }; break
       default: throw new Error(`fixture 未实现命令：${method}`)
     }
