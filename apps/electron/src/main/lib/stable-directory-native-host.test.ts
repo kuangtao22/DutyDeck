@@ -171,14 +171,15 @@ function denyWindowsDirectoryRights(path: string, rights: number): () => void {
 $ErrorActionPreference = 'Stop'
 $path = '${path.replaceAll("'", "''")}'
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$acl = Get-Acl -LiteralPath $path
+# 直接使用 .NET 权限 API，避免 CI 从 PowerShell 7 继承的模块搜索路径污染 Windows PowerShell。
+$acl = [System.IO.Directory]::GetAccessControl($path)
 $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
   $identity, [System.Security.AccessControl.FileSystemRights]${rights},
   [System.Security.AccessControl.InheritanceFlags]::None,
   [System.Security.AccessControl.PropagationFlags]::None,
   [System.Security.AccessControl.AccessControlType]::Deny)
 $acl.${remove ? 'RemoveAccessRuleSpecific' : 'AddAccessRule'}($rule)
-Set-Acl -LiteralPath $path -AclObject $acl
+[System.IO.Directory]::SetAccessControl($path, $acl)
 `
     execFileSync('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
