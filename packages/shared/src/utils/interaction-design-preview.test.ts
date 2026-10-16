@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm'
 import { describe, expect, test } from 'bun:test'
 import { buildPrototypeExport, buildPrototypePreview, parsePrototypePreviewMessage, validatePrototypeStructure } from './interaction-design-preview'
 import type { PrototypeDraft } from '../types/interaction-design'
@@ -63,4 +64,57 @@ test('Given 注释脚本伪路由和无引号真实声明 When 检查 Then 只�
   expect(validatePrototypeStructure(source)).toContain('详情：从入口页不可达')
   source.flows.push({ id: 'forward', fromPageId: 'home', elementId: 'next', targetPageId: 'detail' })
   expect(validatePrototypeStructure(source)).toEqual([])
+})
+
+test('Given 同页多状态 When 预览与结构校验 Then 正文隔离且跨状态元素允许复用', () => {
+  /** 附加状态含不同正文及默认状态已有的稳定元素。 */
+  const source = structuredClone(draft)
+  source.pages[0]!.states = [{ id: 'empty', name: '无数据', html: '<button data-prototype-element="next" data-prototype-page="detail">EMPTY_STATE_ONLY</button>' }]
+  expect(validatePrototypeStructure(source)).toEqual([])
+  const options = { mode: 'play' as const, token: 'token', revision: 1, assets: {} }
+  expect(buildPrototypePreview(source, 'home', options)).not.toContain('EMPTY_STATE_ONLY')
+  expect(buildPrototypePreview(source, 'home', { ...options, stateId: 'empty' })).toContain('EMPTY_STATE_ONLY')
+  expect(() => buildPrototypePreview(source, 'home', { ...options, stateId: 'missing' })).toThrow('页面状态不存在')
+  source.pages[0]!.states[0]!.html += '<button data-prototype-element="next" data-prototype-page="missing">重复</button>'
+  expect(validatePrototypeStructure(source)).toEqual(expect.arrayContaining(['首页 / 无数据：受控元素 ID 重复', '首页 / 无数据：导航目标 missing 不存在']))
+})
+
+test('Given 流程元素仅在附加状态存在 When 检查 Then 不误报缺失元素', () => {
+  const source = structuredClone(draft)
+  source.pages[1]!.html = '<p>默认</p>'
+  source.pages[1]!.states = [{ id: 'empty', name: '无数据', html: '<button data-prototype-element="back">返回</button>' }]
+  expect(validatePrototypeStructure(source)).toEqual([])
+  const message = { type: 'prototype-select' as const, token: 'token', pageId: 'home', stateId: 'empty', revision: 1, elementId: 'next' }
+  expect(parsePrototypePreviewMessage(message)).toEqual(message)
+  expect(parsePrototypePreviewMessage({ ...message, stateId: '../invalid' })).toBeNull()
+})
+
+
+test('Given 离线多状态导出 When 切换状态与跨页跳转 Then 状态可浏览且导航恢复默认', () => {
+  /** 运行真实导出脚本，最小DOM替身仅承接select和iframe操作。 */
+  const source = structuredClone(draft)
+  source.pages[0]!.states = [{ id: 'empty', name: '无数据', html: '<p>EMPTY_VIEW</p>' }]
+  const frame = { srcdoc: '', contentWindow: {} }
+  const createSelect = () => ({ value: '', onchange: undefined as (() => void) | undefined, append(_option: unknown) {}, replaceChildren() {} })
+  const pageSelect = createSelect()
+  const stateSelect = createSelect()
+  const nav = { hidden: false }
+  let onMessage: ((event: { source: object; data: object }) => void) | undefined
+  const html = buildPrototypeExport(source, {})
+  const script = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>'))
+  runInNewContext(script, {
+    document: { querySelector(selector: string) { return selector === 'iframe' ? frame : nav }, querySelectorAll() { return [pageSelect, stateSelect] }, createElement() { return { value: '', textContent: '' } } },
+    window: { addEventListener(_type: string, listener: typeof onMessage) { onMessage = listener } },
+  })
+  expect(nav.hidden).toBe(false)
+  expect(frame.srcdoc).not.toContain('EMPTY_VIEW')
+  stateSelect.value = 'empty'
+  stateSelect.onchange!()
+  expect(frame.srcdoc).toContain('EMPTY_VIEW')
+  onMessage!({ source: frame.contentWindow, data: { type: 'prototype-navigate', token: 'offline-prototype', pageId: 'home', stateId: 'empty', revision: 0, targetPageId: 'detail' } })
+  expect(pageSelect.value).toBe('detail')
+  expect(stateSelect.value).toBe('')
+  pageSelect.value = 'home'
+  pageSelect.onchange!()
+  expect(frame.srcdoc).not.toContain('EMPTY_VIEW')
 })

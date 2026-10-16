@@ -31,9 +31,25 @@ async function waitFor(window: BrowserWindow, expression: string, message: strin
   throw new Error(message)
 }
 
+/** 等待当前页面 iframe 的正文就绪；仅存在 iframe 节点不能证明页面已显示。 */
+async function waitForPreviewText(window: BrowserWindow, expected: string): Promise<void> {
+  const deadline = Date.now() + 15_000
+  while (Date.now() < deadline) {
+    const frame = window.webContents.mainFrame.frames.find(item => item.name === 'prototype-state:')
+    if (frame) {
+      try {
+        const text = await frame.executeJavaScript('document.body?.innerText ?? ""')
+        if (text.includes(expected)) return
+      } catch { /* iframe 尚在切换文档，下一轮继续读取。 */ }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 40))
+  }
+  throw new Error(`当前页面正文未加载：${expected}`)
+}
+
 /** 点击精确文本的可见按钮或 Radix Tab。 */
 async function click(window: BrowserWindow, label: string): Promise<void> {
-  const expression = `[...document.querySelectorAll('button,[role="tab"],[role="menuitem"]')].find((element) => element.textContent?.trim() === ${JSON.stringify(label)} && element.getBoundingClientRect().width > 0)`
+  const expression = `[...(document.querySelector('[role="alertdialog"]') ?? document.querySelector('[role="dialog"]') ?? document).querySelectorAll('button,[role="tab"],[role="menuitem"]')].find((element) => element.textContent?.trim() === ${JSON.stringify(label)} && element.getBoundingClientRect().width > 0)`
   await waitFor(window, expression, `缺少可见入口：${label}`)
   const point = await window.webContents.executeJavaScript(`(async () => {
     const element = ${expression};
@@ -56,6 +72,30 @@ async function clickSelector(window: BrowserWindow, selector: string): Promise<v
   window.webContents.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 })
   window.webContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 })
 }
+/** 在指定状态沙箱内定位元素，再由宿主发送可信指针事件，覆盖真实选区/路由桥。 */
+async function clickStateElement(window: BrowserWindow, stateId: string, selector: string): Promise<void> {
+  /** 带状态名称的子 frame 与宿主画板匹配，不尝试跨源 DOM 访问。 */
+  const deadline = Date.now() + 8_000
+  /** srcDoc iframe 节点挂载先于导航完成，等待目标正文后再做坐标验收。 */
+  let inner: { x: number; y: number } | null = null
+  while (Date.now() < deadline && !inner) {
+    const frame = window.webContents.mainFrame.frames.find(item => item.name === `prototype-state:${stateId}`)
+    if (frame) inner = await frame.executeJavaScript(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); if (!node) return null; const rect = node.getBoundingClientRect(); return {x:rect.x + rect.width / 2,y:rect.y + rect.height / 2} })()`)
+    if (!inner) await new Promise<void>(resolve => setTimeout(resolve, 40))
+  }
+  assert.ok(inner, `缺少状态元素：${stateId} / ${selector}`)
+  /** 用实际 iframe 变换比例换算到宿主窗口坐标。 */
+  const outer = await window.webContents.executeJavaScript(`(() => { const frame = [...document.querySelectorAll('iframe')].find(item => item.name === ${JSON.stringify(`prototype-state:${stateId}`)}); const rect = frame.getBoundingClientRect(); return {x:rect.x,y:rect.y,scale:rect.width / parseFloat(frame.style.width)} })()`)
+  const point = { x: Math.round(outer.x + inner.x * outer.scale), y: Math.round(outer.y + inner.y * outer.scale) }
+  /** Electron sendInputEvent 直接投给主 frame，OOPIF 需经 Chromium 输入路由生成可信事件。 */
+  window.webContents.debugger.attach('1.3')
+  try {
+    await window.webContents.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point })
+    await window.webContents.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 })
+    await window.webContents.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 })
+  } finally { window.webContents.debugger.detach() }
+
+}
 /** Escape 逐层关闭真实菜单。 */
 async function escape(window: BrowserWindow): Promise<void> {
   window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
@@ -72,6 +112,7 @@ async function runElectronSmoke(app: import('electron').App, BrowserWindowCtor: 
   try {
     await window.loadURL(url)
     await waitFor(window, `document.querySelector('iframe') && document.body.textContent.includes('已保存 v1')`, '工作区未就绪')
+    await waitForPreviewText(window, '拾光')
     for (const width of [1180, 820, 390]) {
       window.setSize(width, 850)
       await window.webContents.executeJavaScript(`new Promise(resolve=>setTimeout(resolve,180))`)
@@ -86,6 +127,7 @@ async function runElectronSmoke(app: import('electron').App, BrowserWindowCtor: 
       }
       await click(window, '页面'); await waitFor(window, `document.querySelector('.id-directory')`, '目录未展开')
       assert.equal(await window.webContents.executeJavaScript(`window.__frame===document.querySelector('iframe') && window.__src===window.__frame.srcdoc && window.__rect===JSON.stringify(window.__frame.getBoundingClientRect().toJSON())`), true, `${width}px 目录挤压或重建预览`)
+      assert.equal(await window.webContents.executeJavaScript(`getComputedStyle(document.querySelector('.id-directory-backdrop')).backgroundColor === 'rgba(0, 0, 0, 0)'`), true, '页面目录遮罩不应压暗预览画面')
       assert.equal(await window.webContents.executeJavaScript(`document.querySelector('.id-title strong')?.textContent === '交互设计'`), true, '交互模块标题未使用默认名称')
       assert.equal(await window.webContents.executeJavaScript(`Boolean(document.querySelector('.id-directory-header-actions [aria-label="新建页面"]')?.getBoundingClientRect().width) && Boolean(document.querySelector('.id-directory-header-actions [aria-label="新建分组"]')?.getBoundingClientRect().width) && !document.querySelector('.id-directory-create')`), true, '新增入口未放入目录标题右侧')
       assert.equal(await window.webContents.executeJavaScript(`(() => { const version = document.querySelector('.id-toolbar [aria-label="查看版本与候选"]'); const phone = document.querySelector('.id-toolbar [aria-label="手机预览"]'); const mode = document.querySelector('.id-mode'); return !document.querySelector('.id-actions [aria-label="查看版本与候选"]') && version instanceof HTMLElement && phone instanceof HTMLElement && mode instanceof HTMLElement && version.getBoundingClientRect().left > mode.getBoundingClientRect().right && version.getBoundingClientRect().right < phone.getBoundingClientRect().left })()`), true, `${width}px 版本按钮未移到第二排工具栏空位`)
@@ -112,6 +154,9 @@ async function runElectronSmoke(app: import('electron').App, BrowserWindowCtor: 
     await window.webContents.executeJavaScript(`window.__interactionSmoke.change('workspace-a', 'proto-remote')`)
     assert.equal(await window.webContents.executeJavaScript(`window.__interactionSmoke.state.calls.filter(call => call === 'list:session-a').length > 1`), true, '其他原型事件未触发目录读取')
     await click(window, '预览'); await waitFor(window, `document.querySelector('.id-candidate-preview') && document.body.textContent.includes('明确欢迎文案')`, '候选预览未打开')
+    assert.equal(await window.webContents.executeJavaScript(`document.querySelector('.id-title p')?.textContent === '候选预览 · 2 个页面 · 基于 v1'`), true, '候选预览仍显示正式版本页数')
+    assert.equal(await window.webContents.executeJavaScript(`document.querySelector('[aria-label="查看候选页面列表（2）"]')?.textContent === '查看页面列表（2）'`), true, '候选预览缺少页面列表入口')
+    await waitForPreviewText(window, '开始你的第一天')
     await click(window, '返回当前版本')
     /** 无原型项目的新建页面表单不应被外部变更事件误判为旧版本冲突。 */
     await window.webContents.executeJavaScript(`window.__interactionSmoke.switchEmpty()`)
@@ -184,8 +229,64 @@ async function runElectronSmoke(app: import('electron').App, BrowserWindowCtor: 
     await waitFor(window, `!window.__interactionSmoke.state.pendingCandidate`, '旧请求未释放')
     assert.equal(await window.webContents.executeJavaScript(`!!document.querySelector('.id-candidate-preview')`), false, '旧候选污染新项目')
     assert.equal(await window.webContents.executeJavaScript(`window.__interactionSmoke.prompt()`), null, '旧响应污染新会话')
+    /** Given 一页两状态 When 展示与编辑 Then 平面展开且只修改所选状态。 */
+    window.show(); window.focus()
+    await window.loadURL(url); await waitFor(window, `document.querySelector('iframe') && document.body.textContent.includes('已保存 v1')`, '状态场景未就绪')
+    window.setSize(1180, 850)
+    await window.webContents.executeJavaScript(`(() => {
+      const state = window.__interactionSmoke.state;
+      const page = state.snapshot.document.pages[0];
+      page.defaultStateName = '有数据';
+      page.states = [{id:'empty',name:'无数据',html:'<html><body style="font:18px system-ui;padding:28px"><h1 data-prototype-element="title">暂无记录</h1><button data-prototype-element="next" data-prototype-page="detail">查看详情</button></body></html>'}];
+      state.snapshot.document.revision = 2;
+      window.__interactionSmoke.change('workspace-a','proto-a');
+    })()`)
+    await waitFor(window, `document.querySelectorAll('.id-state-board iframe').length === 2 && document.body.textContent.includes('2 个状态')`, '当前页多状态未展开')
+    await window.webContents.executeJavaScript(`new Promise(resolve=>setTimeout(resolve,200))`)
+    assert.equal(await window.webContents.executeJavaScript(`(() => { const boards=[...document.querySelectorAll('.id-state-board')].map(node=>node.getBoundingClientRect()); return Math.abs(boards[0].top-boards[1].top)<2 && boards[1].left>=boards[0].right && document.querySelectorAll('iframe').length===2 })()`), true, '数据态和空态未并排或错误加载邻页')
+    await window.webContents.executeJavaScript(`window.__frames=[...document.querySelectorAll('iframe')];window.__rects=window.__frames.map(frame=>JSON.stringify(frame.getBoundingClientRect().toJSON()))`)
+    await click(window, '页面')
+    await waitFor(window, `document.querySelector('.id-directory')`, '状态目录未打开')
+    assert.equal(await window.webContents.executeJavaScript(`window.__frames.every((frame,index)=>frame===document.querySelectorAll('iframe')[index] && window.__rects[index]===JSON.stringify(frame.getBoundingClientRect().toJSON())) && document.querySelectorAll('.id-page').length===2`), true, '状态被错误拆成目录页面，或目录挤压画板')
+    await escape(window)
+    await waitFor(window, `!document.querySelector('.id-directory')`, '状态目录未关闭')
+    await click(window, '选择修改')
+    await waitFor(window, `document.querySelector('.id-mode button:last-child')?.getAttribute('aria-pressed')==='true'`, '选择模式尚未生效')
+    await window.webContents.executeJavaScript(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`)
+    await clickStateElement(window, 'empty', '[data-prototype-element="title"]')
+    await waitFor(window, `document.querySelector('.id-selection')?.textContent.includes('无数据 / title')`, '选区未携带状态身份')
+    await click(window, '引用到会话'); await waitFor(window, `document.querySelector('[role="dialog"]')`, '引用表单未打开'); await click(window, '引用到会话')
+    await waitFor(window, `window.__interactionSmoke.prompt()?.message.includes('stateId: empty')`, 'Agent 引用丢失状态身份')
+    await click(window, '编辑文字')
+    await waitFor(window, `document.querySelector('textarea')`, '状态文字表单未打开')
+    assert.equal(await window.webContents.executeJavaScript(`document.querySelector('textarea').value`), '暂无记录', '空态编辑误读默认态同名元素')
+    await window.webContents.executeJavaScript(`(() => { const input=document.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'还没有记录');input.dispatchEvent(new Event('input',{bubbles:true})) })()`)
+    await click(window, '保存'); await waitFor(window, `document.body.textContent.includes('已保存 v3') && !document.querySelector('[role="dialog"]')`, '状态文字保存失败')
+    assert.equal(await window.webContents.executeJavaScript(`window.__interactionSmoke.state.snapshot.document.pages[0].states[0].html.includes('还没有记录') && window.__interactionSmoke.state.snapshot.document.pages[0].html.includes('拾光</h1>')`), true, '空态修改污染了默认态')
+    await click(window, '体验')
+    await waitFor(window, `document.querySelectorAll('.id-state-board iframe').length===2`, '保存后状态未恢复')
+    await writeFile('/private/tmp/interaction-design-page-states.png', (await window.webContents.capturePage()).toPNG())
+    await clickStateElement(window, 'empty', '[data-prototype-page="detail"]')
+    await waitFor(window, `document.querySelector('.id-stage-top')?.textContent.includes('今日习惯') && document.querySelectorAll('iframe').length===1`, '附加状态跨页跳转失败')
+    /** Given 候选新增业务页 When 打开目录 Then 候选新页可读且不写入正式版。 */
+    await window.webContents.executeJavaScript(`(() => { const smoke=window.__interactionSmoke;smoke.candidate.draft=structuredClone(smoke.state.snapshot.document);smoke.candidate.draft.pages.push({id:'settings',name:'设置',groupId:'group-a',html:'<h1>候选设置页</h1>'}); })()`)
+    await click(window, '预览'); await click(window, '查看页面列表（3）')
+    await waitFor(window, `document.querySelectorAll('.id-page').length===3 && document.body.textContent.includes('设置')`, '候选新增业务页未进入目录')
+    assert.equal(await window.webContents.executeJavaScript(`document.querySelector('.id-title p')?.textContent === '候选预览 · 3 个页面 · 基于 v1'`), true, '候选新增页面数量未同步到顶部状态')
+    assert.equal(await window.webContents.executeJavaScript(`document.querySelector('[aria-label="设置页面操作"]').disabled`), true, '候选目录允许误写正式版')
+    await click(window, '设置')
+    await waitFor(window, `document.querySelector('.id-candidate-preview') && document.querySelector('.id-stage-top')?.textContent.includes('设置')`, '切换候选业务页退出了候选预览')
+    await waitForPreviewText(window, '候选设置页')
+    assert.equal(await window.webContents.executeJavaScript(`window.__interactionSmoke.state.snapshot.document.pages.length`), 2, '浏览候选自动采纳页面')
+    await click(window, '返回当前版本')
+    await clickSelector(window, '[aria-label="重新体验"]')
+    window.setSize(390, 850)
+    await window.webContents.executeJavaScript(`new Promise(resolve=>setTimeout(resolve,180))`)
+    assert.equal(await window.webContents.executeJavaScript(`(() => {const space=document.querySelector('.id-state-space');return space && space.scrollHeight>space.clientHeight && space.scrollWidth<=space.clientWidth+1})()`), true, '窄窗口状态没有平铺滚动或横向溢出')
+    await window.webContents.executeJavaScript(`document.querySelector('.id-state-space').scrollTop=10000`)
+    await waitFor(window, `document.querySelector('[data-state-id="empty"] iframe')`, '滚动未加载附加状态')
     assert.deepEqual(errors, [])
-    console.log('[Interaction Design UI smoke] PASS: 开发交接、3种宽度目录覆盖无位移/重建、页面菜单、模式/设备稳定、深色、候选/采纳/恢复、删除确认/取消/错误/重试/上下文隔离及迟到隔离；未访问真实业务数据')
+    console.log('[Interaction Design UI smoke] PASS: 状态平铺/独立编辑/引用/跳转/候选目录、开发交接、3种宽度目录覆盖无位移/重建、页面菜单、模式/设备稳定、深色、候选/采纳/恢复、删除确认/取消/错误/重试/上下文隔离及迟到隔离；未访问真实业务数据')
   } finally { window.destroy() }
 }
 /** Bun 父进程启动临时 Vite，再构建并执行 Electron 子进程。 */

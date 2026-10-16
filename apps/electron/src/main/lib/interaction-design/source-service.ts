@@ -81,8 +81,8 @@ export class InteractionSourceService {
             if (entry.isDirectory()) { if (directory.depth < 6) queue.push({ path, depth: directory.depth + 1 }); else result.truncated = true; continue }
             /** 扩展名分类。 */
             const extension = extname(entry.name).toLowerCase()
-            /** 仅返回支持的页面、源码、样式和图片。 */
-            const kind = /\.html?$/.test(extension) ? 'html' : /\.(tsx?|jsx?|vue|svelte|json)$/.test(extension) ? 'code' : /\.(css|scss)$/.test(extension) ? 'style' : /\.(png|jpe?g|webp|gif)$/.test(extension) ? 'image' : null
+            /** 同时索引 Web 与原生移动端源码，供 Agent 按业务页面读取，不推断具体 UI 框架。 */
+            const kind = /\.html?$/.test(extension) ? 'html' : /\.(tsx?|jsx?|vue|svelte|json|swift|kt|kts|dart)$/.test(extension) ? 'code' : /\.(css|scss)$/.test(extension) ? 'style' : /\.(png|jpe?g|webp|gif)$/.test(extension) ? 'image' : null
             if (kind && entry.isFile()) result.files.push({ path, kind, byteSize: lstatSync(interactionSourcePath(this.root, path)).size })
             if (entry.name === 'next.config.js' || entry.name === 'next.config.ts') result.frameworks.push('Next.js')
             if (entry.name === 'vite.config.ts') result.frameworks.push('Vite')

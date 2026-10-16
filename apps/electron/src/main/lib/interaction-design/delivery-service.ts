@@ -11,7 +11,7 @@ export function createInteractionDelivery(document: PrototypeDocument, assets: I
   /** 本版本实际使用的图片字节；不扫描或导出无关素材。 */
   const imageData: Record<string, string> = {}
   /** 去重后的逻辑图片身份。 */
-  const ids = new Set(document.pages.flatMap(page => [...page.html.matchAll(/prototype-asset:([A-Za-z0-9_-]+)/g)].map(match => match[1]!)))
+  const ids = new Set(document.pages.flatMap(page => [page.html, ...(page.states ?? []).map(state => state.html)].flatMap(html => [...html.matchAll(/prototype-asset:([A-Za-z0-9_-]+)/g)].map(match => match[1]!))))
   /** 内嵌图片最大总量，避免主进程无界分配。 */
   let bytes = 0
   for (const id of ids) {
@@ -59,18 +59,20 @@ export function createInteractionHandoff(document: PrototypeDocument, assets: In
     }
     return [...ids]
   }
-  /** CSS 自定义属性是当前原型可复用的最小视觉 token 集合。 */
+  /** CSS token 扫描默认及附加状态，冲突值显式标记。 */
   const designTokens: Record<string, string> = {}
   for (const page of document.pages) {
-    for (const match of page.html.matchAll(/--([A-Za-z0-9_-]+)\s*:\s*([^;}{]+)/g)) {
-      const key = `--${match[1]}`
-      const value = match[2]!.trim()
-      if (!value) continue
-      designTokens[key] = designTokens[key] && designTokens[key] !== value ? '<multiple values>' : value
+    for (const html of [page.html, ...(page.states ?? []).map(state => state.html)]) {
+      for (const match of html.matchAll(/--([A-Za-z0-9_-]+)\s*:\s*([^;}{]+)/g)) {
+        const key = `--${match[1]}`
+        const value = match[2]!.trim()
+        if (!value) continue
+        designTokens[key] = designTokens[key] && designTokens[key] !== value ? '<multiple values>' : value
+      }
     }
   }
   /** 只收集当前版本页面实际引用的素材，避免交接包带出无关资源。 */
-  const referencedAssetIds = new Set(document.pages.flatMap(page => [...page.html.matchAll(/prototype-asset:([A-Za-z0-9_-]+)/g)].map(match => match[1]!)))
+  const referencedAssetIds = new Set(document.pages.flatMap(page => [page.html, ...(page.states ?? []).map(state => state.html)].flatMap(html => [...html.matchAll(/prototype-asset:([A-Za-z0-9_-]+)/g)].map(match => match[1]!))))
   const knownAssets = assets.list()
   const referencedAssets = knownAssets.filter(asset => referencedAssetIds.has(asset.id))
   if (referencedAssets.length !== referencedAssetIds.size) throw new Error('原型引用了不存在的项目素材，无法生成开发交接包')
@@ -85,7 +87,8 @@ export function createInteractionHandoff(document: PrototypeDocument, assets: In
     name: page.name,
     groupId: page.groupId,
     groupPath: groupPath(page.groupId),
-    elementIds: elementIds(page.html),
+    elementIds: [...new Set([page.html, ...(page.states ?? []).map(state => state.html)].flatMap(elementIds))],
+    states: [{ name: page.defaultStateName ?? '默认', elementIds: elementIds(page.html) }, ...(page.states ?? []).map(state => ({ id: state.id, name: state.name, elementIds: elementIds(state.html) }))],
     flowIds: document.flows.filter(flow => flow.fromPageId === page.id).map(flow => flow.id),
   }))
   const viewport = document.platform === 'mobile' ? { width: 390, height: 844 } : { width: 1280, height: 800 }

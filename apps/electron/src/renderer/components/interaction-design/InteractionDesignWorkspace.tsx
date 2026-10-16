@@ -17,7 +17,7 @@ import './interaction-design.css'
 /** 正式工作区只依赖经过 shell 验证的项目/会话身份。 */
 interface InteractionDesignWorkspaceProps { projectId: string; sessionId: string; paneActive?: boolean }
 /** 输入表单冻结目标与基线，目录操作不得跟随稍后选择漂移。 */
-interface EditorForm { kind: 'create' | 'page' | 'group' | 'rename-page' | 'rename-group' | 'html' | 'import' | 'asset' | 'reference' | 'element'; elementId?: string; title: string; value: string; targetId?: string; baseRevision?: number; prototypeId?: string }
+interface EditorForm { kind: 'create' | 'page' | 'group' | 'rename-page' | 'rename-group' | 'html' | 'import' | 'asset' | 'reference' | 'element'; elementId?: string; stateId?: string; title: string; value: string; targetId?: string; baseRevision?: number; prototypeId?: string }
 /** 删除确认冻结会话、模块和基线，切换项目后不得沿用旧确认。 */
 interface VersionDeletion { context: string; sessionId: string; prototypeId: string; baseRevision: number; revision: number }
 /** 空素材字典复用，避免每次渲染重建 iframe。 */
@@ -40,7 +40,8 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
   const [directory, setDirectory] = React.useState(false)
   const [search, setSearch] = React.useState('')
   const [mode, setMode] = React.useState<'play' | 'select'>('play')
-  const [selectedElement, setSelectedElement] = React.useState<string | null>(null)
+  /** 选区必须带状态身份，避免空态的同名元素误改有数据状态。 */
+  const [selectedElement, setSelectedElement] = React.useState<{ elementId: string; stateId?: string } | null>(null)
   const [focus, setFocus] = React.useState(false)
   const [reset, setReset] = React.useState(0)
   const [visited, setVisited] = React.useState<string[]>([])
@@ -61,6 +62,10 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
   latest.current = { form, flowDraft, deletion, busy, snapshot, paneActive }
   const document = snapshot?.document
   const draft = candidate?.draft ?? document
+  /** 顶部状态与当前预览草稿一致；候选预览不能继续显示正式版本页数。 */
+  const previewPageCount = draft?.pages.length ?? 0
+  /** 预览消息绑定候选基线，避免候选基于旧版本时继续冒充当前版本。 */
+  const previewRevision = candidate?.baseRevision ?? document?.revision ?? 0
   const pageId = draft?.pages.some(page => page.id === view.pageId) ? view.pageId! : draft?.entryPageId ?? ''
   const page = draft?.pages.find(item => item.id === pageId)
   /** 当前草稿的分组树；候选预览也使用同一目录关系。 */
@@ -160,8 +165,9 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
     if (!snapshot) return
     const request = ticket.current
     /** 仅载入当前可见文档引用的图片，预算由主进程控制。 */
-    const content = (candidate?.draft ?? snapshot.document).pages.find(item => item.id === pageId)?.html ?? ''
-    const used = snapshot.assets.filter(asset => content.includes(`prototype-asset:${asset.id}`))
+    const visiblePage = (candidate?.draft ?? snapshot.document).pages.find(item => item.id === pageId)
+    const contents = [visiblePage?.html ?? '', ...(visiblePage?.states ?? []).map(state => state.html)]
+    const used = snapshot.assets.filter(asset => contents.some(content => content.includes(`prototype-asset:${asset.id}`)))
     if (!used.length) { setAssets(EMPTY_ASSETS); return }
     /** 页面内多张大图也要限制总内存，不能仅靠并发数控制最终常驻体积。 */
     const totalAssetBytes = used.reduce((total, asset) => total + asset.byteSize, 0)
@@ -221,13 +227,13 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
     /** 每次打开表单都从当前上下文开始，避免上一次表单的冲突提示污染新操作。 */
     setError(null)
     setChanged(false)
-    setForm({ kind, title, value, targetId, elementId: kind === 'element' ? selectedElement ?? undefined : undefined, prototypeId: document?.id, baseRevision: document?.revision })
+    setForm({ kind, title, value, targetId, elementId: kind === 'element' ? selectedElement?.elementId : undefined, stateId: kind === 'element' || kind === 'reference' ? selectedElement?.stateId : undefined, prototypeId: document?.id, baseRevision: document?.revision })
   }
 
   /** 引用沿用真实主会话，包含固定基线，禁止模拟自动回复。 */
-  function reference(instruction: string, elementId?: string, scope: 'page' | 'prototype' = 'page'): void {
+  function reference(instruction: string, elementId?: string, scope: 'page' | 'prototype' = 'page', stateId?: string): void {
     if (!document) return
-    setPrompt({ sessionId, message: buildPrototypePrompt(document, elementId ? `${instruction}\n元素身份仅作为页面内定位上下文；以当前页面为修改范围，保留其他元素，候选采纳前核对完整页面。` : instruction, scope === 'page' && document.pages.some(item => item.id === pageId) ? pageId : undefined, scope === 'page' ? elementId : undefined), autoSend: false })
+    setPrompt({ sessionId, message: buildPrototypePrompt(document, elementId ? `${instruction}\n元素身份仅作为页面内定位上下文；以当前页面为修改范围，保留其他元素，候选采纳前核对完整页面。` : instruction, scope === 'page' && document.pages.some(item => item.id === pageId) ? pageId : undefined, scope === 'page' ? elementId : undefined, scope === 'page' ? stateId : undefined), autoSend: false })
     setNotice('已引用到主会话输入框，请检查后发送。'); setForm(null); setPanel(null); setFocus(false)
   }
 
@@ -258,7 +264,7 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
       return
     }
     if (!document || document.id !== form.prototypeId || document.revision !== form.baseRevision) { setError('设计基线已变化，请关闭表单并重新加载后操作。'); return }
-    if (form.kind === 'reference') { reference(value, selectedElement ?? undefined); return }
+    if (form.kind === 'reference') { reference(value, selectedElement?.elementId, 'page', form.stateId); return }
     if (form.kind === 'import') {
       void run(() => window.electronAPI.interactionDesign.invoke('importHtml', { sessionId, prototypeId: document.id, baseRevision: document.revision, relativePath: value }), () => { setForm(null); void load(); setNotice('HTML 已导入为候选，请预览后采纳。') }); return
     }
@@ -269,12 +275,16 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
     if (form.kind === 'element') {
       const target = next.pages.find(item => item.id === form.targetId)
       if (!target || !form.elementId) { setError('选中元素已失效'); return }
-      const parsed = new DOMParser().parseFromString(target.html, 'text/html')
+      /** 表单打开时冻结状态身份；找不到状态时拒绝回落到默认正文。 */
+      const targetState = form.stateId ? target.states?.find(state => state.id === form.stateId) : undefined
+      if (form.stateId && !targetState) { setError('选中状态已失效'); return }
+      const parsed = new DOMParser().parseFromString(targetState?.html ?? target.html, 'text/html')
       const elements = [...parsed.querySelectorAll('[data-prototype-element]')].filter(item => item.getAttribute('data-prototype-element') === form.elementId)
       const element = elements[0]
       if (elements.length !== 1 || !element || element.childElementCount > 0 || /^(SCRIPT|STYLE|IFRAME|OBJECT|EMBED|LINK|META)$/.test(element.tagName)) { setError('该元素不是唯一的纯文本字段，请引用到会话修改结构。'); return }
       element.textContent = form.value
-      target.html = '<!doctype html>\n' + parsed.documentElement.outerHTML
+      if (targetState) targetState.html = '<!doctype html>\n' + parsed.documentElement.outerHTML
+      else target.html = '<!doctype html>\n' + parsed.documentElement.outerHTML
     }
     if (form.kind === 'group') next.groups.push({ id: crypto.randomUUID(), name: value, ...(form.targetId ? { parentId: form.targetId } : {}) })
     if (form.kind === 'rename-group') { const group = next.groups.find(item => item.id === form.targetId); if (group) group.name = value }
@@ -316,8 +326,11 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
   /** 仅叶子文本节点允许局部编辑，不破坏嵌套组件结构。 */
   const selectedText = React.useMemo(() => {
     if (!page || !selectedElement || candidate) return null
-    const parsed = new DOMParser().parseFromString(page.html, 'text/html')
-    const elements = [...parsed.querySelectorAll('[data-prototype-element]')].filter(item => item.getAttribute('data-prototype-element') === selectedElement)
+    /** 同页多状态可以使用相同元素 ID，选中文字只从命中的状态读取。 */
+    const state = selectedElement.stateId ? page.states?.find(item => item.id === selectedElement.stateId) : undefined
+    if (selectedElement.stateId && !state) return null
+    const parsed = new DOMParser().parseFromString(state?.html ?? page.html, 'text/html')
+    const elements = [...parsed.querySelectorAll('[data-prototype-element]')].filter(item => item.getAttribute('data-prototype-element') === selectedElement.elementId)
     const element = elements[0]
     return elements.length === 1 && element && element.childElementCount === 0 && !/^(SCRIPT|STYLE|IFRAME|OBJECT|EMBED|LINK|META)$/.test(element.tagName) ? element.textContent : null
   }, [page, selectedElement, candidate])
@@ -335,18 +348,18 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
 
   /** 递归渲染分组与页面，页面仍可通过 groupId 跨层移动。 */
   function renderGroup(node: PrototypeGroupTreeNode, depth = 0): React.ReactNode {
-    if (!document) return null
+    if (!document || !draft) return null
     const group = node.group
     const collapsed = view.collapsedGroups.includes(group.id)
-    const pages = document.pages.filter(item => item.groupId === group.id && (!search || item.name.toLowerCase().includes(search.toLowerCase())))
+    const pages = draft.pages.filter(item => item.groupId === group.id && (!search || item.name.toLowerCase().includes(search.toLowerCase())))
     return <React.Fragment key={group.id}>
-      <div className="id-group" style={{ paddingLeft: `${depth * 12}px` }} onDragOver={event => event.preventDefault()} onDrop={event => { const moving = event.dataTransfer.getData('application/x-prototype-page'); if (moving && moving !== group.id) { event.preventDefault(); save(movePrototypePage(document, moving, group.id), '移动页面') } }}>
-        <button onClick={() => toggleGroup(group.id)} aria-expanded={!collapsed}><span>{collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}<Folder size={13} /></span><span>{group.name}</span><small>{document.pages.filter(item => item.groupId === group.id).length}</small></button>
-        <DropdownMenu><DropdownMenuTrigger asChild><button aria-label={`${group.name}分组操作`}><MoreHorizontal size={14} /></button></DropdownMenuTrigger><DropdownMenuContent className="id-directory-menu" side="right" align="start"><DropdownMenuItem disabled={busy} onSelect={() => openForm('group', '新建子分组', '', group.id)}>新建子分组</DropdownMenuItem><DropdownMenuItem disabled={busy} onSelect={() => openForm('rename-group', '重命名分组', group.name, group.id)}>重命名</DropdownMenuItem><DropdownMenuItem disabled={busy} onSelect={() => removeGroup(group.id)}>删除分组</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+      <div className="id-group" style={{ paddingLeft: `${depth * 12}px` }} onDragOver={event => event.preventDefault()} onDrop={event => { const moving = event.dataTransfer.getData('application/x-prototype-page'); if (!candidate && moving && moving !== group.id) { event.preventDefault(); save(movePrototypePage(document, moving, group.id), '移动页面') } }}>
+        <button onClick={() => toggleGroup(group.id)} aria-expanded={!collapsed}><span>{collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}<Folder size={13} /></span><span>{group.name}</span><small>{draft.pages.filter(item => item.groupId === group.id).length}</small></button>
+        <DropdownMenu><DropdownMenuTrigger asChild><button disabled={!!candidate} aria-label={`${group.name}分组操作`}><MoreHorizontal size={14} /></button></DropdownMenuTrigger><DropdownMenuContent className="id-directory-menu" side="right" align="start"><DropdownMenuItem disabled={busy} onSelect={() => openForm('group', '新建子分组', '', group.id)}>新建子分组</DropdownMenuItem><DropdownMenuItem disabled={busy} onSelect={() => openForm('rename-group', '重命名分组', group.name, group.id)}>重命名</DropdownMenuItem><DropdownMenuItem disabled={busy} onSelect={() => removeGroup(group.id)}>删除分组</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
       </div>
-      {!collapsed && <div className="id-group-children">{pages.map(item => <div className={`id-page ${pageId === item.id ? 'active' : ''}`} key={item.id} draggable={!busy} onDragStart={event => { event.dataTransfer.setData('application/x-prototype-page', item.id) }} onDragOver={event => event.preventDefault()} onDrop={event => { const moving = event.dataTransfer.getData('application/x-prototype-page'); if (moving && moving !== item.id) { event.preventDefault(); save(movePrototypePage(document, moving, item.groupId, item.id), '调整页面顺序') } }}>
-        <button onClick={() => { setCandidate(null); updateView({ pageId: item.id }); setDirectory(false); setSelectedElement(null) }}><span className="id-page-thumb"><Workflow size={14} /></span><span>{item.name}</span>{document.entryPageId === item.id && <small>入口</small>}</button>
-        <DropdownMenu><DropdownMenuTrigger asChild><button aria-label={`${item.name}页面操作`}><MoreHorizontal size={15} /></button></DropdownMenuTrigger><DropdownMenuContent className="id-directory-menu" side="right" align="start"><DropdownMenuItem disabled={busy} onSelect={() => { const next = copyPrototypeDraft(document); next.pages.push({ ...structuredClone(item), id: crypto.randomUUID(), name: `${item.name} 副本` }); save(next, '复制页面') }}>复制</DropdownMenuItem><DropdownMenuItem onSelect={() => openForm('rename-page', '重命名页面', item.name, item.id)}>重命名</DropdownMenuItem><DropdownMenuSub><DropdownMenuSubTrigger>移动到</DropdownMenuSubTrigger><DropdownMenuSubContent className="id-directory-menu">{document.groups.map(groupItem => <DropdownMenuItem key={groupItem.id} disabled={busy || groupItem.id === item.groupId} onSelect={() => save(movePrototypePage(document, item.id, groupItem.id), '移动页面')}>{groupPath(groupItem.id)}</DropdownMenuItem>)}</DropdownMenuSubContent></DropdownMenuSub><DropdownMenuItem disabled={document.entryPageId === item.id || busy} onSelect={() => { const next = copyPrototypeDraft(document); next.entryPageId = item.id; save(next, '设置入口页') }}>设为入口</DropdownMenuItem><DropdownMenuItem disabled={busy || document.entryPageId === item.id || document.pages.length <= 1} onSelect={() => save(deletePrototypePage(document, item.id), '删除页面')}>删除</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+      {!collapsed && <div className="id-group-children">{pages.map(item => <div className={`id-page ${pageId === item.id ? 'active' : ''}`} key={item.id} draggable={!busy && !candidate} onDragStart={event => { event.dataTransfer.setData('application/x-prototype-page', item.id) }} onDragOver={event => event.preventDefault()} onDrop={event => { const moving = event.dataTransfer.getData('application/x-prototype-page'); if (!candidate && moving && moving !== item.id) { event.preventDefault(); save(movePrototypePage(document, moving, item.groupId, item.id), '调整页面顺序') } }}>
+        <button onClick={() => { updateView({ pageId: item.id }); setDirectory(false); setSelectedElement(null) }}><span className="id-page-thumb"><Workflow size={14} /></span><span>{item.name}</span>{draft.entryPageId === item.id && <small>入口</small>}{item.states?.length ? <small>{item.states.length + 1} 状态</small> : null}</button>
+        <DropdownMenu><DropdownMenuTrigger asChild><button disabled={!!candidate} aria-label={`${item.name}页面操作`}><MoreHorizontal size={15} /></button></DropdownMenuTrigger><DropdownMenuContent className="id-directory-menu" side="right" align="start"><DropdownMenuItem disabled={busy} onSelect={() => { const next = copyPrototypeDraft(document); next.pages.push({ ...structuredClone(item), id: crypto.randomUUID(), name: `${item.name} 副本` }); save(next, '复制页面') }}>复制</DropdownMenuItem><DropdownMenuItem onSelect={() => openForm('rename-page', '重命名页面', item.name, item.id)}>重命名</DropdownMenuItem><DropdownMenuSub><DropdownMenuSubTrigger>移动到</DropdownMenuSubTrigger><DropdownMenuSubContent className="id-directory-menu">{document.groups.map(groupItem => <DropdownMenuItem key={groupItem.id} disabled={busy || groupItem.id === item.groupId} onSelect={() => save(movePrototypePage(document, item.id, groupItem.id), '移动页面')}>{groupPath(groupItem.id)}</DropdownMenuItem>)}</DropdownMenuSubContent></DropdownMenuSub><DropdownMenuItem disabled={document.entryPageId === item.id || busy} onSelect={() => { const next = copyPrototypeDraft(document); next.entryPageId = item.id; save(next, '设置入口页') }}>设为入口</DropdownMenuItem><DropdownMenuItem disabled={busy || document.entryPageId === item.id || document.pages.length <= 1} onSelect={() => save(deletePrototypePage(document, item.id), '删除页面')}>删除</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
       </div>)}{node.children.map(child => renderGroup(child, depth + 1))}</div>}
     </React.Fragment>
   }
@@ -354,7 +367,7 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
   return <section className={`interaction-design ${focus && paneActive ? 'id-focus' : ''}`} aria-label="交互设计工作区">
     <header className="id-header">
       <div className="id-title"><span className="id-product-mark"><MousePointer2 size={18} /></span><div>
-        <strong>交互设计</strong><p>{loading ? '正在读取…' : document ? `${document.pages.length} 个页面 · 已保存 v${document.revision}` : '从需求或现有项目开始'}</p>
+        <strong>交互设计</strong><p>{loading ? '正在读取…' : document ? candidate ? `候选预览 · ${previewPageCount} 个页面 · 基于 v${candidate.baseRevision}` : `${document.pages.length} 个页面 · 已保存 v${document.revision}` : '从需求或现有项目开始'}</p>
       </div></div>
       <div className="id-actions">
         <Button variant="outline" size="sm" disabled={busy} aria-expanded={directory} onClick={() => setDirectory(value => !value)}><ListTree size={14} /><span>页面</span></Button>
@@ -370,26 +383,26 @@ export function InteractionDesignWorkspace({ projectId, sessionId, paneActive = 
       <div className="id-toolbar"><div className="id-mode"><button aria-pressed={mode === 'play'} onClick={() => { setMode('play'); setSelectedElement(null) }}><Play size={13} />体验</button><button aria-pressed={mode === 'select'} onClick={() => setMode('select')}><MousePointer2 size={13} />选择修改</button></div><span className="id-spacer" /><button className="id-version-button" aria-label="查看版本与候选" disabled={!document} onClick={() => setPanel('history')}><History size={14} /><span>v{document?.revision ?? 0}</span></button>
         <button aria-label="手机预览" aria-pressed={view.device === 'mobile'} onClick={() => updateView({ device: 'mobile' })}><Smartphone size={16} /></button><button aria-label="桌面预览" aria-pressed={view.device === 'desktop'} onClick={() => updateView({ device: 'desktop' })}><Monitor size={16} /></button><span className="id-rule" />
         <button aria-label="重新体验" onClick={() => { updateView({ pageId: draft?.entryPageId }); setReset(value => value + 1); setVisited([]); setSelectedElement(null) }}><RefreshCw size={15} /></button><button aria-label={focus ? '退出专注' : '专注预览'} aria-pressed={focus} onClick={() => setFocus(value => !value)}>{focus ? <X size={16} /> : <Expand size={16} />}</button>
-        <DropdownMenu><DropdownMenuTrigger asChild><button aria-label="更多原型操作"><MoreHorizontal size={16} /></button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => openForm('reference', '引用到主会话', '请根据需求完善当前原型的页面与交互。')}>描述需求并引用到会话</DropdownMenuItem><DropdownMenuItem onSelect={() => openForm('import', '导入项目 HTML')}>导入项目 HTML</DropdownMenuItem><DropdownMenuItem onSelect={() => openForm('asset', '导入项目图片')}>导入项目图片</DropdownMenuItem>{page && <DropdownMenuItem disabled={!!candidate} onSelect={() => openForm('html', '编辑页面 HTML', page.html, page.id)}>编辑当前页面 HTML</DropdownMenuItem>}</DropdownMenuContent></DropdownMenu>
+        <DropdownMenu><DropdownMenuTrigger asChild><button aria-label="更多原型操作"><MoreHorizontal size={16} /></button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => openForm('reference', '引用到主会话', '请根据需求完善当前原型的页面与交互。')}>描述需求并引用到会话</DropdownMenuItem><DropdownMenuItem onSelect={() => openForm('import', '导入项目 HTML')}>导入项目 HTML</DropdownMenuItem><DropdownMenuItem onSelect={() => openForm('asset', '导入项目图片')}>导入项目图片</DropdownMenuItem>{page && <DropdownMenuItem disabled={!!candidate} onSelect={() => openForm('html', '编辑页面 HTML', page.html, page.id)}>{page.states?.length ? '编辑默认状态 HTML' : '编辑当前页面 HTML'}</DropdownMenuItem>}</DropdownMenuContent></DropdownMenu>
       </div>
       {snapshot.candidates.filter(item => item.status === 'ready' || item.status === 'stale').length > 0 && <div className="id-candidates">{snapshot.candidates.filter(item => item.status === 'ready' || item.status === 'stale').map(item => <div key={item.id}><Sparkles size={14} /><span>{item.summary} <small>{item.baseRevision !== document.revision || item.status === 'stale' ? '基线已变化，不能采纳' : `基于 v${item.baseRevision}`}</small></span><Button size="sm" variant="ghost" disabled={busy} onClick={() => void run(() => window.electronAPI.interactionDesign.invoke('getCandidate', { sessionId, prototypeId: document.id, candidateId: item.id }), result => {
         /** 导入候选新增页面时直接定位新增页，让用户第一次预览就能看到导入结果；普通修改仍保留当前页。 */
         const addedPage = result.draft.pages.find(candidatePage => !document.pages.some(currentPage => currentPage.id === candidatePage.id))
         setCandidate(result); setSelectedElement(null); if (addedPage) updateView({ pageId: addedPage.id })
       })}>预览</Button><Button size="sm" variant="ghost" disabled={busy || item.baseRevision !== document.revision || item.status !== 'ready'} onClick={() => void run(() => window.electronAPI.interactionDesign.invoke('adopt', { sessionId, prototypeId: document.id, candidateId: item.id, baseRevision: document.revision }), acceptSnapshot)}>采纳</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => void run(() => window.electronAPI.interactionDesign.invoke('discardCandidate', { sessionId, prototypeId: document.id, candidateId: item.id }), acceptSnapshot)}>忽略</Button></div>)}</div>}
-      {candidate && <div className="id-candidate-preview"><span>候选预览 · 尚未采纳</span><button onClick={() => { setCandidate(null); setSelectedElement(null) }}>返回当前版本</button></div>}
-      <div className="id-stage"><div className="id-stage-top"><span>{page?.name ?? '暂无页面'}</span><span>{mode === 'select' ? '仅支持声明过身份的受控元素' : '独立沙箱 · 不访问真实业务接口'}</span></div>
-        {page && draft ? <InteractionDesignPreview draft={draft} pageId={page.id} revision={document.revision} identity={`${projectId}:${document.id}:${document.revision}:${candidate?.id ?? 'head'}:${reset}`} mode={mode} device={view.device} assets={assets} onSelect={setSelectedElement} onNavigate={navigate} /> : <div className="id-empty"><p>还没有页面，先创建页面或引用需求到主会话。</p><Button onClick={() => openForm('page', '新建页面', '', document.groups[0]?.id)}>新建页面</Button></div>}
-        {selectedElement && <aside className="id-selection"><div><strong>已选中元素</strong><button aria-label="清除元素选择" onClick={() => setSelectedElement(null)}><X size={14} /></button></div><p>{page?.name} / {selectedElement}</p><p>带着页面、元素与版本引用继续修改。</p>{selectedText !== null && <Button size="sm" variant="outline" className="mb-2 mr-2" onClick={() => openForm('element', '修改选中文字', selectedText, pageId)}>编辑文字</Button>}<Button size="sm" disabled={!!candidate} onClick={() => openForm('reference', '引用到主会话', '请只修改选中的元素，保留其他页面与交互不变。')}>引用到会话</Button>{candidate && <small>先返回当前版本或采纳候选后修改</small>}</aside>}
-        <div className="id-stage-hint"><span className="id-live-dot" />{mode === 'play' ? '预览已运行，直接点击试试看' : '点击带稳定身份的内容，再引用到主会话'}</div>
+      {candidate && <div className="id-candidate-preview"><span>候选预览 · {previewPageCount} 个页面 · 尚未采纳</span><div><button aria-label={`查看候选页面列表（${previewPageCount}）`} onClick={() => setDirectory(true)}>查看页面列表（{previewPageCount}）</button><button onClick={() => { setCandidate(null); setSelectedElement(null) }}>返回当前版本</button></div></div>}
+      <div className="id-stage"><div className="id-stage-top"><span>{page?.name ?? '暂无页面'}{page?.states?.length ? ` · ${page.states.length + 1} 个状态` : ''}</span><span>{mode === 'select' ? '仅支持声明过身份的受控元素' : '独立沙箱 · 不访问真实业务接口'}</span></div>
+        {page && draft ? <InteractionDesignPreview draft={draft} pageId={page.id} revision={previewRevision} identity={`${projectId}:${document.id}:${document.revision}:${candidate?.id ?? 'head'}:${reset}`} mode={mode} device={view.device} assets={assets} onSelect={(elementId, stateId) => setSelectedElement({ elementId, stateId })} onNavigate={navigate} /> : <div className="id-empty"><p>还没有页面，先创建页面或引用需求到主会话。</p><Button onClick={() => openForm('page', '新建页面', '', document.groups[0]?.id)}>新建页面</Button></div>}
+        {selectedElement && <aside className="id-selection"><div><strong>已选中元素</strong><button aria-label="清除元素选择" onClick={() => setSelectedElement(null)}><X size={14} /></button></div><p>{page?.name} / {selectedElement.stateId ? page?.states?.find(state => state.id === selectedElement.stateId)?.name : page?.defaultStateName ?? '默认状态'} / {selectedElement.elementId}</p><p>带着页面、元素与版本引用继续修改。</p>{selectedText !== null && <Button size="sm" variant="outline" className="mb-2 mr-2" onClick={() => openForm('element', '修改选中文字', selectedText, pageId)}>编辑文字</Button>}<Button size="sm" disabled={!!candidate} onClick={() => openForm('reference', '引用到主会话', '请只修改选中的元素，保留其他页面与交互不变。')}>引用到会话</Button>{candidate && <small>先返回当前版本或采纳候选后修改</small>}</aside>}
+        <div className="id-stage-hint"><span className="id-live-dot" />{mode === 'play' ? page?.states?.length ? '同一页面的不同状态并排展示，点击可体验；向下滚动查看更多' : '预览已运行，直接点击试试看' : '点击带稳定身份的内容，再引用到主会话'}</div>
       </div>
       <footer className="id-footer"><span>本次体验 · {visited.length ? `${visited.length} 次页面访问` : '尚未记录跳转'}</span><span>{view.device === 'mobile' ? '390 × 844' : '1280 × 800'}</span></footer>
     </>}
     {directory && <><button className="id-directory-backdrop" aria-label="关闭页面列表" onClick={() => setDirectory(false)} /><aside className="id-directory" aria-label="项目页面">
-      <header><strong>页面 {document && <small>{document.pages.length}</small>}</strong><div className="id-directory-header-actions"><button aria-label="新建页面" title="新建页面" disabled={busy} onClick={() => openForm('page', '新建页面', '', rootGroupId)}><Plus size={16} /></button>{document && <button aria-label="新建分组" title="新建分组" disabled={busy} onClick={() => openForm('group', '新建分组')}><FolderPlus size={16} /></button>}<button aria-label="收起页面列表" title="收起页面列表" onClick={() => setDirectory(false)}><PanelLeftClose size={16} /></button></div></header>
+      <header><strong>页面 {draft && <small>{draft.pages.length}</small>}</strong><div className="id-directory-header-actions"><button aria-label="新建页面" title="新建页面" disabled={busy || !!candidate} onClick={() => openForm('page', '新建页面', '', rootGroupId)}><Plus size={16} /></button>{document && <button aria-label="新建分组" title="新建分组" disabled={busy || !!candidate} onClick={() => openForm('group', '新建分组')}><FolderPlus size={16} /></button>}<button aria-label="收起页面列表" title="收起页面列表" onClick={() => setDirectory(false)}><PanelLeftClose size={16} /></button></div></header>
       {document ? <><label className="id-search"><Search size={14} /><input autoFocus type="search" placeholder="搜索页面" aria-label="搜索页面" value={search} onChange={event => setSearch(event.target.value)} /></label><div className="id-directory-content">
         {groupTree.map(node => renderGroup(node))}
-        {search && !document.pages.some(item => item.name.toLowerCase().includes(search.toLowerCase())) && <p className="id-no-results">没有匹配的页面</p>}
+        {search && !draft?.pages.some(item => item.name.toLowerCase().includes(search.toLowerCase())) && <p className="id-no-results">没有匹配的页面</p>}
       </div></> : <div className="id-directory-empty"><strong>当前项目的页面</strong><p>当前项目还没有交互设计模块。</p><p>新建页面会自动创建唯一模块，之后可在目录中建立多级分组。</p></div>}
       <footer>{document ? '拖拽页面可排序或移入分组 · 分组支持多级嵌套' : '页面从此列表进入，项目只创建一个交互模块'}</footer>
     </aside></>}

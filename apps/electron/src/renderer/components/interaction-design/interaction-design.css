@@ -9,7 +9,8 @@
 @container(max-width:410px){.id-header{flex-wrap:wrap;min-height:85px}.id-title{flex:1}.id-actions{margin-left:auto}.id-actions button span{display:none}.id-toolbar{height:51px}.id-stage-top>span:last-child{display:none}}
 
 /* 交互设计页面目录与项目画布统一：全高左侧浮层、树状条目和独立新建行。 */
-.id-directory-backdrop{background:hsl(var(--background) / .35)}
+.id-candidate-preview{gap:10px}.id-candidate-preview>div{display:flex;align-items:center;gap:5px;flex-shrink:0}.id-candidate-preview button{height:25px;padding:0 7px;border-radius:6px;font-size:10px}.id-candidate-preview button:hover{background:hsl(var(--background) / .65)}
+.id-directory-backdrop{background:transparent}
 .id-directory{left:0;top:0;bottom:0;width:min(240px,80%);border:0;border-right:1px solid hsl(var(--border));border-radius:0;box-shadow:0 12px 30px #0003}
 .id-version-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
 .id-directory>header{height:44px;padding:0 8px;border-bottom:1px solid hsl(var(--border))}
@@ -32,3 +33,9 @@
 .id-directory-menu{z-index:9999 !important;pointer-events:auto !important}
 body>[data-radix-popper-content-wrapper]:has(>.id-directory-menu){z-index:9999 !important;pointer-events:auto}
 @container(max-width:410px){.id-directory{width:min(240px,88%)}.id-directory-create button{min-height:32px}}
+
+/* 状态属于当前业务页面：画板平铺换行，保持可读大小，不挤占页面目录。 */
+.id-state-space{display:flex;flex-wrap:wrap;align-items:flex-start;align-content:flex-start;justify-content:flex-start;gap:24px;padding:16px;overflow:auto;scrollbar-gutter:stable}
+.id-state-board{flex:none;min-width:0}
+.id-state-label{height:28px;display:flex;align-items:flex-start;font-size:11px;font-weight:500;color:hsl(var(--foreground));overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.id-state-placeholder{height:100%;display:grid;place-items:center;color:hsl(var(--muted-foreground));background:hsl(var(--background));font-size:11px}

@@ -3,378 +3,818 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>运维 · 部署页签原型</title>
+  <title>运维 · 版本发布与回退</title>
   <link rel="icon" href="data:,">
   <style>
-    /* 直接对齐当前运维 Pane 的主题语义：内容区最深，卡片只抬一层。 */
-    :root {
-      color-scheme: dark;
-      --background: #191919;
-      --content: #121212;
-      --card: #202020;
-      --card-soft: #1b1b1b;
-      --muted: #292929;
-      --line: #363636;
-      --text: #f1f1f1;
-      --subtle: #9c9c9c;
-      --primary: #f4f4f4;
-      --primary-ink: #161616;
-      --success: #7ac694;
-      --success-bg: #1b3022;
-      --warning: #ddb878;
-      --warning-bg: #32291b;
-      --danger: #e38b83;
-      --danger-bg: #3b2222;
-      --radius: 8px;
-    }
-    [data-theme="light"] {
-      color-scheme: light;
-      --background: #f5f5f4;
-      --content: #fbfbfa;
-      --card: #ffffff;
-      --card-soft: #f6f6f5;
-      --muted: #ededeb;
-      --line: #dededb;
-      --text: #242424;
-      --subtle: #767674;
-      --primary: #242424;
-      --primary-ink: #ffffff;
-      --success: #3d8754;
-      --success-bg: #e9f5eb;
-      --warning: #976825;
-      --warning-bg: #fff3d9;
-      --danger: #aa443d;
-      --danger-bg: #ffebe8;
-    }
-    * { box-sizing: border-box; }
-    html, body { margin: 0; min-height: 100%; }
-    body { background: var(--content); color: var(--text); font: 13px/1.5 Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
-    button, input, select { font: inherit; }
-    button { border: 0; color: inherit; cursor: pointer; }
-    button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-    [hidden] { display: none !important; }
-
-    /* 当前组件的外层：没有独立产品侧栏，直接占满运维面板。 */
-    .workspace { min-height: 100vh; display: flex; flex-direction: column; background: var(--content); }
-    .toolbar { display: grid; grid-template-columns: 180px minmax(0, 1fr) auto auto; grid-template-areas: "project identity access controls"; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent); background: var(--background); }
-    .project-selector { grid-area: project; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--line) 75%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--content) 65%, transparent); font-size: 12px; }
-    .project-selector span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; text-align: left; }
-    .toolbar-identity { grid-area: identity; min-width: 0; display: flex; align-items: center; gap: 7px; }
-    .back-button, .icon-button, .link-button { padding: 6px 7px; border-radius: 6px; background: transparent; color: var(--subtle); }
-    .back-button:hover, .icon-button:hover, .link-button:hover { background: var(--muted); color: var(--text); }
-    .identity-copy { min-width: 0; }
-    .identity-title { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
-    .identity-title .protocol { color: var(--subtle); font-size: 10px; font-weight: 400; }
-    .identity-address { overflow: hidden; color: var(--subtle); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
-    .toolbar-access, .toolbar-controls { display: flex; align-items: center; gap: 5px; }
-    .toolbar-access { grid-area: access; }
-    .toolbar-controls { grid-area: controls; }
-    .button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 28px; padding: 5px 9px; border-radius: 6px; background: transparent; color: var(--subtle); font-size: 11px; white-space: nowrap; }
-    .button:hover { background: var(--muted); color: var(--text); }
-    .button.outline { border: 1px solid var(--line); color: var(--text); }
-    .button.primary { background: var(--primary); color: var(--primary-ink); font-weight: 600; }
-    .button.primary:hover { opacity: .85; background: var(--primary); color: var(--primary-ink); }
-    .status-badge { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 3px 8px; border: 1px solid color-mix(in srgb, var(--success) 38%, var(--line)); border-radius: 999px; color: var(--success); font-size: 10px; white-space: nowrap; }
-    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-
-    /* 页签与当前 ServerOpsWorkspace 的固定能力顺序保持一致。 */
-    .tabs { display: flex; min-height: 40px; align-items: center; gap: 2px; overflow-x: auto; padding: 5px 12px; border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent); background: var(--background); }
-    .tab { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 5px 10px; border-radius: 6px; background: transparent; color: var(--subtle); font-size: 11px; white-space: nowrap; }
-    .tab:hover { background: color-mix(in srgb, var(--muted) 70%, transparent); color: var(--text); }
-    .tab.active { background: var(--muted); color: var(--text); font-weight: 600; }
-    .tab-icon { width: 14px; text-align: center; color: currentColor; font-size: 12px; }
-
-    .page { width: min(1120px, 100%); margin: 0 auto; padding: 18px 20px 42px; }
-    .page-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
-    .page-heading h1 { font-size: 17px; letter-spacing: -.02em; font-weight: 600; }
-    .page-heading p { margin-top: 4px; color: var(--subtle); font-size: 11px; }
-    .page-actions { display: flex; gap: 6px; }
-    .connection-note { display: flex; align-items: center; gap: 8px; padding: 9px 11px; margin-bottom: 14px; border: 1px solid color-mix(in srgb, var(--success) 24%, var(--line)); border-radius: var(--radius); background: color-mix(in srgb, var(--success-bg) 55%, var(--card)); color: var(--subtle); font-size: 11px; }
-    .connection-note strong { color: var(--success); font-weight: 600; }
-    .grid { display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(300px, .88fr); gap: 12px; }
-    .card { min-width: 0; border: 1px solid color-mix(in srgb, var(--line) 78%, transparent); border-radius: var(--radius); background: color-mix(in srgb, var(--card) 82%, transparent); overflow: hidden; }
-    .card-header { display: flex; align-items: start; justify-content: space-between; gap: 12px; padding: 14px 15px 12px; border-bottom: 1px solid color-mix(in srgb, var(--line) 78%, transparent); }
-    .card-header h2 { font-size: 13px; font-weight: 600; }
-    .card-header p { margin-top: 3px; color: var(--subtle); font-size: 10px; }
-    .card-body { padding: 14px 15px; }
-    .pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border-radius: 999px; font-size: 10px; white-space: nowrap; }
-    .pill.success { color: var(--success); background: var(--success-bg); }
-    .pill.warning { color: var(--warning); background: var(--warning-bg); }
-    .pill.neutral { color: var(--subtle); background: var(--muted); }
-    .target-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .target-field { min-width: 0; padding: 10px; border-radius: 6px; background: var(--card-soft); }
-    .target-field span { display: block; margin-bottom: 4px; color: var(--subtle); font-size: 10px; }
-    .target-field strong { display: block; overflow: hidden; font-size: 11px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
-    .target-field code { font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .card-footer { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 11px 15px; border-top: 1px solid color-mix(in srgb, var(--line) 75%, transparent); color: var(--subtle); font-size: 10px; }
-    .card-footer-actions { display: flex; gap: 5px; }
-    .candidate-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-    .candidate-stat { padding: 9px 8px; border-radius: 6px; background: var(--card-soft); text-align: center; }
-    .candidate-stat strong { display: block; font-size: 16px; letter-spacing: -.04em; }
-    .candidate-stat span { display: block; margin-top: 2px; color: var(--subtle); font-size: 9px; }
-    .candidate-lines { display: grid; gap: 7px; margin-top: 12px; }
-    .candidate-line { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--line) 72%, transparent); border-radius: 6px; }
-    .candidate-line div { min-width: 0; }
-    .candidate-line strong { display: block; font-size: 11px; font-weight: 550; }
-    .candidate-line small { display: block; margin-top: 2px; overflow: hidden; color: var(--subtle); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
-    .risk-note { display: flex; gap: 8px; margin-top: 12px; padding: 9px 10px; border-radius: 6px; background: var(--warning-bg); color: var(--warning); font-size: 10px; }
-    .section-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 17px 0 8px; }
-    .section-row h2 { font-size: 13px; font-weight: 600; }
-    .section-row span { color: var(--subtle); font-size: 10px; }
-    .table-wrap { overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 11px; }
-    th { padding: 8px 10px; background: color-mix(in srgb, var(--muted) 55%, transparent); color: var(--subtle); font-size: 10px; font-weight: 500; text-align: left; white-space: nowrap; }
-    td { padding: 9px 10px; border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); vertical-align: top; white-space: nowrap; }
-    tbody tr:hover { background: color-mix(in srgb, var(--muted) 32%, transparent); }
-    td:first-child { color: var(--text); font-weight: 550; }
-    td small { display: block; margin-top: 2px; color: var(--subtle); font-size: 10px; font-weight: 400; }
-    code { color: var(--subtle); }
-    .history-list { display: grid; gap: 5px; }
-    .history-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 9px 10px; border: 1px solid transparent; border-radius: 6px; }
-    .history-row:hover { background: var(--card-soft); border-color: var(--line); }
-    .history-mark { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 6px; background: var(--success-bg); color: var(--success); font-size: 11px; }
-    .history-mark.unknown { background: var(--warning-bg); color: var(--warning); }
-    .history-row strong { display: block; font-size: 11px; font-weight: 550; }
-    .history-row small { display: block; overflow: hidden; margin-top: 2px; color: var(--subtle); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-    .history-state { color: var(--subtle); font-size: 10px; white-space: nowrap; }
-    .history-state.success { color: var(--success); }
-    .history-state.unknown { color: var(--warning); }
-    .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px; background: rgb(0 0 0 / .58); backdrop-filter: blur(7px); }
-    .modal-backdrop[hidden] { display: none; }
-    .modal { width: min(560px, 100%); max-height: 92vh; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--card); box-shadow: 0 22px 55px rgb(0 0 0 / .38); }
-    .modal-header { display: flex; justify-content: space-between; gap: 12px; align-items: start; padding: 15px 16px 12px; border-bottom: 1px solid var(--line); }
-    .modal-header h2 { font-size: 14px; font-weight: 600; }
-    .modal-header p { margin-top: 3px; color: var(--subtle); font-size: 10px; }
-    .modal-body { padding: 15px 16px 16px; }
-    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
-    .field { display: grid; gap: 5px; }
-    .field.full { grid-column: 1 / -1; }
-    .field label { color: var(--subtle); font-size: 10px; }
-    .field input, .field select { width: 100%; height: 34px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--card-soft); color: var(--text); }
-    .field small { color: var(--subtle); font-size: 9px; }
-    .modal-footer { display: flex; justify-content: flex-end; gap: 6px; margin-top: 17px; }
-    .confirm-list { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-    .confirm-line { display: flex; justify-content: space-between; gap: 12px; padding: 9px 10px; font-size: 11px; }
-    .confirm-line + .confirm-line { border-top: 1px solid var(--line); }
-    .confirm-line span { color: var(--subtle); }
-    .confirm-line strong { text-align: right; font-weight: 550; }
-    .confirm-warning { margin-top: 11px; color: var(--warning); font-size: 10px; }
-    .run-state { text-align: center; padding: 10px 0 2px; }
-    .run-state-mark { width: 48px; height: 48px; display: grid; place-items: center; margin: 0 auto 12px; border: 1px solid var(--success); border-radius: 50%; color: var(--success); animation: pulse 1.5s ease-in-out infinite; }
-    .run-state h3 { font-size: 15px; font-weight: 600; }
-    .run-state p { margin-top: 4px; color: var(--subtle); font-size: 10px; }
-    .run-progress { height: 5px; margin: 16px 0 9px; overflow: hidden; border-radius: 999px; background: var(--muted); }
-    .run-progress span { display: block; width: 30%; height: 100%; border-radius: inherit; background: var(--success); animation: progress 2.1s ease-in-out forwards; }
-    .run-log { padding: 10px; border-radius: 6px; background: #0b0b0b; color: #a8c6ad; font: 10px/1.8 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; }
-    .modal-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 14px; }
-    .danger-link { color: var(--danger); background: transparent; font-size: 10px; }
-    .toast { position: fixed; z-index: 40; right: 18px; bottom: 18px; padding: 8px 11px; border-radius: 6px; background: var(--text); color: var(--content); box-shadow: 0 12px 30px rgb(0 0 0 / .28); font-size: 10px; }
-    .toast[hidden] { display: none; }
-    @keyframes pulse { 50% { transform: scale(1.05); box-shadow: 0 0 0 8px color-mix(in srgb, var(--success) 12%, transparent); } }
-    @keyframes progress { from { width: 25%; } to { width: 100%; } }
-    @media (max-width: 840px) {
-      .toolbar { grid-template-columns: 160px minmax(0, 1fr) auto; grid-template-areas: "project identity controls" "project access controls"; }
-      .toolbar-access { justify-content: flex-start; }
-    }
-    @media (max-width: 680px) {
-      .toolbar { grid-template-columns: 1fr auto; grid-template-areas: "project controls" "identity controls" "access controls"; padding: 8px 10px; }
-      .toolbar-controls { align-self: center; }
-      .toolbar-access { padding-left: 28px; }
-      .page { padding: 15px 12px 35px; }
-      .page-heading { display: block; }
-      .page-actions { margin-top: 11px; }
-      .page-actions .button { flex: 1; }
-      .grid { grid-template-columns: 1fr; }
-      .card-footer { align-items: start; flex-direction: column; }
-      .card-footer-actions { width: 100%; }
-      .card-footer-actions .button { flex: 1; }
-      .service-table th:nth-child(3), .service-table td:nth-child(3) { display: none; }
-    }
-    @media (max-width: 420px) {
-      .project-selector { width: 150px; }
-      .identity-address { max-width: 180px; }
-      .toolbar-access { padding-left: 26px; }
-      .tab { padding: 5px 8px; }
-    }
+    /* 沿用现有运维工作区的内容、卡片、选中态层级，原型不加载外部资源。 */
+    :root { color-scheme:dark; --background:#191919; --content:#121212; --card:#202020; --soft:#1b1b1b; --muted:#2a2a2a; --line:#353535; --text:#eee; --subtle:#a3a3a3; --primary:#eee; --primary-ink:#171717; --success:#8dcc9e; --success-bg:#1c2d23; --warning:#e2bd80; --warning-bg:#32291c; --danger:#efa199; --danger-bg:#372221; --accent:#aac3e2; --accent-bg:#222c38; }
+    [data-theme="light"] { color-scheme:light; --background:#f3f3f1; --content:#fafaf9; --card:#fff; --soft:#f6f6f4; --muted:#eaeae7; --line:#ddddd8; --text:#252523; --subtle:#686863; --primary:#252523; --primary-ink:#fff; --success:#306b43; --success-bg:#eaf3ec; --warning:#805719; --warning-bg:#fbf1de; --danger:#a13e35; --danger-bg:#fcece9; --accent:#385e8c; --accent-bg:#edf2f8; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--content); color:var(--text); font:13px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; }
+    h1,h2,h3,p { margin:0; }
+    h1 { font-size:19px; font-weight:600; letter-spacing:-.4px; } h2 { font-size:13px; font-weight:600; } h3 { font-size:12px; font-weight:600; }
+    button,input,select,textarea { font:inherit; color:inherit; }
+    button { cursor:pointer; border:0; } button:disabled { cursor:not-allowed; opacity:.42; }
+    button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,[tabindex="0"]:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+    [hidden] { display:none!important; } code,.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; overflow-wrap:anywhere; } small { font-size:10px; } .muted { color:var(--subtle); } .success-text { color:var(--success); } .warning-text { color:var(--warning); }
+    .workspace { min-height:100vh; }
+    .toolbar { display:grid; grid-template-columns:160px minmax(150px,1fr) auto auto; gap:12px; align-items:center; padding:8px 12px; background:var(--background); border-bottom:1px solid var(--line); }
+    .project-selector { display:flex; gap:8px; align-items:center; padding:6px 9px; border:1px solid var(--line); border-radius:6px; background:var(--soft); font-size:12px; }
+    .project-selector span:nth-child(2) { flex:1; text-align:left; }
+    .identity-title { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:600; }
+    .identity-address { font-size:10px; color:var(--subtle); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .protocol { font-size:9px; color:var(--subtle); font-weight:400; }
+    .toolbar-access,.toolbar-controls,.actions { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+    .button,.icon-button { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:6px 10px; min-height:30px; border:1px solid transparent; border-radius:6px; background:transparent; color:var(--subtle); font-size:11px; white-space:nowrap; }
+    .button:hover:not(:disabled),.icon-button:hover { background:var(--muted); color:var(--text); }
+    .button.outline { border-color:var(--line); color:var(--text); } .button.primary { background:var(--primary); color:var(--primary-ink); font-weight:600; }
+    .button.primary:hover:not(:disabled) { opacity:.85; background:var(--primary); color:var(--primary-ink); }
+    .button.rollback { background:var(--warning-bg); color:var(--warning); border-color:color-mix(in srgb,var(--warning) 30%,transparent); }
+    .icon-button { padding:4px 8px; font-size:15px; }
+    .status { display:inline-flex; align-items:center; gap:6px; color:var(--success); font-size:10px; white-space:nowrap; }
+    .dot { width:5px; height:5px; display:inline-block; flex-shrink:0; border-radius:50%; background:currentColor; }
+    .tabs { display:flex; gap:3px; padding:6px 12px; overflow:auto; background:var(--background); border-bottom:1px solid var(--line); }
+    .tab { display:flex; gap:6px; align-items:center; padding:5px 10px; border-radius:5px; background:transparent; color:var(--subtle); font-size:11px; white-space:nowrap; }
+    .tab.active { background:var(--muted); color:var(--text); font-weight:600; } .tab:hover { background:var(--muted); }
+    .tab svg,.toolbar svg,.button svg { width:14px; height:14px; flex-shrink:0; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+    .page { width:min(1120px,100%); padding:26px 28px 32px; margin:auto; }
+    .page-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; }
+    .page-title { display:flex; align-items:center; gap:10px; flex-wrap:wrap; } h1 { font-size:20px; } h2 { font-size:14px; } h3 { font-size:12px; }
+    .prototype-label { color:var(--subtle); font-size:10px; padding-left:3px; }
+    .target-line { display:flex; align-items:center; gap:12px 28px; flex-wrap:wrap; margin:10px 0 20px; color:var(--subtle); font-size:11px; }
+    .target-line>span { min-width:0; overflow-wrap:anywhere; } .target-line strong { color:var(--text); font-weight:500; margin-left:5px; } .target-separator { padding:0 9px; color:var(--line); }
+    .target-line code { color:var(--text); } .target-line #target-access { display:flex; align-items:center; gap:8px; } .target-line #target-access span:last-child { max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .eyebrow { font-size:11px; color:var(--subtle); }
+    .pill { display:inline-flex; align-items:center; gap:5px; border-radius:4px; padding:2px 7px; font-size:10px; white-space:nowrap; font-weight:400; }
+    .pill.success { background:var(--success-bg); color:var(--success); } .pill.warning { background:var(--warning-bg); color:var(--warning); } .pill.danger { background:var(--danger-bg); color:var(--danger); } .pill.neutral { background:var(--muted); color:var(--subtle); } .pill.accent { background:var(--accent-bg); color:var(--accent); }
+    .current-card { padding:17px 0 21px; display:flex; gap:26px; align-items:center; border-top:1px solid var(--line); }
+    .current-version { min-width:148px; } .current-title { display:flex; gap:9px; align-items:center; margin:2px 0; } .current-title strong { font-size:25px; line-height:1.4; font-weight:550; letter-spacing:-.6px; }
+    .current-card small { color:var(--subtle); display:block; font-size:10px; } .current-health { flex:1; min-width:0; padding-left:24px; border-left:1px solid var(--line); }
+    .current-health summary { font-size:11px; color:var(--subtle); } .current-health details { margin-top:3px; } .current-health details p { color:var(--subtle); font-size:11px; padding-top:6px; }
+    .health-list { display:flex; gap:12px; font-size:11px; flex-wrap:wrap; } .rollback-summary { margin-left:auto; text-align:right; }
+    .rollback-summary .button { padding-right:0; font-size:11px; } .rollback-summary .eyebrow { font-size:10px; }
+    .release-workspace { background:var(--card); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+    .deployment-grid { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(0,1fr); }
+    .release-column,.checks-column { padding:20px 22px; min-width:0; } .checks-column { border-left:1px solid var(--line); background:var(--soft); }
+    .section-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:30px; margin-bottom:15px; }
+    .section-heading .button { padding-right:0; } .section-description { font-size:11px; color:var(--subtle); margin:-5px 0 12px; }
+    .select-label { display:block; color:var(--subtle); font-size:11px; margin-bottom:6px; }
+    select,input,textarea { width:100%; min-width:0; padding:9px 10px; border:1px solid var(--line); border-radius:5px; background:var(--content); font-size:12px; }
+    select { height:40px; } textarea { resize:vertical; } input:disabled { color:var(--subtle); }
+    .release-description { color:var(--subtle); font-size:12px; margin:10px 0 12px; line-height:1.7; }
+    .release-meta { display:flex; flex-wrap:wrap; gap:8px 20px; margin:0 0 17px; }
+    .release-meta div { display:flex; align-items:center; gap:7px; } .release-meta dt { font-size:10px; color:var(--subtle); } .release-meta dd { margin:0; font-size:11px; }
+    .diff-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:2px 0 3px; } .diff-heading .button { padding-right:0; }
+    .table-wrap { overflow:auto; }
+    table { border-collapse:collapse; width:100%; font-size:11px; text-align:left; }
+    th { padding:9px 10px; font-size:10px; color:var(--subtle); font-weight:400; background:var(--soft); white-space:nowrap; }
+    td { padding:10px; border-top:1px solid var(--line); vertical-align:top; } td small { color:var(--subtle); display:block; }
+    .changes-table th:first-child,.changes-table td:first-child { padding-left:0; } .changes-table th { background:transparent; }
+    .changes-table td { white-space:nowrap; } .changes-table th:last-child,.changes-table td:last-child { text-align:right; padding-right:0; }
+    .data-note { font-size:10px; color:var(--subtle); margin-top:12px; }
+    .check-item { display:grid; grid-template-columns:18px minmax(0,1fr) auto; align-items:start; gap:7px; padding:11px 0; border-bottom:1px solid var(--line); } .check-item:last-child { border-bottom:0; }
+    .check-mark { color:var(--success); font-size:12px; } .check-mark.warning { color:var(--warning); } .check-mark.danger { color:var(--danger); } .check-mark.pending { color:var(--subtle); }
+    .check-item h3 { font-size:12px; font-weight:400; } .check-item p { font-size:11px; color:var(--subtle); margin-top:4px; }
+    .check-item details { font-size:10px; color:var(--subtle); } summary { cursor:pointer; padding:2px 0; } .check-item details p { padding:3px 0; }
+    .check-item details summary { padding:0; color:var(--subtle); } .check-item .warning-detail { color:var(--warning); } .check-item .danger-detail { color:var(--danger); }
+    .agent-entry { display:flex; align-items:center; justify-content:space-between; gap:7px; margin-top:20px; padding-top:14px; border-top:1px solid var(--line); font-size:10px; color:var(--subtle); }
+    .agent-entry>div { display:flex; align-items:center; gap:6px; } .agent-entry .button { padding-right:0; } .agent-symbol { font-size:16px; color:var(--accent); }
+    .agent-result { margin-top:8px; padding:11px 12px; border-radius:5px; background:var(--accent-bg); } .agent-result .eyebrow { color:var(--accent); } .agent-result p { margin-top:4px; font-size:11px; line-height:1.7; }
+    .release-footer { padding:14px 22px; border-top:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:14px; }
+    #check-context { font-size:11px; color:var(--subtle); } .release-footer .button { min-height:34px; padding:7px 14px; } .release-footer .actions { flex-shrink:0; }
+    /* 部署内页签区分发布和历史，共用顶部目标与运行状态。 */
+    .deployment-tabs { display:flex; gap:24px; border-bottom:1px solid var(--line); margin-bottom:18px; }
+    .deployment-tab { display:inline-flex; align-items:center; gap:7px; padding:10px 0; margin-bottom:-1px; border-bottom:2px solid transparent; background:transparent; color:var(--subtle); font-size:12px; white-space:nowrap; }
+    .deployment-tab:hover { color:var(--text); } .deployment-tab[aria-selected="true"] { color:var(--text); border-bottom-color:var(--text); font-weight:600; }
+    .history-count { min-width:18px; padding:0 5px; border-radius:4px; background:var(--muted); color:var(--subtle); font-size:10px; font-weight:400; text-align:center; }
+    .history-panel { background:var(--card); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+    .history-header { padding:16px 20px; } .history-header p { margin-top:4px; color:var(--subtle); font-size:11px; }
+    .history-table { min-width:650px; } .history-table tr:hover { background:var(--soft); } .history-table td { vertical-align:middle; } .history-table .button { padding:4px 7px; min-height:25px; }
+    .history-version { font-weight:550; } .history-id { font-size:10px; color:var(--subtle); }
+    .notice { padding:10px 12px; background:var(--warning-bg); color:var(--warning); font-size:11px; border-radius:6px; margin-top:12px; }
+    .notice.danger { background:var(--danger-bg); color:var(--danger); } .notice.neutral { background:var(--soft); color:var(--subtle); }
+    .run-banner { border:1px solid var(--line); border-left:3px solid var(--accent); background:var(--card); padding:12px 15px; margin-bottom:16px; border-radius:7px; display:flex; justify-content:space-between; align-items:center; gap:12px; }
+    .run-banner.warning { border-left-color:var(--warning); } .run-banner.success { border-left-color:var(--success); } .run-banner strong { font-size:12px; } .run-banner p { font-size:10px; color:var(--subtle); }
+    .demo-footer { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:15px; color:var(--subtle); font-size:10px; }
+    dialog { width:min(610px,calc(100% - 28px)); max-height:calc(100dvh - 40px); padding:0; border:1px solid var(--line); border-radius:10px; color:var(--text); background:var(--card); box-shadow:0 24px 70px #0005; }
+    dialog::backdrop { background:#0008; backdrop-filter:blur(4px); }
+    .dialog-header { padding:16px 18px 12px; display:flex; align-items:start; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line); } .dialog-header h2 { font-size:15px; } .dialog-header p { color:var(--subtle); font-size:11px; margin-top:3px; }
+    .dialog-body { padding:18px; } .dialog-footer { display:flex; justify-content:flex-end; align-items:center; gap:8px; margin-top:18px; flex-wrap:wrap; }
+    .key-values { margin:0; } .key-values div { display:grid; grid-template-columns:90px minmax(0,1fr); gap:10px; border-bottom:1px solid var(--line); padding:8px 0; font-size:11px; } .key-values dt { color:var(--subtle); } .key-values dd { margin:0; overflow-wrap:anywhere; }
+    .version-transition { display:flex; gap:20px; align-items:center; padding:0 0 14px; } .version-transition strong { display:block; font-size:24px; font-weight:550; } .version-transition small { color:var(--subtle); } .version-transition>span { font-size:22px; color:var(--subtle); }
+    .acknowledge { display:flex; align-items:start; gap:8px; font-size:11px; margin-top:14px; } .acknowledge input { width:15px; height:15px; margin:3px 0 0; flex-shrink:0; }
+    .run-stages { list-style:none; margin:14px 0; padding:0; } .run-stages li { display:flex; gap:10px; align-items:center; padding:8px 0; color:var(--subtle); font-size:11px; } .run-stages .done { color:var(--success); } .run-stages .active { color:var(--text); } .stage-icon { display:grid; place-items:center; width:20px; height:20px; border:1px solid var(--line); border-radius:50%; font-size:10px; }
+    .progress { height:3px; border-radius:3px; overflow:hidden; background:var(--muted); } .progress span { display:block; height:100%; background:var(--accent); transition:width .4s; }
+    .evidence { background:var(--soft); border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin-top:12px; font-size:11px; color:var(--subtle); }
+    .evidence strong { color:var(--text); font-weight:500; } .evidence ul { padding-left:18px; margin:5px 0 0; }
+    .ref-chip { display:inline-block; padding:4px 8px; margin-bottom:12px; background:var(--accent-bg); color:var(--accent); border-radius:5px; font-size:11px; }
+    .toast { position:fixed; bottom:18px; right:18px; z-index:100; max-width:calc(100% - 36px); padding:10px 14px; border:1px solid var(--line); border-radius:7px; background:var(--text); color:var(--content); font-size:11px; box-shadow:0 8px 30px #0003; }
+    .settings-form { display:flex; flex-direction:column; gap:22px; }
+    .settings-section { min-width:0; } .settings-section+.settings-section { border-top:1px solid var(--line); padding-top:18px; }
+    .settings-section h3 { display:flex; align-items:center; gap:8px; margin-bottom:4px; font-size:13px; }
+    .settings-section p { font-size:11px; color:var(--subtle); } .settings-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:13px; }
+    .settings-field label { display:block; font-size:11px; margin-bottom:5px; } .settings-field .field-hint { margin-top:5px; font-size:10px; }
+    .settings-field.full { grid-column:1/-1; } .readonly-field { border:1px solid var(--line); border-radius:5px; background:var(--soft); padding:9px 10px; font-size:11px; overflow-wrap:anywhere; }
+    .settings-section-header { display:flex; gap:10px; align-items:center; justify-content:space-between; }
+    .settings-error { font-size:11px; color:var(--danger); margin-top:12px; } .settings-suggestion { padding:12px; margin-top:12px; background:var(--accent-bg); border-radius:5px; }
+    .settings-suggestion p { color:var(--accent); } .settings-suggestion .button { padding-left:0; margin-top:4px; color:var(--text); }
+    .settings-note { color:var(--subtle); font-size:11px; } .settings-dialog { width:min(680px,calc(100% - 28px)); }
+    /* 发布影响采用同一列表中的渐进展开，避免增加平级卡片。 */
+    .impact-list { margin-top:6px; } .impact-row { border-top:1px solid var(--line); }
+    .impact-row>summary { display:grid; grid-template-columns:72px minmax(0,1fr) auto; gap:8px; align-items:center; padding:12px 0; list-style:none; font-size:11px; }
+    .impact-row>summary::-webkit-details-marker { display:none; } .impact-row>summary::after { content:'⌄'; color:var(--subtle); }
+    .impact-row[open]>summary::after { transform:rotate(180deg); } .impact-row>summary strong { font-weight:500; }
+    .impact-row>summary .impact-summary { color:var(--subtle); overflow-wrap:anywhere; } .impact-body { padding:0 0 13px; color:var(--subtle); font-size:11px; }
+    .impact-body p+p { margin-top:6px; } .impact-body .button { margin-top:7px; } .impact-body ul { padding-left:16px; margin:4px 0; }
+    .impact-body .key-values div { grid-template-columns:65px minmax(0,1fr); } .impact-body .key-values dd { color:var(--text); }
+    .recovery-strip { border-top:1px solid var(--line); padding-top:12px; margin-top:2px; }
+    .recovery-strip>div { display:flex; gap:10px; align-items:center; justify-content:space-between; font-size:11px; }
+    .recovery-strip p { margin-top:6px; color:var(--subtle); font-size:11px; } .recovery-strip .button { padding-left:0; }
+    .scenario-controls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; } .scenario-controls select { width:220px; height:32px; padding:4px 8px; font-size:11px; }
+    .scenario-help { margin-top:5px; font-size:10px; color:var(--subtle); } .demo-footer { flex-wrap:wrap; }
+    .migration-code { padding:12px; background:var(--content); border:1px solid var(--line); border-radius:5px; white-space:pre-wrap; overflow-wrap:anywhere; font:11px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .migration-path { display:flex; flex-wrap:wrap; gap:5px 10px; margin:14px 0; color:var(--subtle); font-size:11px; }
+    .migration-path span::after { content:' →'; margin-left:7px; color:var(--subtle); } .migration-path span:last-child::after { content:''; }
+    .stage-copy { flex:1; min-width:0; } .stage-copy strong { display:block; font-size:12px; font-weight:500; } .stage-copy small { display:block; color:var(--subtle); margin-top:2px; }
+    .run-stages li { align-items:flex-start; gap:10px; padding:10px 0; } .stage-icon { flex-shrink:0; margin-top:1px; }
+    .run-stages .danger { color:var(--danger); } .run-stages .warning { color:var(--warning); } .run-stages .pill { flex-shrink:0; }
+    .check-item .pending-detail { color:var(--warning); } .run-banner.danger { border-left-color:var(--danger); }
+    .run-summary { padding:12px; border:1px solid var(--line); border-radius:6px; margin-top:14px; font-size:11px; }
+    .run-summary h3 { margin-bottom:6px; } .run-summary p { color:var(--subtle); } .run-summary .actions { margin-top:10px; }
+    @media (max-width:900px) { .toolbar { grid-template-columns:140px minmax(140px,1fr) auto; } .toolbar-access { display:none; } .page { padding:22px 20px; } .release-column,.checks-column { padding:18px; } .current-card { gap:18px; } .current-health { padding-left:18px; } .rollback-summary .eyebrow { display:none; } }
+    @media (max-width:760px) { .deployment-grid { grid-template-columns:1fr; } .checks-column { border-left:0; border-top:1px solid var(--line); } .current-card { flex-wrap:wrap; gap:10px 20px; } .current-health { order:3; flex-basis:100%; padding:12px 0 0; border:0; border-top:1px solid var(--line); } .rollback-summary { margin-left:auto; } .agent-entry { margin-top:12px; } .release-footer { align-items:flex-start; flex-direction:column; padding:14px 18px; } .release-footer .actions { width:100%; justify-content:flex-end; } .target-line { margin-bottom:14px; gap:5px; flex-direction:column; align-items:flex-start; } }
+    @media (max-width:720px) { .page { padding:18px 14px 24px; } .toolbar { grid-template-columns:1fr auto; gap:7px; } .project-selector { grid-column:1; grid-row:1; max-width:180px; } .toolbar-identity { grid-column:1; grid-row:2; min-width:0; } .toolbar-controls { grid-column:2; grid-row:1/3; max-width:130px; justify-content:flex-end; } .toolbar-controls [data-action="disconnect"] { display:none; } .tabs { padding-left:8px; } .tab { padding:5px 8px; } .run-banner { align-items:start; } .run-banner .actions { justify-content:flex-end; } .demo-footer { align-items:start; } }
+    @media (max-width:480px) { .page-title { gap:7px; } .prototype-label { flex-basis:100%; padding:0; } h1 { font-size:19px; } .page-heading { align-items:flex-start; } .current-title strong { font-size:23px; } .release-column,.checks-column { padding:16px; } .key-values div { grid-template-columns:72px minmax(0,1fr); } .settings-grid { grid-template-columns:1fr; } .target-line #target-access span:last-child { max-width:240px; } .settings-section-header { align-items:flex-start; flex-direction:column; gap:2px; } .settings-section-header .button { padding-left:0; } .settings-section h3 { margin-bottom:3px; } }
+    @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; transition:none!important; animation:none!important; } }
   </style>
 </head>
 <body>
   <div class="workspace">
-    <!-- 对应 ServerOpsWorkspaceToolbar：项目、当前 SSH 身份、连接切换和连接操作。 -->
+    <!-- 顶栏和能力页签沿用现有 ServerOpsWorkspace；本稿只实现部署交互。 -->
     <header class="toolbar" data-server-ops-workspace-toolbar>
-      <button class="project-selector" type="button" data-action="project"><span>▣</span><span>运营平台</span><span style="color:var(--subtle)">⌄</span></button>
-      <div class="toolbar-identity"><button class="back-button" type="button" aria-label="返回项目连接列表" title="返回项目连接列表">‹</button><div class="identity-copy"><div class="identity-title"><span>▣</span><span>库存生产</span><span class="protocol">SSH</span></div><div class="identity-address">deploy@api-01.example.com:22</div></div></div>
-      <div class="toolbar-access"><button class="link-button" type="button" data-action="switch-connection">⇄ <span>切换连接</span>⌄</button><button class="link-button" type="button" data-action="reference">↗ <span>引用</span></button></div>
-      <div class="toolbar-controls"><span class="status-badge"><span class="status-dot"></span>已连接</span><button class="button outline" type="button" data-action="disconnect">⇥ <span>断开</span></button><button class="icon-button" type="button" data-action="more" aria-label="更多服务器操作">•••</button><button class="icon-button" type="button" data-action="theme" aria-label="切换主题">◐</button></div>
+      <button class="project-selector" data-action="project"><span>▣</span><span>运营平台</span><span class="muted">⌄</span></button>
+      <div class="toolbar-identity"><div class="identity-title">库存生产 <span class="protocol">SSH</span></div><div class="identity-address mono">deploy@api-01.example.com:22</div></div>
+      <div class="toolbar-access"><button class="button" data-action="switch-connection">⇄ 切换连接</button><button class="button" data-action="reference">↗ 引用</button></div>
+      <div class="toolbar-controls"><span class="status" id="connection-status"><i class="dot"></i>已连接</span><button class="button outline" data-action="disconnect">断开</button><button class="icon-button" data-action="theme" aria-label="切换深浅主题" title="切换深浅主题">◐</button></div>
     </header>
-
-    <!-- 与当前 SERVER_OPS_SECTIONS 同级；部署是新增页签，其余顺序保持不变。 -->
     <nav class="tabs" aria-label="服务器控制台">
-      <button class="tab" type="button" data-section="overview"><span class="tab-icon">◒</span>概览</button><button class="tab" type="button" data-section="terminal"><span class="tab-icon">›_</span>终端</button><button class="tab" type="button" data-section="services"><span class="tab-icon">⚙</span>服务</button><button class="tab" type="button" data-section="logs"><span class="tab-icon">▤</span>日志</button><button class="tab" type="button" data-section="files"><span class="tab-icon">□</span>文件</button><button class="tab" type="button" data-section="docker"><span class="tab-icon">▦</span>Docker</button><button class="tab active" type="button" data-section="deploy" aria-current="page"><span class="tab-icon">↗</span>部署</button><button class="tab" type="button" data-section="audit"><span class="tab-icon">≡</span>审计</button>
+      <button class="tab" data-section="概览"><svg viewBox="0 0 20 20"><path d="M3 12h3l2-7 4 11 2-6h3"/></svg>概览</button>
+      <button class="tab" data-section="终端"><svg viewBox="0 0 20 20"><path d="m3 5 5 5-5 5m8 0h6"/></svg>终端</button>
+      <button class="tab" data-section="服务"><svg viewBox="0 0 20 20"><rect x="3" y="3" width="14" height="6" rx="1"/><rect x="3" y="11" width="14" height="6" rx="1"/><path d="M6 6h1m-1 8h1"/></svg>服务</button>
+      <button class="tab" data-section="日志"><svg viewBox="0 0 20 20"><path d="M5 3h8l3 3v11H5zM8 8h5m-5 3h5m-5 3h3"/></svg>日志</button>
+      <button class="tab" data-section="文件"><svg viewBox="0 0 20 20"><path d="M2 5h6l2 2h8v10H2z"/></svg>文件</button>
+      <button class="tab" data-section="Docker"><svg viewBox="0 0 20 20"><path d="M2 10h16l-2 6H5zM4 7h3v3m1-3h3v3m1-3h3v3M8 4h3v3"/></svg>Docker</button>
+      <button class="tab active" data-section="部署" aria-current="page"><svg viewBox="0 0 20 20"><path d="M10 13V2m-4 4 4-4 4 4M3 11v6h14v-6"/></svg>部署</button>
+      <button class="tab" data-section="审计"><svg viewBox="0 0 20 20"><path d="M6 4h11M6 10h11M6 16h11M2 4h1m-1 6h1m-1 6h1"/></svg>审计</button>
     </nav>
-
-    <main class="page" data-deployment-page>
-      <div class="page-heading"><div><h1>部署</h1><p>管理当前服务器上已经存在的 Compose 项目。</p></div><div class="page-actions"><button class="button outline" type="button" data-action="verify">↻ 验证目标</button><button class="button primary" type="button" data-action="new-target">＋ 新建绑定</button></div></div>
-      <div class="connection-note"><span class="status-dot" style="color:var(--success)"></span><span><strong>SSH 已连接</strong> · 预览和发布将绑定当前连接代次；切换连接后候选会失效。</span></div>
-
-      <section class="grid" aria-label="部署目标和发布候选">
-        <article class="card"><header class="card-header"><div><h2>当前部署绑定</h2><p>本地只保存目标引用，不复制服务器配置。</p></div><span class="pill success">✓ 已验证</span></header><div class="card-body"><div class="target-grid"><div class="target-field"><span>部署名称</span><strong id="target-title">库存服务 · 生产</strong></div><div class="target-field"><span>Compose 项目</span><strong id="target-project">inventory</strong></div><div class="target-field"><span>项目目录</span><strong><code id="target-directory">/srv/inventory</code></strong></div><div class="target-field"><span>入口文件</span><strong><code>compose.yaml</code></strong></div><div class="target-field"><span>来源标签</span><strong><code>io.dutydeck…a92e</code></strong></div><div class="target-field"><span>连接代次</span><strong>generation 18</strong></div></div></div><footer class="card-footer"><span>上次检查 · 今天 10:42 · api-01</span><div class="card-footer-actions"><button class="button" type="button" data-action="edit-target">编辑绑定</button><button class="button" type="button" data-action="refresh-target">重新读取</button></div></footer></article>
-        <article class="card"><header class="card-header"><div><h2>发布候选</h2><p>由远端 Compose 实时解析，等待一次确认。</p></div><span class="pill warning">需要确认</span></header><div class="card-body"><div class="candidate-summary"><div class="candidate-stat"><strong>3</strong><span>服务</span></div><div class="candidate-stat"><strong>1</strong><span>镜像更新</span></div><div class="candidate-stat"><strong>2</strong><span>健康检查</span></div><div class="candidate-stat"><strong>0</strong><span>删除资源</span></div></div><div class="candidate-lines"><div class="candidate-line"><div><strong>配置指纹</strong><small>sha256:71b8…e2a4 · 剩余 04:38</small></div><span class="pill neutral">已冻结</span></div><div class="candidate-line"><div><strong>执行范围</strong><small>up · --no-build · --pull missing · --wait</small></div><span class="pill neutral">固定参数</span></div></div><div class="risk-note"><span>!</span><span>不会执行 down、删卷或自动回滚；断连后的结果会保留为未知。</span></div></div><footer class="card-footer"><span>候选只消费一次</span><button class="button primary" type="button" data-action="confirm">确认并发布</button></footer></article>
+    <main class="page">
+      <div class="page-heading"><div class="page-title"><h1>库存服务</h1><span class="pill neutral">生产环境</span><span class="prototype-label">交互原型 · 模拟</span></div><button class="button outline" data-action="target" id="settings-button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/><circle cx="7" cy="5" r="2"/><circle cx="13" cy="10" r="2"/><circle cx="7" cy="15" r="2"/></svg>部署设置</button></div>
+      <div class="target-line"><span><span class="muted">部署到</span> <strong>api-01</strong><span class="target-separator">/</span><code>/srv/inventory</code></span><span id="target-access"></span></div>
+      <div id="run-banner" aria-live="polite"></div>
+      <section class="current-card" id="current-deployment" aria-label="当前部署"></section>
+      <div class="deployment-tabs" role="tablist" aria-label="部署内容">
+        <button class="deployment-tab" id="release-tab" role="tab" aria-selected="true" aria-controls="candidate-area" tabindex="0" data-deployment-tab="release">发布版本</button>
+        <button class="deployment-tab" id="history-tab" role="tab" aria-selected="false" aria-controls="history-panel" tabindex="-1" data-deployment-tab="history">部署历史 <span class="history-count" id="history-count">4</span></button>
+      </div>
+      <section class="release-workspace" id="candidate-area" role="tabpanel" aria-labelledby="release-tab">
+        <div class="deployment-grid">
+          <section class="release-column" aria-label="发布候选">
+            <header class="section-heading"><h2 id="candidate-title">发布新版本</h2><button class="button" data-action="versions">版本目录 <span aria-hidden="true">↗</span></button></header>
+            <label class="select-label" for="release-select">目标版本</label><select id="release-select"></select><div id="release-summary"></div>
+            <div class="diff-heading"><h3>本次发布影响</h3><button class="button" data-action="artifacts">产物详情</button></div>
+            <div class="impact-list" id="release-impacts"></div>
+            <div class="recovery-strip" id="recovery-summary"></div>
+          </section>
+          <section class="checks-column" aria-label="发布前检查">
+            <header class="section-heading"><h2 id="checks-title">发布前检查</h2><span id="checks-status" class="pill neutral">尚未检查</span></header>
+            <p class="section-description" id="checks-description">先核对产物、兼容性与安全条件，再确认发布。</p>
+            <div class="check-list" id="checks"></div>
+            <div class="agent-entry"><div><span class="agent-symbol" aria-hidden="true">✧</span><span>需要解读检查结果？</span></div><button class="button" data-action="agent" id="agent-button">请 Agent 分析 <span aria-hidden="true">↗</span></button></div>
+            <div class="agent-result" id="agent-result" hidden><span class="eyebrow">Agent 建议 · 模拟</span><p id="agent-summary"></p></div>
+          </section>
+        </div>
+        <footer class="release-footer"><div id="check-context" aria-live="polite"></div><div class="actions"><button class="button outline" data-action="check" id="check-button">运行检查</button><button class="button primary" data-action="confirm" id="confirm-button" disabled>预览发布</button></div></footer>
       </section>
-
-      <div class="section-row"><h2>服务摘要</h2><span>只展示安全白名单，不回显环境变量和秘密</span></div>
-      <section class="card table-wrap"><table class="service-table"><thead><tr><th>服务</th><th>镜像 / 变更</th><th>端口 / 挂载</th><th>健康</th><th>风险</th></tr></thead><tbody><tr><td>api<small>应用服务</small></td><td><code>ghcr.io/acme/api@sha256:…9fd1</code><small>stable → digest 已固定</small></td><td>8080:8080<small>无新增挂载</small></td><td><span class="pill success">healthy</span></td><td>无新增风险</td></tr><tr><td>worker<small>后台任务</small></td><td><code>ghcr.io/acme/worker@sha256:…3ab7</code><small>镜像保持不变</small></td><td>无公开端口<small>named volume</small></td><td><span class="pill success">healthy</span></td><td>无新增风险</td></tr><tr><td>db<small>数据服务</small></td><td><code>postgres:16@sha256:…1a20</code><small>镜像保持不变</small></td><td>5432:5432<small>/srv/data → /var/lib</small></td><td><span class="pill neutral">running</span></td><td><span style="color:var(--warning)">外部数据不回滚</span></td></tr></tbody></table></section>
-
-      <div class="section-row"><h2>运行历史</h2><span>运行事实与后续观察分开保存</span></div>
-      <section class="card"><div class="history-list"><div class="history-row"><span class="history-mark">✓</span><div><strong>库存服务 · 生产</strong><small>今天 09:18 · sha256:69b1…a102 · 3 个服务</small></div><span class="history-state success">发布完成</span></div><div class="history-row"><span class="history-mark unknown">?</span><div><strong>库存服务 · 生产</strong><small>昨天 22:41 · SSH 中断 · 最后阶段：up</small></div><button class="button" type="button" data-action="reconcile-history">结果未知 · 核对</button></div><div class="history-row"><span class="history-mark">✓</span><div><strong>库存服务 · 生产</strong><small>周一 16:03 · sha256:32cc…8b11 · 2 个服务</small></div><span class="history-state success">发布完成</span></div></div></section>
+      <section class="history-panel" id="history-panel" role="tabpanel" aria-labelledby="history-tab" hidden><header class="history-header"><h2>发布与回退记录</h2><p>每次发布、回退与续跑单独留存。选择历史版本回退时，将返回发布页重新检查。</p></header><div class="table-wrap" tabindex="0" role="region" aria-label="部署历史，可横向滚动"><table class="history-table"><thead><tr><th>版本 / 运行</th><th>动作</th><th>时间</th><th>结果</th><th>回退条件</th><th>操作</th></tr></thead><tbody id="history"></tbody></table></div></section>
+      <footer class="demo-footer"><div class="scenario-controls"><label for="scenario-select">演示场景</label><select id="scenario-select"></select><button class="button" data-action="reset">重置演示</button></div><p>示例数据 · 不连接服务器或调用模型</p></footer>
+      <p class="scenario-help" id="scenario-help">切换场景将载入对应示例；在途或未知运行需要先重置演示。</p>
     </main>
   </div>
-
-  <div class="modal-backdrop" id="modal-backdrop" hidden><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header class="modal-header"><div><h2 id="modal-title">编辑部署绑定</h2><p id="modal-subtitle">当前页面只模拟交互，不连接真实服务器。</p></div><button class="icon-button" type="button" data-action="close-modal" aria-label="关闭">×</button></header><div class="modal-body" id="modal-body"></div></section></div>
+  <dialog id="dialog" aria-labelledby="dialog-title" aria-describedby="dialog-subtitle"><header class="dialog-header"><div><h2 id="dialog-title"></h2><p id="dialog-subtitle"></p></div><button class="icon-button" data-action="close" aria-label="关闭弹窗">×</button></header><div class="dialog-body" id="dialog-body"></div></dialog>
   <div class="toast" id="toast" role="status" hidden></div>
-
   <script>
     'use strict';
+    /** 所有产物均为内置示例，镜像摘要只用于交互演示，不能发送到远端。 */
+    const releases = [
+      { id:'v1.8.0', commit:'c9d2f61', build:'#248', config:'cfg-018', fingerprint:'71b8e2a4', available:true, api:'9fd1', worker:'3ab7', supportsNewStates:true, description:'库存查询提速，新增展示字段；按发布计划检查应用、数据与恢复条件。' },
+      { id:'v1.7.3', commit:'a72b0c4', build:'#241', config:'cfg-017', fingerprint:'69b1a102', available:true, api:'81c2', worker:'29d4', description:'库存同步稳定版；可容忍新增可空字段，读写兼容性已有示例测试。' },
+      { id:'v1.7.2', commit:'d43e8a1', build:'#236', config:'cfg-016', fingerprint:'32cc8b11', available:true, api:'7b31', worker:'18a6', description:'历史稳定版；保留镜像与配置，使用前重新核对当前环境。' },
+      { id:'v1.6.8', commit:'b81f342', build:'#219', config:'cfg-012', fingerprint:'41d2c71e', available:true, api:'22ef', worker:'10b9', requiresLegacyColumn:true, description:'旧版仍读取已移除的 stock_count 字段，无法直接回退。' },
+      { id:'v1.6.0', commit:'18ac531', build:'#201', config:'cfg-009', fingerprint:'c91a22b1', available:false, api:'1a01', worker:'0b82', requiresLegacyColumn:true, description:'历史镜像已清理且配置归档缺失，仅保留当时的运行事实。' },
+    ];
+    /** 场景只替换原型的预设事实；故障场景仍须检查并确认后才模拟执行。 */
+    const scenarios = {
+      compatible:{label:'新增字段 · 兼容迁移',kind:'expand',description:'新增 display_name 与查询索引，保留旧字段；旧应用仍可读写。'},
+      'no-db':{label:'常规发布 · 无数据库变更',kind:'none',description:'只更新应用，迁移清单、启动脚本与兼容测试均证明不涉及改库。'},
+      destructive:{label:'删除字段 · 发布被阻断',kind:'drop',description:'准备删除 name，但旧 worker 与报表仍依赖它，需延后清理。'},
+      missing:{label:'证据缺失 · 待核对',kind:'unverified',description:'尚未取得迁移清单和启动脚本依据，不能认定本次没有数据库变更。'},
+      checksum:{label:'迁移校验值 · 发生漂移',kind:'expand',description:'已执行迁移 042 的文件校验值改变，需核查历史，不能自动修正。'},
+      'app-failure':{label:'迁移成功 · 应用验证失败',kind:'expand',outcome:'failed',description:'确认后模拟迁移完成、应用探针失败，可核对后恢复兼容应用。'},
+      unknown:{label:'迁移断连 · 结果未知',kind:'expand',outcome:'unknown',description:'确认后在迁移阶段断连，保留占用；字段存在也不能证明操作完成。'},
+      backfill:{label:'分批回填 · 中途暂停',kind:'backfill',outcome:'paused',description:'兼容应用上线后回填，模拟复制延迟触发暂停；核对游标后单独确认续跑。'},
+      secret:{label:'秘密引用 · 已失效',kind:'none',description:'数据库凭据引用已撤销，镜像和旧配置仍在也不能直接发布或回退。'},
+      semantics:{label:'旧版数据语义 · 不兼容',kind:'none',description:'结构没有变化，但已有新业务状态 RESERVED_PARTIAL，旧版本无法识别。'},
+    };
+    /** 使用独立版本的缓存，保留旧原型缓存，避免跨合同误读在途记录。 */
+    const storageKey = 'dutydeck.compose.lifecycle-demo.v2';
+    /** 页面状态是唯一事实源；弹窗只投影状态，不控制运行生命周期。 */
+    let state = createInitialState();
+    /** 页面内计时器、确认票据和焦点引用不持久化。 */
+    let runTimer = null, checkTimer = null, expiryTimer = null, toastTimer = null, dialogView = null, dialogRunId = null, approvalId = null, dialogOpener = null;
+    /** 原生弹窗负责焦点隔离和 Escape 关闭。 */
+    const dialog = document.querySelector('#dialog');
 
-    /** 原型状态只覆盖主题与发布演示，不代表真实运维状态。 */
-    const state = { theme: 'dark', runTimer: null };
+    /** 返回初始公开地址与数据库绑定；不含任何凭据。 */
+    function defaultSettings() { return {source:'https://git.example.com/ops/inventory',registry:'registry.example.com',access:'https://inventory.example.com',database:'inventory_prod'}; }
+    /** 校验设置输入，返回规范化公开配置；含凭据或非法目标时返回 null。 */
+    function parseSettings(value) {
+      if (!value || !['source','registry','access'].every((key) => typeof value[key] === 'string' && value[key].length <= 500)) return null;
+      /** 数据库只允许内置演示身份，修改目标需要重新预检。 */
+      const normalized = {source:value.source.trim().replace(/\/$/,''),registry:value.registry.trim().replace(/\/$/,''),access:value.access.trim().replace(/\/$/,''),database:value.database || 'inventory_prod'};
+      if (!['inventory_prod','inventory_staging'].includes(normalized.database) || !/^[a-z0-9.-]+(?::\d{1,5})?(?:\/[a-z0-9._-]+)*$/i.test(normalized.registry)) return null;
+      for (const key of ['source','access']) {
+        if (!normalized[key]) continue;
+        try {
+          /** 地址只用于展示，禁止将用户名、密码和查询令牌写入缓存。 */
+          const address = new URL(normalized[key]);
+          if (!['https:','http:'].includes(address.protocol) || address.username || address.password || address.search || address.hash) return null;
+        } catch { return null; }
+      }
+      return normalized;
+    }
+    /** 创建指定演示场景；入参场景 ID，返回完整且互相一致的初始快照。 */
+    function createInitialState(scenario = 'compatible') {
+      /** 历史是当时验证的事实，不代表在新数据条件下仍可回退。 */
+      const initial = {scenario,settings:defaultSettings(),current:'v1.7.3',selected:'v1.8.0',scriptRevision:1,environment:{expanded:false,backfill:0,dataValidated:false,newStates:false,uncertain:false},checking:false,checkEpoch:0,report:null,analysis:null,lockId:null,recoveryFrom:null,observationAt:'10 月 14 日 09:20',runs:[
+        {id:'run_7K3M',from:'v1.7.2',to:'v1.7.3',type:'发布',status:'succeeded',time:'10 月 14 日 09:18',verified:true},
+        {id:'run_6H2P',from:'v1.6.8',to:'v1.7.2',type:'发布',status:'succeeded',time:'10 月 12 日 16:03',verified:true},
+        {id:'run_5G1N',from:'v1.6.0',to:'v1.6.8',type:'发布',status:'succeeded',time:'09 月 30 日 18:20',verified:true},
+        {id:'run_4F0L',from:'v1.6.0',to:'v1.6.0',type:'发布',status:'succeeded',time:'09 月 20 日 11:05',verified:true},
+      ]};
+      if (scenario === 'semantics') {
+        initial.current = 'v1.8.0'; initial.selected = 'v1.7.3'; initial.environment.newStates = true;
+        initial.runs.unshift({id:'run_8NEW',from:'v1.7.3',to:'v1.8.0',type:'发布',status:'succeeded',time:'10 月 15 日 10:35',verified:true});
+      }
+      return initial;
+    }
+    /** 按内置 ID 查找产物；返回版本对象或 undefined。 */
+    function release(id) { return releases.find((item) => item.id === id); }
+    /** 根据预设数据库 ID 返回完整身份，防止预发布库被显示成生产连接。 */
+    function databaseLabel(database) { return `${database === 'inventory_staging' ? 'pg-staging' : 'pg-primary'} / ${database} / public`; }
+    /** 转义显示值，返回安全 HTML 文本。 */
+    function escapeHtml(value) { return String(value).replace(/[&<>"']/g,(character) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character])); }
+    /** 返回当前演示时间，显式标明中国标准时间。 */
+    function nowLabel() { return new Date().toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}) + ' CST'; }
+    /** 判断记录是否仍有计时推进；暂停、失败和未知均不推进。 */
+    function isActive(run) { return Boolean(run && ['preparing','running','verifying'].includes(run.status)); }
+    /** 返回持有目标占用的运行；空闲时返回 undefined。 */
+    function lockedRun() { return state.runs.find((run) => run.id === state.lockId); }
+    /** 只认同环境中的成功验证记录，返回版本是否有历史验证。 */
+    function wasVerified(id) { return state.runs.some((run) => run.to === id && run.status === 'succeeded' && run.verified); }
+    /** 返回候选历史来源，防止当前设置重新解释旧镜像地址。 */
+    function candidateSettings() {
+      /** 历史绑定只用于取回产物，执行数据库目标始终由当前环境单独绑定。 */
+      const prior = state.runs.find((run) => run.to === state.selected && run.status === 'succeeded' && run.verified);
+      return prior ? parseSettings(prior.settings) || defaultSettings() : state.settings;
+    }
+    /** 返回本次动作名称；恢复已验证版本也属于独立应用回退。 */
+    function intent(id = state.selected) { return wasVerified(id) ? '回退' : '发布'; }
+    /** 只在明确失败且核对执行结束后允许规划恢复，不对未知运行开放。 */
+    function recoveryReady(run) { return Boolean(run && run.status === 'failed' && run.reconciled && run.stopped && run.from === state.current && blockersFor(release(run.from)).length === 0); }
+    /** 返回当前占用是否阻止候选检查；恢复候选必须绑定原失败运行。 */
+    function executionBlocked() { return Boolean(lockedRun() && !(state.recoveryFrom === state.lockId && recoveryReady(lockedRun()))); }
+    /** 同一版本只有明确的恢复候选可重新应用，避免普通重复发布。 */
+    function hasSelection() { return state.selected !== state.current || Boolean(state.recoveryFrom); }
+    /** 根据真实示例环境判断版本兼容与资产，不使用 schema 数字等值推断。 */
+    function blockersFor(version) {
+      /** 这些约束同样用于历史版本，不能被候选场景掩盖。 */
+      const blockers = [];
+      if (!version.available) blockers.push('镜像或配置归档缺失，无法恢复这套版本');
+      if (version.requiresLegacyColumn) blockers.push('旧应用依赖已移除的 stock_count 字段，读写不兼容');
+      if (state.environment.newStates && !version.supportsNewStates) blockers.push('旧应用无法识别 RESERVED_PARTIAL 状态；表结构相同也不能直接回退');
+      if (state.scenario === 'secret') blockers.push('秘密引用 inventory/production 已撤销，不能自动恢复旧凭据');
+      return blockers;
+    }
+    /** 返回最近一个当前兼容的历史版本，缺少条件时返回 undefined。 */
+    function rollbackTarget() { return state.runs.filter((run) => run.status === 'succeeded' && run.verified && run.to !== state.current).map((run) => release(run.to)).find((version) => version && blockersFor(version).length === 0); }
+    /** 生成候选输入身份；包含目标、脚本、环境和恢复来源，任何改变均使报告失效。 */
+    function candidateKey() { return JSON.stringify([state.current,state.selected,release(state.selected).fingerprint,state.settings,state.scenario,state.scriptRevision,state.environment,state.recoveryFrom]); }
+    /** 返回短演示计划号；仅作视觉身份，生产方案需使用完整内容摘要。 */
+    function planId() {
+      /** 简单散列只用于本地样例展示，不能作为安全签名。 */
+      let hash = 2166136261;
+      for (const character of candidateKey()) hash = Math.imul(hash ^ character.charCodeAt(0),16777619);
+      return 'plan_' + (hash >>> 0).toString(16);
+    }
+    /** 返回仍绑定当前输入且未过期的报告，否则返回 null。 */
+    function validReport() { return state.report && state.report.key === candidateKey() && state.report.expiresAt > Date.now() ? state.report : null; }
+    /** 返回此次候选的数据库工作类型；结构完成不能替代回填与数据校验完成。 */
+    function migrationKind() {
+      if (state.selected !== 'v1.8.0' || intent() !== '发布') return 'none';
+      if (state.scenario === 'backfill' && !state.environment.dataValidated) return 'backfill';
+      return !state.environment.expanded ? scenarios[state.scenario].kind : 'none';
+    }
+    /** 构造可冻结的发布计划；无执行副作用，包含可展示的数据库与恢复依据。 */
+    function candidatePlan() {
+      /** 迁移仅在已声明的版本中存在；恢复动作引用当前真实库但不执行 down。 */
+      const kind = migrationKind(), current = release(state.current), target = release(state.selected);
+      return {id:planId(),scenario:state.scenario,kind,migrationRequired:['expand','backfill'].includes(kind) && !state.environment.expanded,backfillStart:state.environment.backfill,scriptRevision:state.scriptRevision,database:state.settings.database,checksum:state.scriptRevision === 1 ? '43fd8c2a' : '9ac67e10',migration:kind === 'drop' ? '044_remove_name.sql' : '043_add_display_name.sql',from:current.id,to:target.id,config:target.config,source:candidateSettings().registry,description:target.id === 'v1.8.0' && intent() === '发布' ? scenarios[state.scenario].description : target.description};
+    }
+    /** 返回恢复能力与解释，使用当前证据，不把历史成功直接变成回退许可。 */
+    function recoveryInfo(plan = candidatePlan()) {
+      if (state.environment.uncertain || plan.scenario === 'missing' || plan.scenario === 'checksum' || plan.database !== 'inventory_prod') return {label:'待核对',tone:'warning',text:'先补齐目标与迁移证据；不能据此保证可以回退。'};
+      if (plan.kind === 'drop' || release(plan.to).requiresLegacyColumn || state.environment.newStates && !release(plan.to).supportsNewStates) return {label:'仅支持向前修复',tone:'danger',text:plan.kind === 'drop' ? '删除字段会切断旧应用读写，普通发布已阻断；应先退出旧依赖。' : '目标版本无法正确读写当前结构或业务状态；应修复当前版本或补兼容层。'};
+      if (!release(plan.to).available) return {label:'有条件回退',tone:'warning',text:'目标镜像或配置缺失，先找回并验证原始归档；不能使用当前配置代替。'};
+      if (plan.scenario === 'secret' || plan.kind === 'backfill') return {label:'有条件回退',tone:'warning',text:plan.scenario === 'secret' ? '秘密引用已撤销，先恢复受控访问；不能从旧配置找回失效密码。' : '先核对回填已停止和并发写入；回退应用保留已写入的数据。'};
+      return {label:validReport() ? '可回退' : '待核对',tone:validReport() ? 'success' : 'neutral',text:intent() === '回退' ? `恢复 ${plan.to} 的镜像与配置；保留当前业务数据和已应用结构。` : `失败时可重新检查并退回 ${plan.from}；保留新增结构，不反向迁移数据库。`};
+    }
+    /** 汇总模拟检查项，返回标题/结论/语义色/证据；未核对的必检项仍阻断确认。 */
+    function checkItems() {
+      /** 各项来源明确分开，缺失证据不能借用 Agent 的意见补成通过。 */
+      const plan = candidatePlan(), target = release(state.selected), compatibility = blockersFor(target).filter((reason) => !reason.startsWith('镜像') && !reason.startsWith('秘密'));
+      /** 数据库事实分为声明、已核查、不兼容和历史漂移四种，而非一个版本数字。 */
+      const database = state.settings.database !== 'inventory_prod' ? ['数据库目标与迁移','目标库属于预发布环境，与本次生产目标不一致','danger','绑定 pg-primary / inventory_prod / public 后重新检查，不能跨库沿用票据。'] : state.scenario === 'missing' ? ['数据库目标与迁移','迁移清单和 entrypoint 尚未取得','pending','没有填 migration 不代表无数据库变更；必须补齐项目代码与启动行为依据。'] : state.scenario === 'checksum' ? ['数据库目标与迁移','已执行迁移 042 的校验值与文件不一致','danger','历史记录 8af12c 与文件 7ce904 不匹配；不自动修改历史或跳过迁移。'] : plan.kind === 'drop' ? ['数据库目标与迁移','旧 worker 和报表仍依赖 name，禁止删除','danger','依赖检查发现 2 处旧调用；回退窗口尚未结束，需单独维护计划。'] : ['数据库目标与迁移',!plan.migrationRequired ? state.environment.expanded ? '已应用扩展保留，本次不执行数据库降级' : '无待执行迁移，启动脚本无隐藏初始化' : '目标库已绑定；迁移文件和校验值已固定','success',`示例证据：${databaseLabel(plan.database)}；${plan.kind === 'none' ? '迁移清单、代码差异与启动脚本核对记录' : plan.migration + ' · checksum ' + plan.checksum + ' · 数据库级互斥域'}。`];
+      return [
+        ['构建产物与配置',target.available ? '整组镜像与配置归档可取回' : '镜像或配置归档缺失',target.available ? 'success' : 'danger',`CI ${target.build} 绑定 ${target.commit} 与镜像 digest；配置 ${target.config}。现场基线已归档，历史来源独立保留。`],
+        database,
+        ['应用与数据兼容',plan.kind === 'drop' ? '删除 name 后旧 worker 与报表无法读写' : ['missing','checksum'].includes(plan.scenario) ? '目标变更尚未核实，兼容结论待补齐' : compatibility.length ? compatibility.join('；') : '新旧应用读写兼容，业务语义核对通过',plan.kind === 'drop' || compatibility.length ? 'danger' : ['missing','checksum'].includes(plan.scenario) ? 'pending' : 'success',plan.kind === 'backfill' ? '旧写入进程已退出，兼容应用双写；只在 display_name 为空且版本未变时回填。' : '示例覆盖查询、预留、无列名 INSERT 检查及枚举兼容；这些是预设报告，不是对真实代码的证明。'],
+        ['安全与运行权限',state.scenario === 'secret' ? '秘密引用已撤销，无法校验运行凭据' : '报告匹配镜像；无新增高权限或端口',state.scenario === 'secret' ? 'danger' : 'success','模拟扫描于本次检查前 1 小时完成，覆盖 linux/amd64；无高危项。既有中危记录单独提醒，未新增 Docker socket 或特权挂载。'],
+        ['容量、流量与业务验证',plan.kind === 'backfill' ? '分批回填需观察复制延迟，超阈值暂停' : 'Compose 重建可能短暂不可用','warning',`示例：维护窗口 60 秒，健康等待 120 秒；业务错误率上限 1%，P95 不超过 500ms，观察 5 分钟。${plan.kind === 'expand' || plan.kind === 'backfill' ? '索引构建已在隔离副本演练，锁等待预算 3 秒；在线不等于无锁。' : ''}这些阈值为展示数据。既有数据库映射的公网可达性仍需另行核查。`],
+        ['回退准备',plan.kind === 'drop' ? '破坏性清理未获准，不能保证旧应用可恢复' : ['missing','checksum'].includes(state.scenario) || plan.database !== 'inventory_prod' ? '目标或迁移证据待核对，尚不能判断回退能力' : plan.kind === 'backfill' ? '回填须先确认停止，再检查兼容应用的恢复条件' : target.available && !compatibility.length && state.scenario !== 'secret' ? `已保留 ${state.current} 的应用与配置，重新校验后可恢复` : '先解决产物、凭据和兼容性阻断',plan.kind === 'drop' || !target.available || compatibility.length || state.scenario === 'secret' ? 'danger' : ['missing','checksum'].includes(state.scenario) || plan.database !== 'inventory_prod' ? 'pending' : plan.kind === 'backfill' ? 'warning' : 'success','应用回退、迁移向前修复、数据恢复是不同任务。备份文件存在或 down 脚本存在不能证明可以恢复。'],
+      ];
+    }
+    /** 保存演示状态；不包含检查票据，刷新后必须重新检查。 */
+    function persist() {
+      try { localStorage.setItem(storageKey,JSON.stringify({version:2,settings:state.settings,scenario:state.scenario,current:state.current,selected:state.selected,scriptRevision:state.scriptRevision,environment:state.environment,lockId:state.lockId,observationAt:state.observationAt,runs:state.runs})); }
+      catch { toast('浏览器未允许本地存储；本次演示仅在当前页面保留'); }
+    }
+    /** 恢复原型快照，在途阶段转未知；保留已成功阶段，不重放任何动作。 */
+    function restore() {
+      try {
+        /** 限定为本原型内置身份；旧版缓存不冒充新合同。 */
+        const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
+        if (saved?.version === 2 && scenarios[saved.scenario] && release(saved.current) && release(saved.selected) && parseSettings(saved.settings) && saved.environment && Array.isArray(saved.runs) && saved.runs.every((run) => run && /^run_[A-Za-z0-9_]+$/.test(run.id) && release(run.from) && release(run.to) && ['preparing','running','verifying','succeeded','failed','unknown','paused'].includes(run.status) && (!run.demo || Array.isArray(run.stages) && run.plan && scenarios[run.plan.scenario]))) {
+          state = {...state,...saved,report:null,analysis:null,recoveryFrom:null,checking:false};
+          for (const run of state.runs) if (isActive(run)) {
+            run.status = 'unknown'; run.verified = false; run.reconciled = false; run.stopped = false; run.reason = '页面重新载入，原运行结果无法确认';
+            for (const stage of run.stages) if (stage.status === 'running') stage.status = 'unknown';
+            state.environment.uncertain = true;
+          }
+          state.lockId = state.runs.find((run) => ['unknown','failed','paused'].includes(run.status) && !run.resolved)?.id || null;
+        }
+        /** 主题偏好不随场景重置。 */
+        const theme = localStorage.getItem('dutydeck.server-ops-compose.theme');
+        if (['light','dark'].includes(theme)) document.documentElement.dataset.theme = theme;
+      } catch { toast('示例缓存无法读取，已载入初始场景'); }
+    }
+    /** 显示纯文本反馈；返回值为空，不能触发发布或模型请求。 */
+    function toast(message) { document.querySelector('#toast').textContent = message; document.querySelector('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { document.querySelector('#toast').hidden = true; },3400); }
+    /** 返回运行状态的文案与颜色。 */
+    function runLabel(run) { return ({preparing:['准备中','accent'],running:['执行中','accent'],verifying:['验证中','accent'],succeeded:['验证通过','success'],failed:['执行未完成','danger'],unknown:['结果未知','warning'],paused:['回填已暂停','warning']})[run.status]; }
+    /** 返回单阶段的文案与颜色，历史失败阶段不会因恢复而被涂成成功。 */
+    function stageLabel(status) { return ({pending:['未开始','neutral'],running:['执行中','accent'],succeeded:['完成','success'],failed:['失败','danger'],unknown:['未知','warning'],paused:['已暂停','warning']})[status] || ['待核对','neutral']; }
 
-    /** 显示短暂反馈，模拟 Sonner toast 的低干扰提示。 */
-    function toast(message) {
-      const element = document.querySelector('#toast');
-      element.textContent = message;
-      element.hidden = false;
-      window.clearTimeout(toast.timer);
-      toast.timer = window.setTimeout(() => { element.hidden = true; }, 2600);
+    /** 根据唯一状态渲染主页面；不执行计划，也不调用真实模型。 */
+    function render() {
+      /** 各分区共用当前版本、占用、报告和计划，避免互相矛盾。 */
+      const current = release(state.current), selected = release(state.selected), locked = lockedRun(), report = validReport(), fallback = rollbackTarget(), plan = candidatePlan();
+      document.querySelector('#connection-status').className = `status${locked?.status === 'unknown' ? ' warning-text' : ''}`;
+      document.querySelector('#connection-status').innerHTML = `<i class="dot"></i>${locked?.status === 'unknown' ? '连接待核对' : '已连接'}`;
+      document.querySelector('#target-access').innerHTML = `<span class="muted">访问地址</span><span title="${escapeHtml(state.settings.access)}">${escapeHtml(state.settings.access || '尚未设置 · 在部署设置中添加')}</span>`;
+      document.querySelector('#current-deployment').innerHTML = `<div class="current-version"><div class="eyebrow">${locked ? '上次验证通过的版本' : '当前版本'}</div><div class="current-title"><strong>${current.id}</strong><span class="pill ${locked ? 'warning' : 'success'}">${locked ? '待验证' : '已验证'}</span></div><small><code>${current.commit}</code> · ${current.config}</small></div><div class="current-health"><div class="health-list">${locked ? '<span class="warning-text">操作尚未验证，不能沿用旧健康结论</span>' : '<span class="success-text">● api healthy</span><span class="success-text">● worker healthy</span><span class="muted">● db running</span>'}</div><details><summary>${locked ? '上次验证' : '验证于'} ${escapeHtml(state.observationAt)}</summary><p>db 未配置 healthcheck · ${locked ? '当前业务验证待完成' : '库存查询与预留用例通过'}${state.environment.expanded ? '；数据库保留已应用的新增结构' : ''}</p></details></div><div class="rollback-summary"><div class="eyebrow">${fallback ? '上个稳定版本 ' + fallback.id : '暂无可直接回退版本'}</div><button class="button" data-action="rollback" data-version="${fallback?.id || ''}" ${!fallback || locked ? 'disabled' : ''}>↶ 预览回退${fallback ? ' ' + fallback.id : ''}</button></div>`;
+      document.querySelector('#release-select').innerHTML = releases.map((version) => `<option value="${version.id}" ${version.id === state.selected ? 'selected' : ''}>${version.id}${version.id === state.current ? ' · 上次验证版本' : wasVerified(version.id) ? ' · 历史版本' : ' · 新版本'}${blockersFor(version).length ? ' · 存在阻断' : ''}</option>`).join('');
+      document.querySelector('#release-select').disabled = Boolean(locked);
+      document.querySelector('#candidate-title').textContent = state.recoveryFrom ? '恢复兼容应用' : !hasSelection() ? '已部署版本' : intent() === '回退' ? '回退到历史版本' : '发布新版本';
+      document.querySelector('#release-summary').innerHTML = `<p class="release-description">${escapeHtml(plan.description)}</p><dl class="release-meta"><div><dt>提交</dt><dd><code>${selected.commit}</code></dd></div><div><dt>构建</dt><dd>${selected.build}</dd></div><div><dt>配置</dt><dd>${selected.config}${selected.available ? '' : ' · 缺失'}</dd></div></dl>`;
+      renderImpacts(plan,current,selected); renderChecks(report);
+      document.querySelector('#agent-result').hidden = !report || state.analysis?.key !== candidateKey();
+      document.querySelector('#agent-summary').textContent = report && state.analysis?.key === candidateKey() ? state.analysis.text : '';
+      document.querySelector('#scenario-select').innerHTML = Object.entries(scenarios).map(([id,scenario]) => `<option value="${id}" ${state.scenario === id ? 'selected' : ''}>${scenario.label}</option>`).join('');
+      document.querySelector('#scenario-select').disabled = Boolean(locked);
+      document.querySelector('#scenario-help').textContent = locked ? '当前示例目标被占用。请先核对或完成运行；浏览其他故障场景可重置演示。' : '切换场景会载入对应的初始示例。当前：' + scenarios[state.scenario].description;
+      document.querySelector('#history-count').textContent = state.runs.length;
+      document.querySelector('#history').innerHTML = state.runs.map((run) => {
+        /** 历史事实保持不变，回退条件按当前环境重算。 */
+        const [label,tone] = runLabel(run), reasons = blockersFor(release(run.to));
+        return `<tr><td><span class="history-version">${run.to}</span><small class="mono">${escapeHtml(run.id)}</small></td><td>${escapeHtml(run.type)}<small>从 ${run.from}</small></td><td>${escapeHtml(run.time)}</td><td><span class="pill ${tone}">${label}</span>${run.stages?.some((stage) => stage.key === 'migration' && stage.status === 'succeeded') ? '<small>迁移已完成</small>' : ''}</td><td>${run.status !== 'succeeded' ? run.resolved ? '已有后续恢复' : '<span class="muted">待核对</span>' : run.to === state.current ? '<span class="muted">当前版本</span>' : reasons.length ? '<span class="warning-text">有条件 / 不兼容</span>' : '可预检'}</td><td><button class="button" data-action="run" data-run="${escapeHtml(run.id)}">详情</button>${run.status === 'succeeded' && run.to !== state.current ? `<button class="button" data-action="rollback" data-version="${run.to}" ${locked ? 'disabled' : ''}>${reasons.length ? '查看限制' : '回退到此版本'}</button>` : ''}</td></tr>`;
+      }).join('');
+      renderBanner();
+    }
+    /** 渲染可展开影响列表，输入计划及版本；保留用户已经展开的栏目。 */
+    function renderImpacts(plan,current,target) {
+      /** DOM 展开状态只是视图状态，不进入执行合同。 */
+      const opened = new Set(Array.from(document.querySelectorAll('#release-impacts details[open]')).map((item) => item.dataset.impact));
+      /** 迁移摘要体现已应用、无迁移和证据缺失三种不同事实。 */
+      const databaseSummary = ({none:state.environment.expanded ? '扩展结构已保留 · 不降级' : '无变更 · 有清单依据',expand:'新增 1 字段、1 索引',backfill:plan.migrationRequired ? '新增字段 · 保留旧字段' : '扩展已完成 · 本次不重放',drop:'删除 name · 依赖未退出',unverified:'迁移清单缺失 · 未核对'})[plan.kind];
+      /** 返回同一层级的折叠行，语义标签及展开按钮由原生 details 提供。 */
+      const row = (key,title,summary,body) => `<details class="impact-row" data-impact="${key}" ${opened.has(key) ? 'open' : ''}><summary><strong>${title}</strong><span class="impact-summary">${escapeHtml(summary)}</span></summary><div class="impact-body">${body}</div></details>`;
+      document.querySelector('#release-impacts').innerHTML = [
+        row('app','应用','2 个服务更新 · 数据库容器不变',`<div class="table-wrap" tabindex="0" role="region" aria-label="服务变更，可横向滚动"><table class="changes-table"><thead><tr><th>服务</th><th>当前 → 目标镜像</th><th>操作</th></tr></thead><tbody id="service-diff">${['api','worker'].map((name) => `<tr><td>${name}</td><td><code>…${current[name]} → …${target[name]}</code></td><td>${current[name] === target[name] ? state.recoveryFrom ? '恢复' : '不变' : '重建'}</td></tr>`).join('')}<tr><td>db</td><td><code>postgres:16</code></td><td>不变</td></tr></tbody></table></div>`),
+        row('database','数据库',databaseSummary,`<dl class="key-values"><div><dt>目标</dt><dd>${escapeHtml(databaseLabel(plan.database))}</dd></div><div><dt>依据</dt><dd>${plan.kind === 'unverified' ? '迁移与程序依据未取得' : plan.kind === 'none' ? '迁移清单 + 启动脚本；已应用历史不改写' : `${plan.migration} · 校验值 ${plan.checksum}`}</dd></div></dl><button class="button outline" data-action="migration">查看迁移方案</button>`),
+        row('data','数据处理',plan.kind === 'backfill' ? `待处理 ${(10000 - plan.backfillStart).toLocaleString()} 行 · 校验后切读` : state.environment.backfill ? `已完成 ${state.environment.backfill.toLocaleString()} 行 · 保留数据` : '无批量改写 · 保留业务数据',plan.kind === 'backfill' ? '<p>每批 500 行，只补空值，并核对行版本。游标在批次提交后保存，复制延迟超过 5 秒暂停。</p><p>回填完成且一致性校验通过后才切换读取；旧字段在回退窗口结束后再清理。</p>' : '<p>普通应用回退不恢复数据卷，也不撤销用户新增数据、已发通知或外部扣款。</p>'),
+        row('config','配置与网络',state.scenario === 'secret' ? '秘密引用已撤销 · 执行阻断' : `${current.config} → ${target.config} · 路由不变`,`<p>配置归档可取回；秘密只保存引用，执行前核对可用性。${state.scenario === 'secret' ? '当前引用已撤销，需在凭据模块处理。' : '本次无密钥轮换、DNS 或证书变更。'}</p><p>访问地址仅记录入口，不会自动创建代理或网络规则。</p>`),
+        row('dependencies','依赖与流量','worker 排空 · 维护窗口 60 秒','<ul><li>API / 事件格式兼容；定时任务只保留一个执行者。</li><li>缓存格式与旧页面资源兼容，不做全量清缓存。</li><li>Compose 重建可能短暂不可用；不承诺零停机。</li><li>就绪、库存业务用例通过后观察错误率和延迟。</li></ul>'),
+      ].join('');
+      /** 恢复能力始终可见，详细条件在二级弹窗中解释。 */
+      const recovery = recoveryInfo(plan);
+      document.querySelector('#recovery-summary').innerHTML = `<div><strong>恢复方案</strong><span class="pill ${recovery.tone}" id="recovery-capability">${recovery.label}</span></div><p>${recovery.text}</p><button class="button" data-action="recovery">查看恢复条件 ↗</button>`;
+    }
+    /** 渲染检查结果与操作门槛，输入当前有效报告；不提前显示绿色状态。 */
+    function renderChecks(report) {
+      /** 已检查快照始终绑定当前输入。 */
+      const items = report?.items || checkItems(), blocked = executionBlocked();
+      document.querySelector('#checks-title').textContent = intent() + '前检查';
+      document.querySelector('#checks').innerHTML = items.map(([title,detail,tone,evidence]) => `<div class="check-item"><span class="check-mark ${report ? tone : 'pending'}">${!report ? '○' : tone === 'success' ? '✓' : '!'}</span><div><h3>${title}</h3>${report ? `${tone !== 'success' ? `<p class="${tone}-detail">${escapeHtml(detail)}</p>` : ''}<details><summary>查看依据</summary><p>${tone === 'success' ? escapeHtml(detail) + '。' : ''}${escapeHtml(evidence)}<br>观察于 ${escapeHtml(report.checkedAt)}</p></details>` : ''}</div><span class="pill ${report ? tone === 'pending' ? 'warning' : tone : 'neutral'}">${!report ? state.checking ? '检查中' : '待检查' : tone === 'success' ? '通过' : tone === 'danger' ? '阻断' : tone === 'pending' ? '未核对' : '提醒'}</span></div>`).join('');
+      /** 去重后的阻断原因用于总览，不因同一原因在多项展示而重复计数。 */
+      const status = document.querySelector('#checks-status');
+      status.className = `pill ${report ? report.blockers.length ? 'danger' : 'success' : 'neutral'}`;
+      status.textContent = report ? report.blockers.length ? `${report.blockers.length} 项阻断` : `通过 · ${items.filter((item) => item[2] === 'warning').length} 项提醒` : state.checking ? '检查中' : state.report ? '检查已过期' : '尚未检查';
+      document.querySelector('#check-context').textContent = blocked ? '目标占用中，先完成或核对此次运行' : report ? `${report.checkedAt} · 本候选 5 分钟内有效` : !hasSelection() ? '请选择一个不同的目标版本' : state.recoveryFrom ? '已绑定原失败运行；恢复应用前需重新检查' : '版本、数据库目标或脚本变化后需要重新检查';
+      document.querySelector('#check-button').disabled = blocked || state.checking || !hasSelection();
+      document.querySelector('#check-button').textContent = state.checking ? '检查中…' : report ? '重新检查' : '运行检查';
+      document.querySelector('#confirm-button').disabled = blocked || !report || report.blockers.length > 0 || !hasSelection();
+      document.querySelector('#confirm-button').textContent = !hasSelection() ? '已是当前版本' : '预览' + intent();
+      document.querySelector('#confirm-button').className = `button ${intent() === '回退' ? 'rollback' : 'primary'}`;
+    }
+    /** 渲染最近运行摘要，部分成功、未知和暂停各自保留事实。 */
+    function renderBanner() {
+      /** 占用记录优先于最近的已完成演示。 */
+      const run = lockedRun() || state.runs.find((item) => item.demo);
+      if (!run) { document.querySelector('#run-banner').innerHTML = ''; return; }
+      /** 阶段成功不能被总结果失败抹去。 */
+      const [label,tone] = runLabel(run), migrationDone = run.stages?.some((stage) => stage.key === 'migration' && stage.status === 'succeeded');
+      document.querySelector('#run-banner').innerHTML = `<div class="run-banner ${tone}"><div><strong>${run.type} ${run.to} · ${label}</strong><p>${run.status === 'succeeded' ? '容器与业务用例验证通过，已写入独立运行记录' : migrationDone && run.status === 'failed' ? `数据库迁移已完成，${run.stages[run.stage].title}未完成；核对后再准备应用回退` : run.status === 'paused' ? '已回填 4,000 / 10,000 行；后续切换未执行，核对后可单独确认续跑' : isActive(run) ? '可以关闭进度弹窗，当前页面会继续模拟执行' : '当前版本可能已部分改变；不自动重试，也不自动回退'}</p></div><div class="actions"><button class="button outline" data-action="run" data-run="${escapeHtml(run.id)}">${isActive(run) ? '查看进度' : '查看结果'}</button></div></div>`;
+    }
+    /** 撤销旧检查和确认；无入参，不改变在途运行。 */
+    function invalidateCandidate() { clearTimeout(checkTimer); clearTimeout(expiryTimer); state.checkEpoch += 1; state.checking = false; state.report = null; state.analysis = null; approvalId = null; }
+    /** 切换部署内容页签；入参为内置页签 ID 与是否聚焦，不改候选、检查或运行。 */
+    function selectDeploymentTab(id,focus = false) {
+      if (!['release','history'].includes(id)) return;
+      for (const tab of document.querySelectorAll('[data-deployment-tab]')) {
+        /** 页签选中状态与对应面板可见性同步，隐藏内容退出键盘导航。 */
+        const selected = tab.dataset.deploymentTab === id;
+        tab.setAttribute('aria-selected',String(selected)); tab.tabIndex = selected ? 0 : -1;
+        document.getElementById(tab.getAttribute('aria-controls')).hidden = !selected;
+        if (selected && focus) tab.focus({preventScroll:true});
+      }
+    }
+    /** 选择版本并撤销旧候选；占用期间禁止自由选择。 */
+    function selectRelease(id) {
+      if (!release(id) || lockedRun()) { toast('目标仍有运行未完成或待核对'); return; }
+      selectDeploymentTab('release');
+      state.selected = id; state.recoveryFrom = null; invalidateCandidate(); persist(); render();
+    }
+    /** 模拟预检，捕获输入身份并拒绝迟到结果；没有任何网络请求。 */
+    function checkCandidate() {
+      if (executionBlocked() || state.checking || !hasSelection()) return;
+      invalidateCandidate(); state.checking = true;
+      /** 预检完成只能填回同一候选。 */
+      const epoch = state.checkEpoch, key = candidateKey();
+      render();
+      checkTimer = setTimeout(() => {
+        if (epoch !== state.checkEpoch || key !== candidateKey() || executionBlocked()) return;
+        /** 汇总独立原因；恢复检查若与上层重复，不重复计数。 */
+        const items = checkItems(), blockers = blockersFor(release(state.selected));
+        for (const item of items.slice(1,2)) if (['danger','pending'].includes(item[2])) blockers.push(item[1]);
+        state.checking = false;
+        state.report = {key,id:'candidate_' + Date.now(),checkedAt:nowLabel(),expiresAt:Date.now()+300000,blockers,items};
+        render(); toast(blockers.length ? '检查发现阻断，请查看具体原因' : '检查完成，请查看提醒后预览操作');
+        expiryTimer = setTimeout(() => { render(); if (dialogView === 'confirm') renderConfirm(); },300050);
+      },650);
     }
 
-    /** 在原型中切换明暗主题，映射现有运维主题变量的层级关系。 */
-    function toggleTheme() {
-      state.theme = state.theme === 'dark' ? 'light' : 'dark';
-      document.documentElement.dataset.theme = state.theme;
-      localStorage.setItem('dutydeck.server-ops-compose.theme', state.theme);
-      toast(state.theme === 'dark' ? '已切换为深色主题' : '已切换为浅色主题');
+    /** 打开视图并记录原焦点；入参视图名及可选运行 ID，不产生执行副作用。 */
+    function openDialog(view,runId = null) {
+      if (!dialog.open) dialogOpener = document.activeElement;
+      dialogView = view; dialogRunId = runId; dialog.classList.toggle('settings-dialog',view === 'target');
+      renderDialog(); if (!dialog.open) dialog.showModal();
     }
-
-    /** 打开目标绑定表单，字段对应未来部署绑定 DTO。 */
-    function openTargetModal() {
-      const body = document.querySelector('#modal-body');
-      document.querySelector('#modal-title').textContent = '编辑部署绑定';
-      document.querySelector('#modal-subtitle').textContent = '只保存当前项目的目标引用，不复制服务器配置和秘密。';
-      body.innerHTML = `<form id="target-form"><div class="form-grid"><div class="field full"><label for="binding-name">部署名称</label><input id="binding-name" value="库存服务 · 生产" required><small>仅用于本地识别，不会修改服务器项目。</small></div><div class="field"><label for="binding-project">Compose 项目名</label><input id="binding-project" value="inventory" required></div><div class="field"><label for="binding-file">入口文件</label><input id="binding-file" value="compose.yaml" required></div><div class="field full"><label for="binding-directory">项目目录</label><input id="binding-directory" value="/srv/inventory" required><small>绝对路径；首期不自动扫描服务器。</small></div></div><div class="modal-footer"><button class="button outline" type="button" data-action="close-modal">取消</button><button class="button primary" type="submit">验证并保存</button></div></form>`;
-      body.querySelector('#target-form').addEventListener('submit', (event) => { event.preventDefault(); saveTarget(); });
-      showModal();
+    /** 替换弹窗内容，纯文本标题与可信模板分开处理；必要时恢复弹窗内焦点。 */
+    function dialogContent(title,subtitle,html) {
+      /** 被替换的正文若持有焦点，先转移到固定关闭按钮。 */
+      const restoreFocus = dialog.open && document.querySelector('#dialog-body').contains(document.activeElement);
+      document.querySelector('#dialog-title').textContent = title; document.querySelector('#dialog-subtitle').textContent = subtitle;
+      document.querySelector('#dialog-body').innerHTML = html;
+      if (restoreFocus) dialog.querySelector('[data-action="close"]').focus();
     }
-
-    /** 将目标表单结果写回卡片，模拟保存成功后的局部刷新。 */
-    function saveTarget() {
-      const name = document.querySelector('#binding-name').value.trim();
-      const project = document.querySelector('#binding-project').value.trim();
-      const directory = document.querySelector('#binding-directory').value.trim();
-      if (!name || !project || !directory) { toast('请补全部署名称、项目名和目录'); return; }
-      document.querySelector('#target-title').textContent = name;
-      document.querySelector('#target-project').textContent = project;
-      document.querySelector('#target-directory').textContent = directory;
-      closeModal();
-      toast('绑定已保存，正在重新验证来源');
+    /** 关闭视图；可指定关闭后的焦点目标，不取消已开始的模拟运行。 */
+    function closeDialog(focusTarget = dialogOpener) { dialogOpener = focusTarget; dialog.close(); }
+    /** 绘制公开设置和独立数据库绑定，未决运行时全部只读。 */
+    function renderSettings() {
+      /** 占用期间保存入口关闭，设置草稿不能改变执行目标。 */
+      const disabled = lockedRun() ? 'disabled' : '';
+      dialogContent('部署设置','库存服务 · 生产环境',`<form id="settings-form" class="settings-form">
+        <section class="settings-section"><h3>部署到哪里 <span class="pill neutral">已绑定</span></h3><p>沿用运维模块的服务器，绑定服务器上已有的 Compose 项目。</p><div class="settings-grid">
+          <div class="settings-field"><label>服务器 · 当前 SSH 连接</label><div class="readonly-field">deploy@api-01.example.com:22</div></div>
+          <div class="settings-field"><label>Compose 项目</label><div class="readonly-field">inventory</div></div>
+          <div class="settings-field full"><label>服务器上的配置文件</label><div class="readonly-field mono">/srv/inventory/compose.yaml</div><p class="field-hint">更换服务器或目录应建立新的部署绑定，保留原目标历史。</p></div>
+        </div></section>
+        <section class="settings-section"><h3>关联哪个数据库</h3><p>数据库目标独立于应用服务器；修改后必须重新核对，不能沿用原确认。</p><div class="settings-grid"><div class="settings-field full"><label for="settings-database">连接 / 数据库 / schema</label><select id="settings-database" ${disabled}><option value="inventory_prod" ${state.settings.database === 'inventory_prod' ? 'selected' : ''}>pg-primary / inventory_prod / public · 生产</option><option value="inventory_staging" ${state.settings.database === 'inventory_staging' ? 'selected' : ''}>pg-staging / inventory_staging / public · 预发布</option></select><p class="field-hint">这里使用预设目标演示。生产发布选中预发布库会被检查阻断；凭据由已有数据源管理。</p></div></div></section>
+        <section class="settings-section"><div class="settings-section-header"><h3>从哪里获取版本</h3><button class="button" type="button" data-action="detect-settings" ${disabled}>✧ 演示 Agent 识别</button></div><p>可手动填写；Agent 提供候选，填入草稿后仍需保存。</p><div class="settings-grid">
+          <div class="settings-field full"><label for="settings-source">源码仓库 HTTPS 地址 <span class="muted">· 可选</span></label><input id="settings-source" type="url" maxlength="500" value="${escapeHtml(state.settings.source)}" placeholder="https://git.example.com/team/project" ${disabled}><p class="field-hint">关联 Git tag / commit，构建后按不可变镜像发布。</p></div>
+          <div class="settings-field full"><label for="settings-registry">镜像仓库前缀</label><input id="settings-registry" required maxlength="500" value="${escapeHtml(state.settings.registry)}" placeholder="registry.example.com/team" ${disabled}><p class="field-hint">新版本使用此来源；历史回退使用原仓库，凭据不填写到地址里。</p></div>
+        </div><div id="settings-suggestion" class="settings-suggestion" hidden><p>预设识别结果（模拟）：已找到源码与镜像仓库候选，尚未覆盖表单。</p><dl class="key-values"><div><dt>源码</dt><dd>https://git.example.com/ops/inventory</dd></div><div><dt>镜像仓库</dt><dd>registry.example.com</dd></div></dl><button class="button" type="button" data-action="apply-settings-suggestion" ${disabled}>填入草稿</button></div></section>
+        <section class="settings-section"><h3>发布后从哪里访问</h3><div class="settings-grid"><div class="settings-field full"><label for="settings-access">访问地址 <span class="muted">· 可选</span></label><input id="settings-access" type="url" maxlength="500" value="${escapeHtml(state.settings.access)}" placeholder="https://app.example.com" ${disabled}><p class="field-hint">仅记录访问入口，不自动创建 DNS、证书或反向代理。</p></div></div></section>
+        <div><p class="settings-note">${lockedRun() ? '目标有运行未完成或待核对，设置暂时只读。' : '原型只保存浏览器本地设置，不访问真实连接、仓库或数据库。'}</p><p class="settings-error" id="settings-error" role="alert" hidden></p><div class="dialog-footer"><button class="button outline" type="button" data-action="close">取消</button><button class="button primary" type="submit" ${disabled}>保存示例设置</button></div></div>
+      </form>`);
     }
-
-    /** 打开 Compose 发布前确认卡，不接受任意命令或额外参数。 */
-    function openConfirmModal() {
-      const body = document.querySelector('#modal-body');
-      document.querySelector('#modal-title').textContent = '确认并发布';
-      document.querySelector('#modal-subtitle').textContent = '确认只批准当前候选，配置或连接变化后需要重新预览。';
-      body.innerHTML = `<div class="confirm-list"><div class="confirm-line"><span>目标</span><strong>api-01 · /srv/inventory · inventory</strong></div><div class="confirm-line"><span>动作</span><strong>Compose up · 3 个服务</strong></div><div class="confirm-line"><span>镜像</span><strong>1 个 digest 将更新</strong></div><div class="confirm-line"><span>等待</span><strong>running / healthy · 最多 120 秒</strong></div></div><p class="confirm-warning">发布可能重建容器并拉取批准镜像；不会删除孤儿容器、数据卷，也不会在断连后自动重试。</p><div class="modal-footer"><button class="button outline" type="button" data-action="close-modal">返回预览</button><button class="button primary" type="button" data-action="start-run">确认并发布</button></div>`;
-      showModal();
+    /** 保存公开设置；真实变化才撤销旧检查，相同输入保留当前候选。 */
+    function saveSettings() {
+      if (lockedRun()) return;
+      /** 表单仅能修改地址和预设数据库身份。 */
+      const settings = parseSettings({source:document.querySelector('#settings-source').value,registry:document.querySelector('#settings-registry').value,access:document.querySelector('#settings-access').value,database:document.querySelector('#settings-database').value});
+      if (!settings) { document.querySelector('#settings-error').textContent = '请填写 HTTP(S) 地址和不带协议的镜像仓库前缀；地址不要包含账号、密码、查询参数或片段。'; document.querySelector('#settings-error').hidden = false; return; }
+      /** 只有保存后的变化才影响执行候选。 */
+      const changed = JSON.stringify(settings) !== JSON.stringify(state.settings);
+      if (changed) { state.settings = settings; invalidateCandidate(); persist(); render(); }
+      closeDialog(); toast(changed ? '示例设置已保存，原检查与确认已失效' : '设置未变化，已保留当前检查结果');
     }
-
-    /** 展示持久运行记录的处理中状态，并在几秒后模拟成功终态。 */
+    /** 显示迁移、恢复、产物和目录等视图；只使用内置或转义后的数据。 */
+    function renderDialog() {
+      if (dialogView === 'confirm') { renderConfirm(); return; }
+      if (dialogView === 'run') { renderRun(); return; }
+      if (dialogView === 'agent') { renderAgent(); return; }
+      if (dialogView === 'target') { renderSettings(); return; }
+      if (dialogView === 'migration') { renderMigration(); return; }
+      if (dialogView === 'recovery') { renderRecovery(); return; }
+      if (dialogView === 'resume') { renderResume(); return; }
+      if (dialogView === 'artifacts') {
+        /** 来源使用冻结的历史归档，数据库目标不从旧设置推断。 */
+        const version = release(state.selected), plan = candidatePlan();
+        dialogContent(version.id + ' · 产物详情','版本名用于识别，实际执行固定到整组镜像与配置。',`<dl class="key-values"><div><dt>源码 / 构建</dt><dd>${version.id} · ${version.commit} · CI ${version.build}</dd></div><div><dt>api 镜像</dt><dd><code>${escapeHtml(candidateSettings().registry)}/inventory-api@sha256:…${version.api}</code></dd></div><div><dt>worker 镜像</dt><dd><code>${escapeHtml(candidateSettings().registry)}/inventory-worker@sha256:…${version.worker}</code></dd></div><div><dt>配置归档</dt><dd>${version.config} · 指纹 ${version.fingerprint} · 非敏感模板可恢复</dd></div><div><dt>秘密引用</dt><dd>inventory/production · ${state.scenario === 'secret' ? '已撤销' : '使用前复核可用性'}</dd></div><div><dt>迁移绑定</dt><dd>${plan.kind === 'none' ? '无待执行迁移' : plan.kind === 'unverified' ? '未取得迁移清单' : plan.migration + ' · ' + plan.checksum}</dd></div><div><dt>保留状态</dt><dd>${version.available ? '镜像、配置与当前回退基线已保留（示例）' : '归档缺失，无法部署或回退'}</dd></div></dl><div class="notice neutral">数据库镜像、业务数据与数据卷不随应用回退。配置指纹只能校验内容，不能替代可取回的配置归档。</div>`);
+      } else if (dialogView === 'versions') {
+        dialogContent('版本目录','预设 CI 版本示例；真实接入后从已配置来源同步。',`<div class="table-wrap"><table><thead><tr><th>版本</th><th>源码 / 配置</th><th>当前条件</th><th></th></tr></thead><tbody>${releases.map((version) => `<tr><td>${version.id}</td><td><code>${version.commit}</code><small>${version.config}</small></td><td>${version.id === state.current ? '上次验证版本' : blockersFor(version).length ? '存在阻断' : '可预检'}</td><td><button class="button outline" data-action="choose-version" data-version="${version.id}" ${lockedRun() ? 'disabled' : ''}>选择</button></td></tr>`).join('')}</tbody></table></div>`);
+      } else if (dialogView === 'reset') {
+        dialogContent('重置演示','仅清除这个 HTML 的示例运行记录。','<p>回到 v1.7.3 已部署、v1.8.0 待发布的兼容迁移场景。正在模拟的运行也会结束，不影响任何真实服务器。</p><div class="dialog-footer"><button class="button outline" data-action="close">取消</button><button class="button primary" data-action="confirm-reset">重置示例数据</button></div>');
+      }
+    }
+    /** 展示当前迁移文件、执行边界和字段替换路线；SQL 仅作只读示例。 */
+    function renderMigration() {
+      /** 迁移方案由当前候选生成，修改草稿会产生新计划身份。 */
+      const plan = candidatePlan(), none = plan.kind === 'none' || plan.kind === 'backfill' && !plan.migrationRequired, missing = plan.kind === 'unverified';
+      /** 两个草稿版本只是演示校验值失效，均不向真实数据库执行。 */
+      const sql = plan.kind === 'drop' ? '-- 独立维护：当前仍有旧依赖，禁止执行\nALTER TABLE inventory DROP COLUMN name;' : `-- 扩展结构，保留 name；示例：PostgreSQL 16\nALTER TABLE inventory ADD COLUMN display_name varchar(${plan.scriptRevision === 1 ? '120' : '160'});\n\n-- 独立非事务阶段；需按引擎核对锁与历史\nCREATE INDEX CONCURRENTLY idx_inventory_display_name\n  ON inventory (display_name);`;
+      dialogContent(none ? '数据库变更 · 无待执行迁移' : '数据库迁移方案',`${databaseLabel(plan.database)} · PostgreSQL 16（示例）`,`${missing ? '<div class="notice">未取得迁移文件或启动脚本。需核查 entrypoint 是否自动执行 migration、seed 或初始化，不能直接跳过。</div>' : none ? `<div class="evidence"><strong>${state.environment.expanded ? '扩展迁移已应用，保留新增字段与索引' : '无迁移的依据'}</strong><p>${state.environment.expanded ? '应用恢复不执行 down，后续清理需要独立维护计划。' : '发布清单无待应用迁移；代码差异、启动脚本、应用读写测试已核对（预设证据）。'}</p></div>` : `<dl class="key-values"><div><dt>迁移文件</dt><dd><code>${plan.migration}</code></dd></div><div><dt>脚本版本</dt><dd>草稿 r${plan.scriptRevision} · checksum <code>${plan.checksum}</code></dd></div><div><dt>历史起点</dt><dd>已应用至 042；${plan.scenario === 'checksum' ? '校验值漂移，禁止继续' : '历史校验值匹配'}</dd></div><div><dt>执行方式</dt><dd>项目既有迁移入口 · 一次受控执行，不在每个容器启动时重复迁移</dd></div><div><dt>范围 / 预算</dt><dd>inventory · 示例 10,000 行；锁等待 3 秒，执行上限 120 秒</dd></div></dl><pre class="migration-code">${escapeHtml(sql)}</pre><div class="notice ${plan.kind === 'drop' ? 'danger' : ''}">${plan.kind === 'drop' ? '删除 name 会破坏旧 worker 和报表。回退窗口未结束，当前计划不可执行。' : '新增字段也可能影响旧写入与锁等待；并发建索引失败可能留下无效索引，需依据真实历史核对，不把字段存在当成全部完成。'}</div>`}
+      <div class="migration-path" aria-label="字段变更顺序"><span>扩展结构</span><span>兼容读写</span><span>回填校验</span><span>切换读取</span><span>窗口结束后清理</span></div><p class="muted">数据库目标、迁移文件、脚本校验值与应用产物一起确认。向前修复生成新迁移，不改写已执行历史。</p><div class="dialog-footer">${!none && !missing && !lockedRun() ? '<button class="button" data-action="change-script">演示：更新迁移草稿</button>' : ''}<button class="button outline" data-action="close">返回发布计划</button></div>`);
+    }
+    /** 展示三种恢复的不同边界，不提供伪装成应用回退的数据恢复按钮。 */
+    function renderRecovery() {
+      /** 恢复摘要与页面使用同一事实来源。 */
+      const recovery = recoveryInfo();
+      dialogContent('恢复条件',`${state.current} → ${state.selected} · ${recovery.label}`,`<span class="pill ${recovery.tone}">${recovery.label}</span><div class="run-summary"><h3>应用回退</h3><p>${recovery.text}</p><p>重新检查镜像、可恢复配置、有效秘密引用，以及旧应用对当前结构、枚举和消息的读写能力。</p></div><div class="run-summary"><h3>迁移向前修复</h3><p>保留已经生效的迁移事实；生成新的修复文件和计划，重新审阅与验证。不修改已执行迁移的校验值。</p></div><div class="run-summary"><h3>数据恢复 · 独立任务</h3><p>需明确恢复点、停写范围、备份后新数据如何处理、RPO / RTO 和恢复演练。备份存在不等于可恢复，也不能撤销已发送通知或外部扣款。</p></div><div class="notice neutral">原型展示恢复决策；不会连接数据库、恢复备份或降级数据库容器。</div><div class="dialog-footer"><button class="button outline" data-action="close">返回</button></div>`);
+    }
+    /** 确认精确候选，包含独立数据库目标与迁移影响；任何输入漂移使确认不可用。 */
+    function renderConfirm() {
+      /** 执行前再次比较有效报告、单次票据和占用来源。 */
+      const report = validReport(), current = release(state.current), target = release(state.selected), plan = candidatePlan();
+      if (!report || report.id !== approvalId || report.blockers.length || executionBlocked() || !hasSelection()) {
+        dialogContent('候选已失效','请重新检查当前目标后再确认。','<div class="notice">版本、数据库目标、迁移文件或有效期变化，旧确认不能继续使用。</div><div class="dialog-footer"><button class="button outline" data-action="close">返回检查</button></div>'); return;
+      }
+      dialogContent('确认' + intent() + ' · ' + target.id,'库存服务 · 生产环境 · api-01',`<div class="version-transition"><div><small>上次验证版本</small><strong>${current.id}</strong></div><span>→</span><div><small>${state.recoveryFrom ? '恢复目标' : intent() + '目标'}</small><strong>${target.id}</strong></div></div><dl class="key-values"><div><dt>部署到</dt><dd>api-01 · <code>/srv/inventory/compose.yaml</code></dd></div><div><dt>计划</dt><dd><code>${plan.id}</code> · 政策 release-policy-r3</dd></div><div><dt>镜像来源</dt><dd><code>${escapeHtml(plan.source)}</code></dd></div><div><dt>应用产物</dt><dd>api …${target.api} / worker …${target.worker}，按 digest 固定</dd></div><div><dt>配置恢复</dt><dd>${current.config} → ${target.config}，秘密引用重新校验</dd></div><div><dt>数据库目标</dt><dd>${databaseLabel(plan.database)}</dd></div><div><dt>迁移</dt><dd>${!plan.migrationRequired ? state.environment.expanded ? '已应用迁移保留；本次不重放或降级' : '无待执行迁移；启动行为已核对' : `${plan.migration} · ${plan.checksum} · 新增字段和索引`}</dd></div><div><dt>数据处理</dt><dd>${plan.kind === 'backfill' ? `游标 ${plan.backfillStart.toLocaleString()}；剩余 ${(10000 - plan.backfillStart).toLocaleString()} 行；校验通过才切换读取` : '保留当前业务数据，不降级数据库或恢复卷'}</dd></div><div><dt>影响 / 验证</dt><dd>重建 2 个应用容器，维护窗口 60 秒；容器 + 库存查询与预留用例 + 5 分钟观察</dd></div></dl><div class="notice">${plan.kind === 'none' ? '应用恢复保留当前结构与数据。' : '迁移可能等待数据库锁；已生效步骤不会因后续应用失败被自动撤销。'}结果未知时停止后续阶段并保留占用。以上运行时间在原型中加速模拟。</div><label class="acknowledge"><input id="acknowledge" type="checkbox">我已了解目标、数据影响与恢复限制，确认仅执行此次${intent()}。</label><div class="dialog-footer"><button class="button outline" data-action="close">返回检查</button><button class="button ${intent() === '回退' ? 'rollback' : 'primary'}" data-action="start" id="start-button" disabled>确认${intent()}</button></div>`);
+    }
+    /** 根据计划构建明确依赖的阶段；入参冻结计划，返回未开始的阶段数组。 */
+    function stagesFor(plan) {
+      /** 固定阶段集合足以演示依赖，不开放任意脚本执行。 */
+      const stages = [{key:'prepare',title:'复核目标与保存运行意图',detail:'身份、计划校验值、目标占用和原审计'}];
+      if (plan.migrationRequired) stages.push({key:'migration',title:'执行兼容扩展迁移',detail:`${plan.migration} · ${plan.checksum} · ${databaseLabel(plan.database)}`});
+      stages.push({key:'application',title:'部署应用与配置',detail:`api / worker 固定 digest · ${plan.config} · 旧 worker 排空`});
+      if (plan.kind === 'backfill' && plan.backfillStart < 10000) stages.push({key:'backfill',title:'分批回填历史数据',detail:`从已核对游标 ${plan.backfillStart.toLocaleString()} 继续 · 每批 500 行 · 条件写入`});
+      if (plan.kind === 'backfill') stages.push({key:'validate-data',title:'校验数据并切换读取',detail:'一致性验证通过才启用 display_name，保留 name'});
+      stages.push({key:'verify',title:'验证容器与业务用例',detail:'就绪探针、库存查询与预留业务验证'},{key:'observe',title:'观察错误率与延迟',detail:'5 分钟观察窗口，原型加速模拟；不自动回退'},{key:'record',title:'保存结果与恢复依据',detail:'完整阶段事实与可恢复配置，复用既有审计'});
+      return stages.map((stage) => ({...stage,status:'pending'}));
+    }
+    /** 消费一次候选后创建独立运行；重复点击不能创建第二条记录。 */
     function startRun() {
-      const body = document.querySelector('#modal-body');
-      document.querySelector('#modal-title').textContent = '发布运行中 · run_7K3M';
-      document.querySelector('#modal-subtitle').textContent = '离开部署页也不会丢失运行记录。';
-      body.innerHTML = `<div class="run-state"><div class="run-state-mark">↗</div><h3 id="run-title">正在等待远端准备</h3><p id="run-description">校验项目来源、配置指纹和执行锁</p><div class="run-progress"><span></span></div><div class="run-log" id="run-log">[10:44:02] target locked: api-01 / inventory<br>[10:44:03] compose model verified<br>[10:44:03] waiting for approval channel…</div></div><div class="modal-actions"><button class="danger-link" type="button" data-action="simulate-unknown">模拟连接中断</button><button class="button outline" type="button" data-action="close-modal">后台运行</button></div>`;
-      showModal();
-      window.clearTimeout(state.runTimer);
-      state.runTimer = window.setTimeout(() => finishRun(), 2200);
+      /** 入口不信任按钮状态，重新验证票据与用户本次确认。 */
+      const report = validReport();
+      if (!report || report.id !== approvalId || report.blockers.length || executionBlocked() || !hasSelection() || !document.querySelector('#acknowledge')?.checked) { renderConfirm(); return; }
+      /** 冻结计划和来源；后续渲染只读这份快照。 */
+      const plan = candidatePlan(), run = {id:'run_' + Date.now().toString(36),from:state.current,to:state.selected,type:intent(),status:'preparing',stage:0,time:nowLabel(),verified:false,demo:true,settings:{...candidateSettings()},plan,stages:stagesFor(plan),parentRunId:state.recoveryFrom,stopped:false};
+      run.stages[0].status = 'running';
+      state.runs.unshift(run); state.lockId = run.id; state.recoveryFrom = null; invalidateCandidate();
+      persist(); render(); openDialog('run',run.id); scheduleStage(run.id);
     }
-
-    /** 模拟明确成功结果，健康检查缺失的 db 仍只显示 running。 */
-    function finishRun() {
-      const title = document.querySelector('#run-title');
-      const description = document.querySelector('#run-description');
-      const log = document.querySelector('#run-log');
-      if (!title || !description || !log) return;
-      title.textContent = '发布完成';
-      description.textContent = 'api / worker healthy · db running（未配置 healthcheck）';
-      log.innerHTML = '[10:44:08] api     running / healthy<br>[10:44:08] worker  running / healthy<br>[10:44:08] db      running / healthcheck 未配置<br>[10:44:09] run succeeded · 已写入历史';
-      const button = document.querySelector('[data-action="simulate-unknown"]');
-      button.textContent = '查看运行历史';
-      button.className = 'button outline';
-      button.dataset.action = 'show-history';
-      toast('发布完成，健康结果已写入历史');
+    /** 推进独立运行的一个阶段；关闭弹窗不影响计时，失败或未知则不继续。 */
+    function scheduleStage(runId) {
+      runTimer = setTimeout(() => {
+        /** 所有推进均绑定同一占用与活动运行。 */
+        const run = state.runs.find((item) => item.id === runId);
+        if (!run || state.lockId !== runId || !isActive(run)) return;
+        /** 故障由冻结场景决定，回退与续跑不重复触发首次发布的预设故障。 */
+        const stage = run.stages[run.stage], outcome = run.type === '发布' ? scenarios[run.plan.scenario].outcome : null;
+        if (outcome === 'unknown' && stage.key === 'migration') { stopRun(run,'unknown','迁移派发后 SSH 中断，无法确认数据库会话或最终结果'); return; }
+        if (outcome === 'failed' && stage.key === 'verify') { stopRun(run,'failed','收到应用健康检查失败，迁移已完成；部分变更可能已经生效'); return; }
+        if (outcome === 'paused' && stage.key === 'backfill' && run.plan.backfillStart === 0) {
+          state.environment.backfill = 4000; run.cursor = 4000;
+          stopRun(run,'paused','复制延迟达到 6.2 秒，超过 5 秒预算；已提交 8 批、4,000 行，尚未切换读取'); return;
+        }
+        stage.status = 'succeeded';
+        if (stage.key === 'migration') state.environment.expanded = true;
+        if (stage.key === 'backfill') { state.environment.backfill = 10000; run.cursor = 10000; }
+        if (stage.key === 'validate-data') state.environment.dataValidated = true;
+        run.stage += 1;
+        if (run.stage >= run.stages.length) {
+          run.status = 'succeeded'; run.verified = true; run.stopped = true; run.finishedAt = nowLabel();
+          state.current = run.to; state.observationAt = run.finishedAt; state.lockId = null; state.environment.uncertain = false;
+          /** 终结整条恢复链的占用，保留每条祖先记录原有失败、暂停与阶段事实。 */
+          const visited = new Set([run.id]);
+          /** 父引用沿恢复链回溯，遇到缺失或循环即停止，避免损坏样例导致死循环。 */
+          let parentId = run.parentRunId;
+          while (parentId && !visited.has(parentId)) {
+            visited.add(parentId);
+            /** 仅更新本次成功恢复实际关联的祖先，不解锁无关记录。 */
+            const parent = state.runs.find((item) => item.id === parentId);
+            if (!parent) break;
+            parent.resolved = true; parent.recoveryRunId = run.id; parentId = parent.parentRunId;
+          }
+        } else { run.stages[run.stage].status = 'running'; run.status = ['verify','observe'].includes(run.stages[run.stage].key) ? 'verifying' : 'running'; }
+        persist(); render();
+        if (dialog.open && dialogView === 'run' && dialogRunId === runId) renderRun();
+        if (isActive(run)) scheduleStage(runId); else toast(run.type + '完成，发布后验证已通过（模拟）');
+      },750);
     }
-
-    /** 模拟连接中断，明确 unknown 只核对、不自动重放。 */
-    function showUnknown() {
-      window.clearTimeout(state.runTimer);
-      const title = document.querySelector('#run-title');
-      const description = document.querySelector('#run-description');
-      const log = document.querySelector('#run-log');
-      if (!title || !description || !log) return;
-      title.textContent = '结果未知';
-      description.textContent = 'SSH 连接中断，无法确认 up 的最终结果';
-      log.innerHTML = '[10:44:05] api     container recreate requested<br>[10:44:06] connection closed<br>[10:44:06] result unknown · 不会自动重试';
-      const button = document.querySelector('[data-action="simulate-unknown"]');
-      button.textContent = '去历史中核对';
-      button.className = 'button outline';
-      button.dataset.action = 'show-history';
-      toast('已保留未知结果，不会自动重放');
+    /** 将当前阶段固定为失败、未知或暂停；保留此前成功阶段与目标占用。 */
+    function stopRun(run,status,reason) {
+      clearTimeout(runTimer); run.status = status; run.verified = false; run.reason = reason; run.stopped = status !== 'unknown'; run.reconciled = false;
+      run.stages[run.stage].status = status;
+      if (status === 'unknown') state.environment.uncertain = true;
+      persist(); render(); if (dialog.open && dialogView === 'run' && dialogRunId === run.id) renderRun();
     }
-
-    /** 打开弹窗并把焦点送到第一个可操作控件。 */
-    function showModal() {
-      const backdrop = document.querySelector('#modal-backdrop');
-      backdrop.hidden = false;
-      backdrop.querySelector('input, select, button')?.focus();
+    /** 用户手动模拟故障，故障只作用于当前活动阶段，不能伪造已完成迁移。 */
+    function simulateFailure(status) {
+      /** 占用指向唯一运行，非活动状态不重复处理。 */
+      const run = lockedRun();
+      if (!isActive(run)) return;
+      stopRun(run,status,status === 'unknown' ? 'SSH 连接中断，无法确认最终结果' : '收到执行器明确失败回执；部分变更可能已经生效');
     }
-
-    /** 关闭弹窗并释放模拟运行计时器。 */
-    function closeModal() {
-      document.querySelector('#modal-backdrop').hidden = true;
-      window.clearTimeout(state.runTimer);
+    /** 渲染运行详情，阶段结果独立显示，原历史运行仍可查看。 */
+    function renderRun() {
+      /** 弹窗只访问自身 runId，避免查看旧记录时串用新运行。 */
+      const run = state.runs.find((item) => item.id === dialogRunId);
+      if (!run) { closeDialog(); return; }
+      /** 阶段模板兼容旧的初始历史；旧记录不虚构迁移详情。 */
+      const [label,tone] = runLabel(run), savedSettings = parseSettings(run.settings) || defaultSettings(), focusedAction = dialog.contains(document.activeElement) ? document.activeElement?.dataset.action : null;
+      /** 初始历史仅有发布结果，模拟运行保存完整阶段。 */
+      const stages = run.stages || [{key:'history',title:'历史发布与业务验证',detail:'旧记录未包含逐阶段迁移证据',status:'succeeded'}];
+      /** 进度只计算已经成功的阶段，失败和暂停不算完成。 */
+      const completed = stages.filter((stage) => stage.status === 'succeeded').length, migrationDone = stages.some((stage) => stage.key === 'migration' && stage.status === 'succeeded');
+      dialogContent(run.type + ' ' + run.to + ' · ' + label,run.id + ' · ' + run.time,`<div class="actions"><span class="pill ${tone}">${label}</span><span class="muted mono">${run.from} → ${run.to}</span></div><p class="section-description" style="margin:10px 0">api-01 · /srv/inventory · 来源 ${escapeHtml(savedSettings.registry)}${run.plan ? `<br>${escapeHtml(databaseLabel(run.plan.database))} · ${escapeHtml(run.plan.id)}` : ''}</p><ol class="run-stages">${stages.map((stage,index) => {
+        /** 阶段状态来自持久快照，不通过总状态推断全部成功。 */
+        const [stageText,stageTone] = stageLabel(stage.status);
+        return `<li data-stage="${stage.key}" class="${stage.status === 'succeeded' ? 'done' : stageTone}"><span class="stage-icon">${stage.status === 'succeeded' ? '✓' : index+1}</span><div class="stage-copy"><strong>${stage.title}</strong><small>${escapeHtml(stage.detail)}${stage.inherited ? ' · 引用原运行证据，未重执行' : ''}${stage.key === 'backfill' && run.cursor ? ` · 已提交 ${run.cursor.toLocaleString()} / 10,000 行` : ''}</small></div><span class="pill ${stageTone}">${stageText}</span></li>`;
+      }).join('')}</ol><div class="progress" role="progressbar" aria-label="已完成阶段" aria-valuenow="${completed}" aria-valuemin="0" aria-valuemax="${stages.length}"><span style="width:${completed / stages.length * 100}%"></span></div>
+      ${run.status === 'succeeded' ? `<div class="evidence"><strong>本次验证结果（示例）</strong><ul><li>api / worker：running + healthy</li><li>db：running，未配置 healthcheck</li><li>业务：库存查询与预留用例通过</li><li>${migrationDone ? '扩展迁移完成；新增结构保留' : '未执行数据库降级或数据恢复'}</li>${run.cursor === 10000 ? '<li>10,000 行回填与一致性校验完成后才切换读取</li>' : ''}</ul></div>` : isActive(run) ? '<div class="evidence">阶段按依赖执行。关闭弹窗不停止运行；刷新页面会把在途阶段标为未知，已完成阶段仍保留。</div>' : `<div class="notice ${run.status === 'failed' ? 'danger' : ''}">${escapeHtml(run.reason || '缺少可信终态')}。${run.status === 'unknown' ? '目标继续锁定，不自动重试或回退。' : '后续阶段已停止，先核对再选择恢复路径。'}</div>${run.observation ? `<div class="evidence"><strong>后续观察 · ${escapeHtml(run.observation)}</strong><p>${run.status === 'unknown' ? '数据库对象可见，但执行器与数据库会话未确认停止。原记录保持结果未知，本次观察不解除占用。' : run.status === 'paused' ? '已核对任务停在批次边界、游标 4,000 与提交记录一致，复制延迟回落至 1.2 秒；续跑只处理剩余空值，不重放迁移。' : `${migrationDone ? '迁移历史与校验值匹配；扩展结构已生效。' : '已取得执行失败与退出记录。'}执行器已停止，旧应用兼容读写测试通过，可生成独立应用恢复计划。`}</p></div>` : ''}
+      ${run.resolved ? `<div class="evidence">已有后续恢复记录 ${escapeHtml(run.recoveryRunId)}；本记录保留原始阶段结果。</div>` : run.status === 'failed' ? `<div class="run-summary"><h3>${migrationDone ? '迁移已完成，' + stages[run.stage].title + '未完成' : '应用恢复前需要核对执行状态'}</h3><p>可恢复兼容应用 ${run.from}，保留已生效结构和当前业务数据。恢复是新计划，需要重新检查和确认。</p><div class="actions"><button class="button rollback" data-action="prepare-recovery" ${!recoveryReady(run) || state.lockId !== run.id ? 'disabled' : ''}>准备回退应用</button></div></div>` : run.status === 'paused' ? `<div class="run-summary"><h3>已回填 4,000 / 10,000 行</h3><p>游标 4,000 · 每批 500 行 · 条件写入。切换读取尚未执行；核对已提交批次和当前负载后再继续。</p><div class="actions"><button class="button primary" data-action="resume" ${!run.reconciled || state.lockId !== run.id ? 'disabled' : ''}>预览续跑</button></div></div>` : ''}`}
+      <div class="dialog-footer">${isActive(run) ? '<button class="button" data-action="fail">模拟验证失败</button><button class="button" data-action="unknown">模拟连接中断</button><button class="button outline" data-action="close">后台运行</button>' : run.status === 'succeeded' ? `<button class="button outline" data-action="history">查看部署历史</button>${run.to !== state.current ? `<button class="button rollback" data-action="rollback" data-version="${run.to}" ${lockedRun() ? 'disabled' : ''}>回退到此版本</button>` : '<button class="button primary" data-action="close">完成</button>'}` : '<button class="button outline" data-action="observe">核对当前状态</button><button class="button" data-action="run-agent">请 Agent 分析</button>'}</div>`);
+      if (focusedAction) dialog.querySelector(`[data-action="${focusedAction}"]`)?.focus();
     }
-
-    /** 页签跳转只模拟当前工作区的导航反馈，避免伪造其他面板内容。 */
-    function switchSection(section) {
-      document.querySelectorAll('[data-section]').forEach((button) => { button.classList.toggle('active', button.dataset.section === section); button.toggleAttribute('aria-current', button.dataset.section === section); });
-      if (section !== 'deploy') toast(`${section === 'overview' ? '概览' : section === 'docker' ? 'Docker' : section === 'audit' ? '审计' : section}页签保持现有实现，本稿聚焦部署页签`);
+    /** 追加观察，未知结果不会凭对象存在变成成功；明确终止的示例可进入恢复预检。 */
+    function observeRun() {
+      /** 用户查看的是具体历史记录，不能通过观察改变另一个运行。 */
+      const run = state.runs.find((item) => item.id === dialogRunId);
+      if (!run || !['unknown','failed','paused'].includes(run.status)) return;
+      run.observation = nowLabel();
+      if (run.stopped && ['failed','paused'].includes(run.status)) run.reconciled = true;
+      persist(); renderRun(); toast(run.reconciled ? '已核对执行结束；原结果保留，恢复动作需单独确认' : '已追加观察；原运行结果和目标占用保持不变');
     }
-
-    /** 统一处理原型中的按钮动作。 */
-    document.addEventListener('click', (event) => {
-      const target = event.target.closest('[data-action], [data-section]');
-      if (!target) return;
-      if (target.dataset.section) { switchSection(target.dataset.section); return; }
-      const action = target.dataset.action;
-      if (action === 'theme') toggleTheme();
-      else if (action === 'new-target' || action === 'edit-target') openTargetModal();
-      else if (action === 'confirm') openConfirmModal();
-      else if (action === 'start-run') startRun();
-      else if (action === 'simulate-unknown') showUnknown();
-      else if (action === 'show-history' || action === 'reconcile-history') { closeModal(); toast(action === 'show-history' ? '已打开运行历史' : '已读取当前容器状态，历史结果仍保持未知'); }
-      else if (action === 'close-modal') closeModal();
-      else if (action === 'verify' || action === 'refresh-target') toast('已重新读取目标来源；配置未变化');
-      else if (action === 'switch-connection') toast('切换连接沿用当前项目连接选择器');
-      else if (action === 'reference') toast('已准备将服务器引用到当前 Agent 会话');
-      else if (action === 'disconnect') toast('断开操作沿用现有 SSH 连接确认流程');
-      else if (action === 'project') toast('项目选择沿用当前运维项目选择器');
-      else if (action === 'more') toast('更多菜单包含信任、编辑和删除服务器');
+    /** 失败恢复绑定原运行，保留其占用直到新的恢复运行接管。 */
+    function prepareRecovery() {
+      /** 仅当前已核对失败运行可建立恢复候选。 */
+      const run = state.runs.find((item) => item.id === dialogRunId);
+      if (!recoveryReady(run) || state.lockId !== run.id) return;
+      state.recoveryFrom = run.id; state.selected = run.from; invalidateCandidate(); closeDialog(document.querySelector('#release-tab')); selectDeploymentTab('release'); persist(); render(); checkCandidate();
+      document.querySelector('#candidate-area').scrollIntoView({behavior:'smooth',block:'start'});
+    }
+    /** 展示回填续跑确认，已提交批次只作为证据引用，不重新迁移。 */
+    function renderResume() {
+      /** 续跑只对当前、已核对的暂停记录开放。 */
+      const run = state.runs.find((item) => item.id === dialogRunId);
+      if (!run || run.status !== 'paused' || !run.reconciled || run.resolved || state.lockId !== run.id) { dialogContent('续跑条件不足','先核对已提交批次和目标占用。','<div class="notice">不能跳过状态核对直接重试。</div>'); return; }
+      dialogContent('确认续跑 · 剩余 6,000 行','保持原迁移文件、目标与写入条件，生成新的续跑记录。',`<dl class="key-values"><div><dt>原运行</dt><dd>${run.id}</dd></div><div><dt>目标</dt><dd>${databaseLabel(run.plan.database)}</dd></div><div><dt>起点</dt><dd>游标 4,000；前 8 批已提交，不重复执行</dd></div><div><dt>写入规则</dt><dd>每批 500 行，仅补空值并核对行版本，避免覆盖并发新写入</dd></div><div><dt>后续阶段</dt><dd>回填完成 → 一致性校验 → 切换读取 → 业务验证与观察</dd></div></dl><div class="notice neutral">保留原暂停记录。应用部署与扩展迁移已经完成，续跑引用其证据，不重新执行。</div><label class="acknowledge"><input id="resume-acknowledge" type="checkbox">确认从已核对游标继续，保留限速与停止条件。</label><div class="dialog-footer"><button class="button outline" data-action="back-run">返回运行</button><button class="button primary" data-action="confirm-resume" id="resume-button" disabled>确认续跑</button></div>`);
+    }
+    /** 为剩余批次创建新运行；严格承接旧快照，双击只消费一次暂停占用。 */
+    function resumeRun() {
+      /** 入口复核运行与勾选，不能靠按钮禁用属性防重复。 */
+      const prior = state.runs.find((item) => item.id === dialogRunId);
+      if (!prior || prior.status !== 'paused' || !prior.reconciled || state.lockId !== prior.id || !document.querySelector('#resume-acknowledge')?.checked) return;
+      /** 复制已完成证据，保持同一脚本、目标与条件；仅当前阶段重新进入运行。 */
+      const run = {...structuredClone(prior),id:'run_' + Date.now().toString(36),type:'续跑',status:'running',time:nowLabel(),parentRunId:prior.id,resolved:false,reconciled:false,stopped:false,observation:null,reason:null};
+      for (const stage of run.stages) if (stage.status === 'succeeded') stage.inherited = true;
+      run.stages[run.stage].status = 'running'; run.plan.id = prior.plan.id + '_resume';
+      // 续跑计划仅包含剩余范围，展示起点与新确认保持一致。
+      run.plan.migrationRequired = false; run.plan.backfillStart = prior.cursor;
+      run.stages[run.stage].detail = `从已核对游标 ${prior.cursor.toLocaleString()} 继续 · 每批 500 行 · 条件写入`;
+      state.runs.unshift(run); state.lockId = run.id; invalidateCandidate(); persist(); render(); openDialog('run',run.id); scheduleStage(run.id);
+    }
+    /** 引用当前候选证据到已有会话的模拟预览；不发送消息。 */
+    function renderAgent() {
+      /** 报告身份和时间随请求提供，未检查时不允许生成肯定结论。 */
+      const report = validReport(), plan = candidatePlan();
+      dialogContent('交给当前 Agent 分析','主会话协作预览 · 本原型不会发送消息或调用模型',`<div class="ref-chip">库存生产 / inventory / ${state.selected}</div><label for="agent-prompt" class="select-label">引用到主会话的问题</label><textarea id="agent-prompt" rows="3">请评估从 ${state.current} ${intent()}到 ${state.selected} 的影响，检查数据库变更、依赖与恢复条件。</textarea><div class="evidence"><strong>随请求携带的公开信息</strong><p>${plan.id} · api-01 /srv/inventory · ${databaseLabel(plan.database)}；源码、镜像摘要、配置引用、${report ? report.id + ' / ' + report.checkedAt + ' 的检查报告' : '检查尚未完成'}。不包含秘密值或业务行数据。</p></div><div class="notice neutral">Agent 可以解释风险、提出草稿与排查建议；模块控制执行与真实状态。下方只展示预设回答。</div><div class="dialog-footer"><button class="button outline" data-action="close">返回页面</button><button class="button primary" data-action="simulate-agent" ${!report ? 'disabled' : ''}>演示 Agent 分析</button></div>`);
+    }
+    /** 生成当前报告对应的预设建议；文本不能修改检查结论或执行状态。 */
+    function simulateAgent() {
+      /** 过期报告拒绝使用，避免把旧分析套到新计划。 */
+      const report = validReport(), plan = candidatePlan();
+      if (!report) { renderAgent(); return; }
+      state.analysis = {key:candidateKey(),text:report.blockers.length ? `建议暂停${intent()}：${report.blockers.join('；')}。先补证据或生成独立修复计划，再重新检查；不能通过 SSH 绕过限制。` : `${state.current} → ${state.selected}：${plan.kind === 'backfill' ? `${plan.migrationRequired ? '先扩展字段' : '保留已完成扩展'}、部署兼容读写，从游标 ${plan.backfillStart.toLocaleString()} 继续回填和校验；不要提前切换读取。` : plan.kind === 'expand' ? '先执行兼容扩展迁移，再部署应用。新增结构保留，应用失败时重新检查后恢复兼容版本。' : '本次不执行迁移，保留当前结构和业务数据。'}检查确认了产物和读写条件；仍需遵守维护窗口与观察阈值。`};
+      closeDialog(); render(); toast('预设分析已展示；没有发送消息或执行发布');
+    }
+    /** 运行排查使用该运行快照，不能替代核对，也不能将 unknown 直接解锁。 */
+    function renderRunAgent() {
+      /** 从绑定的运行获取事实，避免引用当前候选覆盖历史。 */
+      const run = state.runs.find((item) => item.id === dialogRunId);
+      if (!run) return;
+      dialogView = 'run-agent';
+      dialogContent('Agent 排查建议','预设分析示例 · 不会调用模型或修改服务器',`<div class="evidence"><strong>引用 ${escapeHtml(run.id)}</strong><p>${run.status === 'unknown' ? '先核对执行器、数据库会话、迁移历史与校验值。当前对象可见不足以证明旧操作停止，禁止重发迁移或释放占用。' : run.status === 'paused' ? '核对已提交批次与游标一致、复制延迟回落后，只续跑剩余范围。条件写入不得覆盖并发新值。' : '分别保留迁移和应用结果。核对执行器已经退出，再验证旧应用能读写当前结构与数据，准备独立应用恢复计划。'}</p></div><div class="notice">恢复需要模块重新校验与用户确认。Agent 的建议不会改写阶段结果，也不会自动执行。</div><div class="dialog-footer"><button class="button outline" data-action="back-run">返回运行记录</button></div>`);
+    }
+    /** 切换演示预设；真实占用不能靠切换场景被忽略，仅重置演示可清理样例。 */
+    function selectScenario(id) {
+      if (!scenarios[id] || lockedRun()) return;
+      clearTimeout(runTimer); invalidateCandidate(); state = createInitialState(id);
+      selectDeploymentTab('release');
+      persist(); render(); toast('已载入场景：' + scenarios[id].label);
+    }
+    /** 统一按钮路由，只处理内置动作和经过校验的版本/运行身份。 */
+    document.addEventListener('click',(event) => {
+      /** 兼容图标内部点击，禁用按钮不派发动作。 */
+      const button = event.target.closest('button');
+      if (!button || button.disabled) return;
+      if (button.dataset.deploymentTab) { selectDeploymentTab(button.dataset.deploymentTab); return; }
+      if (button.dataset.section) { if (button.dataset.section !== '部署') toast(button.dataset.section + '沿用程序现有页面；此原型展示部署流程'); return; }
+      /** 动作不包含任意脚本、远端地址执行或模型调用。 */
+      const action = button.dataset.action;
+      if (action === 'check') checkCandidate();
+      else if (action === 'confirm') { approvalId = validReport()?.id || null; openDialog('confirm'); }
+      else if (action === 'start') startRun();
+      else if (action === 'close') closeDialog();
+      else if (action === 'run') openDialog('run',button.dataset.run);
+      else if (action === 'unknown' || action === 'fail') simulateFailure(action === 'unknown' ? 'unknown' : 'failed');
+      else if (action === 'rollback' || action === 'choose-version') { if (dialog.open) closeDialog(document.querySelector('#release-select')); selectRelease(button.dataset.version); document.querySelector('#candidate-area').scrollIntoView({behavior:'smooth',block:'start'}); document.querySelector('#release-select').focus({preventScroll:true}); if (action === 'rollback') checkCandidate(); }
+      else if (action === 'agent' || action === 'reference') openDialog('agent');
+      else if (action === 'simulate-agent') simulateAgent();
+      else if (action === 'observe') observeRun();
+      else if (action === 'prepare-recovery') prepareRecovery();
+      else if (action === 'resume') openDialog('resume',dialogRunId);
+      else if (action === 'confirm-resume') resumeRun();
+      else if (action === 'run-agent') renderRunAgent();
+      else if (action === 'back-run') { dialogView = 'run'; renderRun(); }
+      else if (action === 'history') { closeDialog(document.querySelector('#history-tab')); selectDeploymentTab('history',true); document.querySelector('#history-tab').scrollIntoView({behavior:'smooth',block:'nearest'}); }
+      else if (action === 'detect-settings') document.querySelector('#settings-suggestion').hidden = false;
+      else if (action === 'apply-settings-suggestion') {
+        /** 识别结果只填入草稿，不覆盖访问域名或数据库目标。 */
+        const suggested = defaultSettings();
+        document.querySelector('#settings-source').value = suggested.source; document.querySelector('#settings-registry').value = suggested.registry;
+        document.querySelector('#settings-suggestion').hidden = true; document.querySelector('#settings-error').hidden = true; toast('已填入草稿；保存后生效，未连接服务器或调用模型');
+      }
+      else if (action === 'change-script' && !lockedRun()) { state.scriptRevision = state.scriptRevision === 1 ? 2 : 1; invalidateCandidate(); persist(); render(); renderMigration(); toast('迁移草稿已改变，原检查和确认已失效'); }
+      else if (['target','artifacts','versions','reset','migration','recovery'].includes(action)) openDialog(action);
+      else if (action === 'confirm-reset') { clearTimeout(runTimer); invalidateCandidate(); state = createInitialState(); selectDeploymentTab('release'); closeDialog(); persist(); render(); toast('演示已重置'); }
+      else if (action === 'theme') { document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; try { localStorage.setItem('dutydeck.server-ops-compose.theme',document.documentElement.dataset.theme); } catch { /* 主题切换不依赖持久化成功。 */ } }
+      else if (action === 'disconnect') toast('可在运行详情中演示连接中断；真实程序沿用现有 SSH 断开流程');
+      else if (action === 'project' || action === 'switch-connection') toast('沿用当前运维项目与连接选择器；此稿固定为库存生产示例');
     });
+    /** 表单提交只保存公开设置，禁止浏览器默认导航。 */
+    document.addEventListener('submit',(event) => { if (event.target.id === 'settings-form') { event.preventDefault(); saveSettings(); } });
+    /** 控件变化需要清除旧候选；确认复选框仅解锁对应动作按钮。 */
+    document.addEventListener('change',(event) => {
+      if (event.target.id === 'release-select') selectRelease(event.target.value);
+      if (event.target.id === 'scenario-select') selectScenario(event.target.value);
+      if (event.target.id === 'acknowledge') document.querySelector('#start-button').disabled = !event.target.checked;
+      if (event.target.id === 'resume-acknowledge') document.querySelector('#resume-button').disabled = !event.target.checked;
+    });
+    /** 页签支持方向键循环以及 Home/End，焦点与选中内容一起切换。 */
+    document.querySelector('.deployment-tabs').addEventListener('keydown',(event) => {
+      if (!event.target.matches('[role="tab"]') || !['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+      event.preventDefault();
+      /** 两个固定视图无需重建 DOM，切换不会丢失展开详情或在途检查。 */
+      const id = event.key === 'Home' ? 'release' : event.key === 'End' ? 'history' : event.target.dataset.deploymentTab === 'release' ? 'history' : 'release';
+      selectDeploymentTab(id,true);
+    });
+    /** 约束键盘焦点在弹窗内部，同时保留原生 Escape 行为。 */
+    dialog.addEventListener('keydown',(event) => {
+      if (event.key !== 'Tab') return;
+      /** 只收集可见且启用的控件，包括可键盘展开的依据。 */
+      const controls = Array.from(dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,[tabindex="0"]')).filter((control) => control.getClientRects().length);
+      /** 首尾控制循环，不将焦点移到遮罩后的页面。 */
+      const first = controls[0], last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    });
+    /** 关闭后恢复原焦点；失效节点则退到仍可操作的检查或结果入口。 */
+    dialog.addEventListener('close',() => { dialogView = null; approvalId = null; if (dialogOpener?.isConnected && !dialogOpener.disabled && dialogOpener.getClientRects().length) dialogOpener.focus(); else (document.querySelector('#run-banner button') || document.querySelector('.deployment-tab[aria-selected="true"]')).focus(); });
+    restore(); render(); persist();
 
-    /** 恢复原型独立的主题偏好。 */
-    const savedTheme = localStorage.getItem('dutydeck.server-ops-compose.theme');
-    if (savedTheme === 'light' || savedTheme === 'dark') { state.theme = savedTheme; document.documentElement.dataset.theme = savedTheme; }
   </script>
 </body>
 </html>

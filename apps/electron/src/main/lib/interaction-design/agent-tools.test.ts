@@ -34,6 +34,13 @@ test('Given 计划模式 When 调用写工具 Then 每次执行拒绝且不暴�
   expect(INTERACTION_DESIGN_AGENT_READ_TOOL_NAMES as readonly string[]).not.toContain('prototype_validate')
 })
 
+test('Given 整页 HTML 导入工具 When 缺少独立导入任务 Then 在执行器前拒绝绕过页面拆分', async () => {
+  const { tools, calls } = fixture()
+  const tool = tools.find((item) => item.name === 'prototype_import_html')!
+  await expect(tool.execute('import', { prototypeId: 'p', baseRevision: 1, relativePath: 'page.html' }, undefined, undefined, {} as never)).rejects.toThrow('INTERACTION_DESIGN_INVALID_INPUT')
+  expect(calls).toHaveLength(0)
+})
+
 test('Given 生成候选 When 未绑定job Then 在服务前拒绝', async () => {
   const { tools, calls } = fixture()
   await expect(tools.find((item) => item.name === 'prototype_propose')!.execute('call', { prototypeId: 'p', baseRevision: 1, summary: '候选', draft: {} }, undefined, undefined, {} as never)).rejects.toThrow()
@@ -80,7 +87,7 @@ function pageFixture(cancelOnRead?: AbortController) {
   const document = {
     schemaVersion: 1 as const, id: 'prototype-1', revision: 3, createdAt: 1, updatedAt: 3,
     name: '多页原型', platform: 'mobile' as const, brief: '说明', groups: [{ id: 'g', name: '分组' }], entryPageId: 'home',
-    pages: [{ id: 'home', groupId: 'g', name: '首页', html: '<h1>原正文</h1>' }, { id: 'other', groupId: 'g', name: '其他页', html: '<h1>OTHER_PAGE_BODY_NOT_FOR_CONTEXT</h1>', source: { path: 'src/other.html', hash: 'a'.repeat(64), kind: 'html' as const } }],
+    pages: [{ id: 'home', groupId: 'g', name: '首页', html: '<h1>原正文</h1>', states: [{ id: 'empty', name: '无数据', html: '<p>空态</p>' }] }, { id: 'other', groupId: 'g', name: '其他页', html: '<h1>OTHER_PAGE_BODY_NOT_FOR_CONTEXT</h1>', source: { path: 'src/other.html', hash: 'a'.repeat(64), kind: 'html' as const } }],
     flows: [{ id: 'next', fromPageId: 'home', elementId: 'go', targetPageId: 'other' }],
   }
   /** 记录真实领域命令和取消信号；返回固定快照模拟宿主读取。 */
@@ -121,6 +128,7 @@ test('Given 固定基线与单页修改 When 提交单页候选 Then 宿主仅�
   /** 从领域请求检查完整候选，原版本对象必须保持不可变。 */
   const proposed = calls[1]!.input as { draft: { pages: typeof document.pages; groups: typeof document.groups; flows: typeof document.flows }; baseRevision: number; jobId: string; sessionId: string }
   expect(proposed.draft.pages[0]!.html).toBe(input.html)
+  expect(proposed.draft.pages[0]!.states).toEqual(document.pages[0]!.states)
   expect(proposed.draft.pages[1]).toEqual(document.pages[1]!)
   expect(proposed.draft.groups).toEqual(document.groups)
   expect(proposed.draft.flows).toEqual(document.flows)
@@ -144,4 +152,19 @@ test('Given 不存在页面或伪造额外字段 When 单页工具执行 Then �
   await expect(tool.execute('missing', input, undefined, undefined, {} as never)).rejects.toThrow('页面不存在')
   await expect(tool.execute('forged', { ...input, sessionId: 'forged' }, undefined, undefined, {} as never)).rejects.toThrow('INVALID_INPUT')
   expect(calls.map((call) => call.method)).toEqual(['getVersion'])
+})
+
+
+test('Given 附加状态 When 单页工具指定stateId Then 仅修改该状态且未知状态拒绝', async () => {
+  /** 固定基线保留默认正文与其他页面。 */
+  const { tools, document, calls } = pageFixture()
+  const tool = tools.find(item => item.name === 'prototype_propose_page')!
+  const input = { prototypeId: 'prototype-1', baseRevision: 3, jobId: 'job-1', pageId: 'home', stateId: 'empty', html: '<p>新空态</p>', summary: '修改空态' }
+  await tool.execute('state', input, undefined, undefined, {} as never)
+  const proposed = calls[1]!.input as { draft: typeof document }
+  expect(proposed.draft.pages[0]!.html).toBe(document.pages[0]!.html)
+  expect(proposed.draft.pages[0]!.states![0]!.html).toBe(input.html)
+  expect(document.pages[0]!.states![0]!.html).toBe('<p>空态</p>')
+  await expect(tool.execute('missing', { ...input, stateId: 'missing' }, undefined, undefined, {} as never)).rejects.toThrow('页面状态不存在')
+  expect(calls.filter(call => call.method === 'propose')).toHaveLength(1)
 })

@@ -72,7 +72,7 @@ const api: InteractionDesignApi = {
   },
 }
 Object.defineProperty(window, 'electronAPI', { value: { interactionDesign: api }, configurable: true })
-Object.defineProperty(window, '__interactionSmoke', { value: { state, switchHost: () => switchHost?.(), switchEmpty: () => switchEmpty?.(), release: () => { state.holdCandidate = false; releaseCandidate?.() }, prompt: () => store.get(agentPendingPromptAtom), change: (workspaceId = 'workspace-a', prototypeId?: string) => { if (workspaceId === 'workspace-a' && prototypeId === 'proto-remote') state.remoteVisible = true; for (const listener of listeners) listener({ workspaceId, prototypeId }) } } })
+Object.defineProperty(window, '__interactionSmoke', { value: { state, candidate, switchHost: () => switchHost?.(), switchEmpty: () => switchEmpty?.(), release: () => { state.holdCandidate = false; releaseCandidate?.() }, prompt: () => store.get(agentPendingPromptAtom), change: (workspaceId = 'workspace-a', prototypeId?: string) => { if (workspaceId === 'workspace-a' && prototypeId === 'proto-remote') state.remoteVisible = true; for (const listener of listeners) listener({ workspaceId, prototypeId }) } } })
 /** API 安装后再载入真实组件。 */
 const { InteractionDesignWorkspace } = await import('../src/renderer/components/interaction-design/InteractionDesignWorkspace')
 function Fixture(): React.ReactElement {

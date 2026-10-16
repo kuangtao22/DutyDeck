@@ -19,7 +19,79 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 /** 统一的测试会话。 */
 const sessionId = 'session'
 
+/** 项目还原任务的完整规划，测试正文只关注任务边界而不伪造源码字节。 */
+function restorePlan() {
+  return {
+    schemaVersion: 1 as const,
+    summary: '按业务路由拆分页面',
+    groups: [{ id: 'main', name: '核心导航' }],
+    pages: [
+      { id: 'home', name: '首页', groupId: 'main', role: '核心入口', entry: true, states: [], evidence: [] },
+      { id: 'parking', name: '停车记录', groupId: 'main', role: '记录列表', states: [], evidence: [] },
+    ],
+    entryPageId: 'home',
+    flows: [],
+    unresolved: [],
+  }
+}
+
 describe('交互设计版本与候选', () => {
+  it('Given 项目还原任务缺少页面规划 When 开始生成 Then 宿主拒绝进入生成阶段', async () => {
+    const { service } = setup()
+    const first = await service.invoke('create', { sessionId, name: '车本本', platform: 'mobile' })
+    await expect(service.invoke('beginJob', {
+      sessionId, prototypeId: first.document.id, baseRevision: 1,
+      instruction: '根据现有项目拆分多页面', mode: 'project-restore',
+      pageManifest: [{ id: 'home', name: '首页' }, { id: 'parking', name: '停车记录' }],
+    })).rejects.toThrow('页面规划')
+  })
+
+  it('Given 完整页面规划 When 候选按规划提交 Then 宿主保留页面分组和状态并生成候选', async () => {
+    const { service } = setup()
+    const first = await service.invoke('create', { sessionId, name: '车本本', platform: 'mobile' })
+    const group = first.document.groups[0]!
+    const plan = {
+      schemaVersion: 1 as const,
+      summary: '核心页面规划',
+      groups: [group],
+      pages: [
+        { id: 'home', name: '首页', groupId: group.id, role: '核心入口', entry: true, defaultStateName: '有数据', states: [{ id: 'empty', name: '无数据' }], evidence: [] },
+        { id: 'parking', name: '停车记录', groupId: group.id, role: '记录列表', states: [], evidence: [] },
+      ],
+      entryPageId: 'home', flows: [], unresolved: [],
+    }
+    const job = await service.invoke('beginJob', { sessionId, prototypeId: first.document.id, baseRevision: 1, instruction: '根据现有项目拆分多页面', mode: 'project-restore', plan })
+    const draft = {
+      ...first.document,
+      pages: [
+        { ...first.document.pages[0]!, id: 'home', name: '首页', groupId: group.id, html: '<h1>首页</h1>', defaultStateName: '有数据', states: [{ id: 'empty', name: '无数据', html: '<p>暂无记录</p>' }] },
+        { ...first.document.pages[0]!, id: 'parking', name: '停车记录', groupId: group.id, html: '<h1>停车记录</h1>' },
+      ],
+      entryPageId: 'home',
+    }
+    const candidate = await service.invoke('propose', { sessionId, prototypeId: first.document.id, baseRevision: 1, jobId: job.id, draft, summary: '按规划生成' })
+    expect(candidate.status).toBe('ready')
+    expect((await service.invoke('load', { sessionId, prototypeId: first.document.id })).jobs.find(value => value.id === job.id)?.plan).toEqual(plan)
+  })
+
+  it('Given 已冻结页面规划 When 候选新增未规划页面 Then 宿主拒绝越过规划边界', async () => {
+    const { service } = setup()
+    const first = await service.invoke('create', { sessionId, name: '车本本', platform: 'mobile' })
+    const group = first.document.groups[0]!
+    const plan = { ...restorePlan(), groups: [group], pages: restorePlan().pages.map(page => ({ ...page, groupId: group.id })) }
+    const job = await service.invoke('beginJob', { sessionId, prototypeId: first.document.id, baseRevision: 1, instruction: '根据现有项目拆分多页面', mode: 'project-restore', plan })
+    const draft = {
+      ...first.document,
+      pages: [
+        { ...first.document.pages[0]!, id: 'home', name: '首页', groupId: group.id, html: '<h1>首页</h1>' },
+        { ...first.document.pages[0]!, id: 'parking', name: '停车记录', groupId: group.id, html: '<h1>停车记录</h1>' },
+        { ...first.document.pages[0]!, id: 'settings', name: '设置', groupId: group.id, html: '<h1>设置</h1>' },
+      ],
+      entryPageId: 'home',
+    }
+    await expect(service.invoke('propose', { sessionId, prototypeId: first.document.id, baseRevision: 1, jobId: job.id, draft, summary: '越过规划' })).rejects.toThrow('未规划页面')
+  })
+
   it('Given 空项目 When 从页面入口创建 Then 一次生成隐藏空间和用户命名页面', async () => {
     /** 隔离服务。 */
     const { service } = setup()
@@ -28,6 +100,49 @@ describe('交互设计版本与候选', () => {
     expect(snapshot.document.pages).toHaveLength(1)
     expect(snapshot.document.pages[0]!.name).toBe('欢迎页')
     expect(snapshot.document.entryPageId).toBe(snapshot.document.pages[0]!.id)
+  })
+
+  it('Given 项目还原任务 When 候选包含导览页和完整 App 单页 Then 宿主拒绝伪拆分', async () => {
+    const { service } = setup()
+    const first = await service.invoke('create', { sessionId, name: '车本本', platform: 'mobile' })
+    const job = await service.invoke('beginJob', {
+      sessionId, prototypeId: first.document.id, baseRevision: 1,
+      instruction: '根据现有项目拆分多路由 App', mode: 'project-restore',
+      plan: restorePlan(),
+    })
+    const pseudoSplit = {
+      ...first.document,
+      pages: [
+        { ...first.document.pages[0]!, id: 'guide', name: '首页导航', html: '<h1>页面清单</h1>' },
+        { ...first.document.pages[0]!, id: 'full-app', name: '车本本-App交互原型.html', source: { path: '车本本-App交互原型.html', hash: 'a'.repeat(64), kind: 'html' as const }, html: '<nav>首页 记一笔 停车记录 找车 车辆管理 我的</nav>' },
+      ],
+      entryPageId: 'guide',
+    }
+    await expect(service.invoke('propose', { sessionId, prototypeId: first.document.id, baseRevision: 1, jobId: job.id, draft: pseudoSplit, summary: '伪拆分' })).rejects.toThrow('页面拆分')
+  })
+
+  it('Given 项目还原任务 When 只有一个页面覆盖多个页面清单 Then 宿主拒绝不完整候选', async () => {
+    const { service } = setup()
+    const first = await service.invoke('create', { sessionId, name: '车本本', platform: 'mobile' })
+    const job = await service.invoke('beginJob', {
+      sessionId, prototypeId: first.document.id, baseRevision: 1,
+      instruction: '根据现有项目拆分多页面', mode: 'project-restore',
+      plan: restorePlan(),
+    })
+    const incomplete = { ...first.document, pages: [{ ...first.document.pages[0]!, id: 'home', name: '首页', html: '<h1>首页、停车记录</h1>' }], entryPageId: 'home' }
+    await expect(service.invoke('propose', { sessionId, prototypeId: first.document.id, baseRevision: 1, jobId: job.id, draft: incomplete, summary: '缺页' })).rejects.toThrow('页面拆分')
+  })
+
+  it('Given 项目还原任务 When 调用整页 HTML 导入 Then 宿主拒绝绕过页面清单', async () => {
+    const { root, service } = setup()
+    writeFileSync(join(root, 'standalone.html'), '<h1>独立页面</h1>')
+    const first = await service.invoke('create', { sessionId, name: '车本本', platform: 'mobile' })
+    const job = await service.invoke('beginJob', {
+      sessionId, prototypeId: first.document.id, baseRevision: 1,
+      instruction: '根据现有项目拆分多页面', mode: 'project-restore',
+      plan: restorePlan(),
+    })
+    await expect(service.invoke('importHtml', { sessionId, prototypeId: first.document.id, baseRevision: 1, relativePath: 'standalone.html', jobId: job.id })).rejects.toThrow('页面拆分')
   })
   it('Given 项目已有交互模块 When 再次创建 Then 拒绝创建第二个模块', async () => {
     const { service } = setup()
@@ -513,4 +628,63 @@ it('Given 版本元数据累计超预算 When list Then 明确拒绝无界摘要
   stored.padding = 'x'.repeat(9 * 1024 * 1024)
   writeFileSync(path, JSON.stringify(stored))
   await expect(service.invoke('list', { sessionId })).rejects.toThrow('预算')
+})
+
+
+describe('页面状态持久化', () => {
+  it('Given 旧版本与多状态候选 When 采纳再恢复 Then 保留不可变历史并独立去重状态正文', async () => {
+    /** 隔离服务与首个旧格式版本。 */
+    const { root, service } = setup()
+    const first = await service.invoke('create', { sessionId, name: '状态测试', platform: 'mobile' })
+    const prototypeId = first.document.id
+    const directory = join(root, '.proma', 'interaction-design', 'prototypes', prototypeId)
+    const oldBytes = readFileSync(join(directory, 'revisions', '1.json'))
+    /** 两个不同状态共享正文，验证内容寻址去重。 */
+    const draft = { ...first.document, pages: first.document.pages.map(page => ({ ...page, defaultStateName: '有数据', states: [{ id: 'empty', name: '无数据', html: '<p>暂无记录</p>' }, { id: 'loading', name: '加载中', html: '<p>暂无记录</p>' }] })) }
+    const candidate = await service.invoke('propose', { sessionId, prototypeId, baseRevision: 1, draft, summary: '补齐状态' })
+    expect((await service.invoke('getCandidate', { sessionId, prototypeId, candidateId: candidate.id })).draft.pages).toEqual(draft.pages)
+    const adopted = await service.invoke('adopt', { sessionId, prototypeId, candidateId: candidate.id, baseRevision: 1 })
+    expect(adopted.document.pages).toEqual(draft.pages)
+    expect(readdirSync(join(directory, 'contents'))).toHaveLength(2)
+    expect(readFileSync(join(directory, 'revisions', '2.json'), 'utf8')).not.toContain('<p>暂无记录</p>')
+    const restored = await service.invoke('restore', { sessionId, prototypeId, baseRevision: 2, revision: 1 })
+    expect(restored.document.pages[0]).not.toHaveProperty('states')
+    expect(readFileSync(join(directory, 'revisions', '1.json'))).toEqual(oldBytes)
+    expect((await service.invoke('getVersion', { sessionId, prototypeId, revision: 2 })).pages).toEqual(draft.pages)
+    /** 状态正文损坏不能静默回退默认正文。 */
+    writeFileSync(join(directory, 'contents', `${interactionHash('<p>暂无记录</p>')}.json`), JSON.stringify({ html: '损坏' }))
+    await expect(service.invoke('getVersion', { sessionId, prototypeId, revision: 2 })).rejects.toThrow('正文已损坏')
+  })
+  it('Given 状态候选被篡改 When 读取 Then 拒绝内容身份不匹配', async () => {
+    /** 候选保存在隔离目录，模拟外部改写状态正文。 */
+    const { root, service } = setup()
+    const first = await service.invoke('create', { sessionId, name: '状态测试', platform: 'mobile' })
+    const prototypeId = first.document.id
+    const draft = { ...first.document, pages: first.document.pages.map(page => ({ ...page, states: [{ id: 'empty', name: '无数据', html: '<p>空</p>' }] })) }
+    const candidate = await service.invoke('propose', { sessionId, prototypeId, baseRevision: 1, draft, summary: '状态' })
+    const path = join(root, '.proma', 'interaction-design', 'prototypes', prototypeId, 'candidates', `${candidate.id}.json`)
+    const stored = JSON.parse(readFileSync(path, 'utf8')) as { draft: typeof draft }
+    stored.draft.pages[0]!.states[0]!.html = '<p>被替换</p>'
+    writeFileSync(path, JSON.stringify(stored))
+    await expect(service.invoke('getCandidate', { sessionId, prototypeId, candidateId: candidate.id })).rejects.toThrow('候选正文身份已损坏')
+  })
+  it('Given 附加状态引用缺失资源 When 提交 Then 拒绝无效候选', async () => {
+    /** 隔离草稿带有仅在附加状态出现的资源。 */
+    const { service } = setup()
+    const first = await service.invoke('create', { sessionId, name: '状态测试', platform: 'mobile' })
+    const draft = { ...first.document, pages: first.document.pages.map(page => ({ ...page, states: [{ id: 'empty', name: '无数据', html: '<img src="prototype-asset:missing">' }] })) }
+    await expect(service.invoke('propose', { sessionId, prototypeId: first.document.id, baseRevision: 1, draft, summary: '状态' })).rejects.toThrow('不存在的项目素材')
+  })
+  it('Given 页级任务 When 为当前页添加状态 Then 允许候选且其他页仍受保护', async () => {
+    /** 页级任务只开放所属页面的全部视觉状态。 */
+    const { service } = setup()
+    const first = await service.invoke('create', { sessionId, name: '状态测试', platform: 'mobile' })
+    const prototypeId = first.document.id
+    const job = await service.invoke('beginJob', { sessionId, prototypeId, baseRevision: 1, instruction: '补充空状态', pageId: 'home' })
+    const draft = { ...first.document, pages: first.document.pages.map(page => ({ ...page, defaultStateName: '有数据', states: [{ id: 'empty', name: '无数据', html: '<p data-prototype-element="retry">暂无记录</p>' }] })) }
+    const candidate = await service.invoke('propose', { sessionId, prototypeId, baseRevision: 1, draft, summary: '状态', jobId: job.id })
+    const adopted = await service.invoke('adopt', { sessionId, prototypeId, candidateId: candidate.id, baseRevision: 1 })
+    expect(adopted.document.pages[0]!.states).toHaveLength(1)
+    expect((await service.invoke('beginJob', { sessionId, prototypeId, baseRevision: 2, instruction: '修改重试', pageId: 'home', elementId: 'retry' })).status).toBe('running')
+  })
 })

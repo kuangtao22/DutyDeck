@@ -2293,7 +2293,7 @@ export class AgentOrchestrator {
       }) + (automationContext ? `\n\n## 定时任务执行上下文\n\n${automationContext}` : '')
       /** 单次可信运行场景放在通用规则之后，使专用会话覆盖普通入口分流语义。 */
       const systemPromptAppend = [baseSystemPrompt,
-        interactionAccess ? '交互设计使用 prototype_* 工具：用户可直接描述要还原的项目页面，Agent 先读取现有原型和当前版本，再从路由、组件、主题和实际素材建立最小源码证据闭包；修改先 begin_job，再 propose 完整候选，由用户在工作区采纳。元素引用是修改上下文，自动保护范围为所属页面。不要用 Write/Edit 直接改 .proma/interaction-design 数据，也不要把结构检查或访问路径记录宣称为视觉一比一验证。详细流程按 interaction-design Skill。' : undefined,
+        interactionAccess ? '交互设计使用 prototype_* 工具：用户可直接描述要还原的项目页面，Agent 先读取现有原型和当前版本，再从路由、组件、主题和实际素材建立最小源码证据闭包；现有项目还原必须先盘点并向用户确认页面数量、分组树、状态矩阵、页面流程和源码/素材证据，再 begin_job(mode=project-restore, plan=完整页面规划)，之后只能按规划用 propose 提交完整候选，由用户在工作区采纳。元素引用是修改上下文，自动保护范围为所属页面。不要用 Write/Edit 直接改 .proma/interaction-design 数据，也不要把结构检查或访问路径记录宣称为视觉一比一验证。不同业务页面分别写入 pages，同页有数据/无数据等状态写入该页 states 并排展示；禁止整套 App 塞一个 HTML、导览页或来源参考页冒充拆分；prototype_import_html 只用于用户明确要求导入的独立 HTML，不能用于现有项目还原。详细流程按 interaction-design Skill。' : undefined,
         extensions.systemPromptAppend]
         .filter((section): section is string => Boolean(section?.trim()))
         .join('\n\n')

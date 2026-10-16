@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, opendirSync, readdirSync } from 'node:fs'
 import { basename, join, posix } from 'node:path'
 import type { InteractionDesignInputs, InteractionDesignMethod, InteractionDesignResults, PrototypeCandidate, PrototypeCandidateSummary, PrototypeCheck, PrototypeDocument, PrototypeDraft, PrototypeJob, PrototypeSnapshot, PrototypeVersion } from '@proma/shared'
-import { assertPrototypeDraft, parsePrototypeDraft, parseInteractionDesignCommand, PROTOTYPE_LIMITS, validatePrototypeStructure } from '@proma/shared'
+import { assertPrototypeDraft, inferPrototypeJobMode, isProjectRestoreInstruction, parsePrototypeDraft, parsePrototypePlan, parseInteractionDesignCommand, PROTOTYPE_LIMITS, validateProjectRestoreDraft, validatePrototypeStructure } from '@proma/shared'
 import { acquireMediaFileLock } from '../media/media-file-lock'
 import { readAtomicFileState, removeFileAtomic, writeJsonFileAtomicSecure } from '../safe-file'
 import { assertInteractionId, interactionDirectory, readInteractionFile } from './paths'
@@ -43,7 +43,7 @@ interface PrototypeHead {
 interface StoredVersion {
   /** 完整文档的 SHA-256，用于检测版本元数据篡改。 */
   hash: string
-  document: Omit<PrototypeDocument, 'pages'> & { pages: Array<Omit<PrototypeDocument['pages'][number], 'html'> & { contentHash: string }> }
+  document: Omit<PrototypeDocument, 'pages'> & { pages: Array<Omit<PrototypeDocument['pages'][number], 'html' | 'states'> & { contentHash: string; states?: Array<{ id: string; name: string; contentHash: string }> }> }
   version: PrototypeVersion
 }
 /** 正式数据只读和修改都通过本服务。 */
@@ -103,16 +103,21 @@ export class InteractionDesignService {
     if (!stored.document || !Array.isArray(stored.document.pages) || stored.document.pages.length > PROTOTYPE_LIMITS.pages) throw new Error('版本页面记录非法')
     /** 在加载下一页前扣除正文读取预算。 */
     let remainingContentBytes = PROTOTYPE_LIMITS.totalChars * 4
-    /** 恢复后的完整文档。 */
+    /** 根据内容身份读取单个状态正文，并共享整个版本的读取预算。 */
+    const readContent = (contentHash: string): string => {
+      if (!/^[a-f0-9]{64}$/.test(contentHash)) throw new Error('页面内容身份非法')
+      /** 内容寻址的页面或状态对象。 */
+      const content = this.json<{ html: string }>(join(this.directory(id, 'contents'), `${contentHash}.json`), Math.min(remainingContentBytes, PROTOTYPE_LIMITS.pageChars * 4 + 1024))
+      if (typeof content.html !== 'string' || interactionHash(content.html) !== contentHash) throw new Error('页面正文已损坏')
+      remainingContentBytes -= Buffer.byteLength(content.html)
+      return content.html
+    }
+    /** 恢复后的完整文档；旧版本不补写可选状态字段。 */
     const document: PrototypeDocument = { ...stored.document, pages: stored.document.pages.map(page => {
-      if (!/^[a-f0-9]{64}$/.test(page.contentHash)) throw new Error('页面内容身份非法')
-      /** 内容寻址的页面对象。 */
-      const content = this.json<{ html: string }>(join(this.directory(id, 'contents'), `${page.contentHash}.json`), Math.min(remainingContentBytes, PROTOTYPE_LIMITS.pageChars * 4 + 1024))
-      if (typeof content.html === 'string') remainingContentBytes -= Buffer.byteLength(content.html)
-      if (typeof content.html !== 'string' || interactionHash(content.html) !== page.contentHash) throw new Error('页面正文已损坏')
-      /** 不向 renderer 暴露存储 locator。 */
-      const { contentHash: _hash, ...metadata } = page
-      return { ...metadata, html: content.html }
+      if (page.states !== undefined && (!Array.isArray(page.states) || page.states.length > PROTOTYPE_LIMITS.statesPerPage)) throw new Error('版本页面状态记录非法')
+      /** 存储定位字段不穿过公开边界。 */
+      const { contentHash, states, ...metadata } = page
+      return { ...metadata, html: readContent(contentHash), ...(states === undefined ? {} : { states: states.map(state => ({ id: state.id, name: state.name, html: readContent(state.contentHash) })) }) }
     }) }
     if (document.id !== id || document.revision !== revision || document.schemaVersion !== 1) throw new Error('版本身份不匹配')
     assertPrototypeDraft(document)
@@ -259,21 +264,25 @@ export class InteractionDesignService {
     const document: PrototypeDocument = { ...structuredClone(draft), schemaVersion: 1, id, revision, createdAt, updatedAt: Date.now() }
     /** 页面内容寻址目录。 */
     const contents = this.directory(id, 'contents', true)
-    /** 页面正文和元数据分离存储。 */
-    const pages = document.pages.map(page => {
+    /** 保存默认正文或附加状态正文；相同 HTML 共享不可变内容对象。 */
+    const storeContent = (html: string): string => {
       /** HTML 内容身份。 */
-      const contentHash = interactionHash(page.html)
+      const contentHash = interactionHash(html)
       /** 不可变内容位置。 */
       const path = join(contents, `${contentHash}.json`)
-      if (!existsSync(path)) writeJsonFileAtomicSecure(path, { html: page.html }, { expectedDestination: { kind: 'missing' } })
+      if (!existsSync(path)) writeJsonFileAtomicSecure(path, { html }, { expectedDestination: { kind: 'missing' } })
       else {
-        /** 已存在但未被引用的崩溃残留也必须经过内容身份验证。 */
+        /** 崩溃残留也必须经过内容身份验证。 */
         const existing = this.json<{ html: string }>(path, PROTOTYPE_LIMITS.pageChars * 4 + 1024)
         if (typeof existing.html !== 'string' || interactionHash(existing.html) !== contentHash) throw new Error('已有页面内容对象损坏，未提交新版本')
       }
-      /** 从版本记录移除正文。 */
-      const { html: _html, ...metadata } = page
-      return { ...metadata, contentHash }
+      return contentHash
+    }
+    /** 页面及状态正文与版本元数据分离存储。 */
+    const pages = document.pages.map(page => {
+      /** 保留旧文档未提供状态字段时的原始磁盘结构。 */
+      const { html, states, ...metadata } = page
+      return { ...metadata, contentHash: storeContent(html), ...(states === undefined ? {} : { states: states.map(state => ({ id: state.id, name: state.name, contentHash: storeContent(state.html) })) }) }
     })
     /** 新版本记录完整写入后才允许发布 head。 */
     const versionPath = join(this.directory(id, 'revisions', true), `${revision}.json`)
@@ -307,6 +316,7 @@ export class InteractionDesignService {
       const job = this.job(input.prototypeId, input.jobId)
       if (job.sessionId !== input.sessionId || job.status !== 'running' || job.baseRevision !== input.baseRevision) throw new Error('生成任务已结束或归属不匹配')
       this.assertJobScope(job, input.draft)
+      this.assertProjectRestoreScope(job, input.draft)
     }
     /** 不可变候选内容。 */
     const candidate: PrototypeCandidate = { id: randomUUID(), prototypeId: input.prototypeId, baseRevision: input.baseRevision, draft: structuredClone(input.draft), summary: input.summary.slice(0, 1000), status: head.revision === input.baseRevision ? 'ready' : 'stale', createdAt: Date.now(), ...(input.jobId ? { jobId: input.jobId } : {}) }
@@ -322,17 +332,29 @@ export class InteractionDesignService {
     if (!job.pageId) return
     /** 固定任务基线。 */
     const baseline = parsePrototypeDraft(this.version(job.prototypeId, job.baseRevision))
-    /** 仅目标页面正文可不同；目录归属和页面名称也属于用户页面管理。 */
-    const withoutPageContent = (value: PrototypeDraft): string => JSON.stringify({ ...value, pages: value.pages.map(page => page.id === job.pageId ? { ...page, html: '' } : page) })
+    /** 目标页默认正文、附加状态及状态名称可不同；页面名称和目录仍受保护。 */
+    const withoutPageContent = (value: PrototypeDraft): string => JSON.stringify({ ...value, pages: value.pages.map(page => page.id === job.pageId ? { ...page, html: '', defaultStateName: undefined, states: undefined } : page) })
     if (withoutPageContent(baseline) !== withoutPageContent(draft)) throw new Error('候选修改超出任务页面范围')
+  }
+  /** 项目还原任务必须按冻结的业务页面清单提交，防止导览页加整套 App 单页冒充拆分。 */
+  private assertProjectRestoreScope(job: PrototypeJob, draft: PrototypeDraft): void {
+    /** 旧任务或损坏记录没有合法 mode 时按历史指令兼容推断，避免绕过采纳校验。 */
+    const mode = job.mode === 'design' || job.mode === 'page-edit' || job.mode === 'project-restore' ? job.mode : inferPrototypeJobMode(job.instruction, job.pageId)
+    if (mode !== 'project-restore' && !isProjectRestoreInstruction(job.instruction)) return
+    /** 宿主共享校验逻辑，阻断导览页、完整单体和缺页候选。 */
+    /** 新任务使用完整规划，旧任务仅保留 pageManifest 兼容读取。 */
+    const issues = validateProjectRestoreDraft(draft, job.plan ?? job.pageManifest)
+    if (issues.length) throw new Error(`项目还原候选未完成页面拆分：${issues[0]}`)
   }
   /** 确认所有逻辑图片引用已在本项目独立库中存在。 */
   private assertAssets(draft: PrototypeDraft): void {
     /** 当前项目已知资产身份。 */
     const known = new Set(this.assets.list().map(asset => asset.id))
     for (const page of draft.pages) {
-      for (const match of page.html.matchAll(/prototype-asset:([A-Za-z0-9_-]+)/g)) {
-        if (!known.has(match[1]!)) throw new Error('原型引用了不存在的项目素材')
+      for (const html of [page.html, ...(page.states?.map(state => state.html) ?? [])]) {
+        for (const match of html.matchAll(/prototype-asset:([A-Za-z0-9_-]+)/g)) {
+          if (!known.has(match[1]!)) throw new Error('原型引用了不存在的项目素材')
+        }
       }
     }
   }
@@ -343,6 +365,8 @@ export class InteractionDesignService {
     /** 当前任务记录。 */
     const job = this.json<PrototypeJob>(join(this.directory(id, 'jobs'), `${jobId}.json`))
     if (job.id !== jobId || job.prototypeId !== id) throw new Error('任务归属不匹配')
+    /** 任务文件属于受管数据，重新读取规划时仍执行同一边界解析。 */
+    if (job.plan !== undefined) job.plan = parsePrototypePlan(job.plan)
     return job
   }
   /** 类型安全入口；边界 parser 由生产 facade 调用。 */
@@ -490,6 +514,7 @@ export class InteractionDesignService {
             const job = this.job(request.prototypeId, candidate.jobId)
             if (job.status !== 'candidate' || job.baseRevision !== candidate.baseRevision) throw new Error('候选对应的生成任务尚未完成或已失效')
             this.assertJobScope(job, candidate.draft)
+            this.assertProjectRestoreScope(job, candidate.draft)
           }
           this.commit(request.prototypeId, request.baseRevision, candidate.draft, candidate.summary, candidate.id)
           return this.snapshot(request.prototypeId)
@@ -512,13 +537,16 @@ export class InteractionDesignService {
         const request = input as InteractionDesignInputs['beginJob']
         return this.write(() => {
           if (this.head(request.prototypeId).revision !== request.baseRevision) throw new Error('生成基线已变化')
+          if (request.mode === 'project-restore' && (!request.plan || request.plan.pages.length < 2)) throw new Error('项目还原任务必须先提交至少两个业务页面的页面规划')
           /** 验证范围来自实际基线，不接受不存在的页面。 */
           const baseline = this.version(request.prototypeId, request.baseRevision)
           if (request.pageId && !baseline.pages.some(page => page.id === request.pageId)) throw new Error('任务页面不存在')
           if (request.elementId) {
             /** 元素引用提供修改上下文，实际候选隔离边界仍为所属页面。 */
             const page = baseline.pages.find(value => value.id === request.pageId)
-            if (!page || !new RegExp(`data-prototype-element\\s*=\\s*["']${request.elementId}["']`, 'i').test(page.html)) throw new Error('任务元素在指定页面不存在')
+            /** 逐状态扫描元素，避免为检查额外拼接全部正文。 */
+            const elementPattern = new RegExp(`data-prototype-element\\s*=\\s*["']${request.elementId}["']`, 'i')
+            if (!page || ![page.html, ...(page.states?.map(state => state.html) ?? [])].some(html => elementPattern.test(html))) throw new Error('任务元素在指定页面不存在')
           }
           /** 已固定任务所属会话和范围。 */
           const job: PrototypeJob = { ...request, id: randomUUID(), status: 'running', createdAt: Date.now(), ...(request.elementId ? { message: '元素引用已固定，候选变更保护范围为所属页面' } : {}) }
@@ -602,6 +630,13 @@ export class InteractionDesignService {
   private async importHtml(request: InteractionDesignInputs['importHtml']): Promise<PrototypeCandidateSummary> {
     /** 固定来源版本。 */
     const document = this.version(request.prototypeId, request.baseRevision)
+    /** Agent 的整页导入必须绑定独立 HTML 任务，项目还原任务只能走页面清单候选。 */
+    /** 可选的独立 HTML 任务记录；UI 直接导入时没有该字段。 */
+    const job = request.jobId ? this.job(request.prototypeId, request.jobId) : undefined
+    if (job) {
+      if (job.sessionId !== request.sessionId || job.status !== 'running' || job.baseRevision !== request.baseRevision) throw new Error('生成任务已结束或归属不匹配')
+      if (job.mode !== 'design' || isProjectRestoreInstruction(job.instruction)) throw new Error('整页 HTML 导入只允许独立页面设计任务；项目还原任务必须先完成页面拆分，再调用 prototype_propose')
+    }
     /** 页面源 HTML。 */
     const original = await this.sources.text(request.relativePath)
     /** 递归闭包剩余总预算。 */

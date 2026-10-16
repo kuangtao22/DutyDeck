@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { parseInteractionDesignCommand, parsePrototypeDraft } from './interaction-design-validation'
+import { parseInteractionDesignCommand, parsePrototypeDraft, PROTOTYPE_LIMITS } from './interaction-design-validation'
 import type { PrototypeDraft } from './interaction-design'
 
 /** 测试一条双页面路径，目录排序与连接独立。 */
@@ -59,5 +59,66 @@ describe('交互设计完整版本合同', () => {
   })
   test('Given 危险对象键 When 解析 Then 拒绝', () => {
     expect(() => parseInteractionDesignCommand({ method: 'load', input: { sessionId: 'session-1', prototypeId: '__proto__' } })).toThrow()
+  })
+})
+
+
+describe('业务页面与附加状态合同', () => {
+  test('Given 旧页面 When 解析 Then 不补状态字段且保持原内容身份输入', () => {
+    expect(parsePrototypeDraft(draft())).toEqual(draft())
+    expect(parsePrototypeDraft(draft()).pages[0]).not.toHaveProperty('states')
+    expect(parsePrototypeDraft(draft()).pages[0]).not.toHaveProperty('defaultStateName')
+  })
+  test('Given 同页不同状态 When 解析 Then 保留名称正文且允许跨页面复用状态身份', () => {
+    /** 各页各自拥有空状态。 */
+    const value = draft()
+    value.pages = value.pages.map(page => ({ ...page, defaultStateName: '有数据', states: [{ id: 'empty', name: '无数据', html: '<p>暂无记录</p>' }] }))
+    expect(parsePrototypeDraft(value)).toEqual(value)
+    expect(parsePrototypeDraft(value).pages).toHaveLength(2)
+  })
+  test('Given 重复状态或超限内容 When 解析 Then 拒绝且状态正文计入整体预算', () => {
+    /** 单页状态边界样本。 */
+    const value = draft()
+    value.pages[0]!.states = [{ id: 'empty', name: '无数据', html: '' }, { id: 'empty', name: '加载', html: '' }]
+    expect(() => parsePrototypeDraft(value)).toThrow('重复')
+    value.pages[0]!.states = Array.from({ length: 13 }, (_, index) => ({ id: `state-${index}`, name: '状态', html: '' }))
+    expect(() => parsePrototypeDraft(value)).toThrow('状态集合')
+    value.pages[0]!.states = [{ id: 'empty', name: '无数据', html: 'x'.repeat(PROTOTYPE_LIMITS.pageChars + 1) }]
+    expect(() => parsePrototypeDraft(value)).toThrow('状态 HTML')
+    value.pages = value.pages.map(page => ({ ...page, states: Array.from({ length: 12 }, (_, index) => ({ id: `state-${index}`, name: '状态', html: 'x'.repeat(PROTOTYPE_LIMITS.pageChars) })) }))
+    expect(() => parsePrototypeDraft(value)).toThrow('预算')
+  })
+})
+
+describe('项目还原任务合同', () => {
+  test('Given 页面规划 When 开始项目还原任务 Then 保留分组状态和源码证据', () => {
+    const plan = {
+      schemaVersion: 1,
+      summary: '按路由拆分业务页面',
+      groups: [{ id: 'core', name: '核心导航' }],
+      pages: [{
+        id: 'home', name: '首页', groupId: 'core', route: '/', role: '核心入口', entry: true,
+        defaultStateName: '有数据',
+        states: [{ id: 'empty', name: '无数据' }],
+        evidence: [{ path: 'src/routes.tsx', sourceKind: 'code', relation: 'route', hash: 'a'.repeat(64) }],
+      }],
+      entryPageId: 'home',
+      flows: [],
+      unresolved: ['错误状态尚未在源码中确认'],
+    }
+    const parsed = parseInteractionDesignCommand({ method: 'beginJob', input: {
+      sessionId: 'session-1', prototypeId: 'proto-1', baseRevision: 1,
+      instruction: '根据现有项目拆分多页面', mode: 'project-restore', plan,
+    } as never })
+    expect(parsed.input).toMatchObject({ mode: 'project-restore', plan })
+  })
+
+  test('Given 项目还原任务 When 解析页面清单 Then 保留模式与页面边界', () => {
+    const parsed = parseInteractionDesignCommand({ method: 'beginJob', input: {
+      sessionId: 'session-1', prototypeId: 'proto-1', baseRevision: 1,
+      instruction: '根据现有项目拆分多页面', mode: 'project-restore',
+      pageManifest: [{ id: 'home', name: '首页' }, { id: 'settings', name: '设置' }],
+    } })
+    expect(parsed.input).toMatchObject({ mode: 'project-restore', pageManifest: [{ id: 'home', name: '首页' }, { id: 'settings', name: '设置' }] })
   })
 })

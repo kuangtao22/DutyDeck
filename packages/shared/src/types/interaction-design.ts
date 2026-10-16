@@ -24,6 +24,16 @@ export interface PrototypeSource {
   kind: 'html' | 'code'
 }
 
+/** 同一业务页面的附加视觉状态；默认状态正文保留在页面 html 中。 */
+export interface PrototypePageState {
+  /** 当前页面内稳定且唯一的状态身份。 */
+  id: string
+  /** 可读状态名称，例如无数据、加载失败。 */
+  name: string
+  /** 该状态的独立离线 HTML。 */
+  html: string
+}
+
 /** 独立页面正文；持久化服务将 HTML 转成不可变内容对象。 */
 export interface PrototypePage {
   /** 原型内稳定页面身份。 */
@@ -34,6 +44,10 @@ export interface PrototypePage {
   name: string
   /** 离线 HTML；元素用 data-prototype-element，路由用 data-prototype-page。 */
   html: string
+  /** 默认正文的状态名称；未提供时仅在展示层称为默认状态。 */
+  defaultStateName?: string
+  /** 同页并排展示的附加状态，不包含默认正文。 */
+  states?: PrototypePageState[]
   /** 可选的原项目来源记录。 */
   source?: PrototypeSource
 }
@@ -134,6 +148,79 @@ export interface PrototypeCandidate extends PrototypeCandidateSummary {
   draft: PrototypeDraft
 }
 
+/** Agent 生成任务的边界模式；项目还原必须按完整页面规划提交。 */
+export type PrototypeJobMode = 'design' | 'page-edit' | 'project-restore'
+
+/** 项目还原任务在生成前声明的业务页面清单。 */
+export interface PrototypePageManifestItem {
+  /** 页面稳定身份。 */
+  id: string
+  /** 页面业务名称。 */
+  name: string
+}
+
+/** 页面规划中的源码或素材证据关系。 */
+export interface PrototypePlanEvidence {
+  /** 项目内相对路径；只保存路径，不保存本机绝对路径。 */
+  path: string
+  /** 提取时的文件内容身份。 */
+  hash: string
+  /** 文件在页面规划中的技术类型。 */
+  sourceKind: 'html' | 'code' | 'style' | 'image'
+  /** 证据支持的页面事实。 */
+  relation: 'route' | 'layout' | 'component' | 'style' | 'asset' | 'interaction' | 'state'
+  /** 给 Agent 和用户看的证据说明。 */
+  note?: string
+}
+
+/** 同一业务页面在生成前声明的状态，不携带 HTML 正文。 */
+export interface PrototypePlanState {
+  /** 页面内稳定状态身份。 */
+  id: string
+  /** 可读状态名称，例如有数据、无数据、加载中。 */
+  name: string
+}
+
+/** 页面规划中的单个业务页面。 */
+export interface PrototypePlanPage {
+  /** 页面稳定身份，生成后的 draft.pages 必须复用。 */
+  id: string
+  /** 页面业务名称。 */
+  name: string
+  /** 规划所属分组。 */
+  groupId: string
+  /** 可选业务路由或入口标识。 */
+  route?: string
+  /** 页面职责，帮助 Agent 区分相邻页面。 */
+  role: string
+  /** 是否是规划中的唯一入口页。 */
+  entry?: boolean
+  /** 默认正文状态名称。 */
+  defaultStateName?: string
+  /** 附加状态清单；状态正文在生成候选时才写入。 */
+  states: PrototypePlanState[]
+  /** 页面源码、样式、素材和交互证据。 */
+  evidence: PrototypePlanEvidence[]
+}
+
+/** 生成前冻结的完整页面规划；持久化在生成任务中，避免边写边猜。 */
+export interface PrototypePlan {
+  /** 规划合同版本。 */
+  schemaVersion: 1
+  /** 规划目的和范围说明。 */
+  summary: string
+  /** 生成任务使用的分组树。 */
+  groups: PrototypeGroup[]
+  /** 生成任务允许写入的业务页面。 */
+  pages: PrototypePlanPage[]
+  /** 唯一入口页面。 */
+  entryPageId: string
+  /** 规划阶段已确认的跨页流程。 */
+  flows: PrototypeFlow[]
+  /** 尚未被源码证据确认的事项。 */
+  unresolved: string[]
+}
+
 /** 运行记录跨会话关闭保留，不自动重放未知消费。 */
 export interface PrototypeJob {
   /** 任务身份。 */
@@ -150,6 +237,12 @@ export interface PrototypeJob {
   pageId?: string
   /** 可选的当前元素范围。 */
   elementId?: string
+  /** 任务边界模式；旧记录缺省时由指令兼容推断。 */
+  mode?: PrototypeJobMode
+  /** 旧项目还原任务的兼容页面清单；新任务使用 plan。 */
+  pageManifest?: PrototypePageManifestItem[]
+  /** 项目还原任务的完整页面规划；新任务优先使用它。 */
+  plan?: PrototypePlan
   /** 任务终态与候选采用状态独立。 */
   status: 'running' | 'candidate' | 'cancelled' | 'failed' | 'interrupted'
   /** 可理解的结果说明。 */
@@ -224,6 +317,15 @@ export interface PrototypeHandoffPage {
   groupPath: string
   /** 页面 HTML 中声明的稳定元素身份。 */
   elementIds: string[]
+  /** 同页状态摘要；默认状态省略 id，旧单状态交接包省略整个字段。 */
+  states?: Array<{
+    /** 附加状态身份，默认状态不提供。 */
+    id?: string
+    /** 可读状态名称。 */
+    name: string
+    /** 此状态声明的元素身份。 */
+    elementIds: string[]
+  }>
   /** 从当前页面发出的交互连接身份。 */
   flowIds: string[]
 }
@@ -308,7 +410,7 @@ export interface InteractionDesignInputs {
   getCandidate: { sessionId: string; prototypeId: string; candidateId: string }
   adopt: { sessionId: string; prototypeId: string; candidateId: string; baseRevision: number }
   discardCandidate: { sessionId: string; prototypeId: string; candidateId: string }
-  beginJob: { sessionId: string; prototypeId: string; baseRevision: number; instruction: string; pageId?: string; elementId?: string }
+  beginJob: { sessionId: string; prototypeId: string; baseRevision: number; instruction: string; pageId?: string; elementId?: string; mode?: PrototypeJobMode; pageManifest?: PrototypePageManifestItem[]; plan?: PrototypePlan }
   cancelJob: { sessionId: string; prototypeId: string; jobId: string }
   failJob: { sessionId: string; prototypeId: string; jobId: string; message: string }
   importAsset: { sessionId: string; prototypeId: string; relativePath: string }
@@ -316,7 +418,7 @@ export interface InteractionDesignInputs {
   assetContent: { sessionId: string; prototypeId: string; assetId: string }
   inspectProject: { sessionId: string }
   readSource: { sessionId: string; paths: string[] }
-  importHtml: { sessionId: string; prototypeId: string; baseRevision: number; relativePath: string; groupId?: string }
+  importHtml: { sessionId: string; prototypeId: string; baseRevision: number; relativePath: string; groupId?: string; jobId?: string }
   exportHtml: { sessionId: string; prototypeId: string; revision: number }
   validate: { sessionId: string; prototypeId: string; revision: number }
   recordExperience: { sessionId: string; prototypeId: string; revision: number; visitedPageIds: string[] }

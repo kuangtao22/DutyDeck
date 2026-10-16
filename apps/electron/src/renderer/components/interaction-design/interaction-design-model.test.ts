@@ -45,6 +45,16 @@ describe('交互设计 renderer 身份与编辑边界', () => {
     const prompt = buildPrototypePrompt(document, '修改按钮文案', 'p2', 'submit')
     expect(prompt).toContain('prototypeId: prototype-a'); expect(prompt).toContain('baseRevision: 7'); expect(prompt).toContain('pageId: p2'); expect(prompt).toContain('elementId: submit'); expect(prompt).toContain('勿直接采纳')
   })
+  test('Given 同页不同状态共享元素 ID When 引用空态 Then 任务精确携带状态且默认态不冒用状态 ID', () => {
+    /** 空数据与有数据的标题身份相同，但修改范围需可区分。 */
+    const emptyPrompt = buildPrototypePrompt(document, '修改空态标题', 'p2', 'title', 'empty')
+    expect(emptyPrompt).toContain('stateId: empty')
+    expect(emptyPrompt).toContain('pageId: p2')
+    expect(emptyPrompt).toContain('elementId: title')
+    const defaultPrompt = buildPrototypePrompt(document, '修改标题', 'p2', 'title')
+    expect(defaultPrompt).toContain('默认状态（page.html')
+    expect(defaultPrompt).not.toContain('stateId:')
+  })
   test('Given 固定开发交接包 When 构建主会话提示 Then 保留版本、视口和元素身份', () => {
     const prompt = buildPrototypeHandoffPrompt({
       schemaVersion: 1, id: 'handoff-1', prototypeId: 'prototype-a', revision: 7, createdAt: 1, name: '产品', platform: 'mobile', brief: '主路径',

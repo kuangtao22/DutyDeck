@@ -67,8 +67,8 @@ export function deletePrototypePage(draft: PrototypeDraft, pageId: string): Prot
 }
 
 /** 引用冻结原型基线和选区；正文不会伪装成已经生成的回复。 */
-export function buildPrototypePrompt(document: PrototypeDocument, instruction: string, pageId?: string, elementId?: string): string {
-  return `请使用交互设计工具处理以下任务，先读取当前原型，生成候选，勿直接采纳。\nprototypeId: ${document.id}\nbaseRevision: ${document.revision}${pageId ? `\npageId: ${pageId}` : ''}${elementId ? `\nelementId: ${elementId}` : ''}\n\n${instruction}`
+export function buildPrototypePrompt(document: PrototypeDocument, instruction: string, pageId?: string, elementId?: string, stateId?: string): string {
+  return `请使用交互设计工具处理以下任务，先读取当前原型，生成候选，勿直接采纳。\nprototypeId: ${document.id}\nbaseRevision: ${document.revision}${pageId ? `\npageId: ${pageId}` : ''}${elementId ? `\nelementId: ${elementId}` : ''}${stateId ? `\nstateId: ${stateId}` : pageId && elementId ? '\n状态：默认状态（page.html，工具调用不传 stateId）' : ''}\n\n${instruction}`
 }
 
 /** 将固定交接包压缩为主会话可读的开发约束，正文通过固定 revision 按需读取。 */
