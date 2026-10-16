@@ -138,3 +138,5 @@ export * from './server-ops-task'
 export * from './server-ops-task-session'
 export * from './interaction-design'
 export * from './interaction-design-validation'
+
+export * from './server-ops-deployment'

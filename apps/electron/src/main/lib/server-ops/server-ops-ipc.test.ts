@@ -1,6 +1,6 @@
 import { SERVER_OPS_AGENT_ACCESS_MANAGEMENT_CHANNELS, SERVER_OPS_TASK_IPC_CHANNELS } from '@proma/shared'
 import { describe, expect, spyOn, test } from 'bun:test'
-import { SERVER_OPS_IPC_CHANNELS, SERVER_OPS_TRUST_CHANNELS, SERVER_OPS_DOCKER_CHANNELS, SERVER_OPS_FILE_CHANNELS, SERVER_OPS_CONSOLE_IPC_CHANNELS, SERVER_OPS_TRANSFER_CHANNELS, SERVER_OPS_DATA_CHANNELS, SERVER_OPS_DATA_SCHEMA_CHANNELS, SERVER_OPS_PROJECT_CHANNELS, SERVER_OPS_SCRIPT_CHANNELS, SERVER_OPS_SCRIPT_DRAFT_CHANNELS, SERVER_OPS_DATA_WRITE_CHANNELS } from '@proma/shared'
+import { SERVER_OPS_IPC_CHANNELS, SERVER_OPS_TRUST_CHANNELS, SERVER_OPS_DOCKER_CHANNELS, SERVER_OPS_DEPLOYMENT_CHANNELS, SERVER_OPS_FILE_CHANNELS, SERVER_OPS_CONSOLE_IPC_CHANNELS, SERVER_OPS_TRANSFER_CHANNELS, SERVER_OPS_DATA_CHANNELS, SERVER_OPS_DATA_SCHEMA_CHANNELS, SERVER_OPS_PROJECT_CHANNELS, SERVER_OPS_SCRIPT_CHANNELS, SERVER_OPS_SCRIPT_DRAFT_CHANNELS, SERVER_OPS_DATA_WRITE_CHANNELS } from '@proma/shared'
 import type { AgentSessionMeta, ServerOpsAuditListResult, ServerOpsConnectionState, ServerOpsHost, ServerOpsLogExitEvent, ServerOpsLogOutputEvent, ServerOpsTerminalExitEvent, ServerOpsTerminalOutputEvent, ServerOpsUpsertHostInput } from '@proma/shared'
 import type { IpcMainInvokeEvent, WebContents } from 'electron'
 import { registerServerOpsIpcHandlers } from './server-ops-ipc'
@@ -1059,7 +1059,7 @@ describe('服务器运维 IPC', () => {
       SERVER_OPS_IPC_CHANNELS.AGENT_ACCESS_CHANGED,
       SERVER_OPS_IPC_CHANNELS.LOG_OUTPUT,
       SERVER_OPS_IPC_CHANNELS.LOG_EXIT,
-    ] as readonly string[]).includes(channel)).flatMap((channel) => channel === SERVER_OPS_IPC_CHANNELS.REVOKE_AGENT_ACCESS_SESSION ? [channel, ...Object.values(SERVER_OPS_AGENT_ACCESS_MANAGEMENT_CHANNELS)] : [channel]), SERVER_OPS_AGENT_READ_CHANNELS.GET, SERVER_OPS_AGENT_READ_CHANNELS.SET, 'server-ops:get-database-agent-policy', 'server-ops:set-database-agent-policy', SERVER_OPS_CONNECTION_DRAFT_CHANNELS.LIST, SERVER_OPS_CONNECTION_DRAFT_CHANNELS.DISMISS, ...Object.values(SERVER_OPS_TRUST_CHANNELS), ...Object.values(SERVER_OPS_DOCKER_CHANNELS),
+    ] as readonly string[]).includes(channel)).flatMap((channel) => channel === SERVER_OPS_IPC_CHANNELS.REVOKE_AGENT_ACCESS_SESSION ? [channel, ...Object.values(SERVER_OPS_AGENT_ACCESS_MANAGEMENT_CHANNELS)] : [channel]), SERVER_OPS_AGENT_READ_CHANNELS.GET, SERVER_OPS_AGENT_READ_CHANNELS.SET, 'server-ops:get-database-agent-policy', 'server-ops:set-database-agent-policy', SERVER_OPS_CONNECTION_DRAFT_CHANNELS.LIST, SERVER_OPS_CONNECTION_DRAFT_CHANNELS.DISMISS, ...Object.values(SERVER_OPS_TRUST_CHANNELS), ...Object.values(SERVER_OPS_DOCKER_CHANNELS), ...Object.values(SERVER_OPS_DEPLOYMENT_CHANNELS),
       ...Object.values(SERVER_OPS_FILE_CHANNELS),
       ...Object.values(SERVER_OPS_CONSOLE_IPC_CHANNELS).filter((channel) => channel !== SERVER_OPS_CONSOLE_IPC_CHANNELS.OUTPUT && channel !== SERVER_OPS_CONSOLE_IPC_CHANNELS.EXIT),
       ...Object.values(SERVER_OPS_TASK_IPC_CHANNELS).filter((channel) => channel !== SERVER_OPS_TASK_IPC_CHANNELS.CHANGED),
@@ -1437,7 +1437,7 @@ describe('服务器运维 IPC', () => {
       'unsubscribe-connection-state',
     ])
     /** 数量随 SERVER_OPS_* 通道常量增长：新增通道必须同步这里。 */
-    expect(cleanup.filter((entry) => entry.startsWith('remove-handler:'))).toHaveLength(96)
+    expect(cleanup.filter((entry) => entry.startsWith('remove-handler:'))).toHaveLength(100)
   })
 
   test('dispose 中首个 unsubscribe 失败仍解绑 closed listener、释放 owner 和全部 handler', async () => {
@@ -1457,7 +1457,7 @@ describe('服务器运维 IPC', () => {
     expect(cleanup).toContain('remove-closed')
     expect(cleanup).toContain('dispose-owner:window:7')
     /** 与上一处保持同一口径：新增 IPC 通道后两处都要更新。 */
-    expect(cleanup.filter((entry) => entry.startsWith('remove-handler:'))).toHaveLength(96)
+    expect(cleanup.filter((entry) => entry.startsWith('remove-handler:'))).toHaveLength(100)
     expect(handlers.size).toBe(0)
     expect(() => registration.dispose()).not.toThrow()
     expect(cleanup).toEqual(afterFirstDispose)

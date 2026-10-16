@@ -51,6 +51,14 @@ import {
   parseServerOpsDockerActionCommitInput,
   parseServerOpsDockerActionResult,
   parseServerOpsDockerActionCancelInput,
+  SERVER_OPS_DEPLOYMENT_CHANNELS,
+  parseServerOpsDeploymentListInput,
+  parseServerOpsDeploymentTargetSaveInput,
+  parseServerOpsDeploymentCheckInput,
+  parseServerOpsDeploymentTargets,
+  parseServerOpsDeploymentTarget,
+  parseServerOpsDeploymentCheck,
+  parseServerOpsDeploymentRuns,
   SERVER_OPS_DATA_CHANNELS,
   SERVER_OPS_PROJECT_CHANNELS,
   parseServerOpsConnectionMoveInput,
@@ -192,6 +200,8 @@ import { serverOpsConnectionDraftStore } from './server-ops-connection-draft-sto
 import { captureServerOpsReadBindings, revalidateServerOpsReadBindings } from './server-ops-agent-read-identity'
 import type { ServerOpsTrustService } from './server-ops-trust-service'
 import type { ServerOpsDockerService } from './server-ops-docker-service'
+import type { ServerOpsDeploymentService } from './server-ops-deployment-service'
+import type { ServerOpsDeploymentStore } from './server-ops-deployment-store'
 import type { ServerOpsFileService } from './server-ops-file-service'
 import type { ServerOpsDockerConsoleService } from './server-ops-docker-console-service'
 import type { ServerOpsFileTransferService } from './server-ops-file-transfer-service'
@@ -311,6 +321,10 @@ export interface ServerOpsIpcOptions {
   logs?: ServerOpsLogContract
   trustManagement?: Pick<ServerOpsTrustService, 'get' | 'prepare' | 'commit' | 'cancel' | 'disposeOwner'>
   docker?: Pick<ServerOpsDockerService, 'listResources' | 'getContainerDetail' | 'prepareAction' | 'commitAction' | 'cancelAction' | 'disposeOwner'>
+  deployment?: {
+    service: Pick<ServerOpsDeploymentService, 'checkTarget' | 'dispose'>
+    store: Pick<ServerOpsDeploymentStore, 'listTargets' | 'saveTarget' | 'listRuns'>
+  }
   files?: Pick<ServerOpsFileService, 'list' | 'preview' | 'prepare' | 'commit' | 'cancel' | 'closeOwner'>
   console?: Pick<ServerOpsDockerConsoleService, 'start' | 'close' | 'write' | 'resize' | 'acknowledge' | 'getSnapshot' | 'disposeOwner'>
   /** 任务启动只经 Agent 审批，界面仅访问所属会话已有任务。 */
@@ -369,6 +383,14 @@ export interface ServerOpsScriptDraftStoreContract {
   dismiss: (sessionId: string, id: string) => boolean
   /** 领取并消费草稿，用于把 Agent 提议标记成来源；被别的会话领走时返回 null。 */
   claim?: (sessionId: string, id: string) => ServerOpsScriptDraft | null
+}
+
+/** 将部署 IPC 的项目与主机绑定到主机 Store 的权威归属。 */
+function assertServerOpsDeploymentScope(options: ServerOpsIpcOptions, projectId: string, hostId: string): void {
+  const host = options.hosts.get(hostId)
+  if (!host || (host.projectId !== undefined && host.projectId !== projectId)) {
+    throw new Error('SERVER_OPS_DEPLOYMENT_SCOPE_CONFLICT')
+  }
 }
 
 /** 可用于测试和退出清理的注册结果。 */
@@ -483,6 +505,7 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
     SERVER_OPS_CONNECTION_DRAFT_CHANNELS.DISMISS,
     ...Object.values(SERVER_OPS_TRUST_CHANNELS),
     ...Object.values(SERVER_OPS_DOCKER_CHANNELS),
+    ...Object.values(SERVER_OPS_DEPLOYMENT_CHANNELS),
     ...Object.values(SERVER_OPS_FILE_CHANNELS),
     ...Object.values(SERVER_OPS_CONSOLE_IPC_CHANNELS).filter((channel) => channel !== SERVER_OPS_CONSOLE_IPC_CHANNELS.OUTPUT && channel !== SERVER_OPS_CONSOLE_IPC_CHANNELS.EXIT),
     ...Object.values(SERVER_OPS_TASK_IPC_CHANNELS).filter((channel) => channel !== SERVER_OPS_TASK_IPC_CHANNELS.CHANGED),
@@ -672,6 +695,34 @@ export function registerServerOpsIpcHandlers(options: ServerOpsIpcOptions): Serv
     const { window } = requireOwner(event)
     if (!options.docker) throw new Error('SERVER_OPS_DOCKER_UNAVAILABLE')
     options.docker.cancelAction(window.id, parsed)
+  })
+  /** 部署目标、检查与历史都走独立只读/配置合同，不复用 Agent 任务终端。 */
+  installHandler(SERVER_OPS_DEPLOYMENT_CHANNELS.LIST_TARGETS, (event, input) => {
+    assertAuthorizedSender(event, options)
+    const parsed = parseServerOpsDeploymentListInput(input)
+    assertServerOpsDeploymentScope(options, parsed.projectId, parsed.hostId)
+    if (!options.deployment) throw new Error('SERVER_OPS_DEPLOYMENT_UNAVAILABLE')
+    return parseServerOpsDeploymentTargets(options.deployment.store.listTargets(parsed))
+  })
+  installHandler(SERVER_OPS_DEPLOYMENT_CHANNELS.SAVE_TARGET, (event, input) => {
+    assertAuthorizedSender(event, options)
+    const parsed = parseServerOpsDeploymentTargetSaveInput(input)
+    assertServerOpsDeploymentScope(options, parsed.target.projectId, parsed.target.hostId)
+    if (!options.deployment) throw new Error('SERVER_OPS_DEPLOYMENT_UNAVAILABLE')
+    return parseServerOpsDeploymentTarget(options.deployment.store.saveTarget(parsed))
+  })
+  installHandler(SERVER_OPS_DEPLOYMENT_CHANNELS.CHECK_TARGET, async (event, input) => {
+    assertAuthorizedSender(event, options)
+    const parsed = parseServerOpsDeploymentCheckInput(input)
+    if (!options.deployment) throw new Error('SERVER_OPS_DEPLOYMENT_UNAVAILABLE')
+    return parseServerOpsDeploymentCheck(await options.deployment.service.checkTarget(parsed))
+  })
+  installHandler(SERVER_OPS_DEPLOYMENT_CHANNELS.LIST_RUNS, (event, input) => {
+    assertAuthorizedSender(event, options)
+    const parsed = parseServerOpsDeploymentListInput(input)
+    assertServerOpsDeploymentScope(options, parsed.projectId, parsed.hostId)
+    if (!options.deployment) throw new Error('SERVER_OPS_DEPLOYMENT_UNAVAILABLE')
+    return parseServerOpsDeploymentRuns(options.deployment.store.listRuns(parsed))
   })
   installHandler(SERVER_OPS_CONNECTION_DRAFT_CHANNELS.LIST, (event, input) => {
     assertAuthorizedSender(event, options)
