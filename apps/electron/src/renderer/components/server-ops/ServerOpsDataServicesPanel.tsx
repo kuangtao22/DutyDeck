@@ -486,7 +486,8 @@ export function createServerOpsDataServicesController(
     submitDialog(input: ServerOpsDataSourceUpsertInput): void {
       /** 提交目标必须仍是当前主机。 */
       const context = projection.context
-      if (context === null || !context.active || (input.transport === 'ssh' && (!context.connected || context.hostId !== input.hostId))) return
+      /** 保存的是本机连接配置，不需要当前 SSH 已建立；实际读取和测试仍由各自路径校验连接状态。 */
+      if (context === null || !context.active || (input.transport === 'ssh' && context.hostId !== input.hostId)) return
       patch({ submitting: true, dialogError: null })
       void options.api.upsertServerOpsDataSource(input).then(() => {
         if (!ownerActive) return

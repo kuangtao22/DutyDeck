@@ -391,6 +391,25 @@ describe('数据服务面板', () => {
     expect(controller.getProjection().dialog).toBeNull()
   })
 
+  test('Given 经跳板的数据源且跳板未连接 When 保存编辑 Then 仍保存连接配置', async () => {
+    /** 保存请求仍属于本机配置操作，不应依赖当前 SSH 会话。 */
+    const submitted: ServerOpsDataSourceUpsertInput[] = []
+    const { controller } = createHarness(createApi({
+      listServerOpsDataSources: async () => ({ sources: [createSource()] }),
+      upsertServerOpsDataSource: async (input) => {
+        submitted.push(input)
+        return { hostId: input.hostId, source: createSource({ label: input.label }) }
+      },
+    }))
+    controller.setContext({ ...connectedContext, connected: false })
+    await Promise.resolve(); await Promise.resolve()
+    controller.openEditDialog(controller.getProjection().sources[0]!)
+    controller.submitDialog({ transport: 'ssh', hostId: 'host-1', sourceId: 'source-1', engine: 'mysql', label: '离线改名', address: '127.0.0.1', port: 3306, tlsMode: 'disabled' })
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    expect(submitted).toHaveLength(1)
+    expect(controller.getProjection().dialog).toBeNull()
+  })
+
   test('Given 保存失败 When 提交 Then 弹窗保留并展示中文错误', async () => {
     const { controller } = createHarness(createApi({
       listServerOpsDataSources: async () => ({ sources: [createSource()] }),
