@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { ChartCandlestick, Check, CircleDashed, Cloud, FileText, Mail, Orbit, Plane, Search, Terminal, TrendingUp, Unplug } from 'lucide-react'
+import { BookOpen, ChartCandlestick, Check, Chrome, CircleDashed, Cloud, FileText, Mail, Orbit, Plane, Search, Smartphone, Terminal, TrendingUp, Unplug } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import tavilyIcon from '@/assets/integrations/tavily.png'
 import braveIcon from '@/assets/integrations/brave.svg'
@@ -12,6 +12,16 @@ import dingtalkIcon from '@/assets/integrations/dingtalk.png'
 import ctripIcon from '@/assets/integrations/ctrip.png'
 import baiduNetdiskIcon from '@/assets/integrations/baidu-netdisk.png'
 import feishuIcon from '@/assets/bots/feishu.png'
+/** 小红书官网品牌图标（https://www.xiaohongshu.com/favicon.ico），本地打包确保离线可用。 */
+import xiaohongshuIcon from '@/assets/integrations/xiaohongshu.png'
+/** 上游公开产品图标本地打包；来源保留在导入旁，避免运行时请求第三方图标服务。 */
+import context7Icon from '@/assets/integrations/context7.svg' // https://context7.com/context7-icon-green.svg
+import playwrightIcon from '@/assets/integrations/playwright.svg' // https://playwright.dev/img/playwright-logo.svg
+import figmaIcon from '@/assets/integrations/figma.png' // https://www.figma.com/favicon.ico
+import apifyIcon from '@/assets/integrations/apify.png' // https://docs.apify.com/ 官方站点 favicon
+import n8nIcon from '@/assets/integrations/n8n.png' // https://n8n.io/ 官方站点 favicon
+import concatIcon from '@/assets/integrations/concat.png' // https://github.com/jub0t/concat/blob/v0.2.7/assets/icons/concat_logo_128.png
+import codebaseMemoryIcon from '@/assets/integrations/codebase-memory.svg' // https://deusdata.github.io/codebase-memory-mcp/
 import { cn } from '@/lib/utils'
 import { compareCatalogConnectionCards, getCatalogCliConnectionStatus, getCatalogCliStatusRank, getCatalogGuidedConnectionStatus, getCatalogMcpConnectionStatus, getCatalogMcpStatusRank, type CatalogCliIntegration, type CatalogCliProbeState, type CatalogCredentialIntegration, type CatalogGuidedIntegration, type CatalogMcpIntegration } from './integration-catalog'
 
@@ -34,6 +44,8 @@ interface IntegrationCatalogProps {
   onGuide: (integration: CatalogGuidedIntegration) => void
   onRequestCredential: (integration: CatalogCredentialIntegration) => void
   onToggleMcp: (serverName: string, enabled: boolean) => void
+  /** 仅已验证的 Mobile MCP 可进入专用设备面板。 */
+  onOpenMobileMirror?: () => void
 }
 
 // The normal capability center keeps its viewport breakpoint. The embedded view
@@ -53,13 +65,13 @@ type CatalogCard =
   | { integration: CatalogGuidedIntegration; status: string; statusTone: 'success' | 'muted'; statusRank: number; actionLabel: string; commandLine: false; enabled?: boolean; onAction: () => void; onToggle?: (enabled: boolean) => void; onDisconnect?: () => void }
   | { integration: CatalogCredentialIntegration; status: string; statusTone: 'success' | 'muted'; statusRank: number; actionLabel: string; primaryActionLabel: string; commandLine: false; enabled: boolean; onAction: () => void; onToggle?: (enabled: boolean) => void; onDisconnect?: () => void }
 
-export function IntegrationCatalog({ mcps, clis, guided, credentials, embedded, installedMcpNames, enabledMcpNames, verifiedMcpNames, activeSkillSlugs, connectedCliIds, cliIntegrationProbeState, installingMcpId, onInstallMcp, onGuideCli, onDisconnectCli, onGuide, onRequestCredential, onToggleMcp }: IntegrationCatalogProps): React.ReactElement {
+export function IntegrationCatalog({ mcps, clis, guided, credentials, embedded, installedMcpNames, enabledMcpNames, verifiedMcpNames, activeSkillSlugs, connectedCliIds, cliIntegrationProbeState, installingMcpId, onInstallMcp, onGuideCli, onDisconnectCli, onGuide, onRequestCredential, onToggleMcp, onOpenMobileMirror }: IntegrationCatalogProps): React.ReactElement {
   const cards: CatalogCard[] = [
     ...mcps.map((integration) => {
       const status = getCatalogMcpConnectionStatus(integration.serverName, installedMcpNames, enabledMcpNames, verifiedMcpNames)
       return {
         integration,
-        status: status === 'connected' ? '已连接' : status === 'pending' ? '待授权' : '未配置',
+        status: status === 'connected' ? '已连接' : status === 'pending' ? (integration.authentication === 'none' ? '待验证' : '待授权') : '未配置',
         statusTone: status === 'connected' ? 'success' as const : 'muted' as const,
         statusRank: getCatalogMcpStatusRank(status),
         actionLabel: status === 'connected' ? `查看 ${integration.name}` : status === 'pending' ? `继续配置 ${integration.name}` : `连接 ${integration.name}`,
@@ -76,7 +88,7 @@ export function IntegrationCatalog({ mcps, clis, guided, credentials, embedded, 
       const connected = status === 'connected'
       return {
         integration,
-        status: skillAvailable ? 'Skill 已安装' : connected ? '已连接' : status === 'pending' ? '待授权' : '未配置',
+        status: skillAvailable ? 'Skill 已安装' : connected ? '已连接' : status === 'pending' ? (integration.authType === 'local-setup' ? '待配置' : '待授权') : '未配置',
         statusTone: skillAvailable || connected ? 'success' as const : 'muted' as const,
         statusRank: skillAvailable || connected
           ? getCatalogMcpStatusRank('connected')
@@ -85,7 +97,8 @@ export function IntegrationCatalog({ mcps, clis, guided, credentials, embedded, 
         commandLine: false as const,
         enabled: Boolean(serverName && enabledMcpNames.has(serverName)),
         onAction: () => onGuide(integration),
-        onToggle: connected && serverName ? (enabled: boolean) => onToggleMcp(serverName, enabled) : undefined,
+        // 引导写入关闭状态的配置后，目录仍须提供真实验证入口；Skill 本身不生成 MCP 开关。
+        onToggle: serverName && installedMcpNames.has(serverName) ? (enabled: boolean) => onToggleMcp(serverName, enabled) : undefined,
       }
     }),
     ...credentials.map((integration) => {
@@ -142,16 +155,19 @@ export function IntegrationCatalog({ mcps, clis, guided, credentials, embedded, 
             description={card.integration.description}
             capabilities={card.integration.capabilities}
             iconSlug={card.integration.iconSlug}
-            status={card.status}
-            statusTone={card.statusTone}
+            status={card.integration.unavailableReason ? '待上游支持' : card.status}
+            statusTone={card.integration.unavailableReason ? 'muted' : card.statusTone}
+            experimental={card.integration.experimental}
+            unavailableReason={card.integration.unavailableReason}
             actionLabel={card.actionLabel}
             primaryActionLabel={'primaryActionLabel' in card ? card.primaryActionLabel : undefined}
             installing={'serverName' in card.integration && installingMcpId === card.integration.id}
             commandLine={card.commandLine}
             onAction={card.onAction}
-            onToggle={card.onToggle}
+            onToggle={card.integration.unavailableReason ? undefined : card.onToggle}
             enabled={card.enabled}
-            onDisconnect={card.onDisconnect}
+            onDisconnect={card.integration.unavailableReason ? undefined : card.onDisconnect}
+            onOpenDevice={card.integration.id === 'mobile-mcp' && card.status === '已连接' && !card.integration.unavailableReason ? onOpenMobileMirror : undefined}
           />
         ))}
       </div>
@@ -174,11 +190,17 @@ interface IntegrationCardProps {
   enabled?: boolean
   onToggle?: (enabled: boolean) => void
   onDisconnect?: () => void
+  /** 在名称旁提示实验状态，不影响正常服务的连接流程。 */
+  experimental?: boolean
+  /** 完整展示不可连接原因，同时禁用主操作。 */
+  unavailableReason?: string
+  /** 用户主动打开镜像，不改变 MCP 的启用状态。 */
+  onOpenDevice?: () => void
 }
 
-function IntegrationCard({ name, description, capabilities, iconSlug, status, statusTone, actionLabel, primaryActionLabel, installing, commandLine, onAction, enabled, onToggle, onDisconnect }: IntegrationCardProps): React.ReactElement {
+function IntegrationCard({ name, description, capabilities, iconSlug, status, statusTone, actionLabel, primaryActionLabel, installing, commandLine, onAction, enabled, onToggle, onDisconnect, experimental, unavailableReason, onOpenDevice }: IntegrationCardProps): React.ReactElement {
   const [iconFailed, setIconFailed] = React.useState(false)
-  const actionText = primaryActionLabel ?? (status === '待授权'
+  const actionText = unavailableReason ? '暂不可用' : primaryActionLabel ?? (status === '待授权' || status === '待验证' || status === '待配置'
     ? '继续配置'
     : status === '未配置'
       ? (commandLine ? '配置' : '连接')
@@ -198,6 +220,9 @@ function IntegrationCard({ name, description, capabilities, iconSlug, status, st
     'lucide-file-text': FileText,
     'lucide-mail': Mail,
     'lucide-search': Search,
+    'lucide-smartphone': Smartphone,
+    'lucide-book-open': BookOpen,
+    'lucide-chrome': Chrome,
   }[iconSlug]
 
   const localIcon = {
@@ -212,6 +237,14 @@ function IntegrationCard({ name, description, capabilities, iconSlug, status, st
     'asset:qichacha': qichachaIcon,
     'asset:dingtalk': dingtalkIcon,
     'asset:ctrip': ctripIcon,
+    'asset:xiaohongshu': xiaohongshuIcon,
+    'asset:context7': context7Icon,
+    'asset:playwright': playwrightIcon,
+    'asset:figma': figmaIcon,
+    'asset:apify': apifyIcon,
+    'asset:n8n': n8nIcon,
+    'asset:concat': concatIcon,
+    'asset:codebase-memory': codebaseMemoryIcon,
   }[iconSlug]
   const imageIconSizeClass = iconSlug === 'asset:feishu' ? 'size-[34px]' : 'size-7'
 
@@ -232,10 +265,15 @@ function IntegrationCard({ name, description, capabilities, iconSlug, status, st
                 : <img className="size-7 object-contain" src={`https://cdn.simpleicons.org/${iconSlug}`} alt="" onError={() => setIconFailed(true)} />}
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className="truncate text-[15px] font-semibold text-foreground [text-wrap:balance]">{name}</h3>
+          <div className="flex items-center gap-1.5">
+            <h3 className="truncate text-[15px] font-semibold text-foreground [text-wrap:balance]">{name}</h3>
+            {experimental && <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">实验性</span>}
+          </div>
           <p className="mt-0.5 line-clamp-2 text-[12px] leading-4 text-muted-foreground">{description}</p>
         </div>
       </div>
+
+      {unavailableReason && <p className="text-[12px] leading-4 text-muted-foreground">{unavailableReason}</p>}
 
       <div className="mt-1 flex flex-wrap gap-1">
         {capabilities.map((capability) => (
@@ -243,12 +281,17 @@ function IntegrationCard({ name, description, capabilities, iconSlug, status, st
         ))}
       </div>
 
-      <div className="mt-auto flex items-center gap-1.5 pt-1.5">
+      <div className="mt-auto flex flex-wrap items-center gap-1.5 pt-1.5">
         <span className={cn('inline-flex items-center gap-1 text-[11px] font-medium', statusTone === 'success' ? 'text-primary' : 'text-muted-foreground')}>
           {statusTone === 'success' ? <Check size={12} strokeWidth={2.5} /> : <CircleDashed size={12} />}
           <span className="truncate">{status}</span>
         </span>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {onOpenDevice && (
+            <button type="button" onClick={onOpenDevice} disabled={installing} aria-label="打开 Mobile MCP 设备面板" className="inline-flex h-7 items-center gap-1 rounded-md border border-border px-2 text-[11px] font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60">
+              <Smartphone size={12} />打开设备
+            </button>
+          )}
           {onToggle && enabled !== undefined && (
             <div className="flex items-center gap-1.5">
               <span className="text-[11px] text-muted-foreground">启用</span>
@@ -275,7 +318,7 @@ function IntegrationCard({ name, description, capabilities, iconSlug, status, st
             </button>
           )}
           {(!onDisconnect || statusTone !== 'success') && (
-            <button type="button" title={actionLabel} aria-label={actionLabel} disabled={installing} onClick={onAction} className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-primary px-2 text-[11px] font-medium text-primary-foreground shadow-sm transition-[transform,background-color,box-shadow] hover:bg-primary/90 hover:shadow active:scale-[0.96] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-wait disabled:opacity-60">
+            <button type="button" title={unavailableReason ?? actionLabel} aria-label={unavailableReason ? `${name} 暂不可用` : actionLabel} disabled={installing || Boolean(unavailableReason)} onClick={onAction} className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-primary px-2 text-[11px] font-medium text-primary-foreground shadow-sm transition-[transform,background-color,box-shadow] hover:bg-primary/90 hover:shadow active:scale-[0.96] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60">
               {installing ? <CircleDashed size={14} className="animate-spin" /> : <span>{actionText}</span>}
             </button>
           )}

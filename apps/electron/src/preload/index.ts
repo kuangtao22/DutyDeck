@@ -1,3 +1,5 @@
+import { MOBILE_MIRROR_CHANNELS } from '@proma/shared'
+import type { MobileMirrorSessionInput, MobileMirrorCaptureInput, MobileMirrorActionInput, MobileMirrorOpenResult, MobileMirrorDevice, MobileMirrorFrame } from '@proma/shared'
 import { createTokenUsagePreload } from './token-usage-preload'
 import type { TokenUsageAPI } from '@proma/shared'
 import { createApiWorkbenchPreload } from './api-workbench-preload'
@@ -912,6 +914,17 @@ export interface ElectronAPI extends ServerOpsTaskPreloadApi, TokenUsageAPI, Lan
 
   /** 测试 MCP 服务器连接 */
   testMcpServer: (workspaceSlug: string, name: string, entry: import('@proma/shared').McpServerEntry) => Promise<{ success: boolean; message: string }>
+
+  /** 打开当前会话绑定的手机面板，返回已连接设备。 */
+  openMobileMirror: (input: MobileMirrorSessionInput) => Promise<MobileMirrorOpenResult>
+  /** 刷新此面板可用设备。 */
+  listMobileMirrorDevices: (input: MobileMirrorSessionInput) => Promise<MobileMirrorDevice[]>
+  /** 获取一帧内存截图与真实触点尺寸。 */
+  captureMobileMirrorFrame: (input: MobileMirrorCaptureInput) => Promise<MobileMirrorFrame>
+  /** 执行经过白名单校验的单次手动操作。 */
+  performMobileMirrorAction: (input: MobileMirrorActionInput) => Promise<void>
+  /** 幂等关闭面板并释放独立 MCP 连接。 */
+  closeMobileMirror: (input: MobileMirrorSessionInput) => Promise<void>
 
   /** 启用或关闭 Proma 内置 MCP */
   setBuiltinMcpEnabled: (workspaceSlug: string, id: string, enabled: boolean) => Promise<WorkspaceCapabilities>
@@ -2515,6 +2528,13 @@ const electronAPI: ElectronAPI = {
   testMcpServer: (workspaceSlug: string, name: string, entry: import('@proma/shared').McpServerEntry) => {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.TEST_MCP_SERVER, workspaceSlug, name, entry) as Promise<{ success: boolean; message: string }>
   },
+
+  // 手机面板只暴露固定方法，不开放任意工具执行或连接配置。
+  openMobileMirror: (input) => ipcRenderer.invoke(MOBILE_MIRROR_CHANNELS.OPEN, input),
+  listMobileMirrorDevices: (input) => ipcRenderer.invoke(MOBILE_MIRROR_CHANNELS.LIST_DEVICES, input),
+  captureMobileMirrorFrame: (input) => ipcRenderer.invoke(MOBILE_MIRROR_CHANNELS.CAPTURE, input),
+  performMobileMirrorAction: (input) => ipcRenderer.invoke(MOBILE_MIRROR_CHANNELS.ACTION, input),
+  closeMobileMirror: (input) => ipcRenderer.invoke(MOBILE_MIRROR_CHANNELS.CLOSE, input),
 
   setBuiltinMcpEnabled: (workspaceSlug: string, id: string, enabled: boolean) => {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.SET_BUILTIN_MCP_ENABLED, workspaceSlug, id, enabled)

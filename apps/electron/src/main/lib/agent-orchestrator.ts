@@ -120,6 +120,7 @@ import { createServerOpsAgentReadFacade, type ServerOpsWriteApprovalSnapshot } f
 import { createServerOpsConnectionDraftAgent } from './server-ops/server-ops-connection-draft-agent'
 import { getAgentVaultRoots, getVaultUserContext } from './vault-service'
 import { buildPiMcpTools } from './adapters/pi-mcp-tools'
+import { createMobileDeviceActivity } from './mobile-mirror/agent-activity'
 import { buildAgentRuntimeEnv, type AgentRuntimeEnv } from './agent-runtime-env'
 import { isVisibleRunMessage } from './agent-run-message-visibility'
 import { resolvePiThinkingLevel } from './agent-thinking-level'
@@ -1533,7 +1534,14 @@ export class AgentOrchestrator {
       // Proma 主进程连接用户 MCP server，并转换为 Pi custom tools。
       if (Object.keys(mcpServers).length > 0) {
         try {
-          piMcpTools = await buildPiMcpTools(mcpServers)
+          piMcpTools = await buildPiMcpTools(mcpServers, undefined, (execution) => {
+            // 观察事件不承担工具取消职责；旧运行只抑制展示，由执行入口的 signal 阻止工具调用。
+            try { runIdentity.assertActive() } catch { return }
+            if (automationContext || (input.triggeredBy && input.triggeredBy !== 'user')
+              || !sessionMeta || !isOrdinaryTopLevelAgentSession(sessionMeta)) return
+            const event = createMobileDeviceActivity(execution, streamStartedAt, runGeneration)
+            if (event) this.eventBus.emit(sessionId, { kind: 'proma_event', event })
+          })
         } catch (error) {
           console.warn('[Agent 编排] Pi MCP 工具桥接失败，已跳过用户 MCP:', error)
         }

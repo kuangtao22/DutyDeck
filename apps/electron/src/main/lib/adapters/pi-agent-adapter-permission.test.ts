@@ -349,3 +349,41 @@ test('Given 采集超时 When 工具正常写入 Then 执行继续且最终请�
   expect(executed).toBe(true)
   expect(phases).toEqual(['before', 'invalidate'])
 })
+
+test('Given Mobile MCP 真实执行观察器 When 审批修改设备 Then 只在执行时广播修改后的设备', async () => {
+  const { createPiMcpToolDefinition } = await import('./pi-mcp-tools')
+  const { createMobileDeviceActivity } = await import('../mobile-mirror/agent-activity')
+  const events: unknown[] = []
+  const calls: Record<string, unknown>[] = []
+  const definition = createPiMcpToolDefinition({
+    serverName: 'mobile-mcp', originalToolName: 'mobile_type_keys',
+    tool: { name: 'mobile_type_keys', inputSchema: { type: 'object' } }, managerConfig: { type: 'stdio' },
+    manager: { callTool: async (_server, _config, _name, args) => { calls.push(args); return { content: [{ type: 'text', text: 'ok' }] } } },
+    onToolExecuting: execution => { const event = createMobileDeviceActivity(execution, 123, 1); if (event) events.push(event) },
+  })
+  const tools = wrapCustomToolDefinitions([definition], async () => ({ behavior: 'allow', updatedInput: { device: 'approved-device', text: 'private' } }))
+  expect(events).toHaveLength(0)
+  await tools[0]!.execute('call-1', { device: 'original-device' }, new AbortController().signal, undefined, {} as ExtensionToolContext)
+  expect(calls).toEqual([{ device: 'approved-device', text: 'private' }])
+  expect(events).toEqual([{ type: 'mobile_device_activity', deviceId: 'approved-device', toolUseId: 'call-1', runStartedAt: 123, runGeneration: 1 }])
+})
+
+test('Given Mobile MCP 工具 When 权限拒绝或取消 Then 不广播且不调用服务', async () => {
+  const { createPiMcpToolDefinition } = await import('./pi-mcp-tools')
+  for (const mode of ['deny', 'cancel'] as const) {
+    let observed = 0; let executed = 0
+    const controller = new AbortController()
+    const definition = createPiMcpToolDefinition({
+      serverName: 'mobile-mcp', originalToolName: 'mobile_take_screenshot',
+      tool: { name: 'mobile_take_screenshot', inputSchema: { type: 'object' } }, managerConfig: { type: 'stdio' },
+      manager: { callTool: async () => { executed++; return { content: [] } } },
+      onToolExecuting: () => { observed++ },
+    })
+    const tools = wrapCustomToolDefinitions([definition], async (_name, input) => {
+      if (mode === 'deny') return { behavior: 'deny', message: 'denied' }
+      controller.abort(); return { behavior: 'allow', updatedInput: input }
+    })
+    await expect(tools[0]!.execute('call-1', { device: 'phone' }, controller.signal, undefined, {} as ExtensionToolContext)).rejects.toThrow()
+    expect(observed).toBe(0); expect(executed).toBe(0)
+  }
+})

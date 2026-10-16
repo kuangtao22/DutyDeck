@@ -14,7 +14,7 @@ import {
   workspaceToolsExpandedAtom,
   workspaceToolsWidthAtom,
 } from './workspace-tools'
-import { agentDiffPanelTabAtom, agentSidePanelOpenAtomFamily, currentAgentSessionIdAtom } from './agent-atoms'
+import { agentDiffPanelTabAtom, agentSidePanelOpenAtomFamily, agentSessionsAtom, agentWorkspacesAtom, currentAgentSessionIdAtom, sanitizeWorkspaceComponentTabs } from './agent-atoms'
 import { activeViewAtom, agentSkillsTabAtom } from './active-view'
 import { appModeAtom } from './app-mode'
 import { automationFormAtom } from './automation-atoms'
@@ -22,6 +22,31 @@ import { planningTabAtom } from './planning-atoms'
 import { productivityToolsAtom } from './ui-preferences'
 
 describe('工作区工具命令', () => {
+  test('Given 有效项目会话 When 从 MCP 打开手机面板 Then 聚焦当前会话并保留可恢复标签', () => {
+    /** 导航必须以当前会话的实际项目为准。 */
+    const store = createStore()
+    store.set(agentWorkspacesAtom, [{ id: 'project-a', name: '项目', slug: 'project-a', createdAt: 1, updatedAt: 1 }])
+    store.set(agentSessionsAtom, [{ id: 'session-a', title: '会话', workspaceId: 'project-a', createdAt: 1, updatedAt: 1 }])
+    store.set(currentAgentSessionIdAtom, 'session-a')
+    store.set(activeViewAtom, 'agent-skills')
+    store.set(openWorkspaceToolAtom, 'mobile-mirror')
+    expect(store.get(activeViewAtom)).toBe('conversations')
+    expect(store.get(agentSidePanelOpenAtomFamily('session-a'))).toBe(true)
+    expect(store.get(activeWorkspaceToolAtom)).toBe('mobile-mirror')
+    expect(sanitizeWorkspaceComponentTabs(['mobile-mirror', 'unknown'])).toEqual(['mobile-mirror'])
+  })
+
+  test('Given 无会话或 Chat 模式 When 尝试打开手机面板 Then 禁用并保持当前视图', () => {
+    /** 不能借用 Chat 背后的 Agent 会话启动设备进程。 */
+    const store = createStore()
+    expect(store.get(workspaceToolAvailabilityAtom)['mobile-mirror']?.disabledReason).toBeDefined()
+    store.set(currentAgentSessionIdAtom, 'session-a')
+    store.set(agentSidePanelOpenAtomFamily('session-a'), false)
+    store.set(appModeAtom, 'chat')
+    store.set(openWorkspaceToolAtom, 'mobile-mirror')
+    expect(store.get(agentSidePanelOpenAtomFamily('session-a'))).toBe(false)
+  })
+
   test('默认收起并按展开状态提供稳定宽度', () => {
     const store = createStore()
     expect(store.get(workspaceToolsExpandedAtom)).toBe(false)

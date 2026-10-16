@@ -4,6 +4,9 @@ import { agentTokenUsageContext } from './lib/token-usage-context'
 import { readAgentRunFileChanges } from './lib/agent-run-file-change-store'
 import { API_WORKBENCH_CHANNELS, apiWorkbenchManualDenialReason, isOrdinaryTopLevelAgentSession } from '@proma/shared'
 import { registerApiWorkbenchIpc } from './lib/api-workbench/api-ipc'
+import { registerMobileMirrorIpc } from './lib/mobile-mirror/mobile-mirror-ipc'
+import { MobileMirrorService } from './lib/mobile-mirror/service'
+import { connectMobileMirror } from './lib/mobile-mirror/connection'
 import { registerCapabilityFactoryIpc } from './lib/capability-factory/capability-factory-ipc'
 import { registerInteractionDesignIpc } from './lib/interaction-design/ipc'
 import { createProductionInteractionDesignAccess, setInteractionDesignHost } from './lib/interaction-design/integration'
@@ -29,7 +32,7 @@ import { getApiWorkbenchService, hasActiveApiWorkbenchRequests, setApiWorkbenchE
  */
 
 import { ipcMain, nativeTheme, shell, dialog, BrowserWindow, app, clipboard, nativeImage, safeStorage } from 'electron'
-import type { OpenDialogOptions, SaveDialogOptions, WebContents } from 'electron'
+import type { IpcMainInvokeEvent, OpenDialogOptions, SaveDialogOptions, WebContents } from 'electron'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
   closeSync,
@@ -2425,6 +2428,45 @@ export function registerIpcHandlers(): void {
     const contents = getStoredMainWindow()?.webContents
     return contents && !contents.isDestroyed() ? [contents] : []
   }
+  /** 手机面板从会话反查项目配置，renderer 不得指定命令、地址或其他项目。 */
+  const mobileMirrorService = new MobileMirrorService({
+    resolveScope: (sessionId) => {
+      const session = requireVisibleSession(sessionId)
+      const workspace = session.workspaceId ? getAgentWorkspace(session.workspaceId) : undefined
+      if (session.archived || !workspace) throw new Error('请在有效项目的未归档 Agent 会话中打开手机面板')
+      workspaceOperationGuard.assertWorkspaceWritable(workspace.id)
+      const entry = getWorkspaceMcpConfig(workspace.slug).servers['mobile-mcp']
+      if (!entry?.enabled || !entry.lastTestResult?.success) throw new Error('请先启用并验证此项目的 Mobile MCP')
+      return { workspaceSlug: workspace.slug, entry }
+    },
+    connect: connectMobileMirror,
+  })
+  /** 仅主窗口的主 frame 可控制手机；网页、iframe 和辅助窗口无权限。 */
+  const mobileMirrorIpc = registerMobileMirrorIpc({
+    ipc: ipcMain,
+    service: mobileMirrorService,
+    isAuthorizedSender: (event) => {
+      const source = event as IpcMainInvokeEvent
+      const main = getStoredMainWindow()?.webContents
+      return Boolean(main && !main.isDestroyed() && source.sender === main && source.senderFrame === main.mainFrame)
+    },
+    watchOwner: (event, invalidate) => {
+      const contents = (event as IpcMainInvokeEvent).sender
+      /** 页面内跳转不重建脚本上下文；主 frame reload 才销毁旧面板连接。 */
+      const navigation = (_event: Electron.Event, _url: string, inPlace: boolean, mainFrame: boolean): void => {
+        if (mainFrame && !inPlace) invalidate()
+      }
+      contents.on('did-start-navigation', navigation)
+      contents.on('render-process-gone', invalidate)
+      contents.on('destroyed', invalidate)
+      return () => {
+        contents.removeListener('did-start-navigation', navigation)
+        contents.removeListener('render-process-gone', invalidate)
+        contents.removeListener('destroyed', invalidate)
+      }
+    },
+  })
+  app.once('before-quit', () => { void mobileMirrorIpc.dispose() })
   /** 全屏项目页与 Agent 右侧知识视图共用窄 IPC，扫描租约由运行时持续持有。 */
   registerKnowledgeExecutionHost({
     enqueue: async (sessionId, prompt, dispatchId, model) => {

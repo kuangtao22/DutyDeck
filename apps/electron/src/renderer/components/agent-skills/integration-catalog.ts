@@ -16,6 +16,10 @@ interface CatalogIntegrationBase {
   /** Fixed catalog order; connection state never affects placement. */
   priority?: number
   placement?: 'bottom'
+  /** 标识仍需验证兼容性或使用边界的实验集成。 */
+  experimental?: boolean
+  /** 上游尚不可接入的原因；存在时目录卡片禁止连接和启用。 */
+  unavailableReason?: string
 }
 
 export interface CatalogMcpIntegration extends CatalogIntegrationBase {
@@ -33,7 +37,7 @@ export interface CatalogCliIntegration extends CatalogIntegrationBase {
 
 export interface CatalogGuidedIntegration extends CatalogIntegrationBase {
   kind: 'guided'
-  authType: 'api-key' | 'provider-app' | 'provider-login'
+  authType: 'api-key' | 'provider-app' | 'provider-login' | 'local-setup'
   agentPrompt: string
   /** The MCP entry created by the guided flow, when it has a stable server name. */
   serverName?: string
@@ -226,6 +230,27 @@ const xiaohongshuMcpPrompt = `请帮我配置和使用「xpzouying/xiaohongshu-m
 5. 配置后必须在当前工作区执行真实 MCP handshake 和 listTools 验证；只有验证成功并由我明确启用后，才报告为「已连接」。发布、评论、点赞、收藏等外部写操作必须逐次获得我的明确确认，不得因为连接成功而自动执行。
 6. 完成后报告实际启动方式、已验证的工具、登录/权限边界、失败原因和后续手动步骤；没有完成真实验证时，明确标记为未连接。${GUIDED_CONNECTION_ACCEPTANCE_INSTRUCTION}`
 
+/** Figma 优先引导官方桌面服务；远程 OAuth 的动态密钥注册目前不兼容客户端。 */
+const figmaMcpPrompt = `请帮我在当前 DutyDeck 工作区配置 Figma 官方 MCP。
+官方说明：https://developers.figma.com/docs/figma-mcp-server/
+1. 优先核验官方桌面 MCP 接入条件：需 Dev / Full 席位及 Professional、Education、Organization、Government 或 Enterprise 套餐。由用户登录更新后的桌面版、打开 Design 文件，取消选中内容后切到 Dev Mode（Shift+D），在右侧 MCP server 区域启用桌面 MCP；不读取 Cookie。桌面版不支持写回 Canvas。
+2. 按官方指引启用桌面 MCP，核实本机 http://127.0.0.1:3845/mcp。确认服务运行后，以 figma 为 server name 添加 type=http 的关闭状态配置；保留已有同名配置，不覆盖用户地址。
+3. 官方远程地址为 https://mcp.figma.com/mcp，但当前 DutyDeck 的动态注册仅支持无 client secret 的公共客户端，与 Figma 的注册/换 token 契约不兼容。不要用个人 API Token 伪造 OAuth，也不要编造 clientId；桌面服务不满足条件时说明阻塞项。
+4. 配置成功后通过 DutyDeck 的启用开关执行真实 handshake 与 listTools 验证；不要因桌面端已登录就宣称 MCP 已连接。${MCP_CONNECTION_ACCEPTANCE_INSTRUCTION}`
+
+/** 原生代码索引依赖显式项目边界和共享 daemon 检查，不能提供全盘默认模板。 */
+const codebaseMemoryMcpPrompt = `请帮我配置 codebase-memory-mcp（实验性）。
+官方仓库：https://github.com/DeusData/codebase-memory-mcp
+1. 先核实 Node.js 18+、平台支持和当前工作区已授权的项目绝对路径。使用 npx -y codebase-memory-mcp@0.12.0，以 stdio 运行；首次安装会下载并校验约 50 MB 的平台原生程序。
+2. 必须把 CBM_ALLOWED_ROOT 限定到该已授权项目的绝对路径，不能默认为整个用户目录、根目录或使用字面量 ~。没有明确项目路径时先让用户选择，不创建无边界配置。
+3. 先检查同账号是否已有其他 IDE 的共享 daemon 及其版本、构建、ABI 和缓存根。CBM_CACHE_DIR 必须是绝对路径并与现有 daemon 一致；单独指定缓存目录不构成 daemon 隔离，不要自动停止、替换或升级其他 IDE 的服务。
+4. 索引存放在外部工具自己的 SQLite 缓存中，不是 DutyDeck 业务数据库。共享 daemon 可能访问既有索引，不承诺跨工作区读取隔离；若用户需要严格隔离，说明当前限制，不启用。
+5. 条件满足后，以 codebase-memory 为 server name 向当前工作区添加默认关闭的配置，保留已有条目。不要执行 install/update/uninstall 子命令，它们可能修改其他 IDE 配置；不要自动扫描整个磁盘或开始索引。
+6. 由用户开启后执行真实 handshake 与 listTools 验证。仅在用户明确要求索引时，对授权项目调用工具。${MCP_CONNECTION_ACCEPTANCE_INSTRUCTION}`
+
+/** 固定显式工具范围并关闭遥测，凭据与请求必须绑定同一完整 URL。 */
+const APIFY_MCP_URL = 'https://mcp.apify.com?tools=actors,docs,apify/rag-web-browser&telemetry-enabled=false'
+
 // These providers have directory definitions but are intentionally withheld from
 // the public MCP picker until their end-to-end connection flows are verified.
 // Keep the definitions intact so re-enabling is an explicit, low-risk catalog change.
@@ -308,11 +333,106 @@ export const MCP_INTEGRATION_CATALOG: CatalogIntegration[] = [
     agentPrompt: tongdaxinVipPrompt,
   },
   {
-    id: 'xiaohongshu-mcp', name: '小红书 MCP', iconSlug: 'lucide-orbit', kind: 'guided', authType: 'provider-login', priority: 12,
+    id: 'xiaohongshu-mcp', name: '小红书 MCP', iconSlug: 'asset:xiaohongshu', kind: 'guided', authType: 'provider-login', priority: 12,
     description: '通过官方仓库自托管的小红书 MCP 读取和管理内容；登录、运行环境与发布权限由用户控制。',
     capabilities: ['笔记搜索与详情', '内容发布与互动', '本地服务与账号授权'],
     setupUrl: 'https://github.com/xpzouying/xiaohongshu-mcp',
     agentPrompt: xiaohongshuMcpPrompt,
+  },
+  {
+    id: 'mobile-mcp', name: 'Mobile MCP · 手机控制', iconSlug: 'lucide-smartphone', kind: 'mcp', authentication: 'none', serverName: 'mobile-mcp', priority: 13,
+    description: '通过 mobile-next/mobile-mcp 操作 Android / iOS 真机与模拟器。需 Node.js 20+；Android 需 SDK/adb，iOS 模拟器需 macOS/Xcode。连接后仍需准备并授权设备。',
+    capabilities: ['设备与应用管理', '截图与界面元素', '点击、滑动与输入'],
+    setupUrl: 'https://github.com/mobile-next/mobile-mcp',
+    entry: {
+      // 固定已核验的官方发行版；添加目录配置不启动服务，用户启用时才下载并验证。
+      ...stdioMcp('npx', ['-y', '@mobilenext/mobile-mcp@1.0.11']),
+      // 首次运行可能下载平台二进制，给现有握手流程保留冷启动时间。
+      timeout: 120,
+      // 本地设备控制默认不向上游发送匿名遥测。
+      env: { MOBILEMCP_DISABLE_TELEMETRY: '1' },
+    },
+  },
+  {
+    id: 'context7-mcp', name: 'Context7', iconSlug: 'asset:context7', kind: 'mcp', authentication: 'none', serverName: 'context7', priority: 14,
+    description: '查询最新库文档与代码示例，减少过时 API 用法。远程免密接入，免费额度受上游限制。',
+    capabilities: ['库文档查询', '版本相关示例', '代码上下文'],
+    setupUrl: 'https://context7.com/docs/resources/all-clients',
+    entry: remoteMcp('https://mcp.context7.com/mcp'),
+  },
+  {
+    id: 'chrome-devtools-mcp', name: 'Chrome DevTools', iconSlug: 'lucide-chrome', kind: 'mcp', authentication: 'none', serverName: 'chrome-devtools', priority: 15,
+    description: '调试 Chrome 页面、网络和性能。需 Chrome 与 Node.js 20.19+（22 分支需 22.12+）；使用临时浏览器资料，关闭使用统计与 CrUX 查询。',
+    capabilities: ['页面与网络调试', '性能分析', '浏览器交互'],
+    setupUrl: 'https://github.com/ChromeDevTools/chrome-devtools-mcp',
+    entry: {
+      ...stdioMcp('npx', ['-y', 'chrome-devtools-mcp@1.11.0', '--isolated', '--no-usage-statistics', '--no-performance-crux']),
+      // 首次启用可能下载 npm 包，沿用现有冷启动超时。
+      timeout: 120,
+    },
+  },
+  {
+    id: 'playwright-mcp', name: 'Playwright', iconSlug: 'asset:playwright', kind: 'mcp', authentication: 'none', serverName: 'playwright', priority: 16,
+    description: '通过页面结构操作浏览器并验证网页流程。需 Node.js 18+ 和可用浏览器；使用独立临时会话，不复用日常浏览器登录态。',
+    capabilities: ['页面导航与交互', '截图与网页验证', '浏览器自动化'],
+    setupUrl: 'https://github.com/microsoft/playwright-mcp',
+    entry: { ...stdioMcp('npx', ['-y', '@playwright/mcp@0.0.83', '--isolated']), timeout: 120 },
+  },
+  {
+    id: 'figma-mcp', name: 'Figma', iconSlug: 'asset:figma', kind: 'guided', authType: 'local-setup', serverName: 'figma', priority: 17,
+    description: '连接 Figma 官方桌面 MCP，读取设计上下文、变量与截图。需桌面版登录并启用 MCP，受席位权限限制；远程 OAuth 暂需客户端适配。',
+    capabilities: ['设计上下文', '变量与组件', '设计截图'],
+    setupUrl: 'https://developers.figma.com/docs/figma-mcp-server/',
+    agentPrompt: figmaMcpPrompt,
+  },
+  {
+    id: 'deepwiki-mcp', name: 'DeepWiki', iconSlug: 'lucide-book-open', kind: 'mcp', authentication: 'none', serverName: 'deepwiki', priority: 18,
+    description: '免费查询公开 GitHub 仓库的文档与代码架构，支持围绕仓库提问。不提供私有仓库访问。',
+    capabilities: ['公开仓库文档', '代码架构理解', '仓库问答'],
+    setupUrl: 'https://docs.devin.ai/work-with-devin/deepwiki-mcp',
+    entry: remoteMcp('https://mcp.deepwiki.com/mcp'),
+  },
+  {
+    id: 'apify-mcp', name: 'Apify', iconSlug: 'asset:apify', kind: 'credential', serverName: 'apify', priority: 19,
+    description: '搜索和运行 Apify Actors，提取网页与结构化数据。需 Apify API Token；云端运行按账户额度计费。',
+    capabilities: ['Actor 搜索与运行', '网页数据提取', '数据集读取'],
+    setupUrl: 'https://docs.apify.com/mcp',
+    entry: remoteMcp(APIFY_MCP_URL),
+    credential: {
+      label: 'Apify API Token', placeholder: '粘贴 Apify API Token',
+      helpText: 'Token 将加密保存到系统凭据存储，通过 Authorization: Bearer 请求头发送。运行 Actor 可能产生费用，请先确认账户额度。',
+      acquisitionUrl: 'https://console.apify.com/settings/integrations', acquisitionLabel: '打开 Apify Token 设置',
+      headerName: 'Authorization', valuePrefix: 'Bearer ', credentialStorageUrl: APIFY_MCP_URL,
+    },
+  },
+  {
+    id: 'n8n-mcp', name: 'n8n MCP', iconSlug: 'asset:n8n', kind: 'mcp', authentication: 'none', serverName: 'n8n', priority: 20,
+    description: '查询 n8n 节点、模板并校验工作流。默认无需账号，不连接你的 n8n 实例；实例管理需另行配置 URL 与安全凭据。需 Node.js 20+。',
+    capabilities: ['节点文档与模板', '节点配置校验', '工作流校验'],
+    setupUrl: 'https://github.com/czlonkowski/n8n-mcp',
+    entry: {
+      // 包含节点知识库与原生数据库依赖，首次下载/安装比普通 stdio 服务更慢。
+      ...stdioMcp('npx', ['-y', 'n8n-mcp@2.94.0']), timeout: 300,
+      // 保持 stdout 为 MCP 协议专用，关闭上游默认遥测；不注入实例凭据。
+      env: { MCP_MODE: 'stdio', LOG_LEVEL: 'error', DISABLE_CONSOLE_OUTPUT: 'true', N8N_MCP_TELEMETRY_DISABLED: 'true' },
+    },
+  },
+  {
+    id: 'codebase-memory-mcp', name: 'codebase-memory', iconSlug: 'asset:codebase-memory', kind: 'guided', authType: 'local-setup', serverName: 'codebase-memory', priority: 21,
+    experimental: true,
+    description: '为授权项目建立代码图谱与索引。需配置项目绝对路径并检查共享后台服务；首次下载约 50 MB，跨工作区索引隔离有限。',
+    capabilities: ['代码图谱', '符号与调用关系', '项目索引查询'],
+    setupUrl: 'https://github.com/DeusData/codebase-memory-mcp',
+    agentPrompt: codebaseMemoryMcpPrompt,
+  },
+  {
+    id: 'concat-mcp', name: 'Concat', iconSlug: 'asset:concat', kind: 'guided', authType: 'local-setup', priority: 22,
+    experimental: true,
+    description: '面向视频剪辑与多轨合成的候选集成，等待上游发布正式 MCP。',
+    capabilities: ['视频剪辑', '多轨合成'],
+    setupUrl: 'https://concatenate.pages.dev/docs/transports/mcp',
+    unavailableReason: '官方尚未发布 MCP；现有 JSON-RPC / gRPC 接口不能直接连接 DutyDeck。',
+    agentPrompt: '先核验 https://concatenate.pages.dev/docs/transports/mcp 是否已发布正式 MCP。当前只有 JSON-RPC / gRPC；不要编造 MCP endpoint 或启动命令。',
   },
   {
     id: 'wecom-cli', name: '企业微信 CLI', iconSlug: 'asset:wecom', kind: 'cli', featured: true, priority: 3,

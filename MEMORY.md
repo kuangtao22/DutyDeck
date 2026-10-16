@@ -1,5 +1,21 @@
 # MEMORY.md
 
+- 2026-10-16（本轮 MCP 提交范围）：用户授权提交此前的 Mobile MCP 与九项目录集成、小红书图标、原生手机面板及 Agent 自动展示。对混有交互设计改动的编排器和本记忆文件按内容分段暂存，交互设计与运维原型等其他工作继续保留在工作区；本次为本地 Git 提交，不包含远程推送。
+
+- 2026-10-16（Mobile MCP 随 Agent 自动展示）：用户确认补充自动打开手机面板。以权限通过后的真实 MCP 执行为触发源，使用原始服务器身份和审批后设备参数；模型提出的 tool_start 不能当成已获准执行，归一化工具名不能证明服务器身份。当前前台普通 Agent 会话每轮仅自动展示一次并定位同一设备，关闭侧栏/手机标签、切走页面或从手机切到另一分屏后本轮不再抢焦点；后台、隐藏窗口和旧运行不补弹，下一轮可重新展示。暂停意图按会话保留，标签卸载与新轮自动展示都不恢复截图；目标设备缺失时明确提示，禁止回退显示另一台手机。为什么：让用户能看到 Agent 实际操作，同时保留手动导航和暂停选择。沿用事件流，不增加后台轮询；展示观察器异常不能中断已获准工具。验证：202 项相关测试、全仓 typecheck、main/renderer 隔离构建，以及真实组件+模拟设备 Chromium 交互/自动展示 smoke 通过（含暂停→卸载→新轮仍暂停）；未操作真实手机，未提交或发布。Nowledge Mem 定向检索仍连接拒绝，未同步。
+
+- 2026-10-16（Mobile MCP 原生手机面板，取代此前仅连接目录的状态）：用户明确要求接入显示界面，采用 DutyDeck 右侧“手机”标签，入口绑定已启用且验证成功的 Mobile MCP 卡片和当前项目 Agent 会话。官方 `/mobile-mirror` 是 Claude Code 的终端插件，不作为 Electron 内嵌界面；使用独立 MCP 连接串行取截图，完成一帧后等待约 1 秒，仅可见期间运行，截图只在内存展示、不进入模型或聊天记录。为什么：获得跨平台一致的设备查看与手动操作入口，同时不干扰 Agent 私有连接或增加后台常驻开销。iOS 触点是 points、截图是 pixels，必须依据设备尺寸映射；保留最多一张 5 秒内的前帧承接刷新期间点击，操作、设备切换和旋转后失效，方向比例不一致拒绝误控。主进程从会话反查配置，只接收固定操作；窗口重载、隐藏、暂停、关闭与退出回收资源，迟到旧请求不得关闭新代次连接。参考官方包 `@mobilenext/mobile-mcp@1.0.11` 的 `lib/server.js` 和 `lib/coordinate-mapping.js`。验证：56 项相关测试、全仓 typecheck、main/preload/renderer 隔离构建、真实组件的 Chromium 模拟设备交互 smoke 通过；涵盖点击/滑动/输入/系统按钮、暂停与隐藏停止截图、设备切换和 320px 布局。尚未完成真实手机端到端操作验收；未提交、发布或重启现有客户端。Nowledge Mem 本轮定向检索在沙箱内外均连接拒绝，未同步。
+
+- 2026-10-16（Mobile MCP 配套显示界面）：核实已选定 @mobilenext/mobile-mcp@1.0.11 的官方 README，项目提供 Claude Code 插件命令 `/mobile-mirror [device-id]`，可在支持 kitty 图形协议的 Ghostty/kitty 终端侧窗显示实时设备画面并进行点击、输入、Home/Back 等操作。这是配套插件的镜像界面，单独添加 npm MCP 服务不会自动获得该界面；本轮 DutyDeck 接入仅包括连接目录与 MCP 工具，尚无专用手机镜像面板。后续若需在 DutyDeck 内实时观看与操作，应评估原生设备面板或镜像能力适配，不能将 MCP 握手成功等同于显示界面已接入。来源：https://github.com/mobile-next/mobile-mcp；Nowledge 定向检索仍连接拒绝。
+
+- 2026-10-16（MCP 目录验收）：新增条目与既有流程共38项相关测试通过，全仓 typecheck、最终 Electron typecheck、隔离目录的 renderer 生产构建及差异检查通过。补齐 guided 配置默认关闭后的启用开关，避免其从“我的 MCP”过滤后无处验证；实验/不可用状态不能被历史连接成功覆盖。本地打包品牌图标，不新增图标运行时请求；Chrome/DeepWiki 使用本地语义图标。测试未启动浏览器业务动作、运行云端 Actor 或扫描用户项目；未提交、发布或重启客户端。
+
+- 2026-10-16（热门 MCP 批量内置决策，取代此前候选建议）：用户明确“全部内置进去”，范围为 Context7、Chrome DevTools、Playwright、Figma、DeepWiki、Apify、n8n-MCP、codebase-memory-mcp、Concat 九项连接目录入口，默认关闭，不自动安装到真实工作区或启动服务。n8n 默认仅节点知识/模板/校验模式，不能宣传已控制用户实例；Figma 当前动态注册需要 client secret，与现有无 secret DCR 不兼容，因此引导官方桌面 Dev/Full 席位路径；Apify 使用系统安全存储中的 Bearer Token，云端 Actor 运行可能计费。CBM 必须先限定已授权项目绝对路径并核实共享 daemon，独立缓存不等于跨工作区索引隔离，也不能执行会改其他 IDE 的 install 子命令。纠正此前调研错误：Concat 官方 https://concatenate.pages.dev/docs/transports/mcp 明确 MCP 尚未合入，JSON-RPC/gRPC 不等于 MCP，因此展示实验性、待上游支持并禁用连接。此轮真实 handshake/listTools：Context7 2、DeepWiki 3、Chrome DevTools 32、Playwright 25、n8n 7 个工具；未调用业务工具，需账号/设备/项目的服务未冒称授权完成。n8n 首次下载与原生依赖安装超过120秒，300秒预算下缓存重试成功。Nowledge Mem 定向检索沙箱内外均连接拒绝，未同步。
+
+- 2026-10-16（小红书 MCP 品牌图标）：用户要求小红书 MCP 使用小红书图标，替换原通用轨道图标；素材取自官网 `https://www.xiaohongshu.com/favicon.ico`，转换为 PNG 随应用打包，确保离线可识别。
+
+- 2026-10-16（Mobile MCP 内置连接目录）：用户要求将 `mobile-next/mobile-mcp` 内置到 MCP，沿用现有「连接」目录与工作区 stdio 管理，固定官方稳定包 `@mobilenext/mobile-mcp@1.0.11`，默认未启用并关闭匿名遥测；只有用户开启开关后才下载、握手和启用，不随应用启动新增后台进程或设备扫描。无需账号即可连接本地服务；Node.js 20+、Android SDK/adb、iOS 模拟器 macOS/Xcode 与设备授权是使用前置条件。服务 handshake/listTools 成功不代表设备就绪；本轮隔离缓存真实握手发现 33 个工具，未调用设备工具。无认证 MCP 的未就绪文案使用「待验证」，只添加配置不得提示「已启用」。11 项既有 MCP 回归、真实组件渲染/回调检查、全仓 typecheck 和差异检查通过。官方来源 `https://github.com/mobile-next/mobile-mcp/releases/tag/1.0.11`；验证脚本位于 `/private/tmp/dutydeck-mobile-mcp-check/`。Nowledge Mem 定向检索在沙箱外仍连接拒绝，未同步。
+
 - 2026-10-15（交互设计模块默认名称）：用户指出工作区标题显示了首个页面名称。首次从“新增页面”创建时，模块 `name` 现在固定保存为“交互设计”，页面仍使用用户输入名称；工作区标题对旧数据也固定显示默认模块名，避免历史页面名继续冒充模块名。新增存储断言与 Electron UI smoke 标题回归；39 项交互设计测试、UI smoke、Electron typecheck 和 `git diff --check` 通过。Nowledge Mem 定向检索仍因本机 127.0.0.1:14242 连接拒绝未同步。
 
 - 2026-10-14（交互设计目录菜单层级与入口位置）：用户反馈页面/分组三点菜单点击无菜单，并要求把“新增页面/新增分组”移到目录标题右侧。目录标题现为“页面”，新增按钮与收起按钮同栏；目录菜单内容使用独立高层级和命中检查，避免真实 Electron 宿主层叠上下文盖住 Radix Portal。Electron UI smoke 新增标题入口、页面菜单屏幕命中、菜单项打开重命名表单及分组菜单回归；smoke、Electron typecheck、git diff --check 通过。Nowledge Mem 定向检索仍因本机 127.0.0.1:14242 连接拒绝未同步。

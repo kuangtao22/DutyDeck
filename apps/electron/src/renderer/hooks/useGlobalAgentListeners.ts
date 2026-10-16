@@ -1,4 +1,5 @@
 import { mergeAgentRunFileChangesSnapshot } from '@/lib/agent-run-file-changes'
+import { createMobileMirrorAutoOpenConsumer } from '@/lib/mobile-mirror-auto-open'
 /**
  * useGlobalAgentListeners — 全局 Agent IPC 监听器
  *
@@ -1001,6 +1002,8 @@ export function useGlobalAgentListeners(): void {
     }
     /** 当前聊天修改自动定位；后台委托只补充所属聊天的变化摘要。 */
     const canvasChangeConsumer = startGlobalAgentCanvasChangeConsumer(store)
+    /** 手机展示只消费主进程实际执行通知，不依据模型尚待审批的 tool_start。 */
+    const mobileMirrorConsumer = createMobileMirrorAutoOpenConsumer(store)
     /** 主进程仍持有的审批与问答必须随运行态一并恢复，避免重载后只剩运行计时。 */
     const pendingRequestRecovery = createPendingRequestRecoveryCoordinator(store, {
       loadSnapshot: () => window.electronAPI.getPendingRequests(),
@@ -1627,6 +1630,12 @@ export function useGlobalAgentListeners(): void {
           || store.get(canvasAgentInternalInvalidSessionIdsAtom).has(sessionId)
 
         unstable_batchedUpdates(() => {
+
+        // 手机活动不写入聊天历史，也不经过历史 SDK 消息重放路径。
+        if (payload.kind === 'proma_event' && payload.event.type === 'mobile_device_activity') {
+          if (!isCanvasAgent) mobileMirrorConsumer.handle(sessionId, payload.event)
+          return
+        }
 
         // 元数据归属其原始 run，终态后迟到也只更新历史统计，不复活流式状态。
         if (payload.kind === 'proma_event' && payload.event.type === 'run_file_changes') {
@@ -2801,6 +2810,7 @@ export function useGlobalAgentListeners(): void {
       cleanupQueuedMessageStatus()
       canvasActivityConsumer.dispose()
       canvasChangeConsumer.dispose()
+      mobileMirrorConsumer.dispose()
       clearInterval(pruneTimer)
       window.removeEventListener('focus', onWindowFocus)
     }

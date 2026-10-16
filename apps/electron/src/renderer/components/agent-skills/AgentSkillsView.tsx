@@ -21,8 +21,9 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
-import { agentPendingPromptAtom, agentSessionDraftHtmlAtom, agentSessionDraftsAtom, agentSessionDraftSyncVersionsAtom, currentAgentSessionIdAtom, skillDetailNavigationAtomFamily, workspaceCapabilitiesVersionAtom } from '@/atoms/agent-atoms'
+import { agentSessionsAtom, agentPendingPromptAtom, agentSessionDraftHtmlAtom, agentSessionDraftsAtom, agentSessionDraftSyncVersionsAtom, currentAgentSessionIdAtom, skillDetailNavigationAtomFamily, workspaceCapabilitiesVersionAtom } from '@/atoms/agent-atoms'
 import { agentSkillsTabAtom } from '@/atoms/active-view'
+import { openWorkspaceToolAtom, workspaceToolAvailabilityAtom } from '@/atoms/workspace-tools'
 import { useProjectActions } from '@/hooks/useProjectActions'
 import { useCreateSession } from '@/hooks/useCreateSession'
 import { McpServerForm } from '@/components/settings/McpServerForm'
@@ -124,6 +125,22 @@ export function AgentSkillsView({
   const { workspaces, currentWorkspaceId: selectedWorkspaceId, selectProject } = useProjectActions()
   const { createAgent } = useCreateSession()
   const currentWorkspace = workspaces.find((workspace) => workspace.id === (workspaceId ?? selectedWorkspaceId))
+
+  /** 手机入口必须属于当前 Agent 会话，避免全屏目录误打开其他项目的设备。 */
+  const openMobileMirror = React.useCallback((): void => {
+    const targetSessionId = sessionId ?? currentAgentSessionId
+    const targetSession = store.get(agentSessionsAtom).find((session) => session.id === targetSessionId)
+    if (!targetSession || targetSession.id !== store.get(currentAgentSessionIdAtom) || targetSession.archived || targetSession.workspaceId !== currentWorkspace?.id) {
+      toast.error('请先打开该项目的 Agent 会话')
+      return
+    }
+    const availability = store.get(workspaceToolAvailabilityAtom)['mobile-mirror']
+    if (!availability.visible || availability.disabledReason) {
+      toast.error(availability.disabledReason ?? '请在 Agent 会话中打开手机面板')
+      return
+    }
+    store.set(openWorkspaceToolAtom, 'mobile-mirror')
+  }, [sessionId, currentAgentSessionId, currentWorkspace?.id, store])
 
   const fillCurrentAgentPrompt = React.useCallback((message: string): boolean => {
     const targetSessionId = sessionId ?? currentAgentSessionId
@@ -354,7 +371,7 @@ export function AgentSkillsView({
       const installed = await data.installMcp(integration.serverName, integration.entry)
       if (!installed) return
       toast.success(`已添加 ${integration.name}`, {
-        description: integration.authentication === 'none' ? '已启用，可在「我的 MCP」中测试连接。' : '已写入待配置模板。需要时可从卡片打开配置，不会自动跳转浏览器。',
+        description: integration.authentication === 'none' ? '配置已添加。请开启卡片上的开关验证连接，成功后即可在 Agent 中使用。' : '已写入待配置模板。需要时可从卡片打开配置，不会自动跳转浏览器。',
       })
       return
     } finally {
@@ -813,6 +830,7 @@ export function AgentSkillsView({
               onDisconnectCatalogCli={(integration) => { void disconnectCatalogCli(integration) }}
               onGuideCatalogIntegration={(integration) => { void guideCatalogIntegration(integration) }}
               onRequestCredential={setPendingCredentialIntegration}
+              onOpenMobileMirror={openMobileMirror}
             />
           ) : (
             <ProjectKnowledgeTab workspaceSlug={data.workspaceSlug} />
@@ -1025,9 +1043,11 @@ interface McpTabProps {
   onDisconnectCatalogCli: (integration: CatalogCliIntegration) => void
   onGuideCatalogIntegration: (integration: CatalogGuidedIntegration) => void
   onRequestCredential: (integration: CatalogCredentialIntegration) => void
+  /** 在所属会话的右侧工作区打开手机。 */
+  onOpenMobileMirror: () => void
 }
 
-function McpTab({ userEntries, catalogMcps, catalogClis, catalogGuided, catalogCredentials, embedded, installedMcpNames, enabledMcpNames, verifiedMcpNames, activeSkillSlugs, connectedCliIds, cliIntegrationProbeState, installingCatalogMcpId, onOpen, onToggle, onRequestDelete, onAuthorize, onInstallCatalogMcp, onGuideCatalogCli, onDisconnectCatalogCli, onGuideCatalogIntegration, onRequestCredential }: McpTabProps): React.ReactElement {
+function McpTab({ userEntries, catalogMcps, catalogClis, catalogGuided, catalogCredentials, embedded, installedMcpNames, enabledMcpNames, verifiedMcpNames, activeSkillSlugs, connectedCliIds, cliIntegrationProbeState, installingCatalogMcpId, onOpen, onToggle, onRequestDelete, onAuthorize, onInstallCatalogMcp, onGuideCatalogCli, onDisconnectCatalogCli, onGuideCatalogIntegration, onRequestCredential, onOpenMobileMirror }: McpTabProps): React.ReactElement {
   if (userEntries.length === 0 && catalogMcps.length === 0 && catalogClis.length === 0 && catalogGuided.length === 0 && catalogCredentials.length === 0) {
     return <EmptyState icon={<Search className="size-8 text-foreground/30" />} title="没有匹配的 MCP 服务器" hint="试试更换搜索关键词。" />
   }
@@ -1071,6 +1091,7 @@ function McpTab({ userEntries, catalogMcps, catalogClis, catalogGuided, catalogC
         onGuide={onGuideCatalogIntegration}
         onRequestCredential={onRequestCredential}
         onToggleMcp={onToggle}
+        onOpenMobileMirror={onOpenMobileMirror}
       />
     </div>
   )

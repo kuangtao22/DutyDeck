@@ -188,7 +188,7 @@ describe('Agent sendMessage 准入顺序合同', () => {
     const end = source.indexOf('// 11. 构建动态上下文', start)
     const body = source.slice(start, end)
     /** MCP 调用、catch 和 catch 后 checkpoint 的位置。 */
-    const callIndex = body.indexOf('await buildPiMcpTools(mcpServers)')
+    const callIndex = body.indexOf('await buildPiMcpTools(mcpServers, undefined,')
     const catchIndex = body.indexOf('} catch (error)')
     const checkpointIndex = body.lastIndexOf('checkpoint()')
 

@@ -1,3 +1,7 @@
+import { activeViewAtom } from '@/atoms/active-view'
+import { mobileMirrorDeviceRequestsAtom } from '@/atoms/mobile-mirror-atoms'
+import { appModeAtom } from '@/atoms/app-mode'
+import { MobileMirrorPanel } from '@/components/mobile-mirror/MobileMirrorPanel'
 import { InteractionDesignWorkspace } from '@/components/interaction-design/InteractionDesignWorkspace'
 import { MousePointer2 } from 'lucide-react'
 /**
@@ -11,7 +15,7 @@ import * as React from 'react'
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
 import { clearWorkspaceToolRequestAtom, pendingWorkspaceToolRequestAtom } from '@/atoms/workspace-tools'
 import { createWorkspaceToolNavigationGuard, runPendingWorkspaceToolRequest } from './workspace-tool-request'
-import { X, ExternalLink, ChevronRight, MoreHorizontal, FolderSearch, Pencil, FolderInput, GitBranch, GitMerge, MessageSquarePlus, FileDiff, FileText, FolderOpen, Globe, MessageCircle, Brain, Split, Blocks, Braces, CalendarDays, ListTodo, Clock, ServerCog, SquareTerminal, Terminal, Workflow, Factory } from 'lucide-react'
+import { X, ExternalLink, ChevronRight, MoreHorizontal, FolderSearch, Pencil, FolderInput, GitBranch, GitMerge, MessageSquarePlus, FileDiff, FileText, FolderOpen, Globe, MessageCircle, Brain, Split, Blocks, Braces, CalendarDays, ListTodo, Clock, ServerCog, SquareTerminal, Terminal, Workflow, Factory, Smartphone } from 'lucide-react'
 import { CapabilityFactoryPanel } from '@/components/capability-factory/CapabilityFactoryPanel'
 import { Button } from '@/components/ui/button'
 import { toast } from 'sonner'
@@ -48,6 +52,7 @@ import { VaultView } from '@/components/vault/VaultView'
 import { OBSIDIAN_NAME, ObsidianIcon } from '@/components/obsidian/obsidian-brand'
 import {
   currentSessionSidePanelOpenAtom,
+  currentAgentSessionIdAtom,
   agentFileSourceFilterMapAtom,
   workspaceFilesVersionAtom,
   currentAgentWorkspaceIdAtom,
@@ -545,6 +550,14 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
   const workspaceToolStore = useStore()
   const pendingWorkspaceTool = useAtomValue(pendingWorkspaceToolRequestAtom(sessionId))
   const [isOpen, setIsOpen] = useAtom(currentSessionSidePanelOpenAtom)
+  /** 面板关闭或整个 Agent 页面隐藏时停止截图，不受分屏焦点影响。 */
+  const activeView = useAtomValue(activeViewAtom)
+  const appMode = useAtomValue(appModeAtom)
+  const selectedSessionId = useAtomValue(currentAgentSessionIdAtom)
+  const mobileMirrorActive = isOpen && activeView === 'conversations' && appMode === 'agent' && selectedSessionId === sessionId
+  /** 自动展示目标按会话隔离，仅每轮首次设备调用更新。 */
+  const mobileMirrorDeviceRequest = useAtomValue(mobileMirrorDeviceRequestsAtom).get(sessionId)
+
   // Tab 系统
   const previewFileMap = useAtomValue(previewFileMapAtom)
   const setPreviewFileMap = useSetAtom(previewFileMapAtom)
@@ -1805,6 +1818,7 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
         automations: { label: '定时任务', icon: <Clock className="size-3.5" /> },
         skills: { label: 'Skills', icon: <Blocks className="size-3.5" /> },
         mcp: { label: 'MCP', icon: <ServerCog className="size-3.5" /> },
+        'mobile-mirror': { label: '手机', icon: <Smartphone className="size-3.5" /> },
         memory: { label: '项目知识库', icon: <Brain className="size-3.5" /> },
         vault: { label: OBSIDIAN_NAME, icon: <ObsidianIcon className="size-3.5" /> },
         'server-ops': { label: '运维', icon: <ServerCog className="size-3.5" /> },
@@ -2220,6 +2234,17 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
       <AgentSkillsView embedded componentTab="skills" workspaceId={currentWorkspaceId ?? undefined} sessionId={sessionId} />
     ) : paneTab === 'mcp' ? (
       <AgentSkillsView embedded componentTab="mcp" workspaceId={currentWorkspaceId ?? undefined} sessionId={sessionId} />
+    ) : paneTab === 'mobile-mirror' ? (
+      <MobileMirrorPanel
+        key={`${sessionId}:${currentWorkspaceId}:${pane ?? 'single'}`}
+        sessionId={sessionId}
+        active={mobileMirrorActive}
+        deviceRequest={mobileMirrorDeviceRequest}
+        onOpenMcp={() => {
+          setWorkspaceComponentTabs((previous) => previous.includes('mcp') ? previous : [...previous, 'mcp'])
+          handleWorkspaceTabChange('mcp')
+        }}
+      />
     ) : paneTab === 'memory' ? (
       workspaceSlug ? (
         <div className="min-h-0 flex-1 overflow-hidden p-2">

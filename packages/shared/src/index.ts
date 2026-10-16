@@ -19,3 +19,4 @@ export * from './types/capability-factory-experiment'
 
 export * from './types/capability-factory-review-retry'
 export * from './utils/capability-factory-run-diagnosis'
+export * from './types/mobile-mirror'

@@ -651,6 +651,8 @@ export type AgentEvent =
 
 /** Proma 内部事件类型 */
 export type PromaEvent =
+  /** 已通过权限检查的真实 Mobile MCP 设备调用，仅供当前会话展示手机面板。 */
+  | { type: 'mobile_device_activity'; deviceId: string; toolUseId: string; runStartedAt: number; runGeneration: number }
   | { type: 'run_file_changes'; snapshot: import('./agent-run-file-changes').AgentRunFileChangesSnapshot }
   | { type: 'permission_request'; request: PermissionRequest }
   | { type: 'permission_resolved'; requestId: string; behavior: 'allow' | 'deny' }

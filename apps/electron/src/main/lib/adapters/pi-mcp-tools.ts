@@ -87,11 +87,21 @@ interface McpConnectionLease {
   connection: McpConnection
 }
 
+/** 获准执行时观察真实 MCP 来源；不根据归一化名称猜测服务器。 */
+export interface PiMcpToolExecution {
+  serverName: string
+  toolName: string
+  toolUseId: string
+  args: Record<string, unknown>
+}
+
 interface McpToolBinding {
   serverName: string
   originalToolName: string
   tool: McpToolInfo
-  manager: PiMcpClientManager
+  manager: Pick<PiMcpClientManager, 'callTool'>
+  /** 由编排器捕获运行身份，只在真实执行入口调用。 */
+  onToolExecuting?: (execution: PiMcpToolExecution) => void
   managerConfig: PiMcpServerConfig
 }
 
@@ -527,7 +537,7 @@ class PiMcpClientManager {
 
 const manager = new PiMcpClientManager()
 
-function createPiMcpToolDefinition(binding: McpToolBinding): ToolDefinition {
+export function createPiMcpToolDefinition(binding: McpToolBinding): ToolDefinition {
   const toolName = mcpToolName(binding.serverName, binding.originalToolName)
   const description = binding.tool.description || `Call MCP tool ${binding.originalToolName} from server ${binding.serverName}`
 
@@ -537,8 +547,15 @@ function createPiMcpToolDefinition(binding: McpToolBinding): ToolDefinition {
     description,
     promptSnippet: `${toolName}: ${description}`,
     parameters: toTypeBoxSchema(binding.tool.inputSchema),
-    async execute(_toolCallId, params, signal) {
+    async execute(toolCallId, params, signal) {
       const args = isObjectSchema(params) ? params as Record<string, unknown> : {}
+      if (signal?.aborted) throw new Error('当前工具调用已取消')
+      try {
+        binding.onToolExecuting?.({ serverName: binding.serverName, toolName: binding.originalToolName, toolUseId: toolCallId, args })
+      } catch {
+        // 展示观察器失败不改变已获准工具的业务结果，也不记录私有输入或异常载荷。
+      }
+      if (signal?.aborted) throw new Error('当前工具调用已取消')
       const result = await binding.manager.callTool(binding.serverName, binding.managerConfig, binding.originalToolName, args, signal)
       return convertMcpResult(result)
     },
@@ -551,7 +568,7 @@ function createPiMcpToolDefinition(binding: McpToolBinding): ToolDefinition {
  * 注意：本函数仅供 Pi runtime 使用；Claude runtime 仍直接把 mcpServers 交给
  * Claude Agent SDK，不经过这里。
  */
-export async function buildPiMcpTools(mcpServers: PiMcpServers, proxyUrl?: string): Promise<ToolDefinition[]> {
+export async function buildPiMcpTools(mcpServers: PiMcpServers, proxyUrl?: string, onToolExecuting?: (execution: PiMcpToolExecution) => void): Promise<ToolDefinition[]> {
   const tools: ToolDefinition[] = []
   const proxiedServers = proxyUrl
     ? Object.fromEntries(Object.entries(mcpServers).map(([name, config]) => {
@@ -603,6 +620,7 @@ export async function buildPiMcpTools(mcpServers: PiMcpServers, proxyUrl?: strin
         tool,
         manager,
         managerConfig: config,
+        onToolExecuting,
       }))
     }
   }
