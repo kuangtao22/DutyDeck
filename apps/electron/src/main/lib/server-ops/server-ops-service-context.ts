@@ -14,6 +14,7 @@ import type { ServerOpsLocalFileLeaseRegistry } from './server-ops-local-file-le
 import type { ServerOpsDataService } from './server-ops-data-service'
 import type { ServerOpsDatabaseAgentPolicyStore } from './server-ops-database-agent-policy-store'
 import type { ServerOpsTaskService } from './server-ops-task-service'
+import type { ServerOpsDeploymentService } from './server-ops-deployment-service'
 
 /** Server Ops 主进程唯一服务实例边界。 */
 export interface ServerOpsServiceContext {
@@ -34,6 +35,8 @@ export interface ServerOpsServiceContext {
   console?: ServerOpsDockerConsoleService
   /** Agent 发起的独立任务终端，与 SSH 连接共享应用生命周期。 */
   tasks?: ServerOpsTaskService
+  /** 发布检查生命周期；持久目标 Store 由其自身配置事务管理。 */
+  deployment?: Pick<ServerOpsDeploymentService, 'dispose'>
   transfers?: ServerOpsFileTransferService
   fileLeases?: ServerOpsLocalFileLeaseRegistry
   /** 数据服务：数据源元数据、密码密文与 SSH 隧道只读读取。 */
@@ -125,6 +128,9 @@ async function disposeContext(context: ServerOpsServiceContext | null, nextConte
   }
   if (!ownedByNewerContext(context, nextContext, 'tasks')) {
     try { context.tasks?.dispose() } catch (error) { firstError ??= error }
+  }
+  if (!ownedByNewerContext(context, nextContext, 'deployment')) {
+    try { context.deployment?.dispose() } catch (error) { firstError ??= error }
   }
   if (!ownedByNewerContext(context, nextContext, 'disposeTrustWatcher')) {
     try { context.disposeTrustWatcher?.() } catch (error) { firstError ??= error }

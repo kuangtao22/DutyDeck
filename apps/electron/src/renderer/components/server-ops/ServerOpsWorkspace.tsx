@@ -16,6 +16,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Rocket,
   Server,
   Settings2,
   ShieldCheck,
@@ -113,6 +114,7 @@ import { createServerOpsDataSourceListController } from './server-ops-data-sourc
 import { getServerOpsDataErrorMessage } from './server-ops-data-display'
 import { ServerOpsFilesWorkspace } from './ServerOpsFilesWorkspace'
 import { ServerOpsDockerConsole } from './ServerOpsDockerConsole'
+import { ServerOpsDeploymentPanel } from './ServerOpsDeploymentPanel'
 import { useServerOpsTransferLeave } from './useServerOpsTransferLeave'
 import { useServerOpsViewPosition } from './useServerOpsViewPosition'
 import { createServerOpsLocalSqliteProbeDraft, importServerOpsLocalSqlite, resolveServerOpsLocalSqliteFileSelection } from './server-ops-local-sqlite-controller'
@@ -217,7 +219,7 @@ export const serverOpsDataApi: ServerOpsDataPanelApi = {
  * 数据服务不再是页签：数据库 / Redis 是项目内的独立连接，
  * 从项目视图点进去就是数据服务详情，页签里不需要第二个指向同一批数据的入口。
  */
-export type ServerOpsSection = 'overview' | 'terminal' | 'services' | 'logs' | 'files' | 'docker' | 'audit'
+export type ServerOpsSection = 'overview' | 'terminal' | 'services' | 'logs' | 'files' | 'docker' | 'deployment' | 'audit'
 
 /** 运维页签的显示元数据。 */
 interface ServerOpsSectionMeta {
@@ -237,6 +239,7 @@ const SERVER_OPS_SECTIONS: readonly ServerOpsSectionMeta[] = [
   { id: 'logs', label: '日志', icon: FileText },
   { id: 'files', label: '文件', icon: FolderOpen },
   { id: 'docker', label: 'Docker', icon: Box },
+  { id: 'deployment', label: '发布', icon: Rocket },
   { id: 'audit', label: '审计', icon: ClipboardList },
 ]
 
@@ -721,6 +724,8 @@ export function ServerOpsWorkspaceView({
                     onSectionChange('logs')
                   }}
                 />
+            : activeSection === 'deployment'
+              ? <ServerOpsDeploymentPanel projectId={projectId ?? selectedHost.projectId ?? ''} hostId={selectedHost.id} connected={connected} active />
             : activeSection === 'audit'
               ? <ServerOpsAudit
                   status={auditStatus}

@@ -18,6 +18,9 @@ export type ServerOpsConfigFileName =
   | 'agent-read-access.json'
   | 'scripts.json'
   | 'script-runs.json'
+  | 'deployments.json'
+  | 'deployment-runs.json'
+  | 'deployment-artifacts.json'
 
 /** 配置事务向上层暴露的稳定错误码。 */
 export type ServerOpsConfigTransactionErrorCode =
@@ -124,6 +127,9 @@ const CONFIG_FILES: ReadonlySet<string> = new Set<ServerOpsConfigFileName>([
   // 脚本库与运行记录属于运维项目资产，必须与项目归属检查共用同一把跨进程写锁。
   'scripts.json',
   'script-runs.json',
+  'deployments.json',
+  'deployment-runs.json',
+  'deployment-artifacts.json',
 ])
 
 /** 当前 JS isolate 内唯一的外层事务；同步调用不会在中途交出事件循环。 */

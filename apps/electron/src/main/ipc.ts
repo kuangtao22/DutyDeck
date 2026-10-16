@@ -536,6 +536,8 @@ import { ServerOpsConnectionService, createServerOpsConnectionSystemDependencies
 import { ServerOpsOverviewService } from './lib/server-ops/server-ops-overview-service'
 import { ServerOpsSystemdService } from './lib/server-ops/server-ops-systemd-service'
 import { ServerOpsDockerService } from './lib/server-ops/server-ops-docker-service'
+import { ServerOpsDeploymentService } from './lib/server-ops/server-ops-deployment-service'
+import { ServerOpsDeploymentStore } from './lib/server-ops/server-ops-deployment-store'
 import { ServerOpsFileService } from './lib/server-ops/server-ops-file-service'
 import { ServerOpsDockerConsoleService } from './lib/server-ops/server-ops-docker-console-service'
 import { ServerOpsTaskService } from './lib/server-ops/server-ops-task-service'
@@ -2699,6 +2701,17 @@ export function registerIpcHandlers(): void {
     acquireMutationGuard: acquireServerOpsMutationGuard,
     ...createServerOpsConnectionSystemDependencies(),
   })
+  /** 发布目标和检查结果独立于 Agent 会话；首期只开放 Compose 现场检查。 */
+  const serverOpsDeploymentStore = new ServerOpsDeploymentStore(getConfigDir(), { transaction: serverOpsConfigTransaction })
+  const serverOpsDeploymentService = new ServerOpsDeploymentService({
+    store: serverOpsDeploymentStore,
+    getHost: (hostId) => {
+      const host = serverOpsHostStore.get(hostId)
+      return host?.projectId ? { projectId: host.projectId } : undefined
+    },
+    getActiveIdentity: (hostId) => serverOpsConnectionService.getActiveIdentity(hostId),
+    exec: (hostId, connectionId, command, timeoutMs) => serverOpsConnectionService.exec(hostId, connectionId, command, timeoutMs),
+  })
   /** SSH/Redis Agent 读取授权使用共享配置持久化，并复用同一运维服务实例。 */
   const serverOpsAgentReadAccessPersistence = new ServerOpsAgentReadAccessPersistenceStore(getConfigDir(), { transaction: serverOpsConfigTransaction })
   const serverOpsAgentAccessStore = new ServerOpsAgentAccessStore(undefined, serverOpsAgentReadAccessPersistence)
@@ -2858,6 +2871,7 @@ export function registerIpcHandlers(): void {
         logs: serverOpsLogService,
         trustManagement: serverOpsTrustService,
         docker: serverOpsDockerService,
+        deployment: { service: serverOpsDeploymentService, store: serverOpsDeploymentStore },
         files: serverOpsFileService,
         console: serverOpsConsoleService,
         tasks: serverOpsTaskService,
@@ -2893,6 +2907,7 @@ export function registerIpcHandlers(): void {
         logs: serverOpsLogService,
         trustManagement: serverOpsTrustService,
         docker: serverOpsDockerService,
+        deployment: serverOpsDeploymentService,
         files: serverOpsFileService,
         console: serverOpsConsoleService,
         tasks: serverOpsTaskService,
@@ -2927,6 +2942,9 @@ export function registerIpcHandlers(): void {
       }
       try { serverOpsDockerService.dispose() } catch (cleanupError) {
         console.error('[Server Ops] Docker 服务初始化回滚失败:', cleanupError)
+      }
+      try { serverOpsDeploymentService.dispose() } catch (cleanupError) {
+        console.error('[Server Ops] 发布服务初始化回滚失败:', cleanupError)
       }
       try { serverOpsFileService.dispose() } catch (cleanupError) {
         console.error('[Server Ops] 文件服务初始化回滚失败:', cleanupError)
