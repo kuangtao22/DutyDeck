@@ -12,10 +12,12 @@ export const CANVAS_READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   'canvas_inspect_media', 'canvas_get_task', 'canvas_list_versions', 'canvas_read_version',
   'canvas_list_trash', 'canvas_list_workflows', 'canvas_get_workflow',
   'canvas_get_workflow_run', 'canvas_list_workflow_runs', 'canvas_get_orchestration',
+  'canvas_get_settings',
 ])
 
 /** Renderer 手动运行保留完整的 Canvas Agent 交互能力。 */
 const RENDERER_MANUAL_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'canvas_get_settings',
   ...CANVAS_IMAGE_CANDIDATE_TOOL_NAMES,
   ...CANVAS_MEDIA_REVIEW_TOOL_NAMES,
   ...MEDIA_TOOL_NAMES,
@@ -60,6 +62,7 @@ const RENDERER_MANUAL_TOOL_NAMES: ReadonlySet<string> = new Set([
 
 /** 父编排允许检查与准备产物，但不能递归启动或控制高影响运行。 */
 const PARENT_ORCHESTRATED_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'canvas_get_settings',
   ...CANVAS_IMAGE_CANDIDATE_TOOL_NAMES,
   ...CANVAS_MEDIA_REVIEW_TOOL_NAMES,
   ...MEDIA_TOOL_NAMES.filter((name) => !['media_execute_run', 'media_cancel_run', 'media_save_profile'].includes(name)),

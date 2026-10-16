@@ -198,6 +198,12 @@ export interface CanvasBatchOperationResult {
   operationId: string
 }
 
+/** 在同一 Canvas 锁内完成恢复后取得的图与逐来源事务证据。 */
+export interface CanvasBatchSourceReconciliationResult {
+  document: CanvasDocument
+  intents: Array<CanvasBatchOperationIntent | null>
+}
+
 /** 待发布图事实及其持久来源，确保崩溃恢复后仍能定位触发 Agent。 */
 export interface CanvasBatchPublication {
   document: CanvasDocument
@@ -817,7 +823,7 @@ export function createCanvasAgentBatchOperationService(dependencies: CanvasAgent
   }
 
   /** 在已取得共享 Canvas 串行权与 workspace lease 时执行新批次。 */
-  const executeLocked = async (envelope: CanvasBatchOperationEnvelope): Promise<CanvasBatchLockedExecutionResult> => {
+  const executeLocked = async (envelope: CanvasBatchOperationEnvelope, assertAuthorized?: () => void): Promise<CanvasBatchLockedExecutionResult> => {
     const target = { projectId: envelope.projectId, canvasId: envelope.canvasId }
     /** 任何新请求先收敛全部旧 intent，禁止并存第二个未决事务。 */
     let reconciliationPublications: CanvasBatchPublication[]
@@ -865,6 +871,8 @@ export function createCanvasAgentBatchOperationService(dependencies: CanvasAgent
         expectedGraphSha256: createGraphSha256(plan.expectedDocument),
         operations: plan.operations,
       }
+      /** 对账与回放查询可等待磁盘；新事务首次写入前复核取消和撤权。 */
+      assertAuthorized?.()
       await write(intent)
       intent = await prepareResources(intent)
       try {
@@ -906,11 +914,18 @@ export function createCanvasAgentBatchOperationService(dependencies: CanvasAgent
   }
 
   /** 唯一外层在 serializer 与 workspace lease 释放后发布锁内提交事实。 */
-  const execute = async (envelope: CanvasBatchOperationEnvelope): Promise<CanvasBatchOperationResult> => {
+  const execute = async (
+    envelope: CanvasBatchOperationEnvelope,
+    /** 排队后的宿主准入检查；首次事务副作用前执行，已开始后保持一致性收敛。 */
+    assertAuthorized?: () => void,
+  ): Promise<CanvasBatchOperationResult> => {
     const target = { projectId: envelope.projectId, canvasId: envelope.canvasId }
     let result: CanvasBatchLockedExecutionResult
     try {
-      result = await dependencies.runExclusive(target, () => executeLocked(envelope))
+      result = await dependencies.runExclusive(target, () => {
+        assertAuthorized?.()
+        return executeLocked(envelope, assertAuthorized)
+      })
     } catch (error) {
       if (error instanceof CanvasBatchExecutionError) {
         await publishBestEffort(target, [
@@ -928,7 +943,40 @@ export function createCanvasAgentBatchOperationService(dependencies: CanvasAgent
     return { document: result.document, operationId: result.operationId }
   }
 
+  /** 输入可信来源列表，在共享锁内恢复事务并返回同一时刻的权威证据；发布在锁外进行。 */
+  const reconcileSources = async (
+    target: CanvasTarget,
+    sources: CanvasChangeSource[],
+    /** 宿主传入的实时授权检查；排队完成后、首次恢复副作用前执行。 */
+    assertAuthorized?: () => void,
+  ): Promise<CanvasBatchSourceReconciliationResult> => {
+    /** 即使后续来源读取失败，也不能丢失恢复期间已提交的图事实。 */
+    let publications: CanvasBatchPublication[] = []
+    try {
+      /** 图与 receipt 读取共用现有 serializer，避免与新提交交错。 */
+      const result = await dependencies.runExclusive(target, async () => {
+        /** 排队时的授权可能已撤销；进入事务后不再中途打断其一致性收敛。 */
+        assertAuthorized?.()
+        /** 恢复先完成；扫描失败必须向上传播，不能解释为不存在。 */
+        const reconciled = await reconcileLocked(target)
+        publications = reconciled.publications
+        /** 按输入顺序保留 null，以证明每个精确来源均已检查。 */
+        const intents: Array<CanvasBatchOperationIntent | null> = []
+        for (const source of sources) intents.push(await findReplayLocked(target, source))
+        return { document: reconciled.document, intents }
+      })
+      await publishBestEffort(target, publications)
+      return result
+    } catch (error) {
+      /** 中途恢复失败包含之前成功提交的事实，仍需锁外广播。 */
+      const unwrapped = unwrapCanvasBatchReconciliationError(error)
+      await publishBestEffort(target, [...publications, ...unwrapped.publications])
+      throw unwrapped.error
+    }
+  }
+
   return {
+    reconcileSources,
     findReplayLocked,
     executeLocked,
     reconcileLocked,

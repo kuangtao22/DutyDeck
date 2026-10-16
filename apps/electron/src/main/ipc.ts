@@ -1,3 +1,7 @@
+import { createCanvasSessionIdleGuard } from './lib/design/canvas-session-idle-guard'
+import type { CanvasViewCommandTarget } from '@proma/shared'
+import { createCanvasViewCommandService } from './lib/design/canvas-view-command-service'
+import { registerCanvasViewIpcHandlers } from './lib/design/canvas-view-ipc'
 import { registerTokenUsageIpc } from './lib/token-usage-ipc'
 import { initializeTokenUsageRecording } from './lib/token-usage-recorder'
 import { agentTokenUsageContext } from './lib/token-usage-context'
@@ -240,6 +244,7 @@ import { DesignContextOrchestrator } from './lib/design/design-context-orchestra
 import { DesignImageModelPreferences } from './lib/design/design-image-model-preferences'
 import { registerDesignIpcHandlers } from './lib/design/design-ipc'
 import { registerCanvasSessionIpcHandlers } from './lib/design/canvas-session-ipc'
+import { createCanvasSessionManagement } from './lib/design/canvas-session-management'
 import { CanvasSessionStore } from './lib/design/canvas-session-store'
 import {
   cleanupDeletedAgentSessionCanvasBindings,
@@ -3744,6 +3749,78 @@ export function registerIpcHandlers(): void {
       }
     }
   }
+  /** 媒体模块异步读取期间监听权威运行提交，删除前同步复查全部执行状态。 */
+  const canvasSessionIdleGuard = createCanvasSessionIdleGuard({
+    assertSynchronousIdle: ({ projectId, canvasId }) => {
+      /** Agent 与图片任务任一仍运行时都保留画布，避免删除执行中的事实源。 */
+      const hasBusyAgent = listAgentSessions().some((session) => (
+        session.sourceCanvasProjectId === projectId
+        && session.sourceCanvasId === canvasId
+        && isAgentSessionBusy(session.id)
+      ))
+      const hasBusyImageJob = designJobManager.list(projectId).some((job) => (
+        job.target?.kind === 'canvas-image'
+        && job.target.canvasId === canvasId
+        && (job.status === 'queued' || job.status === 'running')
+      ))
+      /** 持久工作流和编排仍可恢复时，也必须先显式停止再删除事实源。 */
+      const orchestration = canvasOrchestrationStore.get({ projectId, canvasId })
+      const hasActiveOrchestration = orchestration && !['completed', 'cancelled'].includes(orchestration.status)
+      const hasActiveWorkflow = canvasWorkflowRuns.list({ projectId, canvasId })
+        .some((run) => ['running', 'waiting-review', 'waiting-budget'].includes(run.status))
+      if (hasBusyAgent || hasBusyImageJob || hasActiveOrchestration || hasActiveWorkflow) {
+        throw new Error('CANVAS_SESSION_BUSY: 画布仍有任务或可恢复工作流，请先停止后再删除。')
+      }
+    },
+    loadRunIds: async ({ projectId, canvasId }) => {
+      /** 仅读原始媒体登记；不调用会恢复或采用结果的工作台 load。 */
+      /** 当前图所有已登记的媒体运行；阶段在删除前同步读取。 */
+      const runIds: string[] = []
+      const document = canvasDocumentStore.load({ projectId, canvasId }).document
+      for (const node of document.nodes) {
+        if (node.kind !== 'audio' && node.kind !== 'video') continue
+        const state = await canvasMediaStore.load({ projectId, canvasId, nodeId: node.id,
+          mediaKind: node.kind, mediaModuleId: node.mediaModuleId })
+        runIds.push(...state.operations.map((operation) => operation.runId))
+      }
+      return runIds
+    },
+    runs: mediaRuns,
+  })
+  /** UI 和 Agent 共用唯一会话生命周期服务；删除与图写入使用同一串行器。 */
+  const canvasSessionManagement = createCanvasSessionManagement({
+    guard: workspaceOperationGuard,
+    sessions: canvasSessionStore,
+    getProjectReadOnlyReason: getDesignProjectReadOnlyReason,
+    broadcast: broadcastCanvasSessionChange,
+    runExclusive: (target, effect) => canvasOperationSerializer.run(target, effect),
+    assertCanvasIdle: (projectId, canvasId) => canvasSessionIdleGuard({ projectId, canvasId }),
+    cleanupBindings: (projectId, canvasId) => {
+      /** Canvas 删除后先撤销所有普通 Agent 授权，再回收内部节点会话。 */
+      cleanupDeletedCanvasBindings(agentCanvasBindingCleanup, projectId, canvasId)
+    },
+    cleanupInternalSessions: async (projectId, canvasId) => {
+      /** 内部 Agent 会话严格按完整 Canvas 归属筛选，不能波及其它画布或普通会话。 */
+      const sessions = listAgentSessions().filter((session) => (
+        session.sourceCanvasProjectId === projectId && session.sourceCanvasId === canvasId
+      ))
+      for (const session of sessions) {
+        try {
+          await stopAgentAndDrain(session.id)
+          permissionService.clearSessionWhitelist(session.id)
+          permissionService.clearSessionPending(session.id)
+          askUserService.clearSessionPending(session.id)
+          exitPlanService.clearSessionPending(session.id)
+          clearAgentQueuedMessages(session.id)
+          await browserController.close(session.id)
+          deleteAgentSession(session.id)
+        } catch (error) {
+          /** Canvas 索引已经删除，单会话清理失败只能隔离记录并继续其它会话。 */
+          console.error(`[Canvas 会话] 内部 Agent 清理失败 (${session.id}):`, error)
+        }
+      }
+    },
+  })
   /** 普通 Agent 引用和五个 Canvas 工具只消费生产唯一 Store 与守卫。 */
   const canvasToolAccess = createCanvasToolAccessFacade({
     getAgentSession: getAgentSessionMeta,
@@ -3753,6 +3830,7 @@ export function registerIpcHandlers(): void {
     getProjectReadOnlyReason: getDesignProjectReadOnlyReason,
     runProjectMutation: (projectId, effect) => workspaceOperationGuard.runWorkspaceWrite(projectId, effect),
     sessions: canvasSessionStore,
+    management: canvasSessionManagement,
     bindings: agentCanvasBindingStore,
     loadCanvas: (target) => canvasDocumentStore.load(target),
     broadcastSession: broadcastCanvasSessionChange,
@@ -3958,47 +4036,7 @@ export function registerIpcHandlers(): void {
     sessions: canvasSessionStore,
     getProjectReadOnlyReason: getDesignProjectReadOnlyReason,
     broadcast: broadcastCanvasSessionChange,
-    assertCanvasIdle: (projectId, canvasId) => {
-      /** Agent 与图片任务任一仍运行时都保留画布，避免删除执行中的事实源。 */
-      const hasBusyAgent = listAgentSessions().some((session) => (
-        session.sourceCanvasProjectId === projectId
-        && session.sourceCanvasId === canvasId
-        && isAgentSessionBusy(session.id)
-      ))
-      const hasBusyImageJob = designJobManager.list(projectId).some((job) => (
-        job.target?.kind === 'canvas-image'
-        && job.target.canvasId === canvasId
-        && (job.status === 'queued' || job.status === 'running')
-      ))
-      if (hasBusyAgent || hasBusyImageJob) {
-        throw new Error('Canvas 仍有任务运行，请先停止后再删除')
-      }
-    },
-    cleanupBindings: (projectId, canvasId) => {
-      /** Canvas 删除后先撤销所有普通 Agent 授权，再回收内部节点会话。 */
-      cleanupDeletedCanvasBindings(agentCanvasBindingCleanup, projectId, canvasId)
-    },
-    cleanupInternalSessions: async (projectId, canvasId) => {
-      /** 内部 Agent 会话严格按完整 Canvas 归属筛选，不能波及其它画布或普通会话。 */
-      const sessions = listAgentSessions().filter((session) => (
-        session.sourceCanvasProjectId === projectId && session.sourceCanvasId === canvasId
-      ))
-      for (const session of sessions) {
-        try {
-          await stopAgentAndDrain(session.id)
-          permissionService.clearSessionWhitelist(session.id)
-          permissionService.clearSessionPending(session.id)
-          askUserService.clearSessionPending(session.id)
-          exitPlanService.clearSessionPending(session.id)
-          clearAgentQueuedMessages(session.id)
-          await browserController.close(session.id)
-          deleteAgentSession(session.id)
-        } catch (error) {
-          /** Canvas 索引已经删除，单会话清理失败只能隔离记录并继续其它会话。 */
-          console.error(`[Canvas 会话] 内部 Agent 清理失败 (${session.id}):`, error)
-        }
-      }
-    },
+    management: canvasSessionManagement,
   })
   /** 低层图片工具与后续 Canvas 工作流复用唯一运行服务和既有持久化边界。 */
   const canvasImageRunService = createCanvasImageRunService({
@@ -4252,7 +4290,54 @@ export function registerIpcHandlers(): void {
       await resumeCanvasWorkflowRuns(runs)
     })().catch(() => console.warn('[Canvas 工作流] 启动恢复暂未完成，保留原运行记录'))
   })
+  /** 视图路由只信任仍有效的普通会话与画布关联，不借用其他窗口的身份。 */
+  const assertCanvasViewTargetAuthorized = (target: CanvasViewCommandTarget): void => {
+    /** 调用身份由登记的真实项目和会话重新构建，每次重新校验。 */
+    const context = { projectId: target.projectId, sessionId: target.sessionId, runStartedAt: Date.now(),
+      explicitReferences: [], permissionCeiling: 'execute' as const }
+    canvasToolAccess.authorizeRead(context)
+    canvasToolAccess.requireLinkedCanvas(context, target.canvasId)
+  }
+  /** 只向当前可见主窗口的精确会话视图发送操作，离线或撤权时拒绝。 */
+  const canvasViewCommands = createCanvasViewCommandService({
+    isAvailable: (senderId, target) => {
+      /** 前台画布只能属于当前存活、可见的主窗口。 */
+      const window = getStoredMainWindow()
+      if (!window || window.isDestroyed() || !window.isVisible() || window.webContents.isDestroyed()
+        || window.webContents.id !== senderId) return false
+      try { assertCanvasViewTargetAuthorized(target); return true } catch { return false }
+    },
+    send: (senderId, channel, payload) => {
+      /** 定向消息禁止退化为向所有窗口广播。 */
+      const contents = listAuthorizedDesignWebContents().find((candidate) => candidate.id === senderId)
+      if (!contents || contents.isDestroyed()) throw new Error('CANVAS_VIEW_NOT_AVAILABLE')
+      contents.send(channel, payload)
+    },
+  })
+  /** 注册与回执仅接收主窗口主 frame，子 frame 和辅助窗口不能伪装视图。 */
+  const canvasViewIpc = registerCanvasViewIpcHandlers({
+    ipc: ipcMain,
+    service: canvasViewCommands,
+    isAuthorizedSender: (event) => {
+      /** 每次 fresh 获取主窗口，窗口替换后旧 sender 即刻失效。 */
+      const contents = getStoredMainWindow()?.webContents
+      return Boolean(contents && !contents.isDestroyed() && event.sender === contents && event.senderFrame === contents.mainFrame)
+    },
+    assertTargetAuthorized: assertCanvasViewTargetAuthorized,
+  })
+  app.once('before-quit', () => {
+    canvasViewIpc.dispose()
+    canvasViewCommands.dispose()
+  })
   registerCanvasDocumentIpcHandlers({
+    viewCommands: canvasViewCommands,
+    configurationCatalog: (projectId) => ({
+      models: buildCanvasGenerationModelOptions(readIndependentGenerationCatalog(), imageModels.listOptions(projectId)),
+      /** 只暴露选择所需公开字段，不返回连接地址、凭据或配置对象。 */
+      connections: getMediaConfiguration().listProject(projectId).connections.map((connection) => ({
+        id: connection.id, name: connection.name, enabled: connection.enabled,
+      })),
+    }),
     orchestration: canvasOrchestrationService,
     taskStore: canvasTaskStore,
     taskOperations: canvasTaskOperations,

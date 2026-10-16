@@ -1,3 +1,8 @@
+import { assertCanvasViewSnapshotBudget } from '@proma/shared'
+import type { CanvasViewSnapshot } from '@proma/shared'
+import { activeSessionIdAtom } from '@/atoms/tab-atoms'
+import { createCanvasViewUpdate, resolveCanvasViewArrangeScope } from './native-canvas-view-command'
+import { useCanvasViewCommandBridge } from './use-canvas-view-command-bridge'
 import * as React from 'react'
 import { applyCanvasMutations } from '@proma/shared'
 import type {
@@ -2769,6 +2774,8 @@ export function NativeCanvasWorkspace({
   /** graph key 只隔离共享图；view key 再加入 Agent 会话身份。 */
   const stateKey = createNativeCanvasKey(target.projectId, target.canvasId)
   const viewStateKey = createAgentCanvasViewKey(sessionId, target.projectId, target.canvasId)
+  /** 只有当前前台普通会话可以响应 Agent 视图指令。 */
+  const activeHostSessionId = useAtomValue(activeSessionIdAtom)
   const states = useAtomValue(nativeCanvasStatesAtom)
   const viewStates = useAtomValue(agentCanvasViewStatesAtom)
   /** 外部修改的定位意图仅在本视图权威 LOAD 后处理。 */
@@ -4191,6 +4198,95 @@ export function NativeCanvasWorkspace({
       }
     })
   }, [arrangeCommand, arrangeState.loading, stateKey, store, viewStateKey])
+
+  /** 保留当前几何与范围，不因选区/视口更新重新注册而取消自己的命令。 */
+  const agentViewContextRef = React.useRef({ visibleNodeIds, validSelectedNodeIds, relatedArrangeNodeIds })
+  agentViewContextRef.current = { visibleNodeIds, validSelectedNodeIds, relatedArrangeNodeIds }
+
+  /** 每次执行与回执都读取实际前台、表面尺寸与权威图。 */
+  const isAgentViewAvailable = (): boolean => {
+    const surface = canvasSurfaceRef.current?.getBoundingClientRect()
+    return currentWorkspaceKeyRef.current === viewStateKey
+      && store.get(activeSessionIdAtom) === sessionId
+      && document.visibilityState === 'visible'
+      && Boolean(surface && surface.width > 0 && surface.height > 0)
+      && Boolean(store.get(nativeCanvasStatesAtom).get(stateKey)?.snapshot)
+  }
+  /** 返回应用到会话 atom 后的真实轻量视图事实。 */
+  const readAgentViewSnapshot = (projectedView?: AgentCanvasViewState): CanvasViewSnapshot => {
+    const graph = store.get(nativeCanvasStatesAtom).get(stateKey)?.snapshot?.document
+    const view = projectedView ?? store.get(agentCanvasViewStatesAtom).get(viewStateKey)
+    if (!graph || !view || !isAgentViewAvailable()) throw new Error('CANVAS_VIEW_NOT_AVAILABLE')
+    return { revision: graph.revision, selectedNodeIds: [...view.selectedNodeIds], viewport: { ...view.viewport },
+      expandedNodeId: view.expandedNodeId, activeTool: view.activeTool,
+      workbenchSizesByNodeId: { ...view.workbenchSizesByNodeId },
+      workbenchOffsetsByNodeId: { ...view.workbenchOffsetsByNodeId },
+      nodeSizesById: Object.fromEntries(canvasNodeSizesByIdRef.current) }
+  }
+  useCanvasViewCommandBridge({
+    target: { ...target, sessionId },
+    enabled: activeHostSessionId === sessionId && Boolean(state.snapshot),
+    bridge: typeof window === 'undefined' || !window.electronAPI?.onCanvasViewCommand ? undefined : window.electronAPI,
+    isAvailable: isAgentViewAvailable,
+    execute: async (request, signal) => {
+      const graph = store.get(nativeCanvasStatesAtom).get(stateKey)?.snapshot?.document
+      const view = store.get(agentCanvasViewStatesAtom).get(viewStateKey)
+      const surface = canvasSurfaceRef.current?.getBoundingClientRect()
+      if (!graph || !view || !surface || signal.aborted || !isAgentViewAvailable()) throw new Error('CANVAS_VIEW_NOT_AVAILABLE')
+      if (request.command.action === 'arrange') {
+        /** Agent布局仅计算位置草案；真正持久化由主进程在写锁内复核授权后完成。 */
+        const command = request.command
+        const sampledView = readAgentViewSnapshot()
+        assertCanvasViewSnapshotBudget(request, sampledView)
+        const scopeNodeIds = resolveCanvasViewArrangeScope(request.command, graph, agentViewContextRef.current)
+        const operationId = window.crypto.randomUUID()
+        const permissionValid = (): boolean => {
+          const current = store.get(nativeCanvasStatesAtom).get(stateKey)
+          return Boolean(current?.snapshot?.writable && current.snapshot.document === graph
+            && current.snapshot.document.revision === command.expectedRevision
+            && current.authoritativeRecoveryState === 'idle' && current.saveState !== 'conflict')
+        }
+        if (!permissionValid()) throw new Error('CANVAS_VIEW_NOT_AVAILABLE')
+        if (!beginStructuralOperation(operationId, 'arrange')) throw new Error('CANVAS_VIEW_BUSY')
+        try {
+          const blockedNodeIds = new Set([...nodeActivityStatesRef.current]
+            .filter(([, activity]) => activity === 'running' || activity === 'waiting-approval').map(([id]) => id))
+          const mutation = await createArrangeCanvasNodesMutation(graph, scopeNodeIds, blockedNodeIds,
+            canvasNodeSizesByIdRef.current, { signal })
+          if (signal.aborted) throw new Error('CANVAS_VIEW_CANCELLED')
+          if (!isAgentViewAvailable() || !permissionValid()) throw new Error('CANVAS_VIEW_NOT_AVAILABLE')
+          if (mutation.positions.some(({ nodeId }) => {
+            const activity = nodeActivityStatesRef.current.get(nodeId)
+            return activity === 'running' || activity === 'waiting-approval'
+          })) throw new Error('CANVAS_VIEW_LAYOUT_STALE')
+          const prepared = { ...sampledView, arrangement: { expectedRevision: graph.revision, positions: mutation.positions } }
+          assertCanvasViewSnapshotBudget(request, prepared)
+          return prepared
+        } finally {
+          endStructuralOperation(operationId)
+        }
+      } else if (request.command.action !== 'query') {
+        const update = createCanvasViewUpdate(request.command, view, graph.nodes, canvasNodeSizesByIdRef.current, surface)
+        /** 必须先检查预期成功响应，避免操作已完成后才因大选区报告失败。 */
+        const projected = readAgentViewSnapshot({ ...view, ...update })
+        assertCanvasViewSnapshotBudget(request, projected)
+        updateAgentCanvasViewState({ key: viewStateKey, update })
+        return projected
+      }
+      const snapshot = readAgentViewSnapshot()
+      assertCanvasViewSnapshotBudget(request, snapshot)
+      return snapshot
+    },
+    observeAvailability: (register) => {
+      const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(register)
+      if (canvasSurfaceRef.current) observer?.observe(canvasSurfaceRef.current)
+      document.addEventListener('visibilitychange', register)
+      return () => {
+        observer?.disconnect()
+        document.removeEventListener('visibilitychange', register)
+      }
+    },
+  })
 
   /** 为唯一展开节点构造轻量工作台；Agent 对话仅在这里按需挂载。 */
   const renderNodeWorkbench = React.useCallback((

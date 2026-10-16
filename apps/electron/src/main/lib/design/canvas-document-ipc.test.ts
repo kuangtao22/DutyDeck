@@ -77,6 +77,9 @@ function createToolAccess(): CanvasToolAccessFacade {
     link: () => { throw new Error('测试未配置 Canvas 关联') },
     unlink: () => { throw new Error('测试未配置 Canvas 解除关联') },
     setDefault: () => { throw new Error('测试未配置 Canvas 默认关联') },
+    listSessions: () => [],
+    updateSession: () => { throw new Error('测试未配置 Canvas 元数据更新') },
+    deleteSession: () => { throw new Error('测试未配置 Canvas 删除') },
   }
 }
 

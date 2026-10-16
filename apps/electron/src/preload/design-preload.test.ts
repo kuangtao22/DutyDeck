@@ -629,3 +629,20 @@ describe('Design preload', () => {
     expect(() => recorded.added[0]?.listener({} as IpcRendererEvent, change)).toThrow('consumer-failure')
   })
 })
+
+test('Given 会话视图桥 When 收到非法命令或重复清理 Then 不透传且幂等解绑', async () => {
+  const recorded = createRecordingIpc()
+  const api = createDesignPreloadApi(recorded.ipc)
+  const received: unknown[] = []
+  const release = api.onCanvasViewCommand((request) => received.push(request))
+  const request = { projectId: 'p', sessionId: 's', canvasId: 'c', requestId: 'r', expiresAt: Date.now() + 1000, command: { action: 'query' } }
+  recorded.added[0]?.listener({} as IpcRendererEvent, request)
+  recorded.added[0]?.listener({} as IpcRendererEvent, { ...request, command: { action: 'viewport', viewport: { x: 0, y: 0, zoom: -1 } } })
+  await api.registerCanvasViewTarget({ projectId: 'p', sessionId: 's', canvasId: 'c' })
+  await api.respondCanvasViewCommand({ projectId: 'p', sessionId: 's', canvasId: 'c', requestId: 'r', ok: false, code: 'CANVAS_VIEW_NOT_AVAILABLE' })
+  release()
+  release()
+  expect(received).toEqual([request])
+  expect(recorded.removed).toHaveLength(1)
+  expect(recorded.invokes.map((entry) => entry.channel)).toEqual(['canvas:view:register', 'canvas:view:response'])
+})

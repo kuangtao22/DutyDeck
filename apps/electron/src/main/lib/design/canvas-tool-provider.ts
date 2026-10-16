@@ -55,6 +55,7 @@ import { resolveCanvasAgentReviewPosition } from './canvas-agent-review-layout'
 import type {
   CanvasArtifactCreationResult,
   CanvasArtifactCreationService,
+  CanvasArtifactSourceLookup,
 } from './canvas-artifact-creation'
 import { CanvasArtifactPreflightError } from './canvas-artifact-preflight'
 import type { CanvasTextArtifactService } from './canvas-text-artifact-service'
@@ -62,6 +63,9 @@ import type { CanvasImageRunService } from './canvas-image-run-service'
 import type { CanvasImageCandidateBatchService } from './canvas-image-candidate-batch-service'
 import type { CanvasImageResultAttachmentService } from './canvas-image-result-attachment-service'
 import { createCanvasImageCandidateTools } from './canvas-image-candidate-tools'
+import { createCanvasConfigurationTools, type CanvasConfigurationToolDependencies } from './canvas-configuration-tools'
+import { createCanvasViewTools } from './canvas-view-tools'
+import type { CanvasViewCommandService } from './canvas-view-command-service'
 import type { CanvasWorkflowExecutionService } from './canvas-workflow-execution-service'
 import type { CanvasMediaService } from './canvas-media-service'
 import type { CanvasToolAccessFacade } from './canvas-tool-access-facade'
@@ -603,6 +607,10 @@ export interface CanvasToolImageImportInput extends CanvasTarget {
 
 /** Provider 只依赖现有权威 Store、Task8 batch 与执行接缝。 */
 export interface CanvasToolProviderDependencies {
+  /** 公开模型和连接目录；凭据仅保留在宿主服务。 */
+  configurationCatalog?: CanvasConfigurationToolDependencies['catalog']
+  /** 前台工作台的真实命令回执；无此服务时不暴露视图能力。 */
+  viewCommands?: Pick<CanvasViewCommandService, 'execute'> & Partial<Pick<CanvasViewCommandService, 'assertAvailable'>>
   /** 专属编排与普通委托共用唯一持久服务，未注入时不展示占位能力。 */
   orchestration?: CanvasOrchestrationService
   /** 生产始终注入持久交付状态；独立旧工具测试可省略持久层。 */
@@ -617,7 +625,7 @@ export interface CanvasToolProviderDependencies {
     | 'createAndLink'
     | 'link'
     | 'unlink'
-    | 'setDefault'>
+    | 'setDefault'> & Partial<Pick<CanvasToolAccessFacade, 'listSessions' | 'updateSession' | 'deleteSession'>>
   documents: {
     load: (target: CanvasTarget) => CanvasWorkspaceSnapshot
     validateBatchOperations: (target: CanvasTarget, expectedRevision: number, operations: unknown[]) => CanvasMutation[]
@@ -628,7 +636,7 @@ export interface CanvasToolProviderDependencies {
   workflowExecution: Pick<CanvasWorkflowExecutionService, 'execute' | 'resume' | 'cancel' | 'get' | 'list' | 'registerCreatedSuccessor'>
     & Partial<Pick<CanvasWorkflowExecutionService, 'recordCreatedSuccessorRegistrationFailure'>>
   readNodeContent?: (target: CanvasTarget, node: CanvasNode) => Promise<string>
-  artifacts: Pick<CanvasArtifactCreationService, 'create' | 'createAgent' | 'resolveCreated'>
+  artifacts: Pick<CanvasArtifactCreationService, 'create' | 'createAgent' | 'resolveCreated' | 'reconcileCreated'>
   /** 主进程在调用导入事务前负责解析并验证本地路径。 */
   importImage: (input: CanvasToolImageImportInput) => Promise<CanvasArtifactCreationResult>
   textArtifacts: Pick<CanvasTextArtifactService, 'read' | 'listVersions' | 'update'>
@@ -643,7 +651,7 @@ export interface CanvasToolProviderDependencies {
     save: (input: SaveCanvasImageModuleInput) => Promise<CanvasImageModuleConfig>
     readThumbnail: (projectId: string, assetId: string) => Promise<CanvasInspectionThumbnail>
   }
-  batch: { execute: (input: CanvasBatchOperationEnvelope) => Promise<CanvasBatchOperationResult> }
+  batch: { execute: (input: CanvasBatchOperationEnvelope, assertAuthorized?: () => void) => Promise<CanvasBatchOperationResult> }
   /** 低层工具直接调用主进程唯一图片运行服务。 */
   imageRuns: Pick<CanvasImageRunService, 'run'>
   /** 候选检查和采用复用既有图片批次事务。 */
@@ -1150,9 +1158,9 @@ export function createCanvasToolRun(
   }
 
   /** 对账只接受由原始会话、运行时间和 toolCallId 派生的权威节点。 */
-  const resolveCreatedOperation = (pending: CanvasTaskPendingOperation) => {
+  const createdOperationLookup = (pending: CanvasTaskPendingOperation): CanvasArtifactSourceLookup | null => {
     if (!pending.nodeKind || !['agent', 'document', 'webview', 'image', 'audio', 'video'].includes(pending.nodeKind)) return null
-    return dependencies.artifacts.resolveCreated({
+    return {
       projectId: context.projectId,
       canvasId: pending.canvasId,
       artifactType: pending.nodeKind as 'agent' | 'document' | 'webview' | 'image' | 'audio' | 'video',
@@ -1161,23 +1169,70 @@ export function createCanvasToolRun(
         runStartedAt: pending.startedAt,
         toolCallId: pending.sourceToolCallId,
       },
-    })
+    }
   }
 
-  /** 在恢复任务时补齐已提交但回执丢失的创建操作；未知来源继续保留 pending。 */
-  const reconcilePendingCreatedOperations = () => {
-    for (const receipt of task.exportState().operationReceipts) {
+  /** 用回执持久化的原始来源查询已提交节点，不使用本次恢复运行的时间。 */
+  const resolveCreatedOperation = (pending: CanvasTaskPendingOperation) => {
+    /** 只有受支持的创建节点类型才有可信来源查询。 */
+    const lookup = createdOperationLookup(pending)
+    return lookup ? dependencies.artifacts.resolveCreated(lookup) : null
+  }
+
+  /**
+   * 补齐已提交创建回执；显式恢复时允许宿主推进原事务或确认未提交。
+   * @param signal 当前工具的停止信号，异步对账前后均复核。
+   * @param recoverTransactions 是否为显式 resume/recover；普通写门禁不主动重放事务。
+   * @returns 原合同的最新状态，证据不足时保留 pending。
+   */
+  const reconcilePendingCreatedOperations = async (signal?: AbortSignal, recoverTransactions = false) => {
+    /** 异步恢复必须绑定原合同，不能把迟到结果写入后来切换的任务。 */
+    const operationTask = task
+    for (const receipt of operationTask.exportState().operationReceipts) {
       if (receipt.status !== 'pending' || receipt.kind !== 'created') continue
-      const resolved = resolveCreatedOperation(receipt)
+      assertReadAccess(receipt.canvasId, signal)
+      /** 既有节点查询保持轻量，只有缺失的 Agent 创建才需要扫描事务。 */
+      let resolved = resolveCreatedOperation(receipt)
+      if (!resolved && recoverTransactions && receipt.nodeKind === 'agent'
+        && context.permissionCeiling !== 'plan' && dependencies.artifacts.reconcileCreated) {
+        /** 来源由已持久化回执重建，模型不能指定另一个操作或运行。 */
+        const lookup = createdOperationLookup(receipt)!
+        /** 恢复可能写图，必须沿用原创建工具的编排准入与写生命周期。 */
+        const releaseRecovery = orchestrationGuard?.('canvas_create_agent', { canvasId: receipt.canvasId })
+        try {
+          /** 领域服务在唯一 Canvas 串行器内检查事务及归档并发布恢复事实。 */
+          const resolution = await dependencies.access.runWrite(context, () => {
+            assertReadAccess(receipt.canvasId, signal)
+            /** 获锁后同步复核项目可写、停止、关联与编排接管，避免沿用排队前的准入。 */
+            return dependencies.artifacts.reconcileCreated!(lookup, () => dependencies.access.runWrite(context, () => {
+              assertReadAccess(receipt.canvasId, signal)
+              /** 门禁只同步检查并计数；立即释放本次复核占位，外层占位仍覆盖整个恢复。 */
+              orchestrationGuard?.('canvas_create_agent', { canvasId: receipt.canvasId })?.()
+            }))
+          })
+          assertReadAccess(receipt.canvasId, signal)
+          if (task !== operationTask) throw new Error('CANVAS_TASK_OPERATION_CONFLICT')
+          if (resolution.status === 'rejected') {
+            operationTask.recordOperation({ ...receipt, kind: 'created', status: 'rejected', reasonCode: resolution.reasonCode })
+            continue
+          }
+          if (resolution.status === 'completed') resolved = resolution.artifact
+        } finally {
+          releaseRecovery?.()
+        }
+      }
       if (!resolved || resolved.artifactType !== receipt.nodeKind) continue
+      if (resolved.canvasId !== receipt.canvasId || resolved.sourceToolCallId !== receipt.sourceToolCallId) {
+        throw new Error('CANVAS_TASK_OPERATION_CONFLICT')
+      }
       try {
-        task.recordOperation(createCompletedReceipt(receipt, resolved))
+        operationTask.recordOperation(createCompletedReceipt(receipt, resolved))
       } catch (error) {
         /** 对账写入再次失败时保留 pending 并返回状态，不能把已存在节点包装成工具失败。 */
-        if (!task.status().pendingOperationIds.includes(receipt.operationId)) throw error
+        if (!operationTask.status().pendingOperationIds.includes(receipt.operationId)) throw error
       }
     }
-    return task.status()
+    return operationTask.status()
   }
 
   /** 创建先登记 pending；可信前置拒绝收尾为 rejected，已提交结果按来源登记 completed。 */
@@ -1340,11 +1395,11 @@ export function createCanvasToolRun(
           if (!stored || (params.taskId && params.taskId !== stored.state.taskId)) throw new Error('CANVAS_TASK_NOT_FOUND')
           if (registeredCanvasId && task.status().taskId !== stored.state.taskId) throw new Error('CANVAS_TASK_ALREADY_STARTED')
           if (registeredCanvasId && task.status().taskId === stored.state.taskId) {
-            return toolResult(reconcilePendingCreatedOperations())
+            return toolResult(await reconcilePendingCreatedOperations(signal, true))
           }
           bindTask(params.canvasId, stored.state)
           taskEngaged = true
-          return toolResult(reconcilePendingCreatedOperations())
+          return toolResult(await reconcilePendingCreatedOperations(signal, true))
         }
         if (params.action === 'start') {
           if (!params.canvasId || !params.requirements) throw new Error('CANVAS_TASK_REQUIREMENTS_INVALID')
@@ -1386,7 +1441,9 @@ export function createCanvasToolRun(
         }
         if (params.action === 'recover') {
           taskEngaged = true
-          reconcilePendingCreatedOperations()
+          /** 不合状态的 recover 不得提前重放业务事务；working 应先 resume。 */
+          const phase = task.status().phase
+          await reconcilePendingCreatedOperations(signal, phase === 'blocked' || phase === 'needs-input')
           return toolResult(await task.recover(signal ?? new AbortController().signal))
         }
         if (params.action === 'rebind') {
@@ -1440,15 +1497,25 @@ export function createCanvasToolRun(
     }),
     defineCanvasTool({
       name: 'canvas_manage', label: '管理画布关联',
-      description: '创建、关联、解除关联或设置默认画布。创建和新增关联必须来自明确任务或用户选择。',
+      description: '列出本会话已关联画布（包括归档），或创建、关联、解除关联、设置默认、改名、归档、恢复和删除整张画布。归档/恢复/改名/删除必须来自用户明确指令并传 intent=explicit；删除保留运行中保护，不能用于绕过未决任务。',
       parameters: Type.Object({
-        action: Type.Union([Type.Literal('create'), Type.Literal('link'), Type.Literal('unlink'), Type.Literal('set-default')]),
+        action: Type.Union([Type.Literal('create'), Type.Literal('link'), Type.Literal('unlink'), Type.Literal('set-default'),
+          Type.Literal('list'), Type.Literal('archive'), Type.Literal('restore'), Type.Literal('rename'), Type.Literal('delete')]),
         canvasId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
         title: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
         makeDefault: Type.Optional(Type.Boolean()),
-      }),
-      execute: async (toolCallId, params) => {
+        archived: Type.Optional(Type.Boolean()),
+        intent: Type.Optional(Type.Literal('explicit')),
+      }, { additionalProperties: false }),
+      execute: async (toolCallId, params, signal) => {
+        signal?.throwIfAborted()
         dependencies.access.authorizeRead(context)
+        if (context.canvasAgentTarget || context.canvasAgentMode) throw new Error('CANVAS_AGENT_CANVAS_SCOPE_FIXED')
+        if (params.action === 'list') {
+          if (!dependencies.access.listSessions) throw new Error('CANVAS_SESSION_MANAGEMENT_UNAVAILABLE')
+          return toolResult({ action: params.action, sessions: dependencies.access.listSessions(context,
+            params.archived === undefined ? {} : { archived: params.archived }) })
+        }
         if (context.permissionCeiling === 'plan' && params.action === 'create') {
           throw new Error('CANVAS_EXECUTE_INTENT_REQUIRED')
         }
@@ -1466,6 +1533,25 @@ export function createCanvasToolRun(
           return toolResult({ action: params.action, canvasId: session.id, session, binding })
         }
         if (!params.canvasId) throw new Error('CANVAS_ID_REQUIRED')
+        if (['archive', 'restore', 'rename', 'delete'].includes(params.action)) {
+          if (params.intent !== 'explicit') throw new Error('CANVAS_DESTRUCTIVE_INTENT_REQUIRED')
+          /** 归档仍保留关联；真正副作用前由共享服务再检查取消、身份和授权。 */
+          const assertAuthorized = (): void => { assertReadAccess(params.canvasId!, signal) }
+          assertAuthorized()
+          if (params.action === 'delete') {
+            if (!dependencies.access.deleteSession) throw new Error('CANVAS_SESSION_MANAGEMENT_UNAVAILABLE')
+            const session = await dependencies.access.deleteSession(context, params.canvasId, assertAuthorized)
+            /** 删除已撤销关联，不能在成功后再要求该关联存在而误报失败。 */
+            return toolResult({ action: params.action, canvasId: session.id, session })
+          }
+          if (!dependencies.access.updateSession) throw new Error('CANVAS_SESSION_MANAGEMENT_UNAVAILABLE')
+          if (params.action === 'rename' && !params.title?.trim()) throw new Error('CANVAS_SESSION_TITLE_REQUIRED')
+          const session = dependencies.access.updateSession(context, {
+            canvasId: params.canvasId,
+            ...(params.action === 'rename' ? { title: params.title!.trim() } : { archived: params.action === 'archive' }),
+          }, assertAuthorized)
+          return toolResult({ action: params.action, canvasId: session.id, session })
+        }
         if (params.action === 'link') {
           /** 关联只能复用已有 binding 或本轮权威节点引用，模型自报参数不能扩权。 */
           const binding = getContext()
@@ -2981,6 +3067,17 @@ export function createCanvasToolRun(
     }),
   ] as ToolDefinition[]
 
+  if (dependencies.configurationCatalog) tools.push(...createCanvasConfigurationTools({
+    access: dependencies.access, documents: dependencies.documents, batch: dependencies.batch,
+    catalog: dependencies.configurationCatalog,
+    assertSettingsWritable: (canvasId) => { orchestrationGuard?.('canvas_update_settings', { canvasId })?.() },
+  }, toolContext))
+  if (dependencies.viewCommands) tools.push(...createCanvasViewTools({
+    access: dependencies.access, viewCommands: dependencies.viewCommands,
+    documents: dependencies.documents, batch: dependencies.batch,
+    assertLayoutWritable: (canvasId) => { orchestrationGuard?.('canvas_arrange', { canvasId })?.() },
+  }, toolContext))
+
   /** 仅向模型开放已完成生产装配的新操作；缺少处理器时不宣告对应能力。 */
   const operationTools = createCanvasOperationTools(
     dependencies.operations ?? {}, toolContext, dependencies.access,
@@ -3234,7 +3331,7 @@ export function createCanvasToolRun(
             throw new Error('CANVAS_TASK_RECOVERY_REQUIRED: 请先用 canvas_task recover 复验并恢复原任务；不能覆盖合同或重复生成。')
           }
           if (status.pendingOperationIds.length > 0) {
-            status = reconcilePendingCreatedOperations()
+            status = await reconcilePendingCreatedOperations(args[2])
             if (status.pendingOperationIds.length > 0) {
               throw new Error('CANVAS_TASK_OPERATION_RECONCILIATION_REQUIRED: 已有创建操作结果尚未确认，请先恢复原回执，不能继续产生新的写入副作用。')
             }
@@ -3271,6 +3368,14 @@ export function createCanvasToolRun(
 
 本轮实际可用的任务、版本、导出、恢复或工作流操作工具仅为：${availableOperationNames.map((name) => `\`${name}\``).join('、')}。canvas_read 返回的 capabilities 已按这份真实清单和 permissionCeiling 收缩；不要调用未列出的操作，也不要把只读查询当成采用、重试、恢复或继续授权。`
     : ''
+  /** 只描述本轮已注册的能力，固定子Agent不接收主会话管理指令。 */
+  const managementPrompt = [
+    availableToolNames.has('canvas_manage') ? 'canvas_manage 可列出已关联画布及归档记录，并改名、归档、恢复或删除整张画布；变更须来自用户明确要求并传 intent=explicit，删除前必须停止相关运行。' : '',
+    availableToolNames.has('canvas_get_settings') ? 'canvas_get_settings 读取画布全局媒体模型范围、默认 ComfyUI 连接及分页公开目录。' : '',
+    availableToolNames.has('canvas_update_settings') ? '只有用户明确要求调整画布全局设置时才用 canvas_update_settings，传 settingsIntent=explicit 和精确 baseRevision；不能为完成生成擅自扩大模型范围。' : '',
+    availableToolNames.has('canvas_view') ? 'canvas_view 查询或调整当前会话前台画布的选中、聚焦、视口、选择/平移工具及工作台展开、关闭、尺寸、偏移和重置；query 只读，其余要求 execute。前台不可用时说明原因，不声称界面已改变。' : '',
+    availableToolNames.has('canvas_arrange') ? 'canvas_arrange 根据 selected/related/visible/all/nodes 范围自动整理，传精确 baseRevision 和 intent=explicit；复用前台布局算法，版本冲突后重新读取，不自动覆盖用户改动。布局和会话视图、全局设置、画布管理无需建立制作交付任务。' : '',
+  ].filter(Boolean).join('\n')
   /** 有真实任务查询能力时才要求有界等待；提交回执不能替代终态与内容验收。 */
   const taskFollowUpPrompt = availableToolNames.has('canvas_get_task')
     ? `\n\n异步图片生成或重试返回 jobId / replacementJobId 后，已提交不等于完成。除用户只要求后台提交外，继续使用 canvas_get_task，waitMs=${CANVAS_TASK_WAIT_MAX_MS} 等待新任务终态，优先执行回执中的 nextAction；超时仍为 running/queued 时等待同一任务，不另行生成。成功后按精确版本看图，已有采用授权时按原范围采用并继续；失败时报告实际错误，保留原卡片和素材。503 或无可用账号属于渠道阻塞，不是提示词或节点损坏，不反复提交付费重试。停止、撤权或预算耗尽时明确报告未完成状态，不承诺不存在的后台唤醒。只读等待不需要重新申请生成授权。`
@@ -3322,6 +3427,7 @@ export function createCanvasToolRun(
 ${CANVAS_INTENT_GUIDANCE}
 ${dependencies.orchestration ? buildCanvasOrchestrationGuidance(context) : ''}
 ${CANVAS_PROFESSIONAL_DESIGN_GUIDANCE}
+${managementPrompt}
 请基于完整用户语义、项目上下文和工具 schema 自主决定是否读取、创建、修改或运行画布，不要按“首页”或“设计”等关键词硬编码。
 
 跨专业任务采用持久委托时，由画布编排 Agent 维护下述交付合同，普通 Agent 不重复启动同一合同。直接执行画布任务时先用 canvas_task status 查询；存在未完成任务就按 taskId resume，首次执行才用 canvas_task start 在写入前登记真实交付要求，并按可用能力自主读取、配置、执行、验证和修复。response 仅适用于文本本身就是用户交付，不能用它代替要求的节点或真实生成结果。canvas_read 返回 content/configuration/adopted 证据，canvas_inspect_images 返回真实图像检查的 inspection 证据；用 evidenceId 完成全部要求后调用 canvas_task complete。提交时严格二选一：content/configuration/adopted/inspection 只提交 \`{id,evidenceId}\`，response 只提交 \`{id,text}\`，绝不在同一项中同时提交 text 与 evidenceId，也不能把说明文字塞入证据提交。配置已保存不表示可运行，媒体采用不表示质量通过。音视频 metadataOnly 与 WebView 源码不能代替内容或交互检查，缺少能力时 canvas_task block 报告具体原因。完成前 Host 会复验产物版本；有合法下一步的未完成任务在原会话和预算内继续，不能重建运行或降低交付要求来绕过核验。普通能力咨询和无需画布产物的问答不必登记任务。任务要求新增产物时，保留源输入，读取新产物作为完成证据。
@@ -3350,7 +3456,9 @@ ${CANVAS_PROFESSIONAL_DESIGN_GUIDANCE}
 Host 只提供 permissionCeiling 权限上限：plan 仅允许新增 idle 结构和只读操作，禁止运行、产物创建、采用、重试、导出、恢复、覆盖、删除和移动；execute 表示工具可执行，不代表用户已授权任意操作。删除或覆盖必须有用户明确意图，并传入 destructiveIntent=explicit。${operationPrompt}${taskFollowUpPrompt}${canvasAgentPrompt}${mediaRun ? `\n\n${mediaRun.systemPromptAppend}` : ''}`,
     piCustomTools: availableTools,
     allowedToolNames: availableTools.map((tool) => tool.name),
-    readOnlyToolNames: availableTools.map(tool => tool.name).filter(name => CANVAS_READ_ONLY_TOOL_NAMES.has(name)),
+    /** 混合动作工具仅获得通用计划门禁准入，写动作仍由工具内部严格限制。 */
+    readOnlyToolNames: availableTools.map(tool => tool.name).filter(name => CANVAS_READ_ONLY_TOOL_NAMES.has(name)
+      || name === 'canvas_manage' || name === 'canvas_view'),
     ...(mediaRun?.toolApprovalPolicy ? { toolApprovalPolicy: mediaRun.toolApprovalPolicy } : {}),
     singleApprovalToolNames: [
       'canvas_run_nodes',

@@ -202,10 +202,10 @@ export interface CanvasDocumentIpcOptions {
   /** 唯一批处理服务；调用时外层已持有共享 Canvas 串行权和 workspace lease。 */
   batch: {
     reconcileLocked: (target: CanvasTarget) => Promise<CanvasBatchReconciliationResult>
-    execute?: (input: CanvasBatchOperationEnvelope) => Promise<CanvasBatchOperationResult>
+    execute?: (input: CanvasBatchOperationEnvelope, assertAuthorized?: () => void) => Promise<CanvasBatchOperationResult>
   }
   /** 普通 Agent 创建 WebView 或图片节点时复用的原子产物服务。 */
-  artifacts: Pick<CanvasArtifactCreationService, 'create' | 'createAgent' | 'resolveCreated'>
+  artifacts: Pick<CanvasArtifactCreationService, 'create' | 'createAgent' | 'resolveCreated' | 'reconcileCreated'>
   /** 普通 Agent 的本地图片导入在生产装配层完成路径授权。 */
   importImage: (input: CanvasToolImageImportInput) => Promise<CanvasArtifactCreationResult>
   /** 普通 Agent 文档与 WebView 读写复用生产唯一文本事务服务。 */
@@ -284,6 +284,10 @@ export interface CanvasDocumentIpcOptions {
   mediaTools?: (context: CanvasToolRunContext) => CanvasToolRun
   /** 正式媒体检查复用 Host 可信素材入口与有界解码服务。 */
   mediaInspection?: CanvasToolProviderDependencies['mediaInspection']
+  /** 主进程仅提供模型与连接公开目录，不把凭据交给模型。 */
+  configurationCatalog?: CanvasToolProviderDependencies['configurationCatalog']
+  /** Agent与Renderer共用唯一前台视图请求路由器。 */
+  viewCommands?: CanvasToolProviderDependencies['viewCommands']
   /** 编排工具与 Renderer 读取复用主进程唯一持久服务。 */
   orchestration?: CanvasOrchestrationService
 }
@@ -330,7 +334,7 @@ export interface CanvasToolProviderRuntime {
   documents: Pick<CanvasDocumentStore, 'load' | 'validateBatchOperations'>
   agentConfigs: Pick<CanvasAgentConfigStore, 'load' | 'update'>
   agentExecution: Pick<CanvasAgentExecutionService, 'execute'>
-  batch: { execute: (input: CanvasBatchOperationEnvelope) => Promise<CanvasBatchOperationResult> }
+  batch: { execute: (input: CanvasBatchOperationEnvelope, assertAuthorized?: () => void) => Promise<CanvasBatchOperationResult> }
   readNodeContent: (target: CanvasTarget, node: CanvasNode) => Promise<string>
   runNodes: (
     context: CanvasToolRunContext,
@@ -1712,6 +1716,8 @@ export function registerCanvasDocumentIpcHandlers(
           },
           mediaTools: options.mediaTools,
           mediaInspection: options.mediaInspection,
+          configurationCatalog: options.configurationCatalog,
+          viewCommands: options.viewCommands,
           ...(options.orchestration ? { orchestration: options.orchestration } : {}),
         }, captureCanvasToolInitialContext(toolAccess, context)),
         documents: options.store,

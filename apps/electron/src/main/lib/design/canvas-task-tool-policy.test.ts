@@ -14,7 +14,7 @@ describe('画布交付操作前置登记', () => {
   test('Given 只读、停止或创建空画布 When 调用工具 Then 不因缺任务阻止安全操作', () => {
     for (const tool of ['canvas_read', 'canvas_get_context', 'canvas_inspect_images',
       'canvas_inspect_media', 'canvas_cancel_task', 'canvas_cancel_media_run', 'canvas_cancel_workflow',
-      'canvas_manage', 'Bash']) expect(requiresCanvasTask(tool, {})).toBe(false)
+      'canvas_manage', 'canvas_get_settings', 'canvas_update_settings', 'canvas_view', 'canvas_arrange', 'Bash']) expect(requiresCanvasTask(tool, {})).toBe(false)
   })
 
   test('Given 结构事务 When 仅移动视图 Then 无需登记而混入业务修改时需要', () => {

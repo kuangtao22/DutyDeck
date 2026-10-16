@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { AgentSessionMeta, CanvasSessionMeta } from '@proma/shared'
 import { createEmptyCanvasDocument } from '@proma/shared'
+import { createCanvasSessionManagement } from './canvas-session-management'
 import { createCanvasToolAccessFacade } from './canvas-tool-access-facade'
 import type { CanvasToolRunContext } from './canvas-tool-provider'
 
@@ -239,5 +240,70 @@ describe('Canvas Tool 唯一授权 facade', () => {
       'guard', 'session-created', 'binding-linked',
       'guard',
     ])
+  })
+})
+
+
+describe('Canvas 生命周期 Agent 授权', () => {
+  test('Given 已关联归档画布 When 查询与恢复 Then 保留关联且支持标题更新；撤权和固定子 Agent 无法管理', async () => {
+    /** 模拟授权与关联在执行期间变化。 */
+    let authorized = true
+    let linked = true
+    /** 当前注册的归档画布。 */
+    const session: CanvasSessionMeta = { id: 'canvas-1', projectId: 'project-1', title: '旧标题', archived: true, createdAt: 1, updatedAt: 1 }
+    /** 统计真正写入，验证失败路径无副作用。 */
+    let writes = 0
+    /** 在服务 guard 内模拟解绑。 */
+    let revokeInsideGuard = false
+    /** 共享服务拥有唯一删除清理。 */
+    const management = createCanvasSessionManagement({
+      guard: { runWorkspaceWrite: (_projectId, effect) => { if (revokeInsideGuard) linked = false; return effect() } },
+      sessions: {
+        update: (input) => { writes += 1; Object.assign(session, input); return session },
+        delete: () => { writes += 1; return session },
+      },
+      getProjectReadOnlyReason: () => undefined,
+      cleanupBindings: () => { linked = false },
+      broadcast: () => undefined,
+    })
+    /** 每次访问实时返回的持久化关联。 */
+    const binding = { projectId: 'project-1', sessionId: 'agent-1', linkedCanvasIds: ['canvas-1'], updatedAt: 1 }
+    /** 与生产一致的 facade 注入。 */
+    const facade = createCanvasToolAccessFacade({
+      management,
+      getAgentSession: () => authorized ? createAgent() : undefined,
+      assertProjectAuthorized: () => undefined,
+      getProjectReadOnlyReason: () => undefined,
+      runProjectMutation: (_projectId, effect) => effect(),
+      sessions: {
+        list: () => [session, { ...session, id: 'unlinked' }],
+        requireNative: () => session,
+        createWithIdOnce: () => ({ session, created: false }),
+      },
+      bindings: {
+        get: () => linked ? binding : null,
+        linkWithChange: () => { throw new Error('UNUSED') },
+        unlinkWithChange: () => { throw new Error('UNUSED') },
+        setDefaultWithChange: () => { throw new Error('UNUSED') },
+      },
+      loadCanvas: (target) => ({ document: createEmptyCanvasDocument(target.projectId, target.canvasId, 1), writable: true, nodeIssues: [] }),
+      broadcastSession: () => undefined,
+      broadcastBinding: () => undefined,
+    })
+    expect(facade.listSessions(context, { archived: true })).toEqual([session])
+    expect(facade.updateSession(context, { canvasId: 'canvas-1', archived: false, title: '新标题' })).toMatchObject({ title: '新标题', archived: false })
+    expect(linked).toBe(true)
+    expect(() => facade.updateSession({ ...context, canvasAgentTarget: { projectId: 'project-1', canvasId: 'canvas-1', nodeId: 'node-1' } }, { canvasId: 'canvas-1', archived: true })).toThrow('CANVAS_AGENT_CANVAS_SCOPE_FIXED')
+    expect(() => facade.updateSession(context, { canvasId: 'unlinked', title: '禁止' })).toThrow('CANVAS_ACCESS_DENIED')
+    revokeInsideGuard = true
+    await expect(facade.deleteSession(context, 'canvas-1')).rejects.toThrow('CANVAS_ACCESS_DENIED')
+    expect(writes).toBe(1)
+    linked = true
+    revokeInsideGuard = false
+    await expect(facade.deleteSession(context, 'canvas-1')).resolves.toMatchObject({ id: 'canvas-1' })
+    expect(linked).toBe(false)
+    authorized = false
+    expect(() => facade.listSessions(context)).toThrow('CANVAS_AGENT_ACCESS_DENIED')
+    expect(writes).toBe(2)
   })
 })

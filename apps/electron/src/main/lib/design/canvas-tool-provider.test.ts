@@ -19,7 +19,7 @@ import {
 import type { CanvasOperationToolHandlers } from './canvas-operation-tools'
 import { createCanvasAgentReviewTracker, resolveCanvasAgentReviewContext } from './canvas-agent-review'
 import { createCanvasTaskStore } from './canvas-task-store'
-import { createCanvasArtifactCreationService } from './canvas-artifact-creation'
+import { createCanvasArtifactCreationService, type CanvasArtifactSourceLookup } from './canvas-artifact-creation'
 import type { CanvasPaths } from './design-paths'
 import type { MediaAssetRef } from '@proma/shared'
 import type { CanvasOrchestrationRecord } from '@proma/shared'
@@ -30,6 +30,99 @@ import { describeCanvasTaskEvidence } from './canvas-task-contract'
 
 const target = { projectId: 'project-1', canvasId: 'canvas-1' }
 const reference: CanvasNodeReference = { ...target, nodeId: 'doc-1', nodeType: 'document', nodeRevision: 3, title: '需求' }
+
+test('Given 宿主装配设置和视图服务 When 普通Agent调用 Then 使用可信身份并保留专业子Agent边界', async () => {
+  /** 通过真实Provider注册与模式过滤检查新增入口，不绕过外层守卫。 */
+  const fixture = createFixture()
+  const viewed: unknown[] = []
+  fixture.dependencies.configurationCatalog = () => ({ models: [], connections: [] })
+  fixture.dependencies.viewCommands = { execute: async (viewTarget, command, options) => {
+    options?.assertAuthorized?.()
+    viewed.push({ viewTarget, command })
+    return { revision: 3, selectedNodeIds: [], viewport: { x: 0, y: 0, zoom: 1 }, expandedNodeId: null,
+      activeTool: 'select', workbenchSizesByNodeId: {}, workbenchOffsetsByNodeId: {}, nodeSizesById: {},
+      ...(command.action === 'arrange' ? { arrangement: { expectedRevision: command.expectedRevision, positions: [] } } : {}) }
+  } }
+  const run = createCanvasToolRun(fixture.dependencies, fixture.context)
+  expect(run.allowedToolNames).toEqual(expect.arrayContaining(['canvas_get_settings', 'canvas_update_settings', 'canvas_view', 'canvas_arrange']))
+  expect((await executeTool(run.piCustomTools, 'canvas_get_settings', { canvasId: target.canvasId })).details)
+    .toMatchObject({ canvasId: target.canvasId, revision: 3, connections: { items: [] } })
+  await executeTool(run.piCustomTools, 'canvas_arrange', { canvasId: target.canvasId, baseRevision: 3, scope: 'all', intent: 'explicit' })
+  expect(viewed).toEqual([{ viewTarget: { ...target, sessionId: fixture.context.sessionId },
+    command: { action: 'arrange', expectedRevision: 3, scope: 'all' } }])
+  expect(run.systemPromptAppend).toContain('canvas_arrange')
+  for (const canvasAgentMode of ['renderer-manual', 'parent-orchestrated', 'canvas-orchestrator'] as const) {
+    const child = createCanvasToolRun(fixture.dependencies, { ...fixture.context, canvasAgentMode,
+      canvasAgentTarget: { ...target, nodeId: 'agent-1' } })
+    expect(child.allowedToolNames).toContain('canvas_get_settings')
+    for (const name of ['canvas_manage', 'canvas_update_settings', 'canvas_view', 'canvas_arrange']) expect(child.allowedToolNames).not.toContain(name)
+  }
+})
+
+test('Given 计划模式 When 查询设置和视图或管理画布 Then 查询可准入而写入仍被内部权限拒绝', async () => {
+  /** mixed-action工具只给通用计划门禁准入，真正动作仍由execute校验。 */
+  const fixture = createFixture()
+  fixture.dependencies.configurationCatalog = () => ({ models: [], connections: [] })
+  fixture.dependencies.viewCommands = { execute: async () => ({ revision: 3, selectedNodeIds: [],
+    viewport: { x: 0, y: 0, zoom: 1 }, expandedNodeId: null, activeTool: 'select',
+    workbenchSizesByNodeId: {}, workbenchOffsetsByNodeId: {}, nodeSizesById: {} }) }
+  Object.assign(fixture.dependencies.access, { listSessions: () => [] })
+  const run = createCanvasToolRun(fixture.dependencies, { ...fixture.context, permissionCeiling: 'plan' })
+  expect(run.readOnlyToolNames).toEqual(expect.arrayContaining(['canvas_get_settings', 'canvas_view', 'canvas_manage']))
+  await executeTool(run.piCustomTools, 'canvas_view', { canvasId: target.canvasId, action: 'query' })
+  await executeTool(run.piCustomTools, 'canvas_manage', { action: 'list' })
+  for (const action of ['archive', 'restore', 'rename', 'delete']) {
+    await expect(executeTool(run.piCustomTools, 'canvas_manage', { canvasId: target.canvasId, action, intent: 'explicit', title: '标题' }))
+      .rejects.toThrow('CANVAS_EXECUTE_INTENT_REQUIRED')
+  }
+  await expect(executeTool(run.piCustomTools, 'canvas_view', { canvasId: target.canvasId, action: 'fit' }))
+    .rejects.toThrow('CANVAS_EXECUTE_INTENT_REQUIRED')
+})
+
+test.each(['archive', 'restore', 'rename', 'delete'] as const)(
+  'Given 明确管理已关联画布 When Agent执行%s Then 使用共享生命周期且不生成内容', async (action) => {
+    /** 真实工具入口配合窄服务记录，核验宿主身份与操作参数。 */
+    const fixture = createFixture()
+    const changes: unknown[] = []
+    const session: CanvasSessionMeta = { ...target, id: target.canvasId, title: '原画布', archived: true, createdAt: 1, updatedAt: 1 }
+    Object.assign(fixture.dependencies.access, {
+      updateSession: (_context: CanvasToolRunContext, input: unknown, assertAuthorized?: () => void) => {
+        assertAuthorized?.()
+        changes.push(input)
+        return session
+      },
+      deleteSession: async (_context: CanvasToolRunContext, canvasId: string, assertAuthorized?: () => void) => {
+        assertAuthorized?.()
+        changes.push({ canvasId })
+        return session
+      },
+    })
+    const run = createCanvasToolRun(fixture.dependencies, fixture.context)
+    const result = await executeTool(run.piCustomTools, 'canvas_manage', {
+      action, canvasId: target.canvasId, intent: 'explicit', ...(action === 'rename' ? { title: '改名' } : {}),
+    })
+    expect(result.details).toMatchObject({ action, canvasId: target.canvasId })
+    expect(changes).toEqual([action === 'archive' || action === 'restore'
+      ? { canvasId: target.canvasId, archived: action === 'archive' }
+      : action === 'rename' ? { canvasId: target.canvasId, title: '改名' } : { canvasId: target.canvasId }])
+    expect(fixture.batchInputs).toHaveLength(0)
+  },
+)
+
+test('Given 已关联归档画布 When Agent列出与无意图删除 Then 允许读取但禁止删除副作用', async () => {
+  /** 列表只展示访问facade已筛选的会话，生产facade覆盖真实关联边界。 */
+  const fixture = createFixture()
+  const session: CanvasSessionMeta = { ...target, id: target.canvasId, title: '归档画布', archived: true, createdAt: 1, updatedAt: 1 }
+  const list = spyOn(Object.assign(fixture.dependencies.access, { listSessions: () => [session] }), 'listSessions')
+  const deletion = spyOn(Object.assign(fixture.dependencies.access, { deleteSession: async () => session }), 'deleteSession')
+  const run = createCanvasToolRun(fixture.dependencies, fixture.context)
+  expect((await executeTool(run.piCustomTools, 'canvas_manage', { action: 'list', archived: true })).details)
+    .toMatchObject({ sessions: [session] })
+  expect(list).toHaveBeenCalledWith(fixture.context, { archived: true })
+  await expect(executeTool(run.piCustomTools, 'canvas_manage', { action: 'delete', canvasId: target.canvasId }))
+    .rejects.toThrow('CANVAS_DESTRUCTIVE_INTENT_REQUIRED')
+  expect(deletion).not.toHaveBeenCalled()
+})
 
 test('Given 编排异步写工具已通过门禁 When 工具成功或失败 Then Provider在完整Promise生命周期后释放写占位', async () => {
   const fixture = createFixture()
@@ -503,6 +596,217 @@ test('Given 创建返回普通同名错误或未知提交错误 When 恢复 Then
     } finally { rmSync(directory, { recursive: true, force: true }) }
   }
 })
+
+test.each(['resume', 'recover'] as const)('Given Windows 创建失败且宿主确认未提交 When %s原任务 Then 核销pending并允许重新创建', async (action) => {
+  /** 持久任务模拟跨回合恢复，业务画布和原生服务仍隔离。 */
+  const directory = mkdtempSync(join(tmpdir(), 'proma-agent-create-recovery-'))
+  try {
+    /** 首次创建的 Windows 错误与用户现场保持一致。 */
+    const failure = '稳定目录 helper 提前退出: code=4, signal=none, stderr=cannot open relative Windows object [win32=5 ACCESS_DENIED]'
+    const fixture = createFixture()
+    fixture.dependencies.taskStore = createCanvasTaskStore({
+      pathResolver: { resolveCanvas: () => ({ canvasRoot: directory } as CanvasPaths) },
+      runWorkspaceWrite: (_projectId, effect) => effect(),
+    })
+    /** 首次失败不能在 Provider 中按错误文字直接核销。 */
+    fixture.dependencies.artifacts.createAgent = async () => { throw new Error(failure) }
+    const run = createCanvasToolRun(fixture.dependencies, fixture.context)
+    await executeTool(run.piCustomTools, 'canvas_task', { action: 'start', canvasId: 'canvas-1', requirements: [
+      { id: 'director', description: '创建导演', nodeKind: 'agent', change: 'created', validation: 'configuration' },
+    ] })
+    await expect(executeTool(run.piCustomTools, 'canvas_create_agent', {
+      canvasId: 'canvas-1', baseRevision: 3, title: '导演', position: { x: 120, y: 120 },
+    }, 'failed-director')).rejects.toThrow(failure)
+    expect((await executeTool(run.piCustomTools, 'canvas_task', { action: 'status' })).details)
+      .toMatchObject({ phase: 'working', operationReceipts: [{ status: 'pending', nodeKind: 'agent' }] })
+    if (action === 'recover') {
+      await executeTool(run.piCustomTools, 'canvas_task', { action: 'block', reason: '目录暂不可用' })
+    }
+    /** 只有领域服务按原来源核验过的无提交结果才能解除阻断。 */
+    const reconcile = spyOn(Object.assign(fixture.dependencies.artifacts, {
+      reconcileCreated: async () => ({ status: 'rejected' as const, reasonCode: 'CANVAS_TASK_CREATE_NOT_COMMITTED' }),
+    }), 'reconcileCreated')
+    /** 新回合使用不同运行时间，恢复仍必须使用回执保存的旧运行来源。 */
+    const resumed = action === 'resume'
+      ? createCanvasToolRun(fixture.dependencies, { ...fixture.context, runStartedAt: 199 })
+      : run
+    const restored = await executeTool(resumed.piCustomTools, 'canvas_task', { action, canvasId: 'canvas-1' })
+    expect(restored.details).toMatchObject({
+      phase: 'working', pendingOperationIds: [],
+      operationReceipts: [{ status: 'rejected', reasonCode: 'CANVAS_TASK_CREATE_NOT_COMMITTED' }],
+    })
+    expect(reconcile).toHaveBeenCalledWith({
+      ...target, artifactType: 'agent',
+      source: { sessionId: fixture.context.sessionId, runStartedAt: fixture.context.runStartedAt, toolCallId: 'failed-director' },
+    }, expect.any(Function))
+    /** 后续新操作可以触达创建服务，且不会重放已失败工具的副作用。 */
+    const createAgent = spyOn(fixture.dependencies.artifacts, 'createAgent').mockResolvedValue({
+      canvasId: 'canvas-1', nodeId: 'new-director', revision: 4, sourceToolCallId: 'retry-director',
+    })
+    await executeTool(resumed.piCustomTools, 'canvas_create_agent', {
+      canvasId: 'canvas-1', baseRevision: 3, title: '导演',
+    }, 'retry-director')
+    expect(createAgent).toHaveBeenCalledTimes(1)
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test.each(['completed', 'pending', 'error'] as const)('Given 未决Agent创建 When 宿主恢复返回%s Then 只按权威结果结算回执', async (outcome) => {
+  /** 每个结果分支使用独立任务文件，防止测试间状态串扰。 */
+  const directory = mkdtempSync(join(tmpdir(), 'proma-agent-recovery-outcome-'))
+  try {
+    const fixture = createFixture()
+    fixture.dependencies.taskStore = createCanvasTaskStore({
+      pathResolver: { resolveCanvas: () => ({ canvasRoot: directory } as CanvasPaths) },
+      runWorkspaceWrite: (_projectId, effect) => effect(),
+    })
+    fixture.dependencies.artifacts.createAgent = async () => { throw new Error('CREATE_UNKNOWN') }
+    const run = createCanvasToolRun(fixture.dependencies, fixture.context)
+    await executeTool(run.piCustomTools, 'canvas_task', { action: 'start', canvasId: 'canvas-1', requirements: [
+      { id: 'director', description: '创建导演', nodeKind: 'agent', change: 'created', validation: 'configuration' },
+    ] })
+    await expect(executeTool(run.piCustomTools, 'canvas_create_agent', {
+      canvasId: 'canvas-1', baseRevision: 3, title: '导演',
+    }, 'failed-director')).rejects.toThrow('CREATE_UNKNOWN')
+    await executeTool(run.piCustomTools, 'canvas_task', { action: 'block', reason: '待恢复原事务' })
+    Object.assign(fixture.dependencies.artifacts, { reconcileCreated: async () => {
+      if (outcome === 'error') throw new Error('RECOVERY_ACCESS_DENIED')
+      if (outcome === 'pending') return { status: 'pending' as const }
+      return { status: 'completed' as const, artifact: {
+        canvasId: 'canvas-1', nodeId: 'original-director', revision: 4,
+        artifactType: 'agent' as const, sourceToolCallId: 'failed-director',
+      } }
+    } })
+    if (outcome === 'completed') {
+      const restored = await executeTool(run.piCustomTools, 'canvas_task', { action: 'recover' })
+      expect(restored.details).toMatchObject({ phase: 'working', pendingOperationIds: [],
+        operationReceipts: [{ status: 'completed', nodeId: 'original-director' }] })
+    } else {
+      await expect(executeTool(run.piCustomTools, 'canvas_task', { action: 'recover' }))
+        .rejects.toThrow(outcome === 'error' ? 'RECOVERY_ACCESS_DENIED' : 'CANVAS_TASK_OPERATION_RECONCILIATION_REQUIRED')
+      expect((await executeTool(run.piCustomTools, 'canvas_task', { action: 'status' })).details)
+        .toMatchObject({ phase: 'blocked', operationReceipts: [{ status: 'pending' }] })
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test.each(['plan', 'read-only', 'orchestration', 'cancelled', 'revoked'] as const)(
+  'Given 未决Agent创建 When %s边界阻止恢复 Then 不核销回执或绕过写入权限', async (boundary) => {
+    /** 持久任务用于证明恢复被拒时磁盘回执没有被错误清除。 */
+    const directory = mkdtempSync(join(tmpdir(), 'proma-agent-recovery-access-'))
+    try {
+      /** 首轮仅模拟创建失败，不产生真实 Canvas 副作用。 */
+      const fixture = createFixture()
+      fixture.dependencies.taskStore = createCanvasTaskStore({
+        pathResolver: { resolveCanvas: () => ({ canvasRoot: directory } as CanvasPaths) },
+        runWorkspaceWrite: (_projectId, effect) => effect(),
+      })
+      fixture.dependencies.artifacts.createAgent = async () => { throw new Error('CREATE_UNKNOWN') }
+      const first = createCanvasToolRun(fixture.dependencies, fixture.context)
+      await executeTool(first.piCustomTools, 'canvas_task', { action: 'start', canvasId: 'canvas-1', requirements: [
+        { id: 'director', description: '创建导演', nodeKind: 'agent', change: 'created', validation: 'configuration' },
+      ] })
+      await expect(executeTool(first.piCustomTools, 'canvas_create_agent', {
+        canvasId: 'canvas-1', baseRevision: 3, title: '导演',
+      }, 'failed-director')).rejects.toThrow('CREATE_UNKNOWN')
+      await executeTool(first.piCustomTools, 'canvas_task', { action: 'block', reason: '待恢复' })
+      /** 异步返回前撤权或取消，不能把此前读取的拒绝证明写入任务。 */
+      const controller = new AbortController()
+      const reconcile = spyOn(Object.assign(fixture.dependencies.artifacts, { reconcileCreated: async () => {
+        if (boundary === 'cancelled') controller.abort(new Error('RECOVERY_CANCELLED'))
+        if (boundary === 'revoked') {
+          fixture.dependencies.access.requireLinkedCanvas = () => { throw new Error('CANVAS_ACCESS_DENIED') }
+        }
+        return { status: 'rejected' as const, reasonCode: 'CANVAS_TASK_CREATE_NOT_COMMITTED' }
+      } }), 'reconcileCreated')
+      if (boundary === 'read-only') fixture.dependencies.access.runWrite = () => { throw new Error('PROJECT_READ_ONLY') }
+      if (boundary === 'orchestration') {
+        fixture.dependencies.orchestration = {
+          get: () => ({ status: 'running' }),
+        } as unknown as CanvasOrchestrationService
+      }
+      /** 新回合必须重新读取权限上限与编排所有权。 */
+      const resumed = createCanvasToolRun(fixture.dependencies, {
+        ...fixture.context, ...(boundary === 'plan' ? { permissionCeiling: 'plan' as const } : {}),
+      })
+      const recovery = executeTool(resumed.piCustomTools, 'canvas_task', {
+        action: 'resume', canvasId: 'canvas-1',
+      }, 'resume', controller.signal)
+      if (boundary === 'plan') {
+        expect((await recovery).details).toMatchObject({ phase: 'blocked', operationReceipts: [{ status: 'pending' }] })
+      } else {
+        /** 不同权限层均应保留可诊断的原始拒绝原因。 */
+        const expectedError = { 'read-only': 'PROJECT_READ_ONLY', orchestration: 'CANVAS_ORCHESTRATION_OWNS_WRITES',
+          cancelled: 'RECOVERY_CANCELLED', revoked: 'CANVAS_ACCESS_DENIED' }[boundary]
+        await expect(recovery).rejects.toThrow(expectedError)
+      }
+      expect(reconcile).toHaveBeenCalledTimes(boundary === 'cancelled' || boundary === 'revoked' ? 1 : 0)
+      expect(fixture.dependencies.taskStore.getActive({ ...target, sessionId: fixture.context.sessionId })?.state)
+        .toMatchObject({ phase: 'blocked', operationReceipts: [{ status: 'pending' }] })
+    } finally { rmSync(directory, { recursive: true, force: true }) }
+  },
+)
+
+test.each(['cancelled', 'revoked', 'orchestration', 'read-only'] as const)(
+  'Given 恢复已排队 When 等待期间%s Then 获锁授权复核阻止副作用并保留pending', async (boundary) => {
+    /** 独立持久任务用于检查拒绝后原回执仍可恢复。 */
+    const directory = mkdtempSync(join(tmpdir(), 'proma-agent-recovery-queued-'))
+    try {
+      /** 创建失败只登记 pending，后续恢复模拟领域服务的等待窗口。 */
+      const fixture = createFixture()
+      fixture.dependencies.taskStore = createCanvasTaskStore({
+        pathResolver: { resolveCanvas: () => ({ canvasRoot: directory } as CanvasPaths) },
+        runWorkspaceWrite: (_projectId, effect) => effect(),
+      })
+      fixture.dependencies.artifacts.createAgent = async () => { throw new Error('CREATE_UNKNOWN') }
+      /** 普通 Agent 等待时可能由新的编排接管同一画布，获锁后必须重新检查。 */
+      let orchestrationActive = false
+      if (boundary === 'orchestration') fixture.dependencies.orchestration = {
+        get: () => orchestrationActive ? { status: 'running' } : null,
+      } as unknown as CanvasOrchestrationService
+      const run = createCanvasToolRun(fixture.dependencies, fixture.context)
+      await executeTool(run.piCustomTools, 'canvas_task', { action: 'start', canvasId: 'canvas-1', requirements: [
+        { id: 'director', description: '创建导演', nodeKind: 'agent', change: 'created', validation: 'configuration' },
+      ] })
+      await expect(executeTool(run.piCustomTools, 'canvas_create_agent', {
+        canvasId: 'canvas-1', baseRevision: 3, title: '导演',
+      }, 'failed-director')).rejects.toThrow('CREATE_UNKNOWN')
+      /** 显式握手控制排队时序，测试不依赖计时等待。 */
+      let enterQueue!: () => void
+      let releaseQueue!: () => void
+      const queued = new Promise<void>((resolve) => { enterQueue = resolve })
+      const lockReleased = new Promise<void>((resolve) => { releaseQueue = resolve })
+      /** 计数代表领域服务开始恢复写入；取消或解绑后必须保持零。 */
+      let recoveryEffects = 0
+      fixture.dependencies.artifacts.reconcileCreated = async (
+        _input: CanvasArtifactSourceLookup,
+        assertAuthorized?: () => void,
+      ) => {
+        enterQueue()
+        await lockReleased
+        assertAuthorized?.()
+        recoveryEffects += 1
+        return { status: 'rejected', reasonCode: 'CANVAS_TASK_CREATE_NOT_COMMITTED' }
+      }
+      /** 取消与关联撤销发生在恢复调用进入领域服务之后。 */
+      const controller = new AbortController()
+      const recovery = executeTool(run.piCustomTools, 'canvas_task', { action: 'resume', canvasId: 'canvas-1' },
+        'resume', controller.signal)
+      await queued
+      if (boundary === 'cancelled') controller.abort(new Error('RECOVERY_CANCELLED'))
+      else if (boundary === 'revoked') fixture.dependencies.access.requireLinkedCanvas = () => { throw new Error('CANVAS_ACCESS_DENIED') }
+      else if (boundary === 'orchestration') orchestrationActive = true
+      else fixture.dependencies.access.runWrite = () => { throw new Error('PROJECT_READ_ONLY') }
+      releaseQueue()
+      /** 每层准入保留自身错误，不能把编排接管误报为创建失败。 */
+      const expectedError = { cancelled: 'RECOVERY_CANCELLED', revoked: 'CANVAS_ACCESS_DENIED',
+        orchestration: 'CANVAS_ORCHESTRATION_OWNS_WRITES', 'read-only': 'PROJECT_READ_ONLY' }[boundary]
+      await expect(recovery).rejects.toThrow(expectedError)
+      expect(recoveryEffects).toBe(0)
+      expect(fixture.dependencies.taskStore.getActive({ ...target, sessionId: fixture.context.sessionId })?.state)
+        .toMatchObject({ operationReceipts: [{ status: 'pending' }] })
+    } finally { rmSync(directory, { recursive: true, force: true }) }
+  },
+)
 
 test('Given 创建结果无法按原来源确认 When 继续正式写入 Then 保留pending并在副作用前阻断', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'proma-provider-unconfirmed-created-'))

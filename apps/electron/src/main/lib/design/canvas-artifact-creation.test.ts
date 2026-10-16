@@ -594,3 +594,77 @@ describe('Canvas Agent 产物原子创建服务', () => {
     expect(new Set(created.map((node) => node.position.y)).size).toBeGreaterThan(1)
   })
 })
+
+
+describe('Agent 回执恢复的执行中保护', () => {
+  test('Given 创建尚未进入事务 When 同源恢复 Then 保持 pending 且不执行对账', async () => {
+    /** 模拟 execute 已接受调用、尚未进入其共享锁。 */
+    let release: (() => void) | undefined
+    /** 对账次数证明执行中直接返回，而非抢先扫描空事务目录。 */
+    let reconciliations = 0
+    /** 空图不能单独证明没有仍在执行的创建。 */
+    const document = createEmptyCanvasDocument(target.projectId, target.canvasId, 1)
+    /** 受控等待阻止创建进入真实副作用边界。 */
+    const wait = new Promise<void>((resolve) => { release = resolve })
+    /** 本测试只隔离并发保护，不替代组合测试中的真实 batch。 */
+    const service = createCanvasArtifactCreationService({
+      documents: { load: () => ({ document, writable: true, nodeIssues: [] }) },
+      content: { prepareArtifactContent: async () => {}, discardPreparedContent: async () => {} },
+      batch: {
+        execute: async () => { await wait; throw new Error('BEFORE_COMMIT') },
+        reconcileSources: async (_target, sources) => { reconciliations += 1; return { document, intents: sources.map(() => null) } },
+      },
+    })
+    /** 完整稳定来源与恢复查询一致。 */
+    const input = { ...target, baseRevision: 0, title: '导演', source: { sessionId: 'session', runStartedAt: 1, toolCallId: 'tool' } }
+    /** 两个同源调用重叠验证计数保护不会提前释放。 */
+    const creation = service.createAgent(input).catch((error: unknown) => error)
+    const repeated = service.createAgent(input).catch((error: unknown) => error)
+    expect(await service.reconcileCreated!({ ...input, artifactType: 'agent' })).toEqual({ status: 'pending' })
+    expect(reconciliations).toBe(0)
+    release!()
+    expect(await creation).toEqual(new Error('BEFORE_COMMIT'))
+    expect(await repeated).toEqual(new Error('BEFORE_COMMIT'))
+    expect(await service.reconcileCreated!({ ...input, artifactType: 'agent' })).toEqual({ status: 'rejected', reasonCode: 'CANVAS_TASK_CREATE_NOT_COMMITTED' })
+    expect(reconciliations).toBe(1)
+  })
+  test('Given 缺少事务对账能力或非Agent创建 When 恢复 Then 不凭空图推断失败', async () => {
+    /** 旧依赖只支持同步查询，缺失证据必须保守处理。 */
+    const fixture = createFixture()
+    for (const artifactType of ['agent', 'document'] as const) {
+      expect(await fixture.service.reconcileCreated!({ ...target, artifactType, source: { sessionId: 's', runStartedAt: 1, toolCallId: 't' } })).toEqual({ status: 'pending' })
+    }
+  })
+})
+
+
+test('Given 来源对账已读取旧空图 When 锁外发布期间同源创建完成 Then 旧快照不得核销失败', async () => {
+  /** 延迟来源查询返回模拟 batch 锁外 publication。 */
+  let finishReconciliation: (() => void) | undefined
+  /** 锁内读取时的空图快照。 */
+  const snapshot = createEmptyCanvasDocument(target.projectId, target.canvasId, 1)
+  /** 创建使用独立权威副本，避免旧快照被就地更新。 */
+  let document = structuredClone(snapshot)
+  /** 恢复返回前的受控发布等待。 */
+  const publishing = new Promise<void>((resolve) => { finishReconciliation = resolve })
+  /** 模拟真实锁外发布允许下一项创建进入的时序。 */
+  const service = createCanvasArtifactCreationService({
+    documents: { load: () => ({ document, writable: true, nodeIssues: [] }) },
+    content: { prepareArtifactContent: async () => {}, discardPreparedContent: async () => {} },
+    batch: {
+      execute: async (envelope) => {
+        document = { ...document, nodes: getBatchOperations(envelope).flatMap((operation) => operation.type === 'upsert-nodes' ? operation.nodes : []), revision: 1 }
+        return { document, operationId: 'committed' }
+      },
+      reconcileSources: async (_target, sources) => { await publishing; return { document: snapshot, intents: sources.map(() => null) } },
+    },
+  })
+  /** 创建与恢复使用完全相同的宿主来源。 */
+  const input = { ...target, baseRevision: 0, title: '导演', source: { sessionId: 'session', runStartedAt: 1, toolCallId: 'tool' } }
+  /** 先取得旧证据，再让创建完整结束。 */
+  const reconciliation = service.reconcileCreated!({ ...input, artifactType: 'agent' })
+  await service.createAgent(input)
+  finishReconciliation!()
+  expect(await reconciliation).toEqual({ status: 'pending' })
+  expect(document.nodes).toHaveLength(1)
+})

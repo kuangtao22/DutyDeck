@@ -6,6 +6,7 @@ import type {
   CanvasSessionMeta,
   CanvasTarget,
   CanvasWorkspaceSnapshot,
+  UpdateCanvasSessionInput,
 } from '@proma/shared'
 import { hasValidCanvasAgentOwnership, isEligibleProjectAgent } from '../agent-session-visibility'
 import type { AgentCanvasBindingMutationResult } from './agent-canvas-binding-store'
@@ -13,11 +14,18 @@ import {
   createCanvasNodeReferenceResolver,
   type CanvasNodeReferenceResolver,
 } from './canvas-node-reference-resolver'
+import type { CanvasSessionManagement } from './canvas-session-management'
 import type { CreateCanvasSessionWithIdResult } from './canvas-session-store'
 import type { CanvasToolRunContext } from './canvas-tool-provider'
 
 /** Canvas 工具与引用解析共同消费的唯一生产授权 facade。 */
 export interface CanvasToolAccessFacade {
+  /** 仅列出当前普通 Agent 已关联的画布，包含可恢复的归档记录。 */
+  listSessions: (context: CanvasToolRunContext, input?: { archived?: boolean }) => CanvasSessionMeta[]
+  /** 更新已关联画布的标题或归档状态。 */
+  updateSession: (context: CanvasToolRunContext, input: Omit<UpdateCanvasSessionInput, 'projectId'>, assertAuthorized?: () => void) => CanvasSessionMeta
+  /** 删除已关联画布，复用 UI 的完整清理流程。 */
+  deleteSession: (context: CanvasToolRunContext, canvasId: string, assertAuthorized?: () => void) => Promise<CanvasSessionMeta>
   referenceResolver: CanvasNodeReferenceResolver
   authorizeRead: (context: CanvasToolRunContext) => void
   getBinding: (context: CanvasToolRunContext) => AgentCanvasBinding | null
@@ -34,6 +42,8 @@ export interface CanvasToolAccessFacade {
 
 /** Facade 只持有 main/ipc.ts 注入的唯一 Store、守卫与广播边界。 */
 export interface CanvasToolAccessFacadeDependencies {
+  /** 生产必须注入与 IPC 共用的生命周期服务；旧 fixture 可省略。 */
+  management?: CanvasSessionManagement
   getAgentSession: (sessionId: string) => AgentSessionMeta | null | undefined
   assertProjectAuthorized: (projectId: string) => void
   getProjectReadOnlyReason: (projectId: string) => string | undefined
@@ -193,8 +203,43 @@ export function createCanvasToolAccessFacade(
     })
   }
 
+  /** 允许归档画布通过既有关联恢复，但固定子 Agent 不得管理整张画布。 */
+  const assertManagementAccess = (context: CanvasToolRunContext, canvasId?: string): void => {
+    requireCanvasManagementAccess(context)
+    requireAuthorizedAgent(dependencies, context)
+    if (canvasId !== undefined) {
+      /** 使用完整持久关联，不能因归档而提前撤销恢复权限。 */
+      const binding = dependencies.bindings.get(context.projectId, context.sessionId)
+      if (!binding?.linkedCanvasIds.includes(canvasId)) throw new Error('CANVAS_ACCESS_DENIED')
+      requireRegisteredCanvas(dependencies, context.projectId, canvasId)
+    }
+  }
+
   return {
     referenceResolver,
+    listSessions: (context, input = {}) => {
+      assertManagementAccess(context)
+      /** 发现范围限定在当前会话已关联的画布。 */
+      const linked = new Set(dependencies.bindings.get(context.projectId, context.sessionId)?.linkedCanvasIds ?? [])
+      return dependencies.sessions.list({ projectId: context.projectId })
+        .filter((session) => linked.has(session.id) && (input.archived === undefined || session.archived === input.archived))
+    },
+    updateSession: (context, input, assertAuthorized) => {
+      assertManagementAccess(context, input.canvasId)
+      if (!dependencies.management) throw new Error('CANVAS_MANAGEMENT_UNAVAILABLE')
+      return dependencies.management.update({ ...input, projectId: context.projectId }, () => {
+        assertAuthorized?.()
+        assertManagementAccess(context, input.canvasId)
+      })
+    },
+    deleteSession: async (context, canvasId, assertAuthorized) => {
+      assertManagementAccess(context, canvasId)
+      if (!dependencies.management) throw new Error('CANVAS_MANAGEMENT_UNAVAILABLE')
+      return dependencies.management.delete({ projectId: context.projectId, canvasId }, () => {
+        assertAuthorized?.()
+        assertManagementAccess(context, canvasId)
+      })
+    },
     authorizeRead: (context) => { requireAuthorizedAgent(dependencies, context) },
     getBinding: (context) => {
       const agent = requireAuthorizedAgent(dependencies, context)

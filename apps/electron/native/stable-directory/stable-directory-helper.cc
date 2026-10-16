@@ -2064,8 +2064,9 @@ bool OpenRelativeWindows(HANDLE RootDirectory, const std::wstring& name,
     const auto rtl_nt_status_to_dos_error = reinterpret_cast<RtlNtStatusToDosErrorFunction>(
         ntdll ? GetProcAddress(ntdll, "RtlNtStatusToDosError") : nullptr);
     const DWORD error_code = rtl_nt_status_to_dos_error ? rtl_nt_status_to_dos_error(status) : ERROR_GEN_FAILURE;
-    SetLastError(error_code);
     *error = WithWindowsError("cannot open relative Windows object", error_code);
+    // 错误文本格式化完成后再恢复系统错误，保证调用方即时读取的是本次 NtCreateFile 失败。
+    SetLastError(error_code);
     return false;
   }
   output->Reset(handle);
@@ -2224,10 +2225,19 @@ bool OpenCanvasTransactions(const Config& config, const StableRoot& root,
     return false;
   }
   const std::wstring name = Utf8ToWide(config.child_name);
+  // 读模式只列举/遍历/查询属性；写入及删除另需 ADD_FILE 创建锁或临时文件。
+  // 子文件自身以 DELETE 打开，transactions 内不建子目录，无需 DELETE_CHILD/ADD_SUBDIRECTORY。
+  const bool writable = config.mode == "canvas-intent-write" || config.mode == "canvas-intent-remove";
+  const ACCESS_MASK access = FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+      | (writable ? FILE_ADD_FILE : 0);
   if (!OpenRelativeWindows(root.handle.Get(), name,
-      FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_DELETE_CHILD
-          | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-      FILE_OPEN_IF, FILE_DIRECTORY_FILE, transactions, error)) return false;
+      access, FILE_OPEN_IF, FILE_DIRECTORY_FILE, transactions, error)) {
+    // 立即保存错误，诊断补充阶段与模式后恢复，避免后续格式化覆盖底层 Win32 原因。
+    const DWORD open_error = GetLastError();
+    *error = WithWindowsError("cannot open canvas transactions directory (mode=" + config.mode + ")", open_error);
+    SetLastError(open_error);
+    return false;
+  }
   BY_HANDLE_FILE_INFORMATION identity {};
   if (!GetFileInformationByHandle(transactions->Get(), &identity)
       || (identity.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0

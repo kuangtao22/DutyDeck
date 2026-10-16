@@ -140,3 +140,4 @@ export * from './interaction-design'
 export * from './interaction-design-validation'
 
 export * from './server-ops-deployment'
+export * from './canvas-view-command'

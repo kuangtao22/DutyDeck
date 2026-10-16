@@ -6,13 +6,33 @@ import {
   type CanvasAgentBatchOperationDependencies,
   type CanvasBatchOperationIntent,
 } from './canvas-agent-batch-operation'
+import { createCanvasArtifactCreationService } from './canvas-artifact-creation'
 import { createCanvasTransactionArchive } from './canvas-transaction-archive'
 import type { StableDirectoryNativeRequest, StableDirectoryNativeResult } from '../stable-directory-native-host'
 
 const target = { projectId: 'project-1', canvasId: 'canvas-1' }
 
+test('Given 批处理已获锁但扫描未完成 When 撤销授权 Then 不创建新事务', async () => {
+  /** 控制首次磁盘扫描返回，模拟真实异步对账。 */
+  const scan = Promise.withResolvers<void>()
+  const entered = Promise.withResolvers<void>()
+  let authorized = true
+  const fixture = createFixture({ beforeScan: async () => { entered.resolve(); await scan.promise } })
+  const pending = fixture.service.execute(batch(), () => { if (!authorized) throw new Error('REVOKED') })
+  await entered.promise
+  authorized = false
+  scan.resolve()
+  await expect(pending).rejects.toThrow('REVOKED')
+  expect(fixture.intentWrites).toHaveLength(0)
+  expect(fixture.getMutateCalls()).toBe(0)
+})
+
 /** 构造可观察资源副作用与单次图提交的批量事务测试夹具。 */
 function createFixture(options: {
+  /** 暂停异步扫描，复现已获锁但尚未创建事务时撤权。 */
+  beforeScan?: () => Promise<void>
+  /** 模拟稳定目录扫描失败。 */
+  scanError?: Error
   failContentId?: string
   /** 指定阶段第一次写入返回 rename 已可见但耐久不确定。 */
   uncertainState?: CanvasBatchOperationIntent['state']
@@ -78,21 +98,23 @@ function createFixture(options: {
     },
   }
   let uuid = 0
+  /** 暴露同一个串行器供测试阻塞真实排队入口。 */
+  const runExclusive: CanvasAgentBatchOperationDependencies['runExclusive'] = async (operationTarget, effect) => {
+    const key = `${operationTarget.projectId}\0${operationTarget.canvasId}`
+    const previous = tails.get(key) ?? Promise.resolve()
+    const result = previous.catch(() => undefined).then(effect)
+    const tail = result.then(() => undefined, () => undefined)
+    tails.set(key, tail)
+    try {
+      return await result
+    } finally {
+      if (tails.get(key) === tail) tails.delete(key)
+    }
+  }
   /** 创建共享同一磁盘 intent 与图事实的新服务实例，用于模拟主进程重启。 */
   const createService = () => createCanvasAgentBatchOperationService({
     store,
-    runExclusive: async (operationTarget, effect) => {
-      const key = `${operationTarget.projectId}\0${operationTarget.canvasId}`
-      const previous = tails.get(key) ?? Promise.resolve()
-      const result = previous.catch(() => undefined).then(effect)
-      const tail = result.then(() => undefined, () => undefined)
-      tails.set(key, tail)
-      try {
-        return await result
-      } finally {
-        if (tails.get(key) === tail) tails.delete(key)
-      }
-    },
+    runExclusive,
     randomUUID: () => `11111111-1111-4111-8111-${String(++uuid).padStart(12, '0')}`,
     publish: async (_target, publication, source) => {
       publicationAttempts.push(publication.revision)
@@ -100,7 +122,11 @@ function createFixture(options: {
       publishedRevisions.push(publication.revision)
       publishedSources.push(structuredClone(source))
     },
-    scanIntents: async () => [...intents.values()].map((intent) => structuredClone(intent)),
+    scanIntents: async () => {
+      await options.beforeScan?.()
+      if (options.scanError) throw options.scanError
+      return [...intents.values()].map((intent) => structuredClone(intent))
+    },
     writeIntent: async (intent) => {
       intentWrites.push(structuredClone(intent))
       const firstResource = intent.preparedResources[0]
@@ -192,6 +218,8 @@ function createFixture(options: {
   const service = createService()
   return {
     service,
+    runExclusive,
+    store,
     createService,
     intents,
     archived,
@@ -1058,4 +1086,128 @@ describe('CanvasAgentBatchOperationService', () => {
     expect(fixture.publishedRevisions).toEqual([9])
     errorSpy.mockRestore()
   })
+})
+
+/** 组合真实创建编排与真实 batch，对照持久事务恢复任务回执。 */
+describe('Agent 创建回执的权威事务对账', () => {
+  /** 本组固定来源，确保重启后仍按完整来源查询。 */
+  const input = { ...target, baseRevision: 7, title: '导演', source: { sessionId: 'source-session', runStartedAt: 99, toolCallId: 'create-director' } }
+  /** 只替换持久化边界，恢复算法使用生产实现。 */
+  const artifactService = (fixture: ReturnType<typeof createFixture>) => createCanvasArtifactCreationService({
+    documents: fixture.store,
+    batch: fixture.createService(),
+    content: { prepareArtifactContent: async () => {}, discardPreparedContent: async () => {} },
+  })
+  test('Given 首次扫描 ACCESS_DENIED 且未创建 intent When 重建服务后成功对账 Then 确认未提交', async () => {
+    /** 可切换故障模拟权限恢复。 */
+    const options = { scanError: new Error('cannot open relative Windows object [win32=5 ACCESS_DENIED]') as Error | undefined }
+    const fixture = createFixture(options)
+    await expect(artifactService(fixture).createAgent(input)).rejects.toThrow('ACCESS_DENIED')
+    expect(fixture.intents.size).toBe(0)
+    options.scanError = undefined
+    expect(await artifactService(fixture).reconcileCreated!({ ...input, artifactType: 'agent' })).toEqual({ status: 'rejected', reasonCode: 'CANVAS_TASK_CREATE_NOT_COMMITTED' })
+  })
+  test('Given 已持久化 prepared intent When 重启对账 Then 恢复提交并发布节点', async () => {
+    const fixture = createFixture({ uncertainState: 'prepared' })
+    await expect(artifactService(fixture).createAgent(input)).rejects.toThrow('CANVAS_BATCH_RECOVERY_REQUIRED')
+    expect(await artifactService(fixture).reconcileCreated!({ ...input, artifactType: 'agent' })).toMatchObject({ status: 'completed', artifact: { artifactType: 'agent', revision: 8 } })
+    expect(fixture.publishedRevisions).toEqual([8])
+  })
+  test('Given 创建已回滚 When 对账 Then 确认未提交', async () => {
+    const fixture = createFixture({ mutateFailsBeforeCommit: true })
+    await expect(artifactService(fixture).createAgent(input)).rejects.toThrow('MUTATE_FAILED_BEFORE_COMMIT')
+    expect(await artifactService(fixture).reconcileCreated!({ ...input, artifactType: 'agent' })).toEqual({ status: 'rejected', reasonCode: 'CANVAS_TASK_CREATE_NOT_COMMITTED' })
+  })
+  test('Given 扫描仍失败 When 对账 Then 传播失败而不伪造未提交', async () => {
+    const fixture = createFixture({ scanError: new Error('ACCESS_DENIED') })
+    await expect(artifactService(fixture).reconcileCreated!({ ...input, artifactType: 'agent' })).rejects.toThrow('ACCESS_DENIED')
+  })
+  test('Given 仅重试来源已有 committed 回执 When 节点缺失后对账 Then 不能把原来源无事务当成安全失败', async () => {
+    /** 模拟首次 revision 冲突后只保留重试来源的提交凭据。 */
+    const fixture = createFixture()
+    await artifactService(fixture).createAgent(input)
+    /** 重试仍使用原始派生节点身份，只改变 batch 的工具来源。 */
+    const intent = [...fixture.intents.values()][0]!
+    intent.source.toolCallId = `${input.source.toolCallId}-retry`
+    fixture.getDocument().nodes = []
+    expect(await artifactService(fixture).reconcileCreated!({ ...input, artifactType: 'agent' })).toEqual({ status: 'pending' })
+  })
+  test('Given 已归档 committed 节点随后删除 When 对账 Then 保留 pending 且完整来源隔离', async () => {
+    const fixture = createFixture({ enableArchive: true })
+    await artifactService(fixture).createAgent(input)
+    await fixture.service.reconcileSources(target, [input.source])
+    fixture.getDocument().nodes = []
+    expect(await artifactService(fixture).reconcileCreated!({ ...input, artifactType: 'agent' })).toEqual({ status: 'pending' })
+    expect((await fixture.service.reconcileSources(target, [{ ...input.source, runStartedAt: 100 }])).intents).toEqual([null])
+  })
+})
+
+
+test('Given 恢复已提交图但归档失败 When 来源对账抛错 Then 仍发布已提交事实', async () => {
+  /** prepared 写不确定制造可恢复事务；归档失败发生在恢复提交之后。 */
+  const fixture = createFixture({ uncertainState: 'prepared', enableArchive: true, failArchiveRemoveOnce: true })
+  await expect(fixture.service.execute(batch())).rejects.toThrow('CANVAS_BATCH_RECOVERY_REQUIRED')
+  await expect(fixture.service.reconcileSources(target, [{ sessionId: 'source-session', runStartedAt: 99, toolCallId: 'tool-call-1' }])).rejects.toThrow('ARCHIVE_REMOVE_FAILED')
+  expect(fixture.publishedRevisions).toEqual([8])
+  expect(fixture.getDocument().revision).toBe(8)
+})
+
+
+test('Given 恢复在共享锁排队 When 排队期间授权撤销 Then 获锁后拒绝且保留原prepared事务', async () => {
+  /** 已持久化但尚未提交的事务确保恢复若错误执行会产生可见副作用。 */
+  const fixture = createFixture({ uncertainState: 'prepared' })
+  /** 原始创建与恢复共享完全相同的来源。 */
+  const input = { ...target, baseRevision: 7, title: '导演', source: { sessionId: 'session', runStartedAt: 1, toolCallId: 'queued-create' } }
+  /** 使用真实 artifact 和 batch，只替换磁盘与会话存储。 */
+  const artifacts = createCanvasArtifactCreationService({
+    documents: fixture.store,
+    batch: fixture.service,
+    content: { prepareArtifactContent: async () => {}, discardPreparedContent: async () => {} },
+  })
+  await expect(artifacts.createAgent(input)).rejects.toThrow('CANVAS_BATCH_RECOVERY_REQUIRED')
+  /** 锁持有者阻止恢复进入事务扫描。 */
+  let release: (() => void) | undefined
+  /** 可手动释放的等待代表另一个合法持锁操作。 */
+  const held = new Promise<void>((resolve) => { release = resolve })
+  /** 直接使用与 batch 相同的串行器，不能用绕过队列的 fake。 */
+  const holding = fixture.runExclusive(target, () => held)
+  /** AbortController 模拟真实宿主停止或权限撤销信号。 */
+  const controller = new AbortController()
+  /** 检查次数证明授权是在真正获锁时才读取。 */
+  let checks = 0
+  /** 恢复承诺预先捕获拒绝，避免测试框架的未处理拒绝误报。 */
+  const recovery = artifacts.reconcileCreated!({ ...input, artifactType: 'agent' }, () => {
+    checks += 1
+    if (controller.signal.aborted) throw new Error('CANVAS_RECOVERY_AUTHORIZATION_REVOKED')
+  }).catch((error: unknown) => error)
+  await Promise.resolve()
+  expect(checks).toBe(0)
+  controller.abort()
+  release!()
+  await holding
+  expect(await recovery).toEqual(new Error('CANVAS_RECOVERY_AUTHORIZATION_REVOKED'))
+  expect(checks).toBe(1)
+  expect(fixture.getMutateCalls()).toBe(0)
+  expect(fixture.sessions.size).toBe(0)
+  expect(fixture.publishedRevisions).toEqual([])
+  expect([...fixture.intents.values()].map((intent) => intent.state)).toEqual(['prepared'])
+})
+
+test('Given 新写入在共享锁排队 When 授权在等待期间撤销 Then 入锁检查阻止事务和图提交', async () => {
+  /** 使用生产串行器路径，提前持锁阻止写入开始。 */
+  const fixture = createFixture()
+  let release!: () => void
+  const held = new Promise<void>((resolve) => { release = resolve })
+  const holding = fixture.runExclusive(target, () => held)
+  const controller = new AbortController()
+  /** 排队期间仍未创建intent；取消后检查应在副作用前抛出。 */
+  const writing = fixture.service.execute(batch(), () => controller.signal.throwIfAborted())
+    .catch((error: unknown) => error)
+  controller.abort(new Error('CANVAS_WRITE_CANCELLED'))
+  release()
+  await holding
+  expect(await writing).toEqual(new Error('CANVAS_WRITE_CANCELLED'))
+  expect(fixture.getMutateCalls()).toBe(0)
+  expect(fixture.intents.size).toBe(0)
+  expect(fixture.sessions.size).toBe(0)
 })

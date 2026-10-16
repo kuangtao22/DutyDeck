@@ -214,7 +214,7 @@ describe('Canvas 会话 IPC', () => {
       channel: DESIGN_IPC_CHANNELS.CANVAS_SESSION_CHANGED,
       value: { projectId: 'project-1', canvasId: 'canvas-1', cause: 'deleted' },
     }])
-    expect(errorSpy).toHaveBeenCalledWith('[CanvasSessionIPC] Canvas 关联清理失败')
+    expect(errorSpy).toHaveBeenCalledWith('[CanvasSessionManagement] Canvas 关联清理失败')
     expect(errorSpy.mock.calls.flat()).not.toContain(expect.stringContaining('/private'))
     errorSpy.mockRestore()
   })

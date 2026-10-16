@@ -34,6 +34,9 @@ export function createCanvasOrchestrationGuard(service: CanvasOrchestrationServi
   return (toolName: string, params: Record<string, unknown>): (() => void) | undefined => {
     /** 任务合同的内存协议不是业务图写入，执行期间可查询、交付和记录阻塞。 */
     const readOnly = CANVAS_READ_ONLY_TOOL_NAMES.has(toolName) || mediaReads.has(toolName)
+      || (toolName === 'canvas_manage' && params.action === 'list')
+      /** 会话视图不修改共享业务图；自动布局使用独立canvas_arrange写入口。 */
+      || toolName === 'canvas_view'
     /** 待决策时不能先结算底层交付合同，否则回答后无法恢复原任务。 */
     const completesTask = toolName === 'canvas_task' && params.action === 'complete'
     /** 报告、等待/受阻结束和取消是待决策期间的可恢复出口。 */

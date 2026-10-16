@@ -1,3 +1,5 @@
+import { CANVAS_VIEW_IPC_CHANNELS, isCanvasViewCommandRequest, isCanvasViewCommandTarget } from '@proma/shared'
+import type { CanvasViewCommandTarget, CanvasViewCommandRequest, CanvasViewCommandResponse } from '@proma/shared'
 import {
   parseListCanvasImageActivityInput,
   parseCanvasImageJobActivities,
@@ -137,6 +139,14 @@ export interface AdoptCanvasImageAssetInput extends CanvasImageJobControlInput {
 
 /** Renderer 获得的稳定 Design API。 */
 export interface DesignPreloadApi {
+  /** 登记或释放当前窗口唯一前台会话画布。 */
+  registerCanvasViewTarget: (target: CanvasViewCommandTarget | null) => Promise<void>
+  /** 只接收已校验的宿主定向视图请求。 */
+  onCanvasViewCommand: (listener: (request: CanvasViewCommandRequest) => void) => () => void
+  /** 取消宿主已终止的请求。 */
+  onCanvasViewCommandCancelled: (listener: (request: CanvasViewCommandTarget & { requestId: string }) => void) => () => void
+  /** 仅实际完成或失败后发送回执。 */
+  respondCanvasViewCommand: (response: CanvasViewCommandResponse) => Promise<void>
   /** 轻量读取当前画布的持久编排记录，不加载完整画布图。 */
   getCanvasOrchestration: (input: CanvasTarget) => Promise<CanvasInvokeResult<CanvasOrchestrationRecord | null>>
   /** 订阅独立编排 revision 变化，Renderer 决定是否重读当前画布记录。 */
@@ -569,6 +579,22 @@ async function invokeCanvasImageSnapshotSafely(
 /** 创建不暴露 ipcRenderer 本体的 Design preload API。 */
 export function createDesignPreloadApi(ipc: DesignPreloadIpc): DesignPreloadApi {
   return {
+    registerCanvasViewTarget: async (target) => { await ipc.invoke(CANVAS_VIEW_IPC_CHANNELS.REGISTER, target) },
+    respondCanvasViewCommand: async (response) => { await ipc.invoke(CANVAS_VIEW_IPC_CHANNELS.RESPONSE, response) },
+    onCanvasViewCommand: (listener) => {
+      const handler = (_event: IpcRendererEvent, value: unknown): void => {
+        if (isCanvasViewCommandRequest(value)) listener(value)
+      }
+      ipc.on(CANVAS_VIEW_IPC_CHANNELS.REQUEST, handler)
+      return makeIdempotentRelease(() => ipc.removeListener(CANVAS_VIEW_IPC_CHANNELS.REQUEST, handler))
+    },
+    onCanvasViewCommandCancelled: (listener) => {
+      const handler = (_event: IpcRendererEvent, value: unknown): void => {
+        if (isCanvasViewCommandTarget(value) && 'requestId' in value && typeof value.requestId === 'string') listener({ ...value, requestId: value.requestId })
+      }
+      ipc.on(CANVAS_VIEW_IPC_CHANNELS.CANCEL, handler)
+      return makeIdempotentRelease(() => ipc.removeListener(CANVAS_VIEW_IPC_CHANNELS.CANCEL, handler))
+    },
     getCanvasOrchestration: (input) => invokeCanvasOrchestrationSafely(ipc, input),
     onCanvasOrchestrationChanged: (listener) => {
       const handler = (_event: IpcRendererEvent, value: unknown): void => {

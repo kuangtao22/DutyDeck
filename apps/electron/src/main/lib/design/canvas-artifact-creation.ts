@@ -21,7 +21,7 @@ import {
   CANVAS_IMAGE_NODE_WIDTH,
   CANVAS_IMAGE_NODE_MAX_HEIGHT,
 } from '@proma/shared'
-import type { CanvasBatchOperationResult } from './canvas-agent-batch-operation'
+import type { CanvasBatchOperationResult, CanvasBatchSourceReconciliationResult } from './canvas-agent-batch-operation'
 import type {
   CanvasNodeContentStore,
   PrepareCanvasArtifactContentInput,
@@ -89,6 +89,12 @@ export interface CanvasArtifactSourceResult {
   sourceToolCallId: string
 }
 
+/** 权威对账只有明确提交或明确未提交才能核销回执，证据不足继续等待。 */
+export type CanvasArtifactCreationResolution =
+  | { status: 'completed'; artifact: CanvasArtifactSourceResult }
+  | { status: 'rejected'; reasonCode: string }
+  | { status: 'pending' }
+
 /** 产物创建服务只编排现有权威 Store、内容 Store 与 batch。 */
 export interface CanvasArtifactCreationDependencies {
   documents: {
@@ -99,6 +105,13 @@ export interface CanvasArtifactCreationDependencies {
   content: Pick<CanvasNodeContentStore, 'prepareArtifactContent' | 'discardPreparedContent'>
   batch: {
     execute: (input: CanvasBatchOperationEnvelope) => Promise<CanvasBatchOperationResult>
+    /** 兼容旧测试依赖；缺少真实事务对账能力时不得确认未提交。 */
+    reconcileSources?: (
+      target: CanvasTarget,
+      sources: CanvasChangeSource[],
+      /** 获得 Canvas 写锁后再次检查宿主权限，避免排队期间撤销后继续恢复。 */
+      assertAuthorized?: () => void,
+    ) => Promise<CanvasBatchSourceReconciliationResult>
   }
   resolveDefaultImageModelProfileId?: (projectId: string) => string | null
 }
@@ -110,6 +123,12 @@ export interface CanvasArtifactCreationService {
   create: (input: CanvasArtifactCreationInput) => Promise<CanvasArtifactCreationResult>
   createAgent: (input: CanvasAgentArtifactCreationInput) => Promise<CanvasAgentArtifactCreationResult>
   resolveCreated: (input: CanvasArtifactSourceLookup) => CanvasArtifactSourceResult | null
+  /** 仅宿主可用的主动恢复入口，不接受模型指定重试来源。 */
+  reconcileCreated?: (
+    input: CanvasArtifactSourceLookup,
+    /** 宿主实时授权断言，透传至 batch 获锁后的副作用入口。 */
+    assertAuthorized?: () => void,
+  ) => Promise<CanvasArtifactCreationResolution>
 }
 
 /** 自动创建节点之间保留的最小净间距。 */
@@ -424,6 +443,11 @@ function documentReferencesContent(document: CanvasDocument, contentId: string):
 export function createCanvasArtifactCreationService(
   dependencies: CanvasArtifactCreationDependencies,
 ): CanvasArtifactCreationService {
+  /** 同一稳定创建身份的执行计数阻止对账把尚未进入 batch 的调用误判为失败。 */
+  const inFlightAgents = new Map<string, number>()
+  /** 创建代次捕获恢复锁释放后、发布 await 期间完整开始并结束的创建。 */
+  let agentCreationGeneration = 0
+
   /** 从同一份权威图判断稳定来源是否已经创建对应节点。 */
   const resolveCreatedFromDocument = (
     input: CanvasArtifactSourceLookup,
@@ -499,7 +523,35 @@ export function createCanvasArtifactCreationService(
     }
   }
 
+  /** 对可信原始来源执行真实事务恢复；只有 Agent 无内容副作用时能证明未提交。 */
+  const reconcileCreated = async (
+    input: CanvasArtifactSourceLookup,
+    /** 宿主检查回调必须延后到真正获锁时执行，不能只在入队前检查。 */
+    assertAuthorized?: () => void,
+  ): Promise<CanvasArtifactCreationResolution> => {
+    /** 稳定节点身份包含 project、canvas 与完整来源三元组。 */
+    const identity = createArtifactIdentity(input)
+    if (input.artifactType !== 'agent' || !dependencies.batch.reconcileSources
+      || inFlightAgents.has(identity.nodeId)) return { status: 'pending' }
+    /** 重试来源由宿主固定推导，模型无法选择另一笔事务。 */
+    const sources = [input.source, { ...input.source, toolCallId: createRetryToolCallId(input.source.toolCallId) }]
+    /** 同锁证据包含 active 和 archived receipt；异常继续向上传播。 */
+    /** 记录恢复前代次，防止已完成的并发创建逃过执行中集合检查。 */
+    const generation = agentCreationGeneration
+    const reconciled = await dependencies.batch.reconcileSources(input, sources, assertAuthorized)
+    if (generation !== agentCreationGeneration || inFlightAgents.has(identity.nodeId)) return { status: 'pending' }
+    /** 只有身份完整匹配的节点可证明创建完成。 */
+    const artifact = resolveCreatedFromDocument(input, reconciled.document)
+    if (artifact) return { status: 'completed', artifact }
+    if (reconciled.document.nodes.some((node) => node.id === identity.nodeId
+      || (node.kind === 'agent' && node.agentSessionId === identity.agentSessionId))) return { status: 'pending' }
+    if (reconciled.intents.length !== sources.length
+      || reconciled.intents.some((intent) => intent !== null && intent.state !== 'rolled-back')) return { status: 'pending' }
+    return { status: 'rejected', reasonCode: 'CANVAS_TASK_CREATE_NOT_COMMITTED' }
+  }
+
   return {
+    reconcileCreated,
     resolveCreated,
     validateCreate: (input) => {
       const target: CanvasTarget = { projectId: input.projectId, canvasId: input.canvasId }
@@ -598,58 +650,69 @@ export function createCanvasArtifactCreationService(
       }
     },
     createAgent: async (input) => {
-      const target: CanvasTarget = { projectId: input.projectId, canvasId: input.canvasId }
-      const identity = createArtifactIdentity(input)
-      /** 第一次 batch 前用同一份权威图完成纯输入预检。 */
-      const initialDocument = dependencies.documents.load(target).document
-      const replayed = resolveCreatedFromDocument({ ...input, artifactType: 'agent' }, initialDocument)
-      if (replayed) {
-        return {
-          canvasId: replayed.canvasId, nodeId: replayed.nodeId,
-          revision: replayed.revision, sourceToolCallId: replayed.sourceToolCallId,
-        }
-      }
-      validateAgentCreateAgainstDocument(input, initialDocument)
-      /** 同一工具调用只允许一次权威重读重试，节点和会话身份始终不变。 */
-      const execute = async (baseRevision: number, sourceToolCallId: string): Promise<CanvasAgentArtifactCreationResult> => {
-        const document = dependencies.documents.load(target).document
-        const operations = createAgentOperations({ ...input, baseRevision }, document, identity)
-        const result = await dependencies.batch.execute(parseCanvasBatchOperationEnvelope({
-          ...target,
-          baseRevision,
-          operations,
-          sourceSessionId: input.source.sessionId,
-          sourceRunStartedAt: input.source.runStartedAt,
-          sourceToolCallId,
-        }))
-        return {
-          canvasId: input.canvasId,
-          nodeId: identity.nodeId,
-          revision: result.document.revision,
-          sourceToolCallId,
-        }
-      }
+      /** 同步登记覆盖所有 await 前的读取与预检，finally 精确释放本次调用。 */
+      const inFlightKey = createArtifactIdentity(input).nodeId
+      agentCreationGeneration += 1
+      inFlightAgents.set(inFlightKey, (inFlightAgents.get(inFlightKey) ?? 0) + 1)
       try {
-        try {
-          return await execute(input.baseRevision, input.source.toolCallId)
-        } catch (error) {
-          if (!isRevisionConflict(error)) throw error
-          const revision = dependencies.documents.load(target).document.revision
-          return await execute(revision, createRetryToolCallId(input.source.toolCallId))
+        const target: CanvasTarget = { projectId: input.projectId, canvasId: input.canvasId }
+        const identity = createArtifactIdentity(input)
+        /** 第一次 batch 前用同一份权威图完成纯输入预检。 */
+        const initialDocument = dependencies.documents.load(target).document
+        const replayed = resolveCreatedFromDocument({ ...input, artifactType: 'agent' }, initialDocument)
+        if (replayed) {
+          return {
+            canvasId: replayed.canvasId, nodeId: replayed.nodeId,
+            revision: replayed.revision, sourceToolCallId: replayed.sourceToolCallId,
+          }
         }
-      } catch (error) {
-        /** 批处理可能已提交但返回不确定；只接受完全匹配的权威节点。 */
-        const authoritative = dependencies.documents.load(target).document
-        const existing = authoritative.nodes.find((node) => node.id === identity.nodeId)
-        if (existing?.kind === 'agent' && existing.agentSessionId === identity.agentSessionId) {
+        validateAgentCreateAgainstDocument(input, initialDocument)
+        /** 同一工具调用只允许一次权威重读重试，节点和会话身份始终不变。 */
+        const execute = async (baseRevision: number, sourceToolCallId: string): Promise<CanvasAgentArtifactCreationResult> => {
+          const document = dependencies.documents.load(target).document
+          const operations = createAgentOperations({ ...input, baseRevision }, document, identity)
+          const result = await dependencies.batch.execute(parseCanvasBatchOperationEnvelope({
+            ...target,
+            baseRevision,
+            operations,
+            sourceSessionId: input.source.sessionId,
+            sourceRunStartedAt: input.source.runStartedAt,
+            sourceToolCallId,
+          }))
           return {
             canvasId: input.canvasId,
             nodeId: identity.nodeId,
-            revision: authoritative.revision,
-            sourceToolCallId: input.source.toolCallId,
+            revision: result.document.revision,
+            sourceToolCallId,
           }
         }
-        throw error
+        try {
+          try {
+            return await execute(input.baseRevision, input.source.toolCallId)
+          } catch (error) {
+            if (!isRevisionConflict(error)) throw error
+            const revision = dependencies.documents.load(target).document.revision
+            return await execute(revision, createRetryToolCallId(input.source.toolCallId))
+          }
+        } catch (error) {
+          /** 批处理可能已提交但返回不确定；只接受完全匹配的权威节点。 */
+          const authoritative = dependencies.documents.load(target).document
+          const existing = authoritative.nodes.find((node) => node.id === identity.nodeId)
+          if (existing?.kind === 'agent' && existing.agentSessionId === identity.agentSessionId) {
+            return {
+              canvasId: input.canvasId,
+              nodeId: identity.nodeId,
+              revision: authoritative.revision,
+              sourceToolCallId: input.source.toolCallId,
+            }
+          }
+          throw error
+        }
+      } finally {
+        /** 允许同源重放重叠时保留其它仍执行中的调用。 */
+        const remaining = (inFlightAgents.get(inFlightKey) ?? 1) - 1
+        if (remaining > 0) inFlightAgents.set(inFlightKey, remaining)
+        else inFlightAgents.delete(inFlightKey)
       }
     },
   }

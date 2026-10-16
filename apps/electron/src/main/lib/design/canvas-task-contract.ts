@@ -98,7 +98,7 @@ export interface CanvasTaskCompletedOperation extends Omit<CanvasTaskPendingOper
   after: CanvasTaskEvidence
 }
 
-/** Host 在创建事务前确定拒绝的终态回执；不携带新节点或完成证据。 */
+/** Host 前置拒绝或权威事务证明未提交/已回滚的终态回执；不携带完成证据。 */
 export interface CanvasTaskRejectedOperation extends Omit<CanvasTaskPendingOperation, 'status' | 'kind'> {
   status: 'rejected'
   kind: 'created'
@@ -683,7 +683,7 @@ export function createCanvasTaskContract(options: CanvasTaskContractOptions) {
           || (existing.nodeKind !== undefined && existing.nodeKind !== parsed.nodeKind)
           || (existing.before !== undefined && JSON.stringify(existing.before) !== JSON.stringify(parsed.before))
         )
-        /** 拒绝发生在事务前，不能像 completed 一样补入权威返回的新节点身份。 */
+        /** 未提交或已回滚的失败核销不能像 completed 一样补入新节点身份。 */
         const rejectedIntentChanged = parsed.status === 'rejected' && (
           existing.nodeId !== parsed.nodeId || existing.nodeKind !== parsed.nodeKind
           || JSON.stringify(existing.before) !== JSON.stringify(parsed.before)
@@ -741,10 +741,10 @@ export function createCanvasTaskContract(options: CanvasTaskContractOptions) {
     /** 重新确认 Canvas 作用域后续行原任务，不替换要求、基线或来源。 */
     async recover(signal: AbortSignal) {
       if (!state.canvasId || (state.phase !== 'blocked' && state.phase !== 'needs-input')) {
-        throw new Error('CANVAS_TASK_RECOVERY_NOT_AVAILABLE')
+        throw new Error('CANVAS_TASK_RECOVERY_NOT_AVAILABLE: 仅已阻塞或待输入任务可 recover；执行中的任务请用 resume 对账原操作。')
       }
       if (state.operationReceipts.some((receipt) => receipt.status === 'pending')) {
-        throw new Error('CANVAS_TASK_OPERATION_RECONCILIATION_REQUIRED')
+        throw new Error('CANVAS_TASK_OPERATION_RECONCILIATION_REQUIRED: 原创建操作仍未确认，请先用 resume 恢复原事务；保留原回执，不能新建任务绕过。')
       }
       await options.validateScope?.(state.canvasId, signal)
       signal.throwIfAborted()

@@ -53,6 +53,15 @@ function pendingFixture(mode?: CanvasToolRunContext['canvasAgentMode']) {
 }
 
 describe('画布编排单一写入者与专业范围', () => {
+  it('Given 编排占用业务图 When 普通Agent查看或调整会话视图 Then 不占业务写权而布局设置和删除仍阻断', () => {
+    const { guard } = fixture()
+    for (const [tool, action] of [['canvas_manage', 'list'], ['canvas_get_settings', undefined], ['canvas_view', 'fit']]) {
+      expect(() => guard(tool!, { canvasId: 'canvas', action })).not.toThrow()
+    }
+    for (const [tool, action] of [['canvas_manage', 'delete'], ['canvas_arrange', undefined], ['canvas_update_settings', undefined]]) {
+      expect(() => guard(tool!, { canvasId: 'canvas', action })).toThrow('CANVAS_ORCHESTRATION_OWNS_WRITES')
+    }
+  })
   it('Given 已委托任务 When 普通会话继续生产 Then 拒绝双重调度但允许查询和取消委托', () => {
     const { guard } = fixture()
     expect(() => guard('canvas_create_artifact', { canvasId: 'canvas' })).toThrow('CANVAS_ORCHESTRATION_OWNS_WRITES')

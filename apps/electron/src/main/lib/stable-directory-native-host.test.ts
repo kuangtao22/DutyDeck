@@ -157,6 +157,37 @@ function toLocalhostAdminShare(path: string): string | null {
   return driveMatch ? `\\\\localhost\\${driveMatch[1]}$\\${driveMatch[2]}` : null
 }
 
+/**
+ * 仅在指定测试目录本身添加当前用户的拒绝 ACL，不向子文件继承；返回移除此规则的清理函数。
+ * @param path 已创建的临时目录。
+ * @param rights Windows FileSystemRights 数值，用于精确模拟缺失的目录权限。
+ * @returns 恢复目录权限的同步函数，必须在删除测试目录前调用。
+ */
+function denyWindowsDirectoryRights(path: string, rights: number): () => void {
+  /** 通过编码脚本传递路径，避免 PowerShell 命令行对空格或引号的二次解释。 */
+  const updateRule = (remove: boolean): void => {
+    /** 规则仅作用于目录，保留子文件自己的 DELETE 权限以验证不需要 DELETE_CHILD。 */
+    const script = `
+$ErrorActionPreference = 'Stop'
+$path = '${path.replaceAll("'", "''")}'
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = Get-Acl -LiteralPath $path
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $identity, [System.Security.AccessControl.FileSystemRights]${rights},
+  [System.Security.AccessControl.InheritanceFlags]::None,
+  [System.Security.AccessControl.PropagationFlags]::None,
+  [System.Security.AccessControl.AccessControlType]::Deny)
+$acl.${remove ? 'RemoveAccessRuleSpecific' : 'AddAccessRule'}($rule)
+Set-Acl -LiteralPath $path -AclObject $acl
+`
+    execFileSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
+    ], { timeout: 15_000 })
+  }
+  updateRule(false)
+  return () => updateRule(true)
+}
+
 /** 当前 Windows 临时目录是否可通过 localhost 管理共享访问。 */
 const windowsAdminShareAvailable = (() => {
   if (process.platform !== 'win32') return false
@@ -1454,6 +1485,92 @@ describe('stable directory native host', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  test.skipIf(process.platform !== 'win32')('Given Windows transactions 禁止创建子目录和删除子项 When 首次写入、覆盖、读取和删除 Then 使用文件自身权限成功', async () => {
+    /** 隔离的目录只拒绝 ADD_SUBDIRECTORY(4) 和 DELETE_CHILD(64)，子文件保留默认 ACL。 */
+    const root = mkdtempSync(join(tmpdir(), 'proma-win-intent-narrow-acl-'))
+    /** Canvas 根与事务子目录使用独立变量，确保 ACL 不作用于其他测试。 */
+    const canvasRoot = join(root, 'canvas')
+    const transactions = join(canvasRoot, 'transactions')
+    /** 固定合法事务名覆盖同一路径首次提交和原子替换。 */
+    const fileName = 'agent-node-11111111-1111-4111-8111-111111111111.json'
+    mkdirSync(transactions, { recursive: true })
+    /** finally 中恢复拒绝规则，避免影响测试临时目录清理。 */
+    const restorePermissions = denyWindowsDirectoryRights(transactions, 4 | 64)
+    try {
+      /** 用真实拒绝证明 ACL 已生效，避免权限设置被忽略后产生假阳性。 */
+      expect(() => mkdirSync(join(transactions, 'forbidden-subdirectory'))).toThrow()
+      for (const content of ['{"state":"prepared"}', '{"state":"committed"}']) {
+        /** 必须读取 helper 的真实提交及持久性结果，而不是只验证文件可见。 */
+        const written = await runStableDirectoryNative({
+          mode: 'canvas-intent-write', roots: [canvasRoot], childName: 'transactions', fileName, content,
+        }, () => true, { helperPath: () => nativeHelperPath })
+        expect(written.writeOutcome).toEqual({ commitVisible: true, durabilityUncertain: false })
+        /** 受限目录仍允许安全扫描和精确读取。 */
+        const scanned = await runStableDirectoryNative({
+          mode: 'canvas-intent-scan', roots: [canvasRoot], childName: 'transactions',
+        }, () => true, { helperPath: () => nativeHelperPath })
+        expect(scanned.entries.map((entry) => entry.name)).toEqual([fileName])
+        const read = await runStableDirectoryNative({
+          mode: 'canvas-intent-read', roots: [canvasRoot], childName: 'transactions', fileName,
+        }, () => true, { helperPath: () => nativeHelperPath })
+        expect(read.readOutcome).toMatchObject({ status: 'ok', content })
+      }
+      /** 删除使用文件自身 DELETE 权限，不要求目录 DELETE_CHILD。 */
+      const removed = await runStableDirectoryNative({
+        mode: 'canvas-intent-remove', roots: [canvasRoot], childName: 'transactions', fileName,
+        content: '{"state":"committed"}',
+      }, () => true, { helperPath: () => nativeHelperPath })
+      expect(removed.writeOutcome).toEqual({ commitVisible: true, durabilityUncertain: false })
+      expect(existsSync(join(transactions, fileName))).toBe(false)
+    } finally {
+      restorePermissions()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  test.skipIf(process.platform !== 'win32')('Given Windows transactions 已有正常事务锁且目录仅允许读取 When 扫描和读取 Then 成功且写入拒绝包含阶段和模式', async () => {
+    /** 先由真实写入建立事务及锁，再只对目录拒绝写入相关权限，不限制锁文件自身权限。 */
+    const root = mkdtempSync(join(tmpdir(), 'proma-win-intent-read-acl-'))
+    const canvasRoot = join(root, 'canvas')
+    const transactions = join(canvasRoot, 'transactions')
+    const fileName = 'agent-node-11111111-1111-4111-8111-111111111111.json'
+    const content = '{"state":"prepared"}'
+    mkdirSync(transactions, { recursive: true })
+    /** 初始化失败时也清理临时目录；ACL 设置完成后保存对应恢复函数。 */
+    let restorePermissions: (() => void) | undefined
+    try {
+      /** 正常事务读取仍须获取已有 .canvas-intent.lock，不承诺缺锁且不可建文件的目录可读。 */
+      const initialized = await runStableDirectoryNative({
+        mode: 'canvas-intent-write', roots: [canvasRoot], childName: 'transactions', fileName, content,
+      }, () => true, { helperPath: () => nativeHelperPath })
+      expect(initialized.writeOutcome).toEqual({ commitVisible: true, durabilityUncertain: false })
+      /** ADD_FILE、ADD_SUBDIRECTORY、DELETE_CHILD、WRITE_EA、WRITE_ATTRIBUTES 均拒绝。 */
+      restorePermissions = denyWindowsDirectoryRights(transactions, 2 | 4 | 64 | 16 | 256)
+      /** 目录拒绝新增文件，现有文件仍能被读取。 */
+      expect(() => writeFileSync(join(transactions, 'forbidden-file'), 'forbidden')).toThrow()
+      /** 只读检查不应因为未使用的写权限而失败。 */
+      const scanned = await runStableDirectoryNative({
+        mode: 'canvas-intent-scan', roots: [canvasRoot], childName: 'transactions',
+      }, () => true, { helperPath: () => nativeHelperPath })
+      expect(scanned.entries.map((entry) => entry.name)).toEqual([fileName])
+      const read = await runStableDirectoryNative({
+        mode: 'canvas-intent-read', roots: [canvasRoot], childName: 'transactions', fileName,
+      }, () => true, { helperPath: () => nativeHelperPath })
+      expect(read.readOutcome).toMatchObject({ status: 'ok', content })
+      await expect(runStableDirectoryNative({
+        mode: 'canvas-intent-write', roots: [canvasRoot], childName: 'transactions', fileName,
+        content: '{"state":"committed"}',
+      }, () => true, { helperPath: () => nativeHelperPath })).rejects.toThrow(
+        'cannot open canvas transactions directory (mode=canvas-intent-write) [win32=5 ACCESS_DENIED]',
+      )
+      expect(readFileSync(join(transactions, fileName), 'utf8')).toBe(content)
+      expect(readdirSync(transactions).sort()).toEqual(['.canvas-intent.lock', fileName].sort())
+    } finally {
+      restorePermissions?.()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 30_000)
 
   test.skipIf(!nativeHelperPlatformSupported)('Given 已授权 Canvas 根 When 原生 helper 写重建 intent Then 文件可提交并参与安全扫描', async () => {
     /** 临时 Canvas 根用于演练真实原生写入与扫描合同。 */

@@ -10,6 +10,8 @@ import type {
 } from '@proma/shared'
 import type { IpcMainInvokeEvent, WebContents } from 'electron'
 import type { WorkspaceOperationGuard } from '../workspace-operation-guard'
+import { createCanvasSessionManagement, type CanvasSessionManagement } from './canvas-session-management'
+import type { CanvasSessionIdleCheck } from './canvas-session-idle-guard'
 import type { CanvasSessionStore } from './canvas-session-store'
 import { isSafeDesignStableId } from './design-paths'
 
@@ -30,6 +32,8 @@ type CanvasSessionStoreContract = Pick<
 
 /** 注册 Canvas 会话 IPC 的可信依赖。 */
 export interface CanvasSessionIpcOptions {
+  /** 可由生产注入与 Agent 共享的生命周期实例。 */
+  management?: CanvasSessionManagement
   ipc: CanvasSessionIpcRegistrar
   listAuthorizedWebContents: () => WebContents[]
   guard: Pick<WorkspaceOperationGuard, 'runWorkspaceWrite'>
@@ -40,7 +44,7 @@ export interface CanvasSessionIpcOptions {
   /** 生产可注入与 Agent 工具共享的唯一公开事件广播边界。 */
   broadcast?: (event: CanvasSessionChangeEvent) => void
   /** 删除前阻止仍有运行任务的 Canvas 进入不可恢复清理。 */
-  assertCanvasIdle?: (projectId: string, canvasId: string) => void
+  assertCanvasIdle?: (projectId: string, canvasId: string) => void | CanvasSessionIdleCheck | Promise<void | CanvasSessionIdleCheck>
   /** 索引删除成功后先清理全部普通 Agent 关联并广播精确变化。 */
   cleanupBindings?: (projectId: string, canvasId: string) => void
   /** 索引删除成功后回收该 Canvas 独占的内部 Agent 会话。 */
@@ -220,6 +224,11 @@ function broadcastChange(options: CanvasSessionIpcOptions, event: CanvasSessionC
 export function registerCanvasSessionIpcHandlers(
   options: CanvasSessionIpcOptions,
 ): CanvasSessionIpcRegistration {
+  /** UI 与 Agent 使用相同生命周期流程；测试可复用既有依赖构造。 */
+  const management = options.management ?? createCanvasSessionManagement({
+    ...options,
+    broadcast: (event) => broadcastChange(options, event),
+  })
   /** 本注册器拥有的固定 invoke 通道。 */
   const channels = [
     DESIGN_IPC_CHANNELS.LIST_CANVAS_SESSIONS,
@@ -277,31 +286,14 @@ export function registerCanvasSessionIpcHandlers(
     assertAuthorizedSender(event, options)
     /** 更新输入必须在只读和项目守卫前完成解析。 */
     const input = parseUpdateInput(value)
-    requireWritableProject(input.projectId, options)
-    /** 更新只有在项目写 lease 内成功原子提交后才可广播。 */
-    const session = options.guard.runWorkspaceWrite(input.projectId, () => options.sessions.update(input))
-    broadcastChange(options, { projectId: input.projectId, canvasId: session.id, cause: 'updated' })
-    return session
+    return management.update(input, () => assertAuthorizedSender(event, options))
   })
 
   options.ipc.handle(DESIGN_IPC_CHANNELS.DELETE_CANVAS_SESSION, async (event, value): Promise<CanvasSessionMeta> => {
     assertAuthorizedSender(event, options)
     /** 删除输入必须在只读、运行态和持久化访问前完成解析。 */
     const input = parseDeleteInput(value)
-    requireWritableProject(input.projectId, options)
-    return options.guard.runWorkspaceWrite(input.projectId, async () => {
-      options.assertCanvasIdle?.(input.projectId, input.canvasId)
-      const session = options.sessions.delete(input)
-      try {
-        options.cleanupBindings?.(input.projectId, input.canvasId)
-      } catch {
-        /** 索引已删除，关联清理失败不得击穿主删除或泄露内部路径。 */
-        console.error('[CanvasSessionIPC] Canvas 关联清理失败')
-      }
-      await options.cleanupInternalSessions?.(input.projectId, input.canvasId)
-      broadcastChange(options, { projectId: input.projectId, canvasId: session.id, cause: 'deleted' })
-      return session
-    })
+    return management.delete(input, () => assertAuthorizedSender(event, options))
   })
 
   /** 清理函数只移除本注册器声明的通道。 */
